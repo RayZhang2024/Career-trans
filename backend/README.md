@@ -14,7 +14,8 @@ FastAPI backend foundation for the multi-user Career Agent application.
 - structured job extraction and evidence-first requirement matching
 - deterministic fit scoring and gap classification
 - six-dimension Career Alignment V1 with deterministic weighted aggregation
-- development demo workflow returning separate fit and career assessments
+- deterministic Recommendation V1 with explicit rule IDs and hard-blocker precedence
+- development demo workflow returning separate fit, career, and recommendation assessments
 - CORS for the React development server
 - tests for authentication and profile isolation
 

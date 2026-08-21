@@ -359,7 +359,6 @@ score_components
 major_strengths
 major_gaps
 hard_blockers
-recommendation
 ```
 
 ## CareerAssessment
@@ -382,6 +381,26 @@ by deterministic validation and weighted aggregation. It consumes `JobProfile`,
 the fit score. Missing strategy or preference information caps confidence instead of
 causing the system to invent goals. The current implementation is integrated into the
 development demo workflow; production persistence remains future work.
+
+## RecommendationAssessment
+
+```text
+recommendation
+fit_score
+career_alignment_score
+career_alignment_confidence
+rule_id
+reasoning
+key_strengths
+key_tradeoffs
+hard_blockers
+```
+
+Recommendation V1 is deterministic Python. Ordered rules give hard blockers explicit
+precedence, support both strong-fit and deliberate strategic-stretch APPLY cases,
+preserve uncertain cases as CONSIDER, and reserve SKIP for blockers or explicitly low
+score combinations. The service copies the two source scores without blending or
+mutating them. Thresholds are central and injectable for later calibration.
 
 ---
 
@@ -627,10 +646,7 @@ Aggregate fit score
 Analyse career alignment
       |
       v
-Gap classification
-      |
-      v
-Recommendation
+Apply deterministic recommendation rules
 ```
 
 ---

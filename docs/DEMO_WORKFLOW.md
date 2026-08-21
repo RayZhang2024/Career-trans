@@ -38,6 +38,12 @@ FitAssessment --------------------+
                                   |
                                   v
                          CareerAssessment
+                                  |
+                                  v
+                         RecommendationService
+                                  |
+                                  v
+                      RecommendationAssessment
 ```
 
 The endpoint returns:
@@ -49,6 +55,8 @@ The endpoint returns:
 - deterministic `fit_assessment`
 - `career_assessment` with six dimensions, a deterministic weighted score, and
   explicit confidence
+- deterministic `recommendation_assessment` with separate source scores, a stable
+  rule ID, and APPLY / CONSIDER / SKIP reasoning
 
 ## Why this endpoint exists
 
@@ -93,4 +101,5 @@ with:
 A configured `OPENAI_API_KEY` is required for the real endpoint. Job extraction,
 semantic requirement matching, and career alignment use replaceable OpenAI-backed
 components; deterministic services validate and aggregate their outputs. Automated
-tests use fake AI components and make no OpenAI calls.
+tests use fake AI components and make no OpenAI calls. Recommendation selection is
+always deterministic and does not add another model call.

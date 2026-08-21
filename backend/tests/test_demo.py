@@ -12,6 +12,10 @@ from app.schemas.job import (
     RequirementImportance,
 )
 from app.schemas.matching import MatchType, RequirementMatch, RequirementMatchSet
+from app.schemas.recommendation import (
+    Recommendation,
+    RecommendationAssessment,
+)
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
 from app.schemas.career_assessment import (
@@ -96,6 +100,16 @@ class FakeDemoAnalysisWorkflow:
                 strategic_tradeoffs=["Some preferences are not stated."],
                 reasoning="Strategically useful based on supplied goals.",
             ),
+            recommendation_assessment=RecommendationAssessment(
+                recommendation=Recommendation.CONSIDER,
+                fit_score=75.0,
+                career_alignment_score=82.0,
+                career_alignment_confidence=AlignmentConfidence.MEDIUM,
+                rule_id="mixed_fit_alignment",
+                reasoning="This mixed case requires human judgement.",
+                key_strengths=["Builds target capabilities."],
+                key_tradeoffs=["Some preferences are not stated."],
+            ),
         )
 
 
@@ -135,6 +149,12 @@ def test_demo_analyse_and_match_returns_end_to_end_result(
     assert career_assessment["confidence"] == "medium"
     assert len(career_assessment["dimensions"]) == 6
 
+    recommendation = body["recommendation_assessment"]
+    assert recommendation["recommendation"] == "consider"
+    assert recommendation["fit_score"] == 75.0
+    assert recommendation["career_alignment_score"] == 82.0
+    assert recommendation["rule_id"] == "mixed_fit_alignment"
+
 
 def test_demo_analyse_and_match_rejects_short_job_text(client: TestClient) -> None:
     response = client.post(
@@ -145,7 +165,7 @@ def test_demo_analyse_and_match_rejects_short_job_text(client: TestClient) -> No
     assert response.status_code == 422
 
 
-def test_demo_workflow_runs_career_assessment_after_fit(tmp_path: Path) -> None:
+def test_demo_workflow_runs_recommendation_after_assessments(tmp_path: Path) -> None:
     candidate = CandidateContext(
         source_name="synthetic_demo",
         career_strategy_text=(
@@ -169,6 +189,14 @@ def test_demo_workflow_runs_career_assessment_after_fit(tmp_path: Path) -> None:
             )
             for dimension in CareerAlignmentDimension
         ],
+        reasoning="Synthetic workflow assertion.",
+    )
+    recommendation_assessment = RecommendationAssessment(
+        recommendation=Recommendation.CONSIDER,
+        fit_score=55.0,
+        career_alignment_score=80.0,
+        career_alignment_confidence=AlignmentConfidence.MEDIUM,
+        rule_id="mixed_fit_alignment",
         reasoning="Synthetic workflow assertion.",
     )
 
@@ -209,11 +237,22 @@ def test_demo_workflow_runs_career_assessment_after_fit(tmp_path: Path) -> None:
             assert received_fit is fit_assessment
             return career_assessment
 
+    class FakeRecommendationService:
+        def assess(
+            self,
+            received_fit: FitAssessment,
+            received_career: CareerAssessment,
+        ) -> RecommendationAssessment:
+            assert received_fit is fit_assessment
+            assert received_career is career_assessment
+            return recommendation_assessment
+
     workflow = DemoAnalysisWorkflow(
         job_analysis_service=FakeJobService(),  # type: ignore[arg-type]
         requirement_matching_service=FakeMatchingService(),  # type: ignore[arg-type]
         fit_assessment_service=FakeFitService(),  # type: ignore[arg-type]
         career_assessment_service=FakeCareerService(),  # type: ignore[arg-type]
+        recommendation_service=FakeRecommendationService(),  # type: ignore[arg-type]
         candidate_loader=FakeLoader(),  # type: ignore[arg-type]
         profile_dir=tmp_path,
     )
@@ -222,3 +261,4 @@ def test_demo_workflow_runs_career_assessment_after_fit(tmp_path: Path) -> None:
 
     assert response.fit_assessment is fit_assessment
     assert response.career_assessment is career_assessment
+    assert response.recommendation_assessment is recommendation_assessment
