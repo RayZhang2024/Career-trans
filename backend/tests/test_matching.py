@@ -10,6 +10,7 @@ from app.schemas.job import (
     RequirementImportance,
 )
 from app.schemas.matching import MatchType, RequirementMatch, RequirementMatchSet
+from app.schemas.candidate import CandidateEligibility
 from app.services.requirement_matching_service import RequirementMatchingService
 
 
@@ -98,3 +99,73 @@ def test_match_job_returns_requirement_level_matches(client: TestClient) -> None
     assert matches[0]["evidence_ids"] == ["EVIDENCE-PY-001"]
     assert matches[1]["match_type"] == "missing"
     assert matches[1]["evidence_ids"] == []
+
+def test_factual_requirement_bypasses_semantic_matcher() -> None:
+    work_auth_requirement = JobRequirement(
+        text="Right to work in the UK",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.WORK_AUTHORIZATION,
+    )
+
+    job_profile = JobProfile(
+        requirements=[
+            PYTHON_REQUIREMENT,
+            work_auth_requirement,
+        ]
+    )
+
+    candidate_context = CandidateContext(
+        source_name="demo",
+        eligibility=CandidateEligibility(
+            work_authorisation=["United Kingdom"]
+        ),
+        evidence=[
+            CareerEvidence(
+                evidence_id="EVIDENCE-PY-001",
+                title="Python application development",
+                text="Built Python applications and automated technical workflows.",
+                skills=["Python"],
+            )
+        ],
+    )
+
+    class FakeSemanticMatcher:
+        def match(
+            self,
+            semantic_job_profile: JobProfile,
+            supplied_candidate_context: CandidateContext,
+        ) -> RequirementMatchSet:
+            assert len(semantic_job_profile.requirements) == 1
+            assert semantic_job_profile.requirements[0] == PYTHON_REQUIREMENT
+            assert supplied_candidate_context == candidate_context
+
+            return RequirementMatchSet(
+                matches=[
+                    RequirementMatch(
+                        requirement_index=0,
+                        requirement=PYTHON_REQUIREMENT,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.8,
+                        evidence_ids=["EVIDENCE-PY-001"],
+                        reasoning="Semantic Python match.",
+                    )
+                ]
+            )
+
+    service = RequirementMatchingService(
+        matcher=FakeSemanticMatcher()
+    )
+
+    result = service.match(
+        job_profile,
+        candidate_context,
+    )
+
+    assert len(result.matches) == 2
+
+    assert result.matches[0].requirement == PYTHON_REQUIREMENT
+    assert result.matches[0].score == 0.8
+
+    assert result.matches[1].requirement == work_auth_requirement
+    assert result.matches[1].match_type == MatchType.DEMONSTRATED
+    assert result.matches[1].score == 1.0

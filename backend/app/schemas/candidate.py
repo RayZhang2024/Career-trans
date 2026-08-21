@@ -9,6 +9,12 @@ class CareerEvidence(BaseModel):
     text: str = Field(min_length=1)
     skills: list[str] = Field(default_factory=list)
 
+class CandidateEligibility(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    work_authorisation: list[str] = Field(default_factory=list)
+    security_clearances: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
 
 class CandidateContext(BaseModel):
     """User-agnostic candidate context consumed by matching workflows.
@@ -24,4 +30,6 @@ class CandidateContext(BaseModel):
     skills_text: str = ""
     career_strategy_text: str = ""
     job_search_criteria_text: str = ""
+    eligibility: CandidateEligibility = Field(default_factory=CandidateEligibility)
     evidence: list[CareerEvidence] = Field(default_factory=list)
+

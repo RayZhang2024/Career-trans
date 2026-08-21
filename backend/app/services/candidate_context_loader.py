@@ -1,7 +1,11 @@
 import re
 from pathlib import Path
 
-from app.schemas.candidate import CandidateContext, CareerEvidence
+from app.schemas.candidate import (
+    CandidateContext,
+    CandidateEligibility,
+    CareerEvidence,
+)
 
 
 _EVIDENCE_HEADING = re.compile(
@@ -55,6 +59,7 @@ class MarkdownCandidateContextLoader:
             skills_text=skills_text,
             career_strategy_text=strategy_text,
             job_search_criteria_text=criteria_text,
+            eligibility=self._extract_eligibility(profile_text),
             evidence=self._parse_evidence(evidence_text),
         )
 
@@ -109,3 +114,16 @@ class MarkdownCandidateContextLoader:
                 if skill:
                     skills.append(skill)
         return skills
+
+    @staticmethod
+    def _extract_eligibility(profile_text: str) -> CandidateEligibility:
+        text = profile_text.lower()
+
+        work_authorisation: list[str] = []
+
+        if "global talent" in text:
+            work_authorisation.append("United Kingdom")
+
+        return CandidateEligibility(
+            work_authorisation=work_authorisation,
+        )
