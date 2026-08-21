@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.job_extraction import OpenAIJobExtractor
 from app.agents.requirement_matching import OpenAIRequirementMatcher
 from app.core.config import get_settings
@@ -12,10 +13,11 @@ from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
 from app.services.auth_service import get_user_by_id
+from app.services.career_assessment_service import CareerAssessmentService
+from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.workflows.demo_analysis import DemoAnalysisWorkflow
-from app.services.fit_assessment_service import FitAssessmentService
 
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_v1_prefix}/auth/login")
@@ -90,15 +92,40 @@ def get_requirement_matching_service() -> RequirementMatchingService:
     return RequirementMatchingService(matcher=matcher)
 
 
+@lru_cache
+def get_career_assessment_service() -> CareerAssessmentService:
+    settings = get_settings()
+
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Career alignment is not configured. "
+                "Set OPENAI_API_KEY in backend/.env."
+            ),
+        )
+
+    agent = OpenAICareerAlignmentAgent(
+        api_key=settings.openai_api_key,
+        model=settings.openai_career_alignment_model,
+    )
+    return CareerAssessmentService(agent=agent)
+
+
 def get_demo_analysis_workflow(
     job_analysis_service: Annotated[JobAnalysisService, Depends(get_job_analysis_service)],
     requirement_matching_service: Annotated[
         RequirementMatchingService,
         Depends(get_requirement_matching_service),
     ],
+    career_assessment_service: Annotated[
+        CareerAssessmentService,
+        Depends(get_career_assessment_service),
+    ],
 ) -> DemoAnalysisWorkflow:
     return DemoAnalysisWorkflow(
         job_analysis_service=job_analysis_service,
         requirement_matching_service=requirement_matching_service,
         fit_assessment_service=FitAssessmentService(),
+        career_assessment_service=career_assessment_service,
     )

@@ -203,7 +203,10 @@ Measures how well the user's current evidence matches the role. Overall fit scor
 
 ## Career Assessment
 
-Measures whether the role moves the user in their preferred strategic direction. This is not implemented yet.
+Measures whether the role moves the user in their preferred strategic direction.
+Career Alignment V1 scores six explainable dimensions independently of current-role
+fit, aggregates them with centrally configured Python weights, and reports explicit
+confidence based on the supplied strategy, preferences, and job information.
 
 ---
 
@@ -221,6 +224,10 @@ Current backend functionality includes:
 - evidence-first requirement matching through `POST /api/v1/jobs/match`;
 - typed `RequirementMatch` output;
 - validation that matchers cannot alter requirements or invent evidence IDs;
+- deterministic fit scoring and gap classification;
+- career-alignment assessment across six strategic dimensions, kept separate from fit;
+- deterministic career-alignment aggregation with explicit input-confidence handling;
+- development demo workflow returning both fit and career assessments;
 - backend tests using fake AI components so automated tests do not call OpenAI.
 
 The matching endpoint currently accepts candidate context directly in the request. Production user-data loading and persistence will be connected later.
@@ -251,18 +258,15 @@ Implemented for raw job-description text. Job URL fetching is still planned.
 
 Requirement/evidence matching is implemented at V1 level.
 
-Next:
-
-- deterministic aggregate fit score;
-- gap classification;
-- explainable fit assessment.
+The backend demo workflow also implements deterministic aggregate fit scoring,
+explainable strengths, gap classification, and hard-blocker detection.
 
 ## Career Strategy
 
-Planned:
-
-- career-alignment score;
-- APPLY / CONSIDER / SKIP recommendation.
+Career Alignment V1 is implemented in the backend demo workflow. It consumes the
+candidate's dynamically loaded strategy and preferences and returns dimension-level
+reasoning, strategic strengths/trade-offs, a deterministic 0–100 score, and explicit
+confidence. APPLY / CONSIDER / SKIP recommendation remains planned.
 
 ## Application Preparation
 
