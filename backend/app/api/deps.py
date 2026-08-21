@@ -1,5 +1,5 @@
-from typing import Annotated
 from functools import lru_cache
+from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -14,6 +14,7 @@ from app.models.user import User
 from app.services.auth_service import get_user_by_id
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.requirement_matching_service import RequirementMatchingService
+from app.workflows.demo_analysis import DemoAnalysisWorkflow
 
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_v1_prefix}/auth/login")
@@ -85,3 +86,16 @@ def get_requirement_matching_service() -> RequirementMatchingService:
         model=settings.openai_requirement_matching_model,
     )
     return RequirementMatchingService(matcher=matcher)
+
+
+def get_demo_analysis_workflow(
+    job_analysis_service: Annotated[JobAnalysisService, Depends(get_job_analysis_service)],
+    requirement_matching_service: Annotated[
+        RequirementMatchingService,
+        Depends(get_requirement_matching_service),
+    ],
+) -> DemoAnalysisWorkflow:
+    return DemoAnalysisWorkflow(
+        job_analysis_service=job_analysis_service,
+        requirement_matching_service=requirement_matching_service,
+    )
