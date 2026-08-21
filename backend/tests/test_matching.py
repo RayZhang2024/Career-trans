@@ -2,15 +2,19 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_requirement_matching_service
 from app.main import app as fastapi_app
-from app.schemas.candidate import CandidateContext, CareerEvidence
+from app.schemas.candidate import CandidateContext, CandidateEligibility, CareerEvidence
 from app.schemas.job import (
     JobProfile,
     JobRequirement,
     RequirementCategory,
     RequirementImportance,
 )
-from app.schemas.matching import MatchType, RequirementMatch, RequirementMatchSet
-from app.schemas.candidate import CandidateEligibility
+from app.schemas.matching import (
+    EvidenceSourceType,
+    MatchType,
+    RequirementMatch,
+    RequirementMatchSet,
+)
 from app.services.requirement_matching_service import RequirementMatchingService
 
 
@@ -97,8 +101,17 @@ def test_match_job_returns_requirement_level_matches(client: TestClient) -> None
     assert len(matches) == 2
     assert matches[0]["match_type"] == "demonstrated"
     assert matches[0]["evidence_ids"] == ["EVIDENCE-PY-001"]
+    assert matches[0]["evidence_refs"] == [
+        {
+            "source_type": "career_evidence",
+            "source_ref": "EVIDENCE-PY-001",
+            "value": None,
+        }
+    ]
     assert matches[1]["match_type"] == "missing"
     assert matches[1]["evidence_ids"] == []
+    assert matches[1]["evidence_refs"] == []
+
 
 def test_factual_requirement_bypasses_semantic_matcher() -> None:
     work_auth_requirement = JobRequirement(
@@ -163,9 +176,24 @@ def test_factual_requirement_bypasses_semantic_matcher() -> None:
 
     assert len(result.matches) == 2
 
-    assert result.matches[0].requirement == PYTHON_REQUIREMENT
-    assert result.matches[0].score == 0.8
+    semantic_match = result.matches[0]
+    assert semantic_match.requirement == PYTHON_REQUIREMENT
+    assert semantic_match.score == 0.8
+    assert len(semantic_match.evidence_refs) == 1
+    assert (
+        semantic_match.evidence_refs[0].source_type
+        == EvidenceSourceType.CAREER_EVIDENCE
+    )
+    assert semantic_match.evidence_refs[0].source_ref == "EVIDENCE-PY-001"
 
-    assert result.matches[1].requirement == work_auth_requirement
-    assert result.matches[1].match_type == MatchType.DEMONSTRATED
-    assert result.matches[1].score == 1.0
+    factual_match = result.matches[1]
+    assert factual_match.requirement == work_auth_requirement
+    assert factual_match.match_type == MatchType.DEMONSTRATED
+    assert factual_match.score == 1.0
+    assert len(factual_match.evidence_refs) == 1
+    assert (
+        factual_match.evidence_refs[0].source_type
+        == EvidenceSourceType.CANDIDATE_ELIGIBILITY
+    )
+    assert factual_match.evidence_refs[0].source_ref == "work_authorisation"
+    assert factual_match.evidence_refs[0].value == "United Kingdom"
