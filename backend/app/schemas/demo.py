@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.assessment import FitAssessment
 from app.schemas.job import JobProfile
 from app.schemas.matching import RequirementMatch
 
@@ -10,7 +11,7 @@ class DemoAnalyseAndMatchRequest(BaseModel):
     job_text: str = Field(
         min_length=50,
         max_length=50_000,
-        description="Raw job description text to analyse against the demo candidate.",
+        description="Raw job-description text for the demo workflow.",
     )
 
 
@@ -21,3 +22,4 @@ class DemoAnalyseAndMatchResponse(BaseModel):
     evidence_count: int = Field(ge=0)
     job_profile: JobProfile
     matches: list[RequirementMatch]
+    fit_assessment: FitAssessment

@@ -15,11 +15,13 @@ from app.services.auth_service import get_user_by_id
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.workflows.demo_analysis import DemoAnalysisWorkflow
+from app.services.fit_assessment_service import FitAssessmentService
 
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_v1_prefix}/auth/login")
 
 DbSession = Annotated[Session, Depends(get_db)]
+
 
 
 def get_current_user(
@@ -98,4 +100,5 @@ def get_demo_analysis_workflow(
     return DemoAnalysisWorkflow(
         job_analysis_service=job_analysis_service,
         requirement_matching_service=requirement_matching_service,
+        fit_assessment_service=FitAssessmentService(),
     )

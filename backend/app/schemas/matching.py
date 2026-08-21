@@ -12,6 +12,20 @@ class MatchType(StrEnum):
     INFERRED = "inferred"
     MISSING = "missing"
 
+class EvidenceSourceType(StrEnum):
+    CAREER_EVIDENCE = "career_evidence"
+    CANDIDATE_PROFILE = "candidate_profile"
+    CANDIDATE_ELIGIBILITY = "candidate_eligibility"
+    SKILLS = "skills"
+    EDUCATION = "education"
+
+
+class EvidenceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_type: EvidenceSourceType
+    source_ref: str = Field(min_length=1)
+    value: str | None = None
 
 class RequirementMatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -21,6 +35,7 @@ class RequirementMatch(BaseModel):
     match_type: MatchType
     score: float = Field(ge=0.0, le=1.0)
     evidence_ids: list[str] = Field(default_factory=list)
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
     reasoning: str = Field(min_length=1)
 
 

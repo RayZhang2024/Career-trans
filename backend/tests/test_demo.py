@@ -10,6 +10,7 @@ from app.schemas.job import (
     RequirementImportance,
 )
 from app.schemas.matching import MatchType, RequirementMatch
+from app.schemas.assessment import FitAssessment
 
 
 SAMPLE_JOB_TEXT = """
@@ -62,6 +63,14 @@ class FakeDemoAnalysisWorkflow:
                     reasoning="No demonstrated React project evidence is available.",
                 ),
             ],
+            fit_assessment=FitAssessment(
+                fit_score=75.0,
+                essential_score=90.0,
+                desirable_score=30.0,
+                strengths=[0],
+                gaps=[],
+                hard_blockers=[],
+),
         )
 
 
@@ -87,6 +96,14 @@ def test_demo_analyse_and_match_returns_end_to_end_result(
     assert len(body["matches"]) == 2
     assert body["matches"][0]["match_type"] == "demonstrated"
     assert body["matches"][1]["match_type"] == "missing"
+
+    fit_assessment = body["fit_assessment"]
+
+    assert fit_assessment["fit_score"] >= 0
+    assert fit_assessment["fit_score"] <= 100
+    assert fit_assessment["essential_score"] >= 0
+    assert "gaps" in fit_assessment
+    assert "hard_blockers" in fit_assessment
 
 
 def test_demo_analyse_and_match_rejects_short_job_text(client: TestClient) -> None:

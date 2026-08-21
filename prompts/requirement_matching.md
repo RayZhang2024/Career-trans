@@ -45,11 +45,13 @@ Typical ranges:
 
 These ranges are guidance, not mechanical rules. The classification and reasoning must remain consistent with the evidence.
 
-## Evidence IDs
+## Evidence provenance
 
 Only cite `evidence_id` values that are present in `candidate_context.evidence`.
 
 For inferred or missing matches, `evidence_ids` may be empty.
+
+Set `evidence_refs` to an empty list for semantic matching. The application converts validated `evidence_ids` into typed `career_evidence` provenance references deterministically after the model response is validated. Do not invent profile, eligibility, skills, or education provenance references here.
 
 ## Requirement index
 
