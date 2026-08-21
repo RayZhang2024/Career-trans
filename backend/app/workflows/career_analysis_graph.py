@@ -18,7 +18,7 @@ from app.services.requirement_matching_service import RequirementMatchingService
 
 class CareerAnalysisState(TypedDict, total=False):
     job_text: str
-    candidate_context: CandidateContext
+    candidate_context: CandidateContext | dict[str, object]
     job_profile: JobProfile
     requirement_matches: list[RequirementMatch]
     fit_assessment: FitAssessment
@@ -45,6 +45,11 @@ class CareerAnalysisGraph:
         self._career_assessment_service = career_assessment_service
         self._recommendation_service = recommendation_service
         self._graph = self._build_graph()
+
+    @property
+    def compiled_graph(self) -> CompiledStateGraph:
+        """Expose the compiled graph for development tooling such as Studio."""
+        return self._graph
 
     def invoke(
         self,
@@ -92,7 +97,7 @@ class CareerAnalysisGraph:
     ) -> CareerAnalysisState:
         match_set = self._requirement_matching_service.match(
             state["job_profile"],
-            state["candidate_context"],
+            self._candidate_context(state),
         )
         return {"requirement_matches": match_set.matches}
 
@@ -110,7 +115,7 @@ class CareerAnalysisGraph:
         return {
             "career_assessment": self._career_assessment_service.assess(
                 state["job_profile"],
-                state["candidate_context"],
+                self._candidate_context(state),
                 state["fit_assessment"],
             )
         }
@@ -125,3 +130,10 @@ class CareerAnalysisGraph:
                 state["career_assessment"],
             )
         }
+
+    @staticmethod
+    def _candidate_context(state: CareerAnalysisState) -> CandidateContext:
+        candidate_context = state["candidate_context"]
+        if isinstance(candidate_context, CandidateContext):
+            return candidate_context
+        return CandidateContext.model_validate(candidate_context)
