@@ -110,11 +110,7 @@ React / TypeScript frontend
 
 The application should support local development first and production deployment later.
 
-See:
-
-`docs/ARCHITECTURE.md`
-
-for the detailed design.
+See `docs/ARCHITECTURE.md` for the detailed design.
 
 ---
 
@@ -122,18 +118,7 @@ for the detailed design.
 
 Career Agent is designed for external users.
 
-Each registered user owns their own:
-
-- candidate profile;
-- career evidence;
-- skills;
-- projects;
-- uploaded CVs;
-- preferences;
-- saved jobs;
-- assessments;
-- application materials;
-- application history.
+Each registered user owns their own candidate profile, career evidence, skills, projects, uploaded CVs, preferences, saved jobs, assessments, application materials, and application history.
 
 Production data must be isolated by authenticated user identity.
 
@@ -168,7 +153,6 @@ career-trans/
 |   `-- ARCHITECTURE.md
 |
 |-- prompts/
-|   `-- system.md
 |
 |-- resources/
 |   |-- README.md
@@ -182,151 +166,131 @@ career-trans/
 
 # Resources
 
-`resources/` contains development resources, templates, and demo fixtures.
+`resources/` contains development resources, templates, and demo fixtures. It does **not** contain production registered-user data.
 
-It does **not** contain production registered-user data.
-
-Example:
-
-```text
-resources/
-|-- templates/
-`-- examples/
-    `-- ray_demo/
-        |-- 01_candidate_profile.md
-        |-- 02_master_career_evidence.md
-        |-- ...
-```
-
-Demo profiles exist only for:
-
-- development;
-- testing;
-- evaluation;
-- examples.
-
-They must never be treated as globally applicable candidate information.
+Demo profiles exist only for development, testing, evaluation, and examples. They must never be treated as globally applicable candidate information.
 
 ---
 
 # Core Concepts
 
-## Candidate Profile
+## Candidate Context
 
-A structured representation of the authenticated user's:
-
-- employment;
-- education;
-- skills;
-- projects;
-- achievements;
-- preferences;
-- career targets.
+A typed, user-agnostic representation of candidate information consumed by matching workflows. During development it can be loaded from demo Markdown resources; in production it will be assembled from authenticated user data.
 
 ## Career Evidence
 
-Atomic evidence supporting claims about candidate capability.
-
-Example:
-
-```text
-Requirement:
-Customer-facing technical project delivery
-
-Evidence:
-Led multiple industrial engineering projects from
-requirements capture through technical delivery.
-```
+Atomic evidence supporting claims about candidate capability. Evidence items have stable IDs so requirement matches can cite the exact supporting records.
 
 ## Job Profile
 
-Structured representation of a job including:
+Structured representation of a job including title, company, location, responsibilities, essential/desirable requirements, technical skills, seniority, and eligibility constraints.
 
-- title;
-- company;
-- location;
-- responsibilities;
-- essential requirements;
-- desirable requirements;
-- technical skills;
-- seniority;
-- eligibility constraints.
+## Requirement Match
+
+An evidence-first assessment of one job requirement. Match types are:
+
+- `demonstrated`
+- `transferable`
+- `inferred`
+- `missing`
+
+Each match includes a 0–1 evidence-strength score, cited evidence IDs, and concise reasoning.
 
 ## Fit Assessment
 
-Measures how well the user's current evidence matches the role.
+Measures how well the user's current evidence matches the role. Overall fit scoring is not implemented yet.
 
 ## Career Assessment
 
-Measures whether the role moves the user in their preferred strategic direction.
+Measures whether the role moves the user in their preferred strategic direction. This is not implemented yet.
 
-These two concepts remain separate.
+---
+
+# Implemented Backend Capabilities
+
+Current backend functionality includes:
+
+- FastAPI application;
+- email/password registration and login;
+- JWT-protected current-user endpoint;
+- user-scoped candidate profile CRUD;
+- structured job-description extraction through `POST /api/v1/jobs/analyse`;
+- typed `JobProfile` and `JobRequirement` schemas;
+- generic Markdown demo-candidate loading into `CandidateContext`;
+- evidence-first requirement matching through `POST /api/v1/jobs/match`;
+- typed `RequirementMatch` output;
+- validation that matchers cannot alter requirements or invent evidence IDs;
+- backend tests using fake AI components so automated tests do not call OpenAI.
+
+The matching endpoint currently accepts candidate context directly in the request. Production user-data loading and persistence will be connected later.
 
 ---
 
 # Planned Development Stages
 
-## V1 — Web Foundation
+## Web Foundation
 
-- FastAPI backend
-- React frontend
-- user registration
-- login/logout
-- authenticated current-user endpoint
-- basic profile CRUD
+Backend registration/login/profile support exists. React authentication/profile UI is deferred while the core intelligence workflow is developed.
 
-## V2 — Profile Intelligence
+## Profile Intelligence
 
-- CV upload
-- CV parsing
-- structured candidate profile
-- evidence extraction
-- user review/editing
+Planned:
 
-## V3 — Job Analysis
+- CV upload;
+- CV parsing;
+- structured candidate profile;
+- evidence extraction;
+- user review/editing.
 
-- job-description input
-- job URL input
-- `JobProfile`
-- structured requirements
+## Job Analysis
 
-## V4 — Matching
+Implemented for raw job-description text. Job URL fetching is still planned.
 
-- requirement/evidence matching
-- fit score
-- gap classification
-- explainable results
+## Matching and Scoring
 
-## V5 — Career Strategy
+Requirement/evidence matching is implemented at V1 level.
 
-- career-alignment score
-- APPLY / CONSIDER / SKIP recommendation
+Next:
 
-## V6 — Application Preparation
+- deterministic aggregate fit score;
+- gap classification;
+- explainable fit assessment.
 
-- evidence selection
-- CV tailoring
-- cover-letter drafting
+## Career Strategy
 
-## V7 — Application Tracking
+Planned:
 
-- saved jobs
-- application status
-- events
-- outcomes
-- notes
+- career-alignment score;
+- APPLY / CONSIDER / SKIP recommendation.
 
-## V8 — Job Discovery
+## Application Preparation
 
-- recurring searches
-- deduplication
-- filtering
-- scoring
-- shortlist generation
+Planned:
 
-## V9 — Learning System
+- evidence selection;
+- CV tailoring;
+- cover-letter drafting.
 
-Use application outcomes to improve prioritisation and evaluation.
+## Application Tracking
+
+Planned:
+
+- saved jobs;
+- application status;
+- events;
+- outcomes;
+- notes.
+
+## Job Discovery
+
+Planned:
+
+- recurring searches;
+- deduplication;
+- filtering;
+- scoring;
+- shortlist generation.
 
 ---
 
@@ -336,43 +300,25 @@ Use application outcomes to improve prioritisation and evaluation.
 
 - React
 - TypeScript
-- modern component-based UI
 
 ## Backend
 
 - Python
 - FastAPI
 - Pydantic
+- SQLAlchemy
 
 ## Database
 
-Development may start simply.
-
-Production target:
-
-- PostgreSQL
-
-## File Storage
-
-Uploaded CVs and documents should eventually use appropriate private file/object storage.
+Development currently uses SQLite. Production target is PostgreSQL.
 
 ## AI
 
-Architecture should support multiple model providers.
-
-Likely uses include:
-
-- job extraction;
-- semantic matching;
-- evidence retrieval;
-- gap analysis;
-- career reasoning;
-- CV tailoring;
-- cover-letter generation.
+AI/provider logic is kept behind interfaces. Current semantic uses are job extraction and requirement matching.
 
 ## Workflow
 
-LangGraph may be introduced where stateful multi-step orchestration adds value.
+LangGraph will be introduced when the workflow has enough stateful stages to justify orchestration complexity.
 
 ---
 
@@ -382,41 +328,37 @@ Security is a core product requirement because the application stores private ca
 
 Important principles:
 
-- all user-owned data is scoped to authenticated users;
+- user-owned production data is scoped to authenticated users;
 - passwords are never stored in plaintext;
 - secrets are never committed;
 - authorization is enforced server-side;
-- uploaded documents are private;
+- uploaded documents will be private;
 - demo data is never mixed with production user data.
 
 ---
 
-# Current Status
+# Development
 
-Repository architecture and shared instructions are being established.
+Repository-wide coding instructions are defined in `AGENTS.md`.
 
-The application implementation is not yet complete.
+From `backend/`, with the virtual environment active:
 
-Do not assume roadmap features already exist.
+```powershell
+python -m pip install -e ".[dev]"
+python -m pytest
+uvicorn app.main:app --reload
+```
 
----
+Swagger is available locally at:
 
-# Development Guidance
-
-Repository-wide coding instructions are defined in:
-
-`AGENTS.md`
-
-Before major implementation changes, follow those instructions.
+```text
+http://127.0.0.1:8000/docs
+```
 
 ---
 
 # Demo Data
 
-The repository may contain example candidate profiles under:
+Example candidate profiles under `resources/examples/` are fixtures for development and evaluation only.
 
-`resources/examples/`
-
-These are only fixtures for development and evaluation.
-
-The application itself must work equally well for users with very different backgrounds and goals.
+The application itself must work for users with very different backgrounds and goals.
