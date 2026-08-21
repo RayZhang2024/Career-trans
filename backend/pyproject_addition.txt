@@ -1,3 +1,0 @@
-# Add this runtime dependency under [project] dependencies in backend/pyproject.toml:
-
-"openai>=1.0",
