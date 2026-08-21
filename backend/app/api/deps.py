@@ -5,13 +5,15 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app.agents.job_extraction import OpenAIJobExtractor
+from app.agents.requirement_matching import OpenAIRequirementMatcher
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
 from app.services.auth_service import get_user_by_id
-from app.agents.job_extraction import OpenAIJobExtractor
 from app.services.job_analysis_service import JobAnalysisService
+from app.services.requirement_matching_service import RequirementMatchingService
 
 settings = get_settings()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.api_v1_prefix}/auth/login")
@@ -43,6 +45,7 @@ def get_current_user(
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
+
 @lru_cache
 def get_job_analysis_service() -> JobAnalysisService:
     settings = get_settings()
@@ -62,3 +65,23 @@ def get_job_analysis_service() -> JobAnalysisService:
     )
 
     return JobAnalysisService(extractor=extractor)
+
+
+@lru_cache
+def get_requirement_matching_service() -> RequirementMatchingService:
+    settings = get_settings()
+
+    if not settings.openai_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Requirement matching is not configured. "
+                "Set OPENAI_API_KEY in backend/.env."
+            ),
+        )
+
+    matcher = OpenAIRequirementMatcher(
+        api_key=settings.openai_api_key,
+        model=settings.openai_requirement_matching_model,
+    )
+    return RequirementMatchingService(matcher=matcher)
