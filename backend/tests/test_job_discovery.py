@@ -51,17 +51,14 @@ def test_greenhouse_payload_is_normalized() -> None:
 
     result = source.search(query())
 
-    assert result == [
-        JobListing(
-            source="greenhouse",
-            external_id="41",
-            title="AI Solutions Engineer",
-            location="London",
-            url="https://boards.greenhouse.io/acme/jobs/41",
-            description="Customer-facing AI implementation role.",
-            posted_at=datetime(2026, 8, 20, 12, tzinfo=timezone.utc),
-        )
-    ]
+    assert len(result) == 1
+    assert result[0].source == "greenhouse"
+    assert result[0].external_id == "41"
+    assert result[0].title == "AI Solutions Engineer"
+    assert result[0].location == "London"
+    assert result[0].url == "https://boards.greenhouse.io/acme/jobs/41"
+    assert result[0].description == "Customer-facing AI implementation role."
+    assert result[0].posted_at == datetime(2026, 8, 20, 12, tzinfo=timezone.utc)
 
 
 def test_lever_payload_is_normalized() -> None:

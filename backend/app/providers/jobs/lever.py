@@ -30,8 +30,6 @@ class LeverJobSource:
                 listing = self._normalize(job)
                 if listing is not None:
                     listings.append(listing)
-                    if len(listings) >= query.max_results:
-                        return listings
         return listings
 
     @classmethod
