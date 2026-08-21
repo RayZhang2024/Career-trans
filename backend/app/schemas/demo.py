@@ -4,6 +4,7 @@ from app.schemas.assessment import FitAssessment
 from app.schemas.career_assessment import CareerAssessment
 from app.schemas.job import JobProfile
 from app.schemas.matching import RequirementMatch
+from app.schemas.recommendation import RecommendationAssessment
 
 
 class DemoAnalyseAndMatchRequest(BaseModel):
@@ -25,3 +26,4 @@ class DemoAnalyseAndMatchResponse(BaseModel):
     matches: list[RequirementMatch]
     fit_assessment: FitAssessment
     career_assessment: CareerAssessment
+    recommendation_assessment: RecommendationAssessment

@@ -199,7 +199,9 @@ Each match includes a 0–1 evidence-strength score, cited evidence IDs, and con
 
 ## Fit Assessment
 
-Measures how well the user's current evidence matches the role. Overall fit scoring is not implemented yet.
+Measures how well the user's current evidence matches the role. V1 deterministically
+aggregates requirement scores and reports strengths, classified gaps, and confirmed
+hard blockers.
 
 ## Career Assessment
 
@@ -207,6 +209,12 @@ Measures whether the role moves the user in their preferred strategic direction.
 Career Alignment V1 scores six explainable dimensions independently of current-role
 fit, aggregates them with centrally configured Python weights, and reports explicit
 confidence based on the supplied strategy, preferences, and job information.
+
+## Recommendation Assessment
+
+Combines fit and career alignment through explicit deterministic rules while
+preserving both scores. Recommendation V1 returns `apply`, `consider`, or `skip`, a
+stable rule ID, concise reasoning, existing strengths/trade-offs, and hard blockers.
 
 ---
 
@@ -227,7 +235,8 @@ Current backend functionality includes:
 - deterministic fit scoring and gap classification;
 - career-alignment assessment across six strategic dimensions, kept separate from fit;
 - deterministic career-alignment aggregation with explicit input-confidence handling;
-- development demo workflow returning both fit and career assessments;
+- development demo workflow returning fit, career, and recommendation assessments;
+- deterministic APPLY / CONSIDER / SKIP recommendation with hard-blocker precedence;
 - backend tests using fake AI components so automated tests do not call OpenAI.
 
 The matching endpoint currently accepts candidate context directly in the request. Production user-data loading and persistence will be connected later.
@@ -266,7 +275,12 @@ explainable strengths, gap classification, and hard-blocker detection.
 Career Alignment V1 is implemented in the backend demo workflow. It consumes the
 candidate's dynamically loaded strategy and preferences and returns dimension-level
 reasoning, strategic strengths/trade-offs, a deterministic 0–100 score, and explicit
-confidence. APPLY / CONSIDER / SKIP recommendation remains planned.
+confidence.
+
+Recommendation V1 is also implemented in the demo workflow. It uses centrally
+configured thresholds, supports a documented strategic-stretch APPLY case, downgrades
+score-based APPLY decisions when career confidence is low, and otherwise preserves
+mixed or uncertain cases for human review with CONSIDER.
 
 ## Application Preparation
 
@@ -318,7 +332,9 @@ Development currently uses SQLite. Production target is PostgreSQL.
 
 ## AI
 
-AI/provider logic is kept behind interfaces. Current semantic uses are job extraction and requirement matching.
+AI/provider logic is kept behind interfaces. Current semantic uses are job extraction,
+requirement matching, and career alignment. Final recommendation selection is
+deterministic Python and does not call another model.
 
 ## Workflow
 

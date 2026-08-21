@@ -17,6 +17,7 @@ from app.services.career_assessment_service import CareerAssessmentService
 from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.requirement_matching_service import RequirementMatchingService
+from app.services.recommendation_service import RecommendationService
 from app.workflows.demo_analysis import DemoAnalysisWorkflow
 
 settings = get_settings()
@@ -128,4 +129,5 @@ def get_demo_analysis_workflow(
         requirement_matching_service=requirement_matching_service,
         fit_assessment_service=FitAssessmentService(),
         career_assessment_service=career_assessment_service,
+        recommendation_service=RecommendationService(),
     )
