@@ -1,7 +1,12 @@
 from app.agents.requirement_matching import RequirementMatcher
 from app.schemas.candidate import CandidateContext
 from app.schemas.job import JobProfile
-from app.schemas.matching import RequirementMatchSet
+from app.schemas.matching import (
+    EvidenceRef,
+    EvidenceSourceType,
+    RequirementMatch,
+    RequirementMatchSet,
+)
 from app.services.factual_requirement_service import FactualRequirementService
 
 
@@ -19,7 +24,7 @@ class RequirementMatchingService:
         job_profile: JobProfile,
         candidate_context: CandidateContext,
     ) -> RequirementMatchSet:
-        factual_matches = []
+        factual_matches: list[RequirementMatch] = []
         semantic_requirements = []
         semantic_indexes = []
 
@@ -36,7 +41,7 @@ class RequirementMatchingService:
                 semantic_requirements.append(requirement)
                 semantic_indexes.append(index)
 
-        semantic_matches = []
+        semantic_matches: list[RequirementMatch] = []
 
         if semantic_requirements:
             semantic_job_profile = job_profile.model_copy(
@@ -55,9 +60,26 @@ class RequirementMatchingService:
             ):
                 local_match.requirement_index = original_index
                 local_match.requirement = job_profile.requirements[original_index]
+                local_match.evidence_refs = self._career_evidence_refs(local_match)
                 semantic_matches.append(local_match)
 
         combined = factual_matches + semantic_matches
         combined.sort(key=lambda item: item.requirement_index)
 
         return RequirementMatchSet(matches=combined)
+
+    @staticmethod
+    def _career_evidence_refs(match: RequirementMatch) -> list[EvidenceRef]:
+        """Convert validated career evidence IDs into typed provenance references.
+
+        The LLM remains responsible for selecting relevant evidence IDs. Provenance
+        objects are generated deterministically from those IDs so the API does not
+        depend on the model reproducing the same information in two formats.
+        """
+        return [
+            EvidenceRef(
+                source_type=EvidenceSourceType.CAREER_EVIDENCE,
+                source_ref=evidence_id,
+            )
+            for evidence_id in match.evidence_ids
+        ]
