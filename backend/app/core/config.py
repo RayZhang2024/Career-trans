@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
+    openai_api_key: str | None = None
+    openai_job_extraction_model: str = "gpt-5.6-luna"
 
 @lru_cache
 def get_settings() -> Settings:
