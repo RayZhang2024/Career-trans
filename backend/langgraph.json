@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "career_analysis": "./app/workflows/studio.py:graph"
+  },
+  "env": ".env"
+}
