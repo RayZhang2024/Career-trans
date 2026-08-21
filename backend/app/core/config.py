@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     openai_job_extraction_model: str = "gpt-5.6-luna"
+    openai_requirement_matching_model: str = "gpt-5.6-luna"
+
 
 @lru_cache
 def get_settings() -> Settings:
