@@ -741,3 +741,155 @@ A feature is complete when:
 - no secrets are committed;
 - the repository remains runnable;
 - no candidate-specific data has leaked into shared application logic.
+
+---
+
+# 31. AI Collaboration Workflow
+
+This repository may be modified by multiple AI coding assistants. Coordination must be explicit so one assistant does not overwrite, duplicate, or silently diverge from another assistant's work.
+
+## Roles
+
+The default collaboration model is:
+
+- **Codex — implementation engineer:** primary local implementation agent for multi-file coding, refactoring, test execution, repository-wide edits, and development-environment work.
+- **ChatGPT — architect and reviewer:** primary product/agent architect for milestone design, schemas, reasoning boundaries, prompts, evaluation strategy, LangGraph design, code review, and targeted GitHub changes when explicitly requested.
+- **User — product owner:** decides priorities, approves architectural direction, controls merges/deployment, and may override this default division at any time.
+
+These are default responsibilities, not hard restrictions. Either assistant may perform another role when explicitly requested, but the handoff rules below still apply.
+
+## Shared Source of Truth
+
+1. `main` is the canonical shared source of truth.
+2. New feature work should normally use a dedicated feature branch.
+3. Only one assistant should actively modify a given feature branch at a time unless the user explicitly coordinates parallel work on non-overlapping files.
+4. Before starting work, inspect and sync the latest target branch.
+5. Do not rely on stale conversation context when the repository can be inspected directly.
+
+## Handoff Protocol
+
+Before handing work from one assistant to another:
+
+1. commit all intended changes;
+2. run the relevant tests where the environment permits;
+3. push the branch;
+4. report the branch name;
+5. report the latest commit or PR;
+6. describe what is complete, what remains, and any known failures or design questions.
+
+The receiving assistant must inspect the latest repository/branch state before modifying code.
+
+Never overwrite another assistant's unmerged work merely because an older local or conversational copy differs.
+
+## Recommended Feature Workflow
+
+```text
+Product goal / milestone
+        ↓
+Architecture + acceptance criteria
+        ↓
+Feature branch
+        ↓
+Codex implementation
+        ↓
+Local tests
+        ↓
+Push + PR
+        ↓
+ChatGPT architecture/code review
+        ↓
+Codex fixes if required
+        ↓
+Final review
+        ↓
+Merge to main
+```
+
+For small targeted changes, the user may explicitly ask ChatGPT to modify the GitHub branch directly. If that happens, local developers/agents must pull before continuing.
+
+## Work Partitioning
+
+Prefer the following split when it reduces conflict.
+
+### Codex usually owns
+
+- FastAPI endpoint plumbing;
+- Pydantic/SQLAlchemy implementation;
+- database migrations;
+- React/TypeScript implementation;
+- refactors;
+- test fixtures;
+- Docker/deployment configuration;
+- local command execution;
+- mechanical multi-file changes.
+
+### ChatGPT usually owns
+
+- milestone decomposition;
+- architecture boundaries;
+- LLM vs deterministic logic decisions;
+- agent/tool/workflow design;
+- LangGraph state and routing design;
+- requirement and evidence taxonomies;
+- scoring philosophy;
+- prompt design/review;
+- evaluation design;
+- PR/diff review;
+- product decision reasoning.
+
+## Branch Safety
+
+- Do not have two assistants independently modify the same files on the same branch at the same time.
+- If parallel work is useful, use separate branches or clearly non-overlapping file ownership.
+- If a remote branch changes while an assistant is working locally, sync/rebase/merge before continuing rather than blindly pushing over remote work.
+- Never force-push shared branches unless the user explicitly requests it and understands the consequences.
+
+## Review Expectations
+
+A handoff PR should make it possible for another assistant or human to understand the change without reconstructing the entire conversation.
+
+PRs should normally state:
+
+- goal;
+- major architectural choices;
+- files/components affected;
+- tests run and results;
+- known limitations;
+- follow-up work explicitly excluded from the PR.
+
+Review should prioritise correctness, user isolation, evidence integrity, security, maintainability, and consistency with this file over stylistic preferences.
+
+## GitHub Issues as Shared Task Memory
+
+For non-trivial milestones, prefer a GitHub issue as the shared task specification between the user, ChatGPT, and Codex.
+
+A good task issue includes:
+
+- goal;
+- background/context;
+- inputs;
+- expected outputs;
+- architectural constraints;
+- LLM vs deterministic responsibilities;
+- non-goals;
+- acceptance criteria;
+- test expectations;
+- likely files/components;
+- handoff notes.
+
+Use `.github/ISSUE_TEMPLATE/ai-feature-task.md` when available.
+
+## Conflict Resolution
+
+When assistant recommendations disagree:
+
+1. identify whether the disagreement is product, architecture, implementation, or factual;
+2. present the alternatives and trade-offs to the user;
+3. do not silently replace another assistant's approach;
+4. record the chosen direction in the issue, PR, architecture docs, or code comments where appropriate.
+
+## Final Principle
+
+Use multiple assistants to create separation of concerns, not duplicated effort:
+
+> design and review should strengthen implementation, while implementation feedback should refine the design.
