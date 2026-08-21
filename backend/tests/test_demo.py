@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_demo_analysis_workflow
@@ -9,8 +11,16 @@ from app.schemas.job import (
     RequirementCategory,
     RequirementImportance,
 )
-from app.schemas.matching import MatchType, RequirementMatch
+from app.schemas.matching import MatchType, RequirementMatch, RequirementMatchSet
 from app.schemas.assessment import FitAssessment
+from app.schemas.candidate import CandidateContext
+from app.schemas.career_assessment import (
+    AlignmentConfidence,
+    CareerAlignmentDimension,
+    CareerAssessment,
+    CareerDimensionAssessment,
+)
+from app.workflows.demo_analysis import DemoAnalysisWorkflow
 
 
 SAMPLE_JOB_TEXT = """
@@ -70,7 +80,22 @@ class FakeDemoAnalysisWorkflow:
                 strengths=[0],
                 gaps=[],
                 hard_blockers=[],
-),
+            ),
+            career_assessment=CareerAssessment(
+                career_alignment_score=82.0,
+                confidence=AlignmentConfidence.MEDIUM,
+                dimensions=[
+                    CareerDimensionAssessment(
+                        dimension=dimension,
+                        score=0.82,
+                        reasoning="The role supports the supplied career direction.",
+                    )
+                    for dimension in CareerAlignmentDimension
+                ],
+                strategic_strengths=["Builds target capabilities."],
+                strategic_tradeoffs=["Some preferences are not stated."],
+                reasoning="Strategically useful based on supplied goals.",
+            ),
         )
 
 
@@ -105,6 +130,11 @@ def test_demo_analyse_and_match_returns_end_to_end_result(
     assert "gaps" in fit_assessment
     assert "hard_blockers" in fit_assessment
 
+    career_assessment = body["career_assessment"]
+    assert career_assessment["career_alignment_score"] == 82.0
+    assert career_assessment["confidence"] == "medium"
+    assert len(career_assessment["dimensions"]) == 6
+
 
 def test_demo_analyse_and_match_rejects_short_job_text(client: TestClient) -> None:
     response = client.post(
@@ -113,3 +143,82 @@ def test_demo_analyse_and_match_rejects_short_job_text(client: TestClient) -> No
     )
 
     assert response.status_code == 422
+
+
+def test_demo_workflow_runs_career_assessment_after_fit(tmp_path: Path) -> None:
+    candidate = CandidateContext(
+        source_name="synthetic_demo",
+        career_strategy_text=(
+            "Build production software leadership capability through ownership "
+            "of customer-facing systems and progressively broader responsibility."
+        ),
+        job_search_criteria_text=(
+            "Seek a permanent hybrid role with learning and progression."
+        ),
+    )
+    job_profile = JobProfile(title="Software Lead")
+    fit_assessment = FitAssessment(fit_score=55.0, essential_score=55.0)
+    career_assessment = CareerAssessment(
+        career_alignment_score=80.0,
+        confidence=AlignmentConfidence.MEDIUM,
+        dimensions=[
+            CareerDimensionAssessment(
+                dimension=dimension,
+                score=0.8,
+                reasoning="Synthetic workflow assertion.",
+            )
+            for dimension in CareerAlignmentDimension
+        ],
+        reasoning="Synthetic workflow assertion.",
+    )
+
+    class FakeLoader:
+        def load(self, profile_dir: Path) -> CandidateContext:
+            assert profile_dir == tmp_path
+            return candidate
+
+    class FakeJobService:
+        def analyse_text(self, job_text: str) -> JobProfile:
+            assert job_text == SAMPLE_JOB_TEXT
+            return job_profile
+
+    class FakeMatchingService:
+        def match(
+            self,
+            received_job: JobProfile,
+            received_candidate: CandidateContext,
+        ) -> RequirementMatchSet:
+            assert received_job is job_profile
+            assert received_candidate is candidate
+            return RequirementMatchSet(matches=[])
+
+    class FakeFitService:
+        def assess(self, matches: list[RequirementMatch]) -> FitAssessment:
+            assert matches == []
+            return fit_assessment
+
+    class FakeCareerService:
+        def assess(
+            self,
+            received_job: JobProfile,
+            received_candidate: CandidateContext,
+            received_fit: FitAssessment,
+        ) -> CareerAssessment:
+            assert received_job is job_profile
+            assert received_candidate is candidate
+            assert received_fit is fit_assessment
+            return career_assessment
+
+    workflow = DemoAnalysisWorkflow(
+        job_analysis_service=FakeJobService(),  # type: ignore[arg-type]
+        requirement_matching_service=FakeMatchingService(),  # type: ignore[arg-type]
+        fit_assessment_service=FakeFitService(),  # type: ignore[arg-type]
+        career_assessment_service=FakeCareerService(),  # type: ignore[arg-type]
+        candidate_loader=FakeLoader(),  # type: ignore[arg-type]
+        profile_dir=tmp_path,
+    )
+
+    response = workflow.run(SAMPLE_JOB_TEXT)
+
+    assert response.fit_assessment is fit_assessment
+    assert response.career_assessment is career_assessment

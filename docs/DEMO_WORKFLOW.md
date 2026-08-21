@@ -25,8 +25,19 @@ ray_demo Markdown          RequirementMatchingService
    v                               |
 CandidateContext ------------------+
    |
-   v
-RequirementMatch[]
+   +------------------------------+
+   |                              |
+   v                              v
+RequirementMatch[]        CareerAlignmentAgent
+   |                              ^
+   v                              |
+FitAssessment --------------------+
+                                  |
+                                  v
+                         CareerAssessmentService
+                                  |
+                                  v
+                         CareerAssessment
 ```
 
 The endpoint returns:
@@ -35,6 +46,9 @@ The endpoint returns:
 - `evidence_count`
 - structured `job_profile`
 - requirement-level `matches`
+- deterministic `fit_assessment`
+- `career_assessment` with six dimensions, a deterministic weighted score, and
+  explicit confidence
 
 ## Why this endpoint exists
 
@@ -76,4 +90,7 @@ with:
 }
 ```
 
-A configured `OPENAI_API_KEY` is required for the real endpoint. Automated tests override the workflow and make no OpenAI calls.
+A configured `OPENAI_API_KEY` is required for the real endpoint. Job extraction,
+semantic requirement matching, and career alignment use replaceable OpenAI-backed
+components; deterministic services validate and aggregate their outputs. Automated
+tests use fake AI components and make no OpenAI calls.

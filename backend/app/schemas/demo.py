@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.assessment import FitAssessment
+from app.schemas.career_assessment import CareerAssessment
 from app.schemas.job import JobProfile
 from app.schemas.matching import RequirementMatch
 
@@ -23,3 +24,4 @@ class DemoAnalyseAndMatchResponse(BaseModel):
     job_profile: JobProfile
     matches: list[RequirementMatch]
     fit_assessment: FitAssessment
+    career_assessment: CareerAssessment

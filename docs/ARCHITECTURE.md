@@ -369,10 +369,19 @@ id
 user_id
 job_id
 career_alignment_score
-career_capital
-tradeoffs
+confidence
+dimensions[]
+strategic_strengths
+strategic_tradeoffs
 reasoning
 ```
+
+Career Alignment V1 is implemented as a provider-independent semantic agent followed
+by deterministic validation and weighted aggregation. It consumes `JobProfile`,
+`CandidateContext`, and `FitAssessment`, but never changes or derives its score from
+the fit score. Missing strategy or preference information caps confidence instead of
+causing the system to invent goals. The current implementation is integrated into the
+development demo workflow; production persistence remains future work.
 
 ---
 
