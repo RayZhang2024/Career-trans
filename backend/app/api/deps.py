@@ -18,6 +18,7 @@ from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.recommendation_service import RecommendationService
+from app.workflows.career_analysis_graph import CareerAnalysisGraph
 from app.workflows.demo_analysis import DemoAnalysisWorkflow
 
 settings = get_settings()
@@ -113,7 +114,7 @@ def get_career_assessment_service() -> CareerAssessmentService:
     return CareerAssessmentService(agent=agent)
 
 
-def get_demo_analysis_workflow(
+def get_career_analysis_graph(
     job_analysis_service: Annotated[JobAnalysisService, Depends(get_job_analysis_service)],
     requirement_matching_service: Annotated[
         RequirementMatchingService,
@@ -123,11 +124,20 @@ def get_demo_analysis_workflow(
         CareerAssessmentService,
         Depends(get_career_assessment_service),
     ],
-) -> DemoAnalysisWorkflow:
-    return DemoAnalysisWorkflow(
+) -> CareerAnalysisGraph:
+    return CareerAnalysisGraph(
         job_analysis_service=job_analysis_service,
         requirement_matching_service=requirement_matching_service,
         fit_assessment_service=FitAssessmentService(),
         career_assessment_service=career_assessment_service,
         recommendation_service=RecommendationService(),
     )
+
+
+def get_demo_analysis_workflow(
+    career_analysis_graph: Annotated[
+        CareerAnalysisGraph,
+        Depends(get_career_analysis_graph),
+    ],
+) -> DemoAnalysisWorkflow:
+    return DemoAnalysisWorkflow(career_analysis_graph=career_analysis_graph)

@@ -11,7 +11,7 @@ from app.schemas.job import (
     RequirementCategory,
     RequirementImportance,
 )
-from app.schemas.matching import MatchType, RequirementMatch, RequirementMatchSet
+from app.schemas.matching import MatchType, RequirementMatch
 from app.schemas.recommendation import (
     Recommendation,
     RecommendationAssessment,
@@ -24,6 +24,7 @@ from app.schemas.career_assessment import (
     CareerAssessment,
     CareerDimensionAssessment,
 )
+from app.workflows.career_analysis_graph import CareerAnalysisState
 from app.workflows.demo_analysis import DemoAnalysisWorkflow
 
 
@@ -165,7 +166,7 @@ def test_demo_analyse_and_match_rejects_short_job_text(client: TestClient) -> No
     assert response.status_code == 422
 
 
-def test_demo_workflow_runs_recommendation_after_assessments(tmp_path: Path) -> None:
+def test_demo_workflow_adapts_graph_state_to_public_response(tmp_path: Path) -> None:
     candidate = CandidateContext(
         source_name="synthetic_demo",
         career_strategy_text=(
@@ -205,54 +206,27 @@ def test_demo_workflow_runs_recommendation_after_assessments(tmp_path: Path) -> 
             assert profile_dir == tmp_path
             return candidate
 
-    class FakeJobService:
-        def analyse_text(self, job_text: str) -> JobProfile:
+    class FakeCareerAnalysisGraph:
+        def invoke(
+            self,
+            *,
+            job_text: str,
+            candidate_context: CandidateContext,
+        ) -> CareerAnalysisState:
             assert job_text == SAMPLE_JOB_TEXT
-            return job_profile
-
-    class FakeMatchingService:
-        def match(
-            self,
-            received_job: JobProfile,
-            received_candidate: CandidateContext,
-        ) -> RequirementMatchSet:
-            assert received_job is job_profile
-            assert received_candidate is candidate
-            return RequirementMatchSet(matches=[])
-
-    class FakeFitService:
-        def assess(self, matches: list[RequirementMatch]) -> FitAssessment:
-            assert matches == []
-            return fit_assessment
-
-    class FakeCareerService:
-        def assess(
-            self,
-            received_job: JobProfile,
-            received_candidate: CandidateContext,
-            received_fit: FitAssessment,
-        ) -> CareerAssessment:
-            assert received_job is job_profile
-            assert received_candidate is candidate
-            assert received_fit is fit_assessment
-            return career_assessment
-
-    class FakeRecommendationService:
-        def assess(
-            self,
-            received_fit: FitAssessment,
-            received_career: CareerAssessment,
-        ) -> RecommendationAssessment:
-            assert received_fit is fit_assessment
-            assert received_career is career_assessment
-            return recommendation_assessment
+            assert candidate_context is candidate
+            return {
+                "job_text": job_text,
+                "candidate_context": candidate_context,
+                "job_profile": job_profile,
+                "requirement_matches": [],
+                "fit_assessment": fit_assessment,
+                "career_assessment": career_assessment,
+                "recommendation_assessment": recommendation_assessment,
+            }
 
     workflow = DemoAnalysisWorkflow(
-        job_analysis_service=FakeJobService(),  # type: ignore[arg-type]
-        requirement_matching_service=FakeMatchingService(),  # type: ignore[arg-type]
-        fit_assessment_service=FakeFitService(),  # type: ignore[arg-type]
-        career_assessment_service=FakeCareerService(),  # type: ignore[arg-type]
-        recommendation_service=FakeRecommendationService(),  # type: ignore[arg-type]
+        career_analysis_graph=FakeCareerAnalysisGraph(),  # type: ignore[arg-type]
         candidate_loader=FakeLoader(),  # type: ignore[arg-type]
         profile_dir=tmp_path,
     )
