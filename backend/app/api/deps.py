@@ -16,7 +16,10 @@ from app.services.auth_service import get_user_by_id
 from app.services.career_assessment_service import CareerAssessmentService
 from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
+from app.services.job_discovery_service import JobDiscoveryService
 from app.services.requirement_matching_service import RequirementMatchingService
+from app.providers.jobs.greenhouse import GreenhouseJobSource
+from app.providers.jobs.lever import LeverJobSource
 from app.services.recommendation_service import RecommendationService
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
 from app.workflows.demo_analysis import DemoAnalysisWorkflow
@@ -92,6 +95,19 @@ def get_requirement_matching_service() -> RequirementMatchingService:
         model=settings.openai_requirement_matching_model,
     )
     return RequirementMatchingService(matcher=matcher)
+
+
+@lru_cache
+def get_job_discovery_service() -> JobDiscoveryService:
+    settings = get_settings()
+    providers = []
+    greenhouse_tokens = settings.configured_tokens(settings.greenhouse_board_tokens)
+    lever_tokens = settings.configured_tokens(settings.lever_site_tokens)
+    if greenhouse_tokens:
+        providers.append(GreenhouseJobSource(greenhouse_tokens))
+    if lever_tokens:
+        providers.append(LeverJobSource(lever_tokens))
+    return JobDiscoveryService(providers=providers)
 
 
 @lru_cache

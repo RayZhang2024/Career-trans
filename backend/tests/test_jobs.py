@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_job_analysis_service
+from app.api.deps import get_job_analysis_service, get_job_discovery_service
+from app.schemas.discovery import JobDiscoveryResponse, JobListing, JobSearchQuery
 from app.main import app as fastapi_app
 from app.schemas.job import (
     JobProfile,
@@ -9,6 +10,7 @@ from app.schemas.job import (
     RequirementImportance,
 )
 from app.services.job_analysis_service import JobAnalysisService
+from app.services.job_discovery_service import JobDiscoveryService
 
 
 SAMPLE_JOB_TEXT = """
@@ -95,3 +97,42 @@ def test_analyse_job_rejects_too_short_text(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_discover_jobs_returns_normalized_fake_provider_results(client: TestClient) -> None:
+    class FakeDiscoveryService:
+        def discover(self, query: JobSearchQuery) -> JobDiscoveryResponse:
+            assert query.keywords == ["AI Solutions Engineer"]
+            return JobDiscoveryResponse(
+                listings=[
+                    JobListing(
+                        source="fake",
+                        external_id="123",
+                        title="AI Solutions Engineer",
+                        company="Acme",
+                        location="London",
+                        url="https://jobs.example.test/123",
+                    )
+                ],
+                provider_counts={"fake": 1},
+                raw_count=1,
+                deduplicated_count=0,
+                screened_out_count=0,
+            )
+
+    fastapi_app.dependency_overrides[get_job_discovery_service] = FakeDiscoveryService
+    try:
+        response = client.post(
+            "/api/v1/jobs/discover",
+            json={
+                "keywords": ["AI Solutions Engineer"],
+                "locations": ["London"],
+                "remote_ok": True,
+            },
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_job_discovery_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["provider_counts"] == {"fake": 1}
+    assert response.json()["listings"][0]["url"] == "https://jobs.example.test/123"

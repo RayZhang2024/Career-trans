@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     openai_requirement_matching_model: str = "gpt-5.6-luna"
     openai_career_alignment_model: str = "gpt-5.6-luna"
 
+    greenhouse_board_tokens: str = ""
+    lever_site_tokens: str = ""
+
+    @staticmethod
+    def configured_tokens(value: str) -> list[str]:
+        return [token.strip() for token in value.split(",") if token.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:
