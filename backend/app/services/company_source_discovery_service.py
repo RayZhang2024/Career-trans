@@ -114,7 +114,8 @@ class CompanySourceDiscoveryService:
             not refresh
             and record.status == CompanySourceStatus.RESOLVED
             and bool(record.provider and record.source_token and record.careers_url)
-            and now - _as_utc(record.last_checked_at) < stale_after
+            and record.last_successful_resolution_at is not None
+            and now - _as_utc(record.last_successful_resolution_at) < stale_after
         )
 
     def _upsert_resolved(self, record: CompanyCareerSource | None, key: str, resolved, now: datetime) -> CompanyCareerSource:

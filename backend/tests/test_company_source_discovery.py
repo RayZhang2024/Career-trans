@@ -91,6 +91,29 @@ def test_unknown_company_resolves_persists_and_second_run_reuses_mapping(db_sess
     assert _as_utc(record.last_successful_resolution_at) == NOW
 
 
+def test_registry_reuse_does_not_postpone_successful_resolution_refresh(db_session: Session) -> None:
+    resolver = FakeResolver({"Example Co": resolved("Example Co", token="example")})
+    current_time = [NOW]
+    registry = CompanySourceDiscoveryService(
+        session=db_session,
+        resolver=resolver,  # type: ignore[arg-type]
+        now=lambda: current_time[0],
+    )
+    request = CompanySourceDiscoveryRequest(
+        companies=[{"name": "Example Co"}], stale_after_days=30
+    )
+
+    registry.resolve_sources(request)
+    current_time[0] = NOW + timedelta(days=10)
+    reuse = registry.resolve_sources(request)
+    current_time[0] = NOW + timedelta(days=31)
+    refreshed = registry.resolve_sources(request)
+
+    assert reuse.results[0].provenance == "registry_reuse"
+    assert refreshed.results[0].provenance == "refreshed_resolution"
+    assert resolver.calls == [["Example Co"], ["Example Co"]]
+
+
 def test_stale_registry_mapping_is_refreshed(db_session: Session) -> None:
     db_session.add(
         CompanyCareerSource(
