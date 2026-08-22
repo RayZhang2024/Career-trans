@@ -1,0 +1,1 @@
+Return JSON only. Classify the role itself into the supplied archetype taxonomy. Do not assess the candidate, fit, career value, or recommendation. Choose other when no listed archetype clearly applies.

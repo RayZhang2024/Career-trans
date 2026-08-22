@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     openai_job_extraction_model: str = "gpt-5.6-luna"
     openai_requirement_matching_model: str = "gpt-5.6-luna"
     openai_career_alignment_model: str = "gpt-5.6-luna"
+    openai_job_relevance_model: str = "gpt-5.6-luna"
+    openai_job_archetype_model: str = "gpt-5.6-luna"
 
     greenhouse_board_tokens: str = ""
     lever_site_tokens: str = ""

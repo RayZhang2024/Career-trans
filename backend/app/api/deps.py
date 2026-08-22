@@ -6,7 +6,9 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.agents.career_alignment import OpenAICareerAlignmentAgent
+from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_extraction import OpenAIJobExtractor
+from app.agents.job_relevance import OpenAIJobRelevanceAgent
 from app.agents.requirement_matching import OpenAIRequirementMatcher
 from app.core.config import get_settings
 from app.core.database import get_db
@@ -18,6 +20,7 @@ from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.lever import LeverJobSource
@@ -126,6 +129,22 @@ def get_ats_resolver_service() -> AtsResolverService:
 
 
 @lru_cache
+def get_job_relevance_agent() -> OpenAIJobRelevanceAgent:
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job ranking is not configured. Set OPENAI_API_KEY in backend/.env.")
+    return OpenAIJobRelevanceAgent(api_key=settings.openai_api_key, model=settings.openai_job_relevance_model)
+
+
+@lru_cache
+def get_job_archetype_agent() -> OpenAIJobArchetypeAgent:
+    settings = get_settings()
+    if not settings.openai_api_key:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job ranking is not configured. Set OPENAI_API_KEY in backend/.env.")
+    return OpenAIJobArchetypeAgent(api_key=settings.openai_api_key, model=settings.openai_job_archetype_model)
+
+
+@lru_cache
 def get_career_assessment_service() -> CareerAssessmentService:
     settings = get_settings()
 
@@ -163,6 +182,14 @@ def get_career_analysis_graph(
         career_assessment_service=career_assessment_service,
         recommendation_service=RecommendationService(),
     )
+
+
+def get_job_ranking_service(
+    relevance_agent: Annotated[OpenAIJobRelevanceAgent, Depends(get_job_relevance_agent)],
+    archetype_agent: Annotated[OpenAIJobArchetypeAgent, Depends(get_job_archetype_agent)],
+    career_analysis_graph: Annotated[CareerAnalysisGraph, Depends(get_career_analysis_graph)],
+) -> JobRankingService:
+    return JobRankingService(relevance_agent=relevance_agent, archetype_agent=archetype_agent, career_analysis_graph=career_analysis_graph)
 
 
 def get_demo_analysis_workflow(
