@@ -6,6 +6,7 @@ from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
 from app.providers.jobs.probes.base import derive_slug
 from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
 from app.providers.jobs.probes.lever import LeverJobSourceProbe
+from app.schemas.discovery import JobSearchQuery
 from app.schemas.job_sources import CompanyTarget, ResolvedJobSource
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.job_source_factory import create_job_source
@@ -51,6 +52,69 @@ def test_ashby_probe_resolves_valid_board_and_factory_creates_source() -> None:
     assert resolved.provider == "ashby"
     assert resolved.careers_url == "https://jobs.ashbyhq.com/example"
     assert isinstance(create_job_source(resolved), AshbyJobSource)
+
+
+def test_resolved_sources_preserve_company_in_discovered_listings() -> None:
+    query = JobSearchQuery(keywords=["Engineer"])
+    cases = [
+        (
+            ResolvedJobSource(
+                company="Example Greenhouse",
+                provider="greenhouse",
+                source_token="example-greenhouse",
+                careers_url="https://job-boards.greenhouse.io/example-greenhouse",
+            ),
+            {
+                "jobs": [
+                    {
+                        "id": 1,
+                        "title": "Engineer",
+                        "absolute_url": "https://boards.greenhouse.io/example/jobs/1",
+                    }
+                ]
+            },
+        ),
+        (
+            ResolvedJobSource(
+                company="Example Ashby",
+                provider="ashby",
+                source_token="example-ashby",
+                careers_url="https://jobs.ashbyhq.com/example-ashby",
+            ),
+            {
+                "jobs": [
+                    {
+                        "id": "1",
+                        "title": "Engineer",
+                        "jobUrl": "https://jobs.ashbyhq.com/example/job/1",
+                    }
+                ]
+            },
+        ),
+        (
+            ResolvedJobSource(
+                company="Example Lever",
+                provider="lever",
+                source_token="example-lever",
+                careers_url="https://jobs.lever.co/example-lever",
+            ),
+            [
+                {
+                    "id": "1",
+                    "text": "Engineer",
+                    "hostedUrl": "https://jobs.lever.co/example/1",
+                }
+            ],
+        ),
+    ]
+
+    for resolved, payload in cases:
+        source = create_job_source(resolved)
+        setattr(source, "_fetch_json", lambda _: payload)
+
+        listings = source.search(query)
+
+        assert [listing.company for listing in listings] == [resolved.company]
 
 
 def test_lever_probe_resolves_valid_board() -> None:

@@ -9,9 +9,9 @@ def create_job_source(resolved: ResolvedJobSource) -> JobSource:
     """Create a discovery adapter from a resolver result without environment config."""
 
     if resolved.provider == GreenhouseJobSource.name:
-        return GreenhouseJobSource([resolved.source_token])
+        return GreenhouseJobSource([resolved.source_token], company=resolved.company)
     if resolved.provider == AshbyJobSource.name:
-        return AshbyJobSource([resolved.source_token])
+        return AshbyJobSource([resolved.source_token], company=resolved.company)
     if resolved.provider == LeverJobSource.name:
-        return LeverJobSource([resolved.source_token])
+        return LeverJobSource([resolved.source_token], company=resolved.company)
     raise ValueError(f"Unsupported job source provider: {resolved.provider}")

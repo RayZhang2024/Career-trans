@@ -16,9 +16,11 @@ class AshbyJobSource:
         self,
         board_tokens: list[str],
         fetch_json: JsonFetcher | None = None,
+        company: str | None = None,
     ) -> None:
         self._board_tokens = board_tokens
         self._fetch_json = fetch_json or self._fetch_public_json
+        self._company = company
 
     @staticmethod
     def jobs_url(board_token: str) -> str:
@@ -33,13 +35,13 @@ class AshbyJobSource:
         for board_token in self._board_tokens:
             payload = self._fetch_json(self.jobs_url(board_token))
             for job in payload.get("jobs", []):
-                listing = self._normalize(job)
+                listing = self._normalize(job, self._company)
                 if listing is not None:
                     listings.append(listing)
         return listings
 
     @classmethod
-    def _normalize(cls, job: dict[str, Any]) -> JobListing | None:
+    def _normalize(cls, job: dict[str, Any], company: str | None = None) -> JobListing | None:
         title = cls._text(job.get("title"))
         url = cls._text(job.get("jobUrl"))
         if not title or not url:
@@ -50,6 +52,7 @@ class AshbyJobSource:
             source=cls.name,
             external_id=cls._text(job.get("id")),
             title=title,
+            company=company,
             location=cls._text(location),
             url=url,
             description=cls._text(job.get("descriptionHtml")),
