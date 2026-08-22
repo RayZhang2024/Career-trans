@@ -1,4 +1,5 @@
 from functools import lru_cache
+import os
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +38,11 @@ class Settings(BaseSettings):
     openai_job_relevance_model: str = "gpt-5.6-luna"
     openai_job_archetype_model: str = "gpt-5.6-luna"
 
+    langsmith_tracing: bool | None = None
+    langsmith_api_key: str | None = None
+    langsmith_project: str | None = None
+    langsmith_endpoint: str | None = None
+
     greenhouse_board_tokens: str = ""
     lever_site_tokens: str = ""
 
@@ -48,3 +54,20 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def configure_langsmith_environment(settings: Settings) -> None:
+    """Expose configured LangSmith settings without overriding process config."""
+    configured = {
+        "LANGSMITH_TRACING": (
+            str(settings.langsmith_tracing).lower()
+            if "langsmith_tracing" in settings.model_fields_set
+            else None
+        ),
+        "LANGSMITH_API_KEY": settings.langsmith_api_key,
+        "LANGSMITH_PROJECT": settings.langsmith_project,
+        "LANGSMITH_ENDPOINT": settings.langsmith_endpoint,
+    }
+    for name, value in configured.items():
+        if value:
+            os.environ.setdefault(name, value)
