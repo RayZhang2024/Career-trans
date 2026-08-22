@@ -132,3 +132,14 @@ def test_legitimacy_is_separate_from_assessment_scores() -> None:
 
     assert recent.legitimacy is PostingLegitimacy.HIGH_CONFIDENCE
     assert old.legitimacy is PostingLegitimacy.PROCEED_WITH_CAUTION
+
+
+def test_future_posting_date_is_unknown() -> None:
+    now = datetime(2026, 8, 22, tzinfo=timezone.utc)
+
+    result = PostingLegitimacyService().assess(
+        job("Future", posted_at=now + timedelta(days=1)),
+        now,
+    )
+
+    assert result.legitimacy is PostingLegitimacy.UNKNOWN
