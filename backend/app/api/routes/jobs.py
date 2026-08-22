@@ -2,13 +2,32 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.agents.job_extraction import JobExtractionError
 from app.agents.requirement_matching import RequirementMatchingError
-from app.api.deps import get_job_analysis_service, get_requirement_matching_service
+from app.api.deps import (
+    get_job_analysis_service,
+    get_job_discovery_service,
+    get_requirement_matching_service,
+)
+from app.schemas.discovery import JobDiscoveryResponse, JobSearchQuery
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
+from app.services.job_discovery_service import JobDiscoveryService
 from app.services.requirement_matching_service import RequirementMatchingService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@router.post(
+    "/discover",
+    response_model=JobDiscoveryResponse,
+    status_code=status.HTTP_200_OK,
+)
+def discover_jobs(
+    payload: JobSearchQuery,
+    service: JobDiscoveryService = Depends(get_job_discovery_service),
+) -> JobDiscoveryResponse:
+    """Discover public ATS listings without performing full career analysis."""
+    return service.discover(payload)
 
 
 @router.post(
