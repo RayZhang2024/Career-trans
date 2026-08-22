@@ -16,10 +16,14 @@ from app.services.auth_service import get_user_by_id
 from app.services.career_assessment_service import CareerAssessmentService
 from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
+from app.services.ats_resolver_service import AtsResolverService
 from app.services.job_discovery_service import JobDiscoveryService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.lever import LeverJobSource
+from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
+from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
+from app.providers.jobs.probes.lever import LeverJobSourceProbe
 from app.services.recommendation_service import RecommendationService
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
 from app.workflows.demo_analysis import DemoAnalysisWorkflow
@@ -108,6 +112,17 @@ def get_job_discovery_service() -> JobDiscoveryService:
     if lever_tokens:
         providers.append(LeverJobSource(lever_tokens))
     return JobDiscoveryService(providers=providers)
+
+
+@lru_cache
+def get_ats_resolver_service() -> AtsResolverService:
+    return AtsResolverService(
+        probes=[
+            GreenhouseJobSourceProbe(),
+            AshbyJobSourceProbe(),
+            LeverJobSourceProbe(),
+        ]
+    )
 
 
 @lru_cache

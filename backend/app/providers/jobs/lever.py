@@ -16,24 +16,32 @@ class LeverJobSource:
         self,
         site_tokens: list[str],
         fetch_json: JsonFetcher | None = None,
+        company: str | None = None,
     ) -> None:
         self._site_tokens = site_tokens
         self._fetch_json = fetch_json or self._fetch_public_json
+        self._company = company
+
+    @staticmethod
+    def jobs_url(site_token: str) -> str:
+        return f"https://api.lever.co/v0/postings/{site_token}?mode=json"
+
+    @staticmethod
+    def careers_url(site_token: str) -> str:
+        return f"https://jobs.lever.co/{site_token}"
 
     def search(self, query: JobSearchQuery) -> list[JobListing]:
         listings: list[JobListing] = []
         for site_token in self._site_tokens:
-            payload = self._fetch_json(
-                f"https://api.lever.co/v0/postings/{site_token}?mode=json"
-            )
+            payload = self._fetch_json(self.jobs_url(site_token))
             for job in payload:
-                listing = self._normalize(job)
+                listing = self._normalize(job, self._company)
                 if listing is not None:
                     listings.append(listing)
         return listings
 
     @classmethod
-    def _normalize(cls, job: dict[str, Any]) -> JobListing | None:
+    def _normalize(cls, job: dict[str, Any], company: str | None = None) -> JobListing | None:
         title = cls._text(job.get("text"))
         url = cls._text(job.get("hostedUrl"))
         if not title or not url:
@@ -47,6 +55,7 @@ class LeverJobSource:
             source=cls.name,
             external_id=cls._text(job.get("id")),
             title=title,
+            company=company,
             location=location,
             url=url,
             description=cls._text(job.get("descriptionPlain")),

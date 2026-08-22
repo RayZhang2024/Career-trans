@@ -1,5 +1,6 @@
+from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.base import JobSource
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.lever import LeverJobSource
 
-__all__ = ["GreenhouseJobSource", "JobSource", "LeverJobSource"]
+__all__ = ["AshbyJobSource", "GreenhouseJobSource", "JobSource", "LeverJobSource"]
