@@ -2,7 +2,12 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_requirement_matching_service
 from app.main import app as fastapi_app
-from app.schemas.candidate import CandidateContext, CandidateEligibility, CareerEvidence
+from app.schemas.candidate import (
+    CandidateContext,
+    CandidateEligibility,
+    CandidateMatchingProfile,
+    CareerEvidence,
+)
 from app.schemas.job import (
     JobProfile,
     JobRequirement,
@@ -52,10 +57,10 @@ class FakeRequirementMatcher:
     def match(
         self,
         job_profile: JobProfile,
-        candidate_context: CandidateContext,
+        candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         assert job_profile == JOB_PROFILE
-        assert candidate_context == CANDIDATE_CONTEXT
+        assert candidate_context.evidence == CANDIDATE_CONTEXT.evidence
         return RequirementMatchSet(
             matches=[
                 RequirementMatch(
@@ -146,11 +151,11 @@ def test_factual_requirement_bypasses_semantic_matcher() -> None:
         def match(
             self,
             semantic_job_profile: JobProfile,
-            supplied_candidate_context: CandidateContext,
+            supplied_candidate_context: CandidateMatchingProfile,
         ) -> RequirementMatchSet:
             assert len(semantic_job_profile.requirements) == 1
             assert semantic_job_profile.requirements[0] == PYTHON_REQUIREMENT
-            assert supplied_candidate_context == candidate_context
+            assert supplied_candidate_context.evidence == candidate_context.evidence
 
             return RequirementMatchSet(
                 matches=[
@@ -197,3 +202,152 @@ def test_factual_requirement_bypasses_semantic_matcher() -> None:
     )
     assert factual_match.evidence_refs[0].source_ref == "work_authorisation"
     assert factual_match.evidence_refs[0].value == "United Kingdom"
+
+
+def test_semantic_matching_receives_deterministic_top_evidence_only() -> None:
+    evidence = [
+        CareerEvidence(
+            evidence_id=f"EVIDENCE-{index}",
+            title=f"Evidence {index}",
+            text=("Python deployment work." if index in {2, 7} else "Unrelated work."),
+            skills=["Python"] if index in {2, 7} else [],
+        )
+        for index in range(10)
+    ]
+    candidate = CandidateContext(
+        profile_text="Long profile that should not be sent in full.",
+        evidence=evidence,
+    )
+    received: list[CandidateMatchingProfile] = []
+
+    class FakeSemanticMatcher:
+        def match(
+            self,
+            _: JobProfile,
+            matching_profile: CandidateMatchingProfile,
+        ) -> RequirementMatchSet:
+            received.append(matching_profile)
+            return RequirementMatchSet(
+                matches=[
+                    RequirementMatch(
+                        requirement_index=0,
+                        requirement=PYTHON_REQUIREMENT,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["EVIDENCE-2"],
+                        reasoning="Direct Python evidence.",
+                    )
+                ]
+            )
+
+    RequirementMatchingService(matcher=FakeSemanticMatcher()).match(
+        JobProfile(requirements=[PYTHON_REQUIREMENT]),
+        candidate,
+    )
+
+    assert [item.evidence_id for item in received[0].evidence] == [
+        "EVIDENCE-2",
+        "EVIDENCE-7",
+    ]
+
+
+def test_requirement_aware_retrieval_keeps_evidence_for_distinct_topics() -> None:
+    data_evidence = [
+        CareerEvidence(
+            evidence_id=f"DATA-{index}",
+            title="Data platform delivery",
+            text="Built Python data pipelines and Python analytics workflows.",
+            skills=["Python", "data"],
+        )
+        for index in range(9)
+    ]
+    security_evidence = CareerEvidence(
+        evidence_id="SECURITY-1",
+        title="Security clearance delivery",
+        text="Delivered security architecture and threat-model reviews.",
+        skills=["security"],
+    )
+    data_requirement = JobRequirement(
+        text="Professional Python data platform experience",
+        category=RequirementCategory.TECHNICAL,
+    )
+    security_requirement = JobRequirement(
+        text="Security architecture and threat modelling experience",
+        category=RequirementCategory.SECURITY,
+    )
+    received: list[CandidateMatchingProfile] = []
+
+    class FakeSemanticMatcher:
+        def match(
+            self,
+            _: JobProfile,
+            matching_profile: CandidateMatchingProfile,
+        ) -> RequirementMatchSet:
+            received.append(matching_profile)
+            return RequirementMatchSet(
+                matches=[
+                    RequirementMatch(
+                        requirement_index=0,
+                        requirement=data_requirement,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["DATA-0"],
+                        reasoning="Python data evidence.",
+                    ),
+                    RequirementMatch(
+                        requirement_index=1,
+                        requirement=security_requirement,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["SECURITY-1"],
+                        reasoning="Security evidence.",
+                    ),
+                ]
+            )
+
+    RequirementMatchingService(matcher=FakeSemanticMatcher()).match(
+        JobProfile(
+            title="Data platform role",
+            requirements=[data_requirement, security_requirement],
+        ),
+        CandidateContext(evidence=[*data_evidence, security_evidence]),
+    )
+
+    retrieved_ids = [item.evidence_id for item in received[0].evidence]
+    assert retrieved_ids[:2] == ["DATA-0", "SECURITY-1"]
+    assert "SECURITY-1" in retrieved_ids
+    assert len(retrieved_ids) <= 8
+
+
+def test_requirement_aware_retrieval_round_robins_with_a_bounded_budget() -> None:
+    requirements = [
+        JobRequirement(text="Python data engineering"),
+        JobRequirement(text="Security architecture"),
+        JobRequirement(text="Cloud infrastructure"),
+        JobRequirement(text="Customer discovery"),
+    ]
+    topics = ["Python data", "Security architecture", "Cloud infrastructure", "Customer discovery"]
+    evidence = [
+        CareerEvidence(
+            evidence_id=f"{topic.split()[0].upper()}-{rank}",
+            title=topic,
+            text=f"Delivered {topic} work.",
+            skills=topic.split(),
+        )
+        for topic in topics
+        for rank in range(3)
+    ]
+
+    from app.services.candidate_profile_compaction import top_evidence
+
+    retrieved_ids = [
+        item.evidence_id
+        for item in top_evidence(
+            evidence,
+            JobProfile(requirements=requirements),
+        )
+    ]
+
+    assert len(retrieved_ids) == 8
+    assert retrieved_ids[:4] == ["PYTHON-0", "SECURITY-0", "CLOUD-0", "CUSTOMER-0"]
+    assert "CUSTOMER-0" in retrieved_ids

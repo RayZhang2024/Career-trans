@@ -6,6 +6,7 @@ from openai import OpenAI
 from pydantic import ValidationError
 
 from app.schemas.candidate import CandidateContext
+from app.services.candidate_profile_compaction import candidate_search_profile
 from app.schemas.discovery import JobListing
 from app.schemas.job_ranking import JobRelevanceAssessment
 
@@ -26,14 +27,10 @@ class OpenAIJobRelevanceAgent:
         self._model = model
 
     def assess(self, job: JobListing, candidate: CandidateContext) -> JobRelevanceAssessment:
+        profile = candidate_search_profile(candidate)
         payload = {
             "job": {"title": job.title, "description": job.description},
-            "candidate": {
-                "profile_text": candidate.profile_text,
-                "skills_text": candidate.skills_text,
-                "career_strategy_text": candidate.career_strategy_text,
-                "job_search_criteria_text": candidate.job_search_criteria_text,
-            },
+            "candidate": profile.model_dump(mode="json"),
         }
         return self._request("job_relevance.md", payload, JobRelevanceAssessment)
 

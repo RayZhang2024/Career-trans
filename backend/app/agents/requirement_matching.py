@@ -5,7 +5,7 @@ from typing import Protocol
 from openai import OpenAI
 from pydantic import ValidationError
 
-from app.schemas.candidate import CandidateContext
+from app.schemas.candidate import CandidateMatchingProfile
 from app.schemas.job import JobProfile
 from app.schemas.matching import RequirementMatchSet
 
@@ -18,7 +18,7 @@ class RequirementMatcher(Protocol):
     def match(
         self,
         job_profile: JobProfile,
-        candidate_context: CandidateContext,
+        candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         """Match every job requirement against candidate evidence."""
 
@@ -46,7 +46,7 @@ class OpenAIRequirementMatcher:
     def match(
         self,
         job_profile: JobProfile,
-        candidate_context: CandidateContext,
+        candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         prompt = self._load_prompt()
         schema = RequirementMatchSet.model_json_schema()
@@ -89,7 +89,7 @@ class OpenAIRequirementMatcher:
         self,
         result: RequirementMatchSet,
         job_profile: JobProfile,
-        candidate_context: CandidateContext,
+        candidate_context: CandidateMatchingProfile,
     ) -> None:
         requirements = job_profile.requirements
         if len(result.matches) != len(requirements):

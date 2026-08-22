@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
-from app.core.config import get_settings
+from app.core.config import configure_langsmith_environment, get_settings
 from app.core.database import Base, engine
 import app.models  # noqa: F401  # Ensures SQLAlchemy models are registered.
 
@@ -13,6 +13,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    configure_langsmith_environment(settings)
     # V1 convenience. Replace with Alembic migrations before production deployment.
     Base.metadata.create_all(bind=engine)
     yield

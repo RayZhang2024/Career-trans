@@ -6,6 +6,7 @@ from app.schemas.job_ranking import (
     JobRankingRequest,
     JobRankingResponse,
     RankedJobOpportunity,
+    SemanticScreeningDiagnostic,
 )
 from app.schemas.recommendation import Recommendation
 from app.services.job_ranking_gate_service import JobRankingGateService
@@ -24,6 +25,7 @@ class JobRankingService:
     def rank(self, request: JobRankingRequest) -> JobRankingResponse:
         gated, gated_out_count = self._gate_service.gate(request.jobs)
         failures: list[JobRankingFailure] = []
+        semantic_screening: list[SemanticScreeningDiagnostic] = []
         screened = []
         semantic_candidates = self._select_semantic_candidates(
             gated,
@@ -34,14 +36,40 @@ class JobRankingService:
                 relevance = self._relevance_agent.assess(job, request.candidate_context)
             except Exception:
                 failures.append(JobRankingFailure(job=job, stage="semantic_relevance", error="Relevance screening failed."))
+                semantic_screening.append(
+                    SemanticScreeningDiagnostic(
+                        job=job,
+                        failure_stage="semantic_relevance",
+                        error="Relevance screening failed.",
+                    )
+                )
                 continue
             if relevance.relevant and relevance.score >= request.min_relevance_score:
                 try:
                     archetype = self._archetype_agent.classify(job)
                 except Exception:
                     failures.append(JobRankingFailure(job=job, stage="role_archetype", error="Role archetype classification failed."))
+                    semantic_screening.append(
+                        SemanticScreeningDiagnostic(
+                            job=job,
+                            relevance=relevance,
+                            failure_stage="role_archetype",
+                            error="Role archetype classification failed.",
+                        )
+                    )
                     continue
+                semantic_screening.append(
+                    SemanticScreeningDiagnostic(
+                        job=job,
+                        relevance=relevance,
+                        archetype=archetype,
+                    )
+                )
                 screened.append((index, job, relevance, archetype))
+            else:
+                semantic_screening.append(
+                    SemanticScreeningDiagnostic(job=job, relevance=relevance)
+                )
 
         finalists = sorted(screened, key=lambda item: (-item[2].score, item[0]))[:request.max_full_analyses]
         opportunities: list[tuple[int, RankedJobOpportunity]] = []
@@ -57,7 +85,7 @@ class JobRankingService:
         priority = {Recommendation.APPLY: 0, Recommendation.CONSIDER: 1, Recommendation.SKIP: 2}
         opportunities.sort(key=lambda item: (priority[item[1].recommendation_assessment.recommendation], -item[1].fit_assessment.fit_score, -item[1].career_assessment.career_alignment_score, -item[1].relevance.score, item[0]))
         results = [opportunity.model_copy(update={"rank": rank}) for rank, (_, opportunity) in enumerate(opportunities, start=1)]
-        return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=gated_out_count, relevance_screened_count=len(semantic_candidates), finalist_count=len(finalists), analysed_count=len(results), results=results, failures=failures)
+        return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=gated_out_count, relevance_screened_count=len(semantic_candidates), finalist_count=len(finalists), analysed_count=len(results), semantic_screening=semantic_screening, results=results, failures=failures)
 
     @staticmethod
     def _select_semantic_candidates(
