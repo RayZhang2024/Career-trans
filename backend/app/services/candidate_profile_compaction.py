@@ -16,6 +16,7 @@ _PROFILE_SUMMARY_LIMIT = 1_200
 _DIRECTION_TEXT_LIMIT = 1_200
 _SKILL_LIMIT = 40
 _TOP_EVIDENCE_LIMIT = 8
+_PER_REQUIREMENT_EVIDENCE_LIMIT = 3
 _TOKEN_PATTERN = re.compile(r"[a-z0-9+#.]{2,}", re.IGNORECASE)
 
 
@@ -68,30 +69,45 @@ def top_evidence(
     *,
     limit: int = _TOP_EVIDENCE_LIMIT,
 ) -> list[CareerEvidence]:
-    """Select the most lexically relevant evidence with stable input-order ties."""
+    """Select bounded, requirement-aware evidence with stable ordering.
+
+    Each semantic requirement receives its own small lexical retrieval pass. The
+    resulting evidence is unioned by ID in requirement order, with source order
+    breaking ties and an explicit total budget preventing prompt growth.
+    """
     if limit < 1:
         return []
 
-    job_terms = _terms(
-        " ".join(
-            [
-                job_profile.title or "",
-                *job_profile.technical_skills,
-                *job_profile.domain_knowledge,
-                *(requirement.text for requirement in job_profile.requirements),
-            ]
+    selected: list[CareerEvidence] = []
+    selected_ids: set[str] = set()
+    for requirement in job_profile.requirements:
+        requirement_terms = _terms(requirement.text)
+        ranked = sorted(
+            enumerate(evidence),
+            key=lambda indexed: (
+                -len(
+                    requirement_terms
+                    & _terms(
+                        " ".join(
+                            [
+                                indexed[1].title,
+                                indexed[1].text,
+                                *indexed[1].skills,
+                            ]
+                        )
+                    )
+                ),
+                indexed[0],
+            ),
         )
-    )
-    scored = [
-        (
-            -len(job_terms & _terms(" ".join([item.title, item.text, *item.skills]))),
-            index,
-            item,
-        )
-        for index, item in enumerate(evidence)
-    ]
-    scored.sort(key=lambda item: (item[0], item[1]))
-    return [item for _, _, item in scored[:limit]]
+        for _, item in ranked[:_PER_REQUIREMENT_EVIDENCE_LIMIT]:
+            if item.evidence_id in selected_ids:
+                continue
+            selected.append(item)
+            selected_ids.add(item.evidence_id)
+            if len(selected) == limit:
+                return selected
+    return selected
 
 
 def _candidate_skills(candidate: CandidateContext) -> list[str]:

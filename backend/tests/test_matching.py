@@ -249,9 +249,72 @@ def test_semantic_matching_receives_deterministic_top_evidence_only() -> None:
         "EVIDENCE-2",
         "EVIDENCE-7",
         "EVIDENCE-0",
-        "EVIDENCE-1",
-        "EVIDENCE-3",
-        "EVIDENCE-4",
-        "EVIDENCE-5",
-        "EVIDENCE-6",
     ]
+
+
+def test_requirement_aware_retrieval_keeps_evidence_for_distinct_topics() -> None:
+    data_evidence = [
+        CareerEvidence(
+            evidence_id=f"DATA-{index}",
+            title="Data platform delivery",
+            text="Built Python data pipelines and Python analytics workflows.",
+            skills=["Python", "data"],
+        )
+        for index in range(9)
+    ]
+    security_evidence = CareerEvidence(
+        evidence_id="SECURITY-1",
+        title="Security clearance delivery",
+        text="Delivered security architecture and threat-model reviews.",
+        skills=["security"],
+    )
+    data_requirement = JobRequirement(
+        text="Professional Python data platform experience",
+        category=RequirementCategory.TECHNICAL,
+    )
+    security_requirement = JobRequirement(
+        text="Security architecture and threat modelling experience",
+        category=RequirementCategory.SECURITY,
+    )
+    received: list[CandidateMatchingProfile] = []
+
+    class FakeSemanticMatcher:
+        def match(
+            self,
+            _: JobProfile,
+            matching_profile: CandidateMatchingProfile,
+        ) -> RequirementMatchSet:
+            received.append(matching_profile)
+            return RequirementMatchSet(
+                matches=[
+                    RequirementMatch(
+                        requirement_index=0,
+                        requirement=data_requirement,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["DATA-0"],
+                        reasoning="Python data evidence.",
+                    ),
+                    RequirementMatch(
+                        requirement_index=1,
+                        requirement=security_requirement,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["SECURITY-1"],
+                        reasoning="Security evidence.",
+                    ),
+                ]
+            )
+
+    RequirementMatchingService(matcher=FakeSemanticMatcher()).match(
+        JobProfile(
+            title="Data platform role",
+            requirements=[data_requirement, security_requirement],
+        ),
+        CandidateContext(evidence=[*data_evidence, security_evidence]),
+    )
+
+    retrieved_ids = [item.evidence_id for item in received[0].evidence]
+    assert retrieved_ids[:3] == ["DATA-0", "DATA-1", "DATA-2"]
+    assert "SECURITY-1" in retrieved_ids
+    assert len(retrieved_ids) <= 8
