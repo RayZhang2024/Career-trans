@@ -99,6 +99,32 @@ def test_ranking_caps_finalists_tolerates_failure_and_sorts_deterministically() 
     assert result.failures[0].stage == "career_analysis"
 
 
+def test_semantic_cap_round_robins_across_companies() -> None:
+    assessed: list[str] = []
+
+    class FakeRelevance:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            assessed.append(listing.title)
+            return JobRelevanceAssessment(relevant=False, score=0.0, reasoning="Not selected.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            raise AssertionError("Irrelevant jobs should not be classified.")
+
+    jobs = [
+        job("A1", url="https://jobs.example.test/a1").model_copy(update={"company": "First"}),
+        job("A2", url="https://jobs.example.test/a2").model_copy(update={"company": "First"}),
+        job("A3", url="https://jobs.example.test/a3").model_copy(update={"company": "First"}),
+        job("B1", url="https://jobs.example.test/b1").model_copy(update={"company": "Later"}),
+    ]
+    service = JobRankingService(relevance_agent=FakeRelevance(), archetype_agent=FakeArchetype(), career_analysis_graph=FakeGraph({}))  # type: ignore[arg-type]
+
+    result = service.rank(JobRankingRequest(jobs=jobs, candidate_context=CandidateContext(), max_semantic_candidates=2))
+
+    assert assessed == ["A1", "B1"]
+    assert result.relevance_screened_count == 2
+
+
 def test_legitimacy_is_separate_from_assessment_scores() -> None:
     now = datetime(2026, 8, 22, tzinfo=timezone.utc)
     recent = PostingLegitimacyService().assess(job("Recent", posted_at=now - timedelta(days=5)), now)
