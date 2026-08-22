@@ -6,10 +6,15 @@ from app.api.deps import (
     get_job_analysis_service,
     get_job_ranking_service,
     get_ats_resolver_service,
+    get_discover_and_rank_service,
     get_job_discovery_service,
     get_requirement_matching_service,
 )
-from app.schemas.discovery import JobDiscoveryResponse, JobSearchQuery
+from app.schemas.discovery import (
+    JobDiscoveryResponse,
+    JobSearchQuery,
+)
+from app.schemas.discovery_pipeline import DiscoverAndRankRequest, DiscoverAndRankResponse
 from app.schemas.job_sources import AtsResolutionRequest, AtsResolutionResponse
 from app.schemas.job_ranking import JobRankingRequest, JobRankingResponse
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
@@ -17,6 +22,7 @@ from app.schemas.matching import JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 
@@ -56,6 +62,19 @@ def discover_jobs(
 ) -> JobDiscoveryResponse:
     """Discover public ATS listings without performing full career analysis."""
     return service.discover(payload)
+
+
+@router.post(
+    "/discover-and-rank",
+    response_model=DiscoverAndRankResponse,
+    status_code=status.HTTP_200_OK,
+)
+def discover_and_rank_jobs(
+    payload: DiscoverAndRankRequest,
+    service: DiscoverAndRankService = Depends(get_discover_and_rank_service),
+) -> DiscoverAndRankResponse:
+    """Resolve structured ATS sources, persist their lifecycle, then rank the cheap-filtered jobs."""
+    return service.discover_and_rank(payload)
 
 
 @router.post(

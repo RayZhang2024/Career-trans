@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     langsmith_endpoint: str | None = None
 
     greenhouse_board_tokens: str = ""
+    ashby_board_tokens: str = ""
     lever_site_tokens: str = ""
 
     @staticmethod

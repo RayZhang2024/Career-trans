@@ -115,6 +115,7 @@ def test_resolved_sources_preserve_company_in_discovered_listings() -> None:
         listings = source.search(query)
 
         assert [listing.company for listing in listings] == [resolved.company]
+        assert [listing.source_token for listing in listings] == [resolved.source_token]
 
 
 def test_lever_probe_resolves_valid_board() -> None:

@@ -20,9 +20,12 @@ from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.discover_and_rank_service import DiscoverAndRankService
+from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
+from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
 from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
@@ -112,6 +115,9 @@ def get_job_discovery_service() -> JobDiscoveryService:
     lever_tokens = settings.configured_tokens(settings.lever_site_tokens)
     if greenhouse_tokens:
         providers.append(GreenhouseJobSource(greenhouse_tokens))
+    ashby_tokens = settings.configured_tokens(settings.ashby_board_tokens)
+    if ashby_tokens:
+        providers.append(AshbyJobSource(ashby_tokens))
     if lever_tokens:
         providers.append(LeverJobSource(lever_tokens))
     return JobDiscoveryService(providers=providers)
@@ -190,6 +196,18 @@ def get_job_ranking_service(
     career_analysis_graph: Annotated[CareerAnalysisGraph, Depends(get_career_analysis_graph)],
 ) -> JobRankingService:
     return JobRankingService(relevance_agent=relevance_agent, archetype_agent=archetype_agent, career_analysis_graph=career_analysis_graph)
+
+
+def get_discover_and_rank_service(
+    db: DbSession,
+    resolver: Annotated[AtsResolverService, Depends(get_ats_resolver_service)],
+    ranking_service: Annotated[JobRankingService, Depends(get_job_ranking_service)],
+) -> DiscoverAndRankService:
+    return DiscoverAndRankService(
+        resolver=resolver,
+        ranking_service=ranking_service,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db),
+    )
 
 
 def get_demo_analysis_workflow(
