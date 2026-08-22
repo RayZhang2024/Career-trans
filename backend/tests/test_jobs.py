@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import (
     get_ats_resolver_service,
+    get_company_source_discovery_service,
     get_discover_and_rank_service,
     get_job_analysis_service,
     get_job_ranking_service,
@@ -10,6 +11,7 @@ from app.api.deps import (
 from app.schemas.discovery import JobDiscoveryResponse, JobListing, JobSearchQuery
 from app.schemas.discovery_pipeline import DiscoverAndRankResponse
 from app.schemas.job_sources import AtsResolutionResponse, CompanySourceResolution, ResolvedJobSource
+from app.schemas.job_sources import CompanySourceDiscoveryResponse, CompanySourceDiscoveryResult, CompanySourceStatus
 from app.schemas.job_ranking import JobRankingResponse
 from app.main import app as fastapi_app
 from app.schemas.job import (
@@ -178,6 +180,38 @@ def test_resolve_job_sources_returns_structured_fake_results(client: TestClient)
 
     assert response.status_code == 200
     assert response.json()["results"][0]["resolved"]["provider"] == "greenhouse"
+
+
+def test_resolve_company_sources_returns_registry_diagnostics(client: TestClient) -> None:
+    class FakeCompanySourceService:
+        def resolve_sources(self, _: object) -> CompanySourceDiscoveryResponse:
+            return CompanySourceDiscoveryResponse(
+                results=[
+                    CompanySourceDiscoveryResult(
+                        company="Example",
+                        canonical_company_key="example",
+                        status=CompanySourceStatus.RESOLVED,
+                        provenance="registry_reuse",
+                        provider="greenhouse",
+                        source_token="example",
+                        careers_url="https://job-boards.greenhouse.io/example",
+                        first_seen_at="2026-08-23T00:00:00Z",
+                        last_checked_at="2026-08-23T00:00:00Z",
+                    )
+                ]
+            )
+
+    fastapi_app.dependency_overrides[get_company_source_discovery_service] = FakeCompanySourceService
+    try:
+        response = client.post(
+            "/api/v1/jobs/companies/resolve-sources",
+            json={"companies": [{"name": "Example"}]},
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_company_source_discovery_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["provenance"] == "registry_reuse"
 
 
 def test_rank_jobs_returns_fake_structured_results(client: TestClient) -> None:
