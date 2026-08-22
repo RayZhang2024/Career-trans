@@ -5,6 +5,7 @@ from typing import Protocol
 from openai import OpenAI
 from pydantic import ValidationError
 
+from app.agents.openai_client import create_traced_openai_client
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
 from app.schemas.career_assessment import CareerAlignmentJudgement
@@ -42,7 +43,10 @@ class OpenAICareerAlignmentAgent:
         if not api_key and client is None:
             raise ValueError("An OpenAI API key is required.")
 
-        self._client = client or OpenAI(api_key=api_key)
+        self._client = client if client is not None else create_traced_openai_client(
+            api_key=api_key,
+            trace_name="career_alignment",
+        )
         self._model = model
         self._prompt_path = prompt_path or _default_prompt_path()
 
