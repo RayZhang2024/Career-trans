@@ -4,7 +4,7 @@ from app.schemas.assessment import (
     GapSeverity,
     GapType,
 )
-from app.schemas.job import RequirementImportance
+from app.schemas.job import RequirementCategory, RequirementImportance
 from app.schemas.matching import MatchType, RequirementMatch
 
 
@@ -103,8 +103,22 @@ class FitAssessmentService:
 
         if (
             importance == RequirementImportance.ESSENTIAL
+            and match.match_type == MatchType.INCOMPATIBLE
+        ):
+            return Gap(
+                requirement_index=match.requirement_index,
+                requirement=match.requirement,
+                gap_type=GapType.HARD_BLOCKER,
+                severity=GapSeverity.HIGH,
+                reason="Structured candidate eligibility conflicts with this essential requirement.",
+            )
+
+        if (
+            importance == RequirementImportance.ESSENTIAL
             and match.match_type == MatchType.MISSING
             and match.score < 0.2
+            and match.requirement.category
+            not in {RequirementCategory.LOCATION, RequirementCategory.WORK_AUTHORIZATION}
         ):
             return Gap(
                 requirement_index=match.requirement_index,
@@ -112,6 +126,15 @@ class FitAssessmentService:
                 gap_type=GapType.HARD_BLOCKER,
                 severity=GapSeverity.HIGH,
                 reason="An essential requirement has no supporting evidence.",
+            )
+
+        if match.match_type == MatchType.UNKNOWN:
+            return Gap(
+                requirement_index=match.requirement_index,
+                requirement=match.requirement,
+                gap_type=GapType.EVIDENCE_GAP,
+                severity=GapSeverity.MEDIUM,
+                reason="Candidate eligibility is not confirmed for this requirement.",
             )
 
         if (

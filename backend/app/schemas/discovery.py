@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -9,6 +10,7 @@ class JobListing(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str = Field(min_length=1)
+    source_token: str | None = None
     external_id: str | None = None
     title: str = Field(min_length=1)
     company: str | None = None
@@ -30,6 +32,9 @@ class JobSearchQuery(BaseModel):
     locations: list[str] = Field(default_factory=list)
     remote_ok: bool | None = None
     companies: list[str] = Field(default_factory=list)
+    excluded_companies: list[str] = Field(default_factory=list)
+    excluded_title_terms: list[str] = Field(default_factory=list)
+    employment_types: list[str] = Field(default_factory=list)
     max_results: int = Field(default=50, ge=1, le=100)
 
 
@@ -42,3 +47,12 @@ class JobDiscoveryResponse(BaseModel):
     deduplicated_count: int
     screened_out_count: int
     provider_errors: dict[str, str] = Field(default_factory=dict)
+
+
+class DiscoveredJobState(StrEnum):
+    """Lifecycle state observed during a successful public-source refresh."""
+
+    NEW = "new"
+    UPDATED = "updated"
+    UNCHANGED = "unchanged"
+    INACTIVE = "inactive"

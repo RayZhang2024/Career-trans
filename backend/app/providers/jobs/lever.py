@@ -30,18 +30,27 @@ class LeverJobSource:
     def careers_url(site_token: str) -> str:
         return f"https://jobs.lever.co/{site_token}"
 
+    @property
+    def source_keys(self) -> list[str]:
+        return [f"{self.name}:{token}" for token in self._site_tokens]
+
     def search(self, query: JobSearchQuery) -> list[JobListing]:
         listings: list[JobListing] = []
         for site_token in self._site_tokens:
             payload = self._fetch_json(self.jobs_url(site_token))
             for job in payload:
-                listing = self._normalize(job, self._company)
+                listing = self._normalize(job, self._company, site_token)
                 if listing is not None:
                     listings.append(listing)
         return listings
 
     @classmethod
-    def _normalize(cls, job: dict[str, Any], company: str | None = None) -> JobListing | None:
+    def _normalize(
+        cls,
+        job: dict[str, Any],
+        company: str | None = None,
+        source_token: str | None = None,
+    ) -> JobListing | None:
         title = cls._text(job.get("text"))
         url = cls._text(job.get("hostedUrl"))
         if not title or not url:
@@ -53,6 +62,7 @@ class LeverJobSource:
         commitment = cls._text(categories.get("commitment"))
         return JobListing(
             source=cls.name,
+            source_token=source_token,
             external_id=cls._text(job.get("id")),
             title=title,
             company=company,

@@ -30,18 +30,27 @@ class AshbyJobSource:
     def careers_url(board_token: str) -> str:
         return f"https://jobs.ashbyhq.com/{board_token}"
 
+    @property
+    def source_keys(self) -> list[str]:
+        return [f"{self.name}:{token}" for token in self._board_tokens]
+
     def search(self, query: JobSearchQuery) -> list[JobListing]:
         listings: list[JobListing] = []
         for board_token in self._board_tokens:
             payload = self._fetch_json(self.jobs_url(board_token))
             for job in payload.get("jobs", []):
-                listing = self._normalize(job, self._company)
+                listing = self._normalize(job, self._company, board_token)
                 if listing is not None:
                     listings.append(listing)
         return listings
 
     @classmethod
-    def _normalize(cls, job: dict[str, Any], company: str | None = None) -> JobListing | None:
+    def _normalize(
+        cls,
+        job: dict[str, Any],
+        company: str | None = None,
+        source_token: str | None = None,
+    ) -> JobListing | None:
         title = cls._text(job.get("title"))
         url = cls._text(job.get("jobUrl"))
         if not title or not url:
@@ -50,6 +59,7 @@ class AshbyJobSource:
         location = location if isinstance(location, str) else None
         return JobListing(
             source=cls.name,
+            source_token=source_token,
             external_id=cls._text(job.get("id")),
             title=title,
             company=company,

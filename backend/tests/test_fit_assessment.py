@@ -71,6 +71,44 @@ def test_missing_essential_requirement_becomes_hard_blocker() -> None:
     assert assessment.gaps[0].gap_type == GapType.HARD_BLOCKER
 
 
+def test_unknown_essential_eligibility_is_an_evidence_gap_not_a_hard_blocker() -> None:
+    match = RequirementMatch(
+        requirement_index=0,
+        requirement=JobRequirement(
+            text="Must be located in the UK.",
+            importance=RequirementImportance.ESSENTIAL,
+            category=RequirementCategory.LOCATION,
+        ),
+        match_type=MatchType.UNKNOWN,
+        score=0.0,
+        reasoning="Location eligibility is not provided.",
+    )
+
+    assessment = FitAssessmentService().assess([match])
+
+    assert assessment.hard_blockers == []
+    assert assessment.gaps[0].gap_type == GapType.EVIDENCE_GAP
+
+
+def test_confirmed_essential_eligibility_incompatibility_is_a_hard_blocker() -> None:
+    match = RequirementMatch(
+        requirement_index=0,
+        requirement=JobRequirement(
+            text="Must be located in the UK.",
+            importance=RequirementImportance.ESSENTIAL,
+            category=RequirementCategory.LOCATION,
+        ),
+        match_type=MatchType.INCOMPATIBLE,
+        score=0.0,
+        reasoning="Candidate location is incompatible.",
+    )
+
+    assessment = FitAssessmentService().assess([match])
+
+    assert assessment.hard_blockers == [0]
+    assert assessment.gaps[0].gap_type == GapType.HARD_BLOCKER
+
+
 def test_low_desirable_requirement_becomes_learnable_gap() -> None:
     matches = [
         make_match(

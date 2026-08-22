@@ -51,5 +51,57 @@ def test_missing_work_authorisation_returns_missing() -> None:
         context,
     )
 
-    assert result.match_type == MatchType.MISSING
+    assert result.match_type == MatchType.UNKNOWN
     assert result.score == 0.0
+
+
+def test_location_eligibility_matches_an_allowed_country() -> None:
+    context = CandidateContext(
+        eligibility=CandidateEligibility(locations=["United Kingdom / London"])
+    )
+    requirement = JobRequirement(
+        text="Must be located in the US, UK, or Canada.",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.LOCATION,
+    )
+
+    result = FactualRequirementService().match(0, requirement, context)
+
+    assert result.match_type == MatchType.DEMONSTRATED
+    assert result.score == 1.0
+    assert result.evidence_refs[0].source_ref == "locations"
+    assert result.evidence_refs[0].value == "United Kingdom"
+
+
+def test_known_incompatible_location_is_distinct_from_unknown_eligibility() -> None:
+    requirement = JobRequirement(
+        text="Must be located in the US, UK, or Canada.",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.LOCATION,
+    )
+
+    incompatible = FactualRequirementService().match(
+        0,
+        requirement,
+        CandidateContext(eligibility=CandidateEligibility(locations=["Germany"])),
+    )
+    unknown = FactualRequirementService().match(0, requirement, CandidateContext())
+
+    assert incompatible.match_type == MatchType.INCOMPATIBLE
+    assert unknown.match_type == MatchType.UNKNOWN
+
+
+def test_country_matching_does_not_treat_must_as_the_us() -> None:
+    requirement = JobRequirement(
+        text="Must be located in the UK.",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.LOCATION,
+    )
+
+    result = FactualRequirementService().match(
+        0,
+        requirement,
+        CandidateContext(eligibility=CandidateEligibility(locations=["United States"])),
+    )
+
+    assert result.match_type == MatchType.INCOMPATIBLE

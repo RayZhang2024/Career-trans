@@ -2,11 +2,13 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import (
     get_ats_resolver_service,
+    get_discover_and_rank_service,
     get_job_analysis_service,
     get_job_ranking_service,
     get_job_discovery_service,
 )
 from app.schemas.discovery import JobDiscoveryResponse, JobListing, JobSearchQuery
+from app.schemas.discovery_pipeline import DiscoverAndRankResponse
 from app.schemas.job_sources import AtsResolutionResponse, CompanySourceResolution, ResolvedJobSource
 from app.schemas.job_ranking import JobRankingResponse
 from app.main import app as fastapi_app
@@ -197,3 +199,35 @@ def test_rank_jobs_returns_fake_structured_results(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json()["discovered_count"] == 1
+
+
+def test_discover_and_rank_returns_composed_fake_result(client: TestClient) -> None:
+    class FakePipelineService:
+        def discover_and_rank(self, _: object) -> DiscoverAndRankResponse:
+            return DiscoverAndRankResponse(
+                resolutions=[],
+                discovery=JobDiscoveryResponse(
+                    listings=[], provider_counts={}, raw_count=0,
+                    deduplicated_count=0, screened_out_count=0,
+                ),
+                ranking=JobRankingResponse(
+                    discovered_count=0, gated_out_count=0,
+                    relevance_screened_count=0, finalist_count=0, analysed_count=0,
+                ),
+            )
+
+    fastapi_app.dependency_overrides[get_discover_and_rank_service] = FakePipelineService
+    try:
+        response = client.post(
+            "/api/v1/jobs/discover-and-rank",
+            json={
+                "companies": [{"name": "Acme"}],
+                "query": {"keywords": ["AI"]},
+                "candidate_context": {},
+            },
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_discover_and_rank_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["ranking"]["relevance_screened_count"] == 0

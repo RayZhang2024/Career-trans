@@ -11,6 +11,8 @@ class MatchType(StrEnum):
     TRANSFERABLE = "transferable"
     INFERRED = "inferred"
     MISSING = "missing"
+    UNKNOWN = "unknown"
+    INCOMPATIBLE = "incompatible"
 
 class EvidenceSourceType(StrEnum):
     CAREER_EVIDENCE = "career_evidence"
