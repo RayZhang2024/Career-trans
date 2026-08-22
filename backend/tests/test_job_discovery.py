@@ -112,6 +112,25 @@ def test_screening_rejects_obvious_keyword_and_location_mismatches() -> None:
     assert result == [relevant, remote]
 
 
+def test_screening_supports_conservative_exclusions_and_employment_type() -> None:
+    service = JobScreeningService()
+    accepted = listing(employment_type="Full-time")
+    excluded_company = listing(company="Excluded Labs", url="https://jobs.example.com/roles/2")
+    excluded_title = listing(title="AI Engineering Intern", url="https://jobs.example.com/roles/3")
+    wrong_employment = listing(employment_type="Contract", url="https://jobs.example.com/roles/4")
+
+    result = service.screen(
+        [accepted, excluded_company, excluded_title, wrong_employment],
+        query(
+            excluded_companies=["Excluded"],
+            excluded_title_terms=["intern"],
+            employment_types=["full-time"],
+        ),
+    )
+
+    assert result == [accepted]
+
+
 def test_discovery_combines_sources_and_tolerates_a_provider_failure() -> None:
     class WorkingSource:
         name = "working"

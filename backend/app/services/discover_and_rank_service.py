@@ -1,4 +1,5 @@
 from app.schemas.discovery_pipeline import (
+    DiscoveryLifecycleCounts,
     DiscoverAndRankRequest,
     DiscoverAndRankResponse,
 )
@@ -51,6 +52,12 @@ class DiscoverAndRankService:
             resolutions=resolution.results,
             discovery=collection.response,
             job_states=job_states,
+            lifecycle_counts=DiscoveryLifecycleCounts(
+                new=sum(state.value == "new" for state in job_states.values()),
+                updated=sum(state.value == "updated" for state in job_states.values()),
+                unchanged=sum(state.value == "unchanged" for state in job_states.values()),
+                inactive=sum(state.value == "inactive" for state in job_states.values()),
+            ),
             ranking=ranking,
         )
 

@@ -32,6 +32,9 @@ class JobSearchQuery(BaseModel):
     locations: list[str] = Field(default_factory=list)
     remote_ok: bool | None = None
     companies: list[str] = Field(default_factory=list)
+    excluded_companies: list[str] = Field(default_factory=list)
+    excluded_title_terms: list[str] = Field(default_factory=list)
+    employment_types: list[str] = Field(default_factory=list)
     max_results: int = Field(default=50, ge=1, le=100)
 
 

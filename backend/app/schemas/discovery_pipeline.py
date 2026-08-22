@@ -19,10 +19,20 @@ class DiscoverAndRankRequest(BaseModel):
     min_relevance_score: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class DiscoveryLifecycleCounts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    new: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    inactive: int = 0
+
+
 class DiscoverAndRankResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     resolutions: list[CompanySourceResolution]
     discovery: JobDiscoveryResponse
     job_states: dict[str, DiscoveredJobState] = Field(default_factory=dict)
+    lifecycle_counts: DiscoveryLifecycleCounts = Field(default_factory=DiscoveryLifecycleCounts)
     ranking: JobRankingResponse
