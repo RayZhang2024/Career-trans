@@ -7,10 +7,10 @@ from app.schemas.discovery import JobListing, JobSearchQuery
 JsonFetcher = Callable[[str], dict[str, Any]]
 
 
-class GreenhouseJobSource:
-    """Public Greenhouse board adapter, configured with board tokens."""
+class AshbyJobSource:
+    """Public Ashby job-board adapter, configured with board tokens."""
 
-    name = "greenhouse"
+    name = "ashby"
 
     def __init__(
         self,
@@ -22,11 +22,11 @@ class GreenhouseJobSource:
 
     @staticmethod
     def jobs_url(board_token: str) -> str:
-        return f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs?content=true"
+        return f"https://api.ashbyhq.com/posting-api/job-board/{board_token}"
 
     @staticmethod
     def careers_url(board_token: str) -> str:
-        return f"https://job-boards.greenhouse.io/{board_token}"
+        return f"https://jobs.ashbyhq.com/{board_token}"
 
     def search(self, query: JobSearchQuery) -> list[JobListing]:
         listings: list[JobListing] = []
@@ -41,19 +41,20 @@ class GreenhouseJobSource:
     @classmethod
     def _normalize(cls, job: dict[str, Any]) -> JobListing | None:
         title = cls._text(job.get("title"))
-        url = cls._text(job.get("absolute_url"))
+        url = cls._text(job.get("jobUrl"))
         if not title or not url:
             return None
-
         location = job.get("location")
+        location = location if isinstance(location, str) else None
         return JobListing(
             source=cls.name,
-            external_id=str(job["id"]) if job.get("id") is not None else None,
+            external_id=cls._text(job.get("id")),
             title=title,
-            location=cls._text(location.get("name")) if isinstance(location, dict) else None,
+            location=cls._text(location),
             url=url,
-            description=cls._text(job.get("content")),
-            posted_at=cls._parse_datetime(job.get("updated_at")),
+            description=cls._text(job.get("descriptionHtml")),
+            posted_at=cls._parse_datetime(job.get("publishedAt")),
+            employment_type=cls._text(job.get("employmentType")),
         )
 
     @staticmethod

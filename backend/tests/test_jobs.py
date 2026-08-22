@@ -1,7 +1,12 @@
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_job_analysis_service, get_job_discovery_service
+from app.api.deps import (
+    get_ats_resolver_service,
+    get_job_analysis_service,
+    get_job_discovery_service,
+)
 from app.schemas.discovery import JobDiscoveryResponse, JobListing, JobSearchQuery
+from app.schemas.job_sources import AtsResolutionResponse, CompanySourceResolution, ResolvedJobSource
 from app.main import app as fastapi_app
 from app.schemas.job import (
     JobProfile,
@@ -136,3 +141,35 @@ def test_discover_jobs_returns_normalized_fake_provider_results(client: TestClie
     assert response.status_code == 200
     assert response.json()["provider_counts"] == {"fake": 1}
     assert response.json()["listings"][0]["url"] == "https://jobs.example.test/123"
+
+
+def test_resolve_job_sources_returns_structured_fake_results(client: TestClient) -> None:
+    class FakeResolverService:
+        def resolve(self, companies: list[object]) -> AtsResolutionResponse:
+            assert len(companies) == 1
+            return AtsResolutionResponse(
+                results=[
+                    CompanySourceResolution(
+                        company="Example",
+                        resolved=ResolvedJobSource(
+                            company="Example",
+                            provider="greenhouse",
+                            source_token="example",
+                            careers_url="https://job-boards.greenhouse.io/example",
+                        ),
+                        attempted_providers=["greenhouse"],
+                    )
+                ]
+            )
+
+    fastapi_app.dependency_overrides[get_ats_resolver_service] = FakeResolverService
+    try:
+        response = client.post(
+            "/api/v1/jobs/sources/resolve",
+            json={"companies": [{"name": "Example"}]},
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_ats_resolver_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["resolved"]["provider"] == "greenhouse"

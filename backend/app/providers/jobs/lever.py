@@ -20,12 +20,18 @@ class LeverJobSource:
         self._site_tokens = site_tokens
         self._fetch_json = fetch_json or self._fetch_public_json
 
+    @staticmethod
+    def jobs_url(site_token: str) -> str:
+        return f"https://api.lever.co/v0/postings/{site_token}?mode=json"
+
+    @staticmethod
+    def careers_url(site_token: str) -> str:
+        return f"https://jobs.lever.co/{site_token}"
+
     def search(self, query: JobSearchQuery) -> list[JobListing]:
         listings: list[JobListing] = []
         for site_token in self._site_tokens:
-            payload = self._fetch_json(
-                f"https://api.lever.co/v0/postings/{site_token}?mode=json"
-            )
+            payload = self._fetch_json(self.jobs_url(site_token))
             for job in payload:
                 listing = self._normalize(job)
                 if listing is not None:
