@@ -71,18 +71,20 @@ def top_evidence(
 ) -> list[CareerEvidence]:
     """Select bounded, requirement-aware evidence with stable ordering.
 
-    Each semantic requirement receives its own small lexical retrieval pass. The
-    resulting evidence is unioned by ID in requirement order, with source order
-    breaking ties and an explicit total budget preventing prompt growth.
+    Each semantic requirement receives its own small lexical retrieval pass.
+    The resulting evidence is selected round-robin by per-requirement rank,
+    deduplicated by ID, and bounded by the total prompt budget. Requirement and
+    source order break ties deterministically.
     """
     if limit < 1:
         return []
 
-    selected: list[CareerEvidence] = []
-    selected_ids: set[str] = set()
+    ranked_by_requirement: list[list[CareerEvidence]] = []
     for requirement in job_profile.requirements:
         requirement_terms = _terms(requirement.text)
-        ranked = sorted(
+        ranked = [
+            item
+            for _, item in sorted(
             enumerate(evidence),
             key=lambda indexed: (
                 -len(
@@ -99,8 +101,19 @@ def top_evidence(
                 ),
                 indexed[0],
             ),
-        )
-        for _, item in ranked[:_PER_REQUIREMENT_EVIDENCE_LIMIT]:
+            )
+            if requirement_terms
+            & _terms(" ".join([item.title, item.text, *item.skills]))
+        ]
+        ranked_by_requirement.append(ranked[:_PER_REQUIREMENT_EVIDENCE_LIMIT])
+
+    selected: list[CareerEvidence] = []
+    selected_ids: set[str] = set()
+    for rank in range(_PER_REQUIREMENT_EVIDENCE_LIMIT):
+        for ranked in ranked_by_requirement:
+            if rank >= len(ranked):
+                continue
+            item = ranked[rank]
             if item.evidence_id in selected_ids:
                 continue
             selected.append(item)

@@ -248,7 +248,6 @@ def test_semantic_matching_receives_deterministic_top_evidence_only() -> None:
     assert [item.evidence_id for item in received[0].evidence] == [
         "EVIDENCE-2",
         "EVIDENCE-7",
-        "EVIDENCE-0",
     ]
 
 
@@ -315,6 +314,40 @@ def test_requirement_aware_retrieval_keeps_evidence_for_distinct_topics() -> Non
     )
 
     retrieved_ids = [item.evidence_id for item in received[0].evidence]
-    assert retrieved_ids[:3] == ["DATA-0", "DATA-1", "DATA-2"]
+    assert retrieved_ids[:2] == ["DATA-0", "SECURITY-1"]
     assert "SECURITY-1" in retrieved_ids
     assert len(retrieved_ids) <= 8
+
+
+def test_requirement_aware_retrieval_round_robins_with_a_bounded_budget() -> None:
+    requirements = [
+        JobRequirement(text="Python data engineering"),
+        JobRequirement(text="Security architecture"),
+        JobRequirement(text="Cloud infrastructure"),
+        JobRequirement(text="Customer discovery"),
+    ]
+    topics = ["Python data", "Security architecture", "Cloud infrastructure", "Customer discovery"]
+    evidence = [
+        CareerEvidence(
+            evidence_id=f"{topic.split()[0].upper()}-{rank}",
+            title=topic,
+            text=f"Delivered {topic} work.",
+            skills=topic.split(),
+        )
+        for topic in topics
+        for rank in range(3)
+    ]
+
+    from app.services.candidate_profile_compaction import top_evidence
+
+    retrieved_ids = [
+        item.evidence_id
+        for item in top_evidence(
+            evidence,
+            JobProfile(requirements=requirements),
+        )
+    ]
+
+    assert len(retrieved_ids) == 8
+    assert retrieved_ids[:4] == ["PYTHON-0", "SECURITY-0", "CLOUD-0", "CUSTOMER-0"]
+    assert "CUSTOMER-0" in retrieved_ids
