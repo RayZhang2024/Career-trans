@@ -5,6 +5,7 @@ from typing import Protocol
 from openai import OpenAI
 from pydantic import ValidationError
 
+from app.agents.openai_client import create_traced_openai_client
 from app.schemas.candidate import CandidateContext
 from app.services.candidate_profile_compaction import candidate_search_profile
 from app.schemas.discovery import JobListing
@@ -23,7 +24,10 @@ class OpenAIJobRelevanceAgent:
     def __init__(self, *, api_key: str, model: str, client: OpenAI | None = None) -> None:
         if not api_key and client is None:
             raise ValueError("An OpenAI API key is required.")
-        self._client = client or OpenAI(api_key=api_key)
+        self._client = client if client is not None else create_traced_openai_client(
+            api_key=api_key,
+            trace_name="job_relevance",
+        )
         self._model = model
 
     def assess(self, job: JobListing, candidate: CandidateContext) -> JobRelevanceAssessment:
