@@ -3,10 +3,12 @@ from fastapi.testclient import TestClient
 from app.api.deps import (
     get_ats_resolver_service,
     get_job_analysis_service,
+    get_job_ranking_service,
     get_job_discovery_service,
 )
 from app.schemas.discovery import JobDiscoveryResponse, JobListing, JobSearchQuery
 from app.schemas.job_sources import AtsResolutionResponse, CompanySourceResolution, ResolvedJobSource
+from app.schemas.job_ranking import JobRankingResponse
 from app.main import app as fastapi_app
 from app.schemas.job import (
     JobProfile,
@@ -16,6 +18,7 @@ from app.schemas.job import (
 )
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.job_ranking_service import JobRankingService
 
 
 SAMPLE_JOB_TEXT = """
@@ -173,3 +176,24 @@ def test_resolve_job_sources_returns_structured_fake_results(client: TestClient)
 
     assert response.status_code == 200
     assert response.json()["results"][0]["resolved"]["provider"] == "greenhouse"
+
+
+def test_rank_jobs_returns_fake_structured_results(client: TestClient) -> None:
+    class FakeRankingService:
+        def rank(self, _: object) -> JobRankingResponse:
+            return JobRankingResponse(discovered_count=1, gated_out_count=0, relevance_screened_count=1, finalist_count=0, analysed_count=0)
+
+    fastapi_app.dependency_overrides[get_job_ranking_service] = FakeRankingService
+    try:
+        response = client.post(
+            "/api/v1/jobs/rank",
+            json={
+                "jobs": [{"source": "fake", "title": "Engineer", "url": "https://jobs.example.test/1", "description": "Role description."}],
+                "candidate_context": {},
+            },
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_job_ranking_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["discovered_count"] == 1

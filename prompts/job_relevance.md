@@ -1,0 +1,1 @@
+Return JSON only. Assess whether the job is plausibly relevant enough to justify a deeper career-analysis workflow for the supplied candidate context. Do not calculate fit, gaps, career alignment, or a recommendation. Be conservative: uncertain roles may be relevant.
