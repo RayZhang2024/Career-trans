@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_relevance import OpenAIJobRelevanceAgent
+from app.agents.job_extraction import JobExtractionError
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext, CareerEvidence
 from app.schemas.career_assessment import (
@@ -212,6 +213,40 @@ def test_semantic_cap_round_robins_across_companies() -> None:
     assert assessed == ["A1", "B1"]
     assert result.relevance_screened_count == 2
     assert [item.job.title for item in result.semantic_screening] == ["A1", "B1"]
+
+
+def test_career_analysis_failure_preserves_safe_root_exception_diagnostic() -> None:
+    listing = job("Malformed extraction", description="Malformed", url="https://jobs.example.test/malformed")
+
+    class FakeRelevance:
+        def assess(self, _: JobListing, __: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9, reasoning="Relevant.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class FailingGraph:
+        def invoke(self, **_: object) -> object:
+            try:
+                json.loads("{malformed")
+            except json.JSONDecodeError as exc:
+                raise JobExtractionError("Invalid structured job profile.") from exc
+
+    result = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=FailingGraph(),  # type: ignore[arg-type]
+    ).rank(
+        JobRankingRequest(
+            jobs=[listing], candidate_context=CandidateContext(), max_full_analyses=1
+        )
+    )
+
+    assert result.analysed_count == 0
+    assert result.failures[0].error == (
+        "Career analysis failed: JobExtractionError (caused by JSONDecodeError)."
+    )
 
 
 def test_legitimacy_is_separate_from_assessment_scores() -> None:

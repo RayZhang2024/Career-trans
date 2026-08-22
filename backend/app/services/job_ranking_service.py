@@ -1,3 +1,5 @@
+import logging
+
 from app.agents.job_archetype import JobArchetypeAgent
 from app.agents.job_relevance import JobRelevanceAgent
 from app.schemas.discovery import JobListing
@@ -12,6 +14,8 @@ from app.schemas.recommendation import Recommendation
 from app.services.job_ranking_gate_service import JobRankingGateService
 from app.services.posting_legitimacy_service import PostingLegitimacyService
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
+
+logger = logging.getLogger(__name__)
 
 
 class JobRankingService:
@@ -77,8 +81,15 @@ class JobRankingService:
             try:
                 state = self._career_analysis_graph.invoke(job_text=job.description or "", candidate_context=request.candidate_context)
                 opportunity = RankedJobOpportunity(job=job, relevance=relevance, archetype=archetype, fit_assessment=state["fit_assessment"], career_assessment=state["career_assessment"], recommendation_assessment=state["recommendation_assessment"], legitimacy=self._legitimacy_service.assess(job), rank=0)
-            except Exception:
-                failures.append(JobRankingFailure(job=job, stage="career_analysis", error="Career analysis failed."))
+            except Exception as exc:
+                logger.exception("Career analysis failed for a public job listing.")
+                failures.append(
+                    JobRankingFailure(
+                        job=job,
+                        stage="career_analysis",
+                        error=self._failure_error("Career analysis failed", exc),
+                    )
+                )
                 continue
             opportunities.append((index, opportunity))
 
@@ -107,3 +118,14 @@ class JobRankingService:
                 if len(selected) == limit:
                     break
         return selected
+
+    @staticmethod
+    def _failure_error(prefix: str, exc: Exception) -> str:
+        """Preserve a safe exception class chain without returning private inputs."""
+        root = exc
+        while root.__cause__ is not None:
+            root = root.__cause__
+        if root is exc:
+            return f"{prefix}: {type(exc).__name__}."
+        return f"{prefix}: {type(exc).__name__} (caused by {type(root).__name__})."
+import logging

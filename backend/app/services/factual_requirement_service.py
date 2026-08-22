@@ -1,3 +1,5 @@
+import re
+
 from app.schemas.candidate import CandidateContext
 from app.schemas.job import JobRequirement, RequirementCategory
 from app.schemas.matching import (
@@ -11,6 +13,7 @@ from app.schemas.matching import (
 class FactualRequirementService:
     def can_handle(self, requirement: JobRequirement) -> bool:
         return requirement.category in {
+            RequirementCategory.LOCATION,
             RequirementCategory.WORK_AUTHORIZATION,
         }
 
@@ -26,6 +29,12 @@ class FactualRequirementService:
                 requirement,
                 candidate_context,
             )
+        if requirement.category == RequirementCategory.LOCATION:
+            return self._match_location(
+                requirement_index,
+                requirement,
+                candidate_context,
+            )
 
         raise ValueError(
             f"Unsupported factual requirement category: {requirement.category}"
@@ -37,21 +46,42 @@ class FactualRequirementService:
         requirement: JobRequirement,
         candidate_context: CandidateContext,
     ) -> RequirementMatch:
-        requirement_text = requirement.text.lower()
+        return self._match_eligibility_values(
+            requirement_index=requirement_index,
+            requirement=requirement,
+            candidate_values=candidate_context.eligibility.work_authorisation,
+            source_ref="work_authorisation",
+            label="work authorisation",
+        )
 
-        authorised_countries = {
-            value.lower()
-            for value in candidate_context.eligibility.work_authorisation
-        }
+    def _match_location(
+        self,
+        requirement_index: int,
+        requirement: JobRequirement,
+        candidate_context: CandidateContext,
+    ) -> RequirementMatch:
+        return self._match_eligibility_values(
+            requirement_index=requirement_index,
+            requirement=requirement,
+            candidate_values=candidate_context.eligibility.locations,
+            source_ref="locations",
+            label="location eligibility",
+        )
 
-        uk_terms = {
-            "uk",
-            "united kingdom",
-        }
+    def _match_eligibility_values(
+        self,
+        *,
+        requirement_index: int,
+        requirement: JobRequirement,
+        candidate_values: list[str],
+        source_ref: str,
+        label: str,
+    ) -> RequirementMatch:
+        required_locations = self._countries_in(requirement.text)
+        candidate_locations = self._countries_in(" ".join(candidate_values))
 
-        requires_uk = any(term in requirement_text for term in uk_terms)
-
-        if requires_uk and "united kingdom" in authorised_countries:
+        if required_locations and candidate_locations & required_locations:
+            matched_location = sorted(candidate_locations & required_locations)[0]
             return RequirementMatch(
                 requirement_index=requirement_index,
                 requirement=requirement,
@@ -61,24 +91,56 @@ class FactualRequirementService:
                 evidence_refs=[
                     EvidenceRef(
                         source_type=EvidenceSourceType.CANDIDATE_ELIGIBILITY,
-                        source_ref="work_authorisation",
-                        value="United Kingdom",
+                        source_ref=source_ref,
+                        value=self._display_country(matched_location),
                     )
                 ],
                 reasoning=(
-                    "Structured candidate eligibility confirms work "
-                    "authorisation for the United Kingdom."
+                    "Structured candidate eligibility confirms "
+                    f"{label} for {self._display_country(matched_location)}."
                 ),
+            )
+
+        if not candidate_values or not required_locations:
+            return RequirementMatch(
+                requirement_index=requirement_index,
+                requirement=requirement,
+                match_type=MatchType.UNKNOWN,
+                score=0.0,
+                evidence_ids=[],
+                reasoning=f"Structured candidate {label} is insufficient to confirm this requirement.",
             )
 
         return RequirementMatch(
             requirement_index=requirement_index,
             requirement=requirement,
-            match_type=MatchType.MISSING,
+            match_type=MatchType.INCOMPATIBLE,
             score=0.0,
             evidence_ids=[],
-            reasoning=(
-                "The structured candidate eligibility data does not confirm "
-                "the required work authorisation."
-            ),
+            reasoning=f"Structured candidate {label} conflicts with the stated requirement.",
         )
+
+    @staticmethod
+    def _countries_in(value: str) -> set[str]:
+        normalized = value.casefold()
+        aliases = {
+            "united kingdom": ("united kingdom", "uk", "london", "england"),
+            "united states": ("united states", "usa", "u.s.", "us"),
+            "canada": ("canada",),
+        }
+        return {
+            country
+            for country, terms in aliases.items()
+            if any(
+                re.search(rf"(?<!\w){re.escape(term)}(?!\w)", normalized)
+                for term in terms
+            )
+        }
+
+    @staticmethod
+    def _display_country(country: str) -> str:
+        return {
+            "united kingdom": "United Kingdom",
+            "united states": "United States",
+            "canada": "Canada",
+        }[country]
