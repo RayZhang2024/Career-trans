@@ -2,7 +2,12 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_requirement_matching_service
 from app.main import app as fastapi_app
-from app.schemas.candidate import CandidateContext, CandidateEligibility, CareerEvidence
+from app.schemas.candidate import (
+    CandidateContext,
+    CandidateEligibility,
+    CandidateMatchingProfile,
+    CareerEvidence,
+)
 from app.schemas.job import (
     JobProfile,
     JobRequirement,
@@ -52,10 +57,10 @@ class FakeRequirementMatcher:
     def match(
         self,
         job_profile: JobProfile,
-        candidate_context: CandidateContext,
+        candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         assert job_profile == JOB_PROFILE
-        assert candidate_context == CANDIDATE_CONTEXT
+        assert candidate_context.evidence == CANDIDATE_CONTEXT.evidence
         return RequirementMatchSet(
             matches=[
                 RequirementMatch(
@@ -146,11 +151,11 @@ def test_factual_requirement_bypasses_semantic_matcher() -> None:
         def match(
             self,
             semantic_job_profile: JobProfile,
-            supplied_candidate_context: CandidateContext,
+            supplied_candidate_context: CandidateMatchingProfile,
         ) -> RequirementMatchSet:
             assert len(semantic_job_profile.requirements) == 1
             assert semantic_job_profile.requirements[0] == PYTHON_REQUIREMENT
-            assert supplied_candidate_context == candidate_context
+            assert supplied_candidate_context.evidence == candidate_context.evidence
 
             return RequirementMatchSet(
                 matches=[
@@ -197,3 +202,56 @@ def test_factual_requirement_bypasses_semantic_matcher() -> None:
     )
     assert factual_match.evidence_refs[0].source_ref == "work_authorisation"
     assert factual_match.evidence_refs[0].value == "United Kingdom"
+
+
+def test_semantic_matching_receives_deterministic_top_evidence_only() -> None:
+    evidence = [
+        CareerEvidence(
+            evidence_id=f"EVIDENCE-{index}",
+            title=f"Evidence {index}",
+            text=("Python deployment work." if index in {2, 7} else "Unrelated work."),
+            skills=["Python"] if index in {2, 7} else [],
+        )
+        for index in range(10)
+    ]
+    candidate = CandidateContext(
+        profile_text="Long profile that should not be sent in full.",
+        evidence=evidence,
+    )
+    received: list[CandidateMatchingProfile] = []
+
+    class FakeSemanticMatcher:
+        def match(
+            self,
+            _: JobProfile,
+            matching_profile: CandidateMatchingProfile,
+        ) -> RequirementMatchSet:
+            received.append(matching_profile)
+            return RequirementMatchSet(
+                matches=[
+                    RequirementMatch(
+                        requirement_index=0,
+                        requirement=PYTHON_REQUIREMENT,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["EVIDENCE-2"],
+                        reasoning="Direct Python evidence.",
+                    )
+                ]
+            )
+
+    RequirementMatchingService(matcher=FakeSemanticMatcher()).match(
+        JobProfile(requirements=[PYTHON_REQUIREMENT]),
+        candidate,
+    )
+
+    assert [item.evidence_id for item in received[0].evidence] == [
+        "EVIDENCE-2",
+        "EVIDENCE-7",
+        "EVIDENCE-0",
+        "EVIDENCE-1",
+        "EVIDENCE-3",
+        "EVIDENCE-4",
+        "EVIDENCE-5",
+        "EVIDENCE-6",
+    ]

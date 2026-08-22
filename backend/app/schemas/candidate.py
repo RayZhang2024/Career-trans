@@ -33,3 +33,34 @@ class CandidateContext(BaseModel):
     eligibility: CandidateEligibility = Field(default_factory=CandidateEligibility)
     evidence: list[CareerEvidence] = Field(default_factory=list)
 
+
+class CandidateSearchProfile(BaseModel):
+    """Small, purpose-built candidate context for job relevance screening."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_summary: str = ""
+    skills: list[str] = Field(default_factory=list)
+    career_strategy_text: str = ""
+    job_search_criteria_text: str = ""
+
+
+class CandidateCareerProfile(BaseModel):
+    """Small, purpose-built candidate context for career-alignment assessment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_summary: str = ""
+    career_strategy_text: str = ""
+    job_search_criteria_text: str = ""
+    eligibility: CandidateEligibility = Field(default_factory=CandidateEligibility)
+
+
+class CandidateMatchingProfile(BaseModel):
+    """Evidence-limited candidate context for semantic requirement matching."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_summary: str = ""
+    skills: list[str] = Field(default_factory=list)
+    evidence: list[CareerEvidence] = Field(default_factory=list)

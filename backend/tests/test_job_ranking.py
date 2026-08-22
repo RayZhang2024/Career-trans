@@ -2,12 +2,18 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_relevance import OpenAIJobRelevanceAgent
 from app.schemas.assessment import FitAssessment
-from app.schemas.candidate import CandidateContext
-from app.schemas.career_assessment import AlignmentConfidence, CareerAssessment
+from app.schemas.candidate import CandidateContext, CareerEvidence
+from app.schemas.career_assessment import (
+    AlignmentConfidence,
+    CareerAlignmentDimension,
+    CareerAssessment,
+)
 from app.schemas.discovery import JobListing
+from app.schemas.job import JobProfile
 from app.schemas.job_ranking import (
     JobArchetype,
     JobArchetypeAssessment,
@@ -70,6 +76,81 @@ def test_openai_relevance_and_archetype_agents_validate_structured_output() -> N
     assert archetype.archetype is JobArchetype.AI_SOLUTIONS_ARCHITECT
 
 
+def test_openai_agents_send_compact_stage_profiles() -> None:
+    class FakeClient:
+        def __init__(self, output: dict[str, object]) -> None:
+            self.calls: list[dict[str, object]] = []
+            self.responses = SimpleNamespace(create=self.create)
+            self._output = output
+
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            self.calls.append(kwargs)
+            return SimpleNamespace(output_text=json.dumps(self._output))
+
+    candidate = CandidateContext(
+        profile_text="P" * 1_500,
+        skills_text="Python, SQL",
+        career_strategy_text="Build applied AI systems.",
+        job_search_criteria_text="Hybrid technical roles.",
+        evidence=[
+            CareerEvidence(
+                evidence_id="E1",
+                title="Python delivery",
+                text="Built Python systems.",
+                skills=["Python"],
+            )
+        ],
+    )
+    listing = job("AI Solutions Engineer", description="Python AI delivery role")
+    relevance_client = FakeClient(
+        {"relevant": True, "score": 0.8, "reasoning": "Relevant."}
+    )
+    OpenAIJobRelevanceAgent(
+        api_key="", model="test", client=relevance_client
+    ).assess(listing, candidate)
+    relevance_input = relevance_client.calls[0]["input"]
+    relevance_payload = json.loads(relevance_input[1]["content"].split("INPUT:\n", 1)[1])
+
+    assert set(relevance_payload["candidate"]) == {
+        "profile_summary",
+        "skills",
+        "career_strategy_text",
+        "job_search_criteria_text",
+    }
+    assert len(relevance_payload["candidate"]["profile_summary"]) == 1_200
+    assert relevance_payload["candidate"]["skills"] == ["Python", "SQL"]
+
+    career_client = FakeClient(
+        {
+            "confidence": "medium",
+            "dimensions": [
+                {
+                    "dimension": dimension.value,
+                    "score": 0.5,
+                    "reasoning": "Synthetic.",
+                }
+                for dimension in CareerAlignmentDimension
+            ],
+            "strategic_strengths": [],
+            "strategic_tradeoffs": [],
+            "reasoning": "Synthetic.",
+        }
+    )
+    OpenAICareerAlignmentAgent(
+        api_key="", model="test", client=career_client
+    ).assess(JobProfile(title=listing.title), candidate, FitAssessment(fit_score=70, essential_score=70))
+    career_input = career_client.calls[0]["input"]
+    career_payload = json.loads(career_input[1]["content"].split("INPUT:\n", 1)[1])
+
+    assert set(career_payload["candidate_context"]) == {
+        "profile_summary",
+        "career_strategy_text",
+        "job_search_criteria_text",
+        "eligibility",
+    }
+    assert "evidence" not in career_payload["candidate_context"]
+
+
 def test_ranking_caps_finalists_tolerates_failure_and_sorts_deterministically() -> None:
     first = job("First", description="First", url="https://jobs.example.test/first")
     failed = job("Failed", description="Failed", url="https://jobs.example.test/failed")
@@ -97,6 +178,13 @@ def test_ranking_caps_finalists_tolerates_failure_and_sorts_deterministically() 
     assert [item.job.title for item in result.results] == ["Apply", "First", "Consider"]
     assert [item.rank for item in result.results] == [1, 2, 3]
     assert result.failures[0].stage == "career_analysis"
+    assert [item.job.title for item in result.semantic_screening] == [
+        "First",
+        "Failed",
+        "Apply",
+        "Consider",
+    ]
+    assert all(item.relevance is not None for item in result.semantic_screening)
 
 
 def test_semantic_cap_round_robins_across_companies() -> None:
@@ -123,6 +211,7 @@ def test_semantic_cap_round_robins_across_companies() -> None:
 
     assert assessed == ["A1", "B1"]
     assert result.relevance_screened_count == 2
+    assert [item.job.title for item in result.semantic_screening] == ["A1", "B1"]
 
 
 def test_legitimacy_is_separate_from_assessment_scores() -> None:

@@ -66,6 +66,18 @@ class JobRankingFailure(BaseModel):
     error: str
 
 
+class SemanticScreeningDiagnostic(BaseModel):
+    """Semantic-screening result retained whether or not a job becomes a finalist."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job: JobListing
+    relevance: JobRelevanceAssessment | None = None
+    archetype: JobArchetypeAssessment | None = None
+    failure_stage: str | None = None
+    error: str | None = None
+
+
 class RankedJobOpportunity(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -87,5 +99,6 @@ class JobRankingResponse(BaseModel):
     relevance_screened_count: int
     finalist_count: int
     analysed_count: int
+    semantic_screening: list[SemanticScreeningDiagnostic] = Field(default_factory=list)
     results: list[RankedJobOpportunity] = Field(default_factory=list)
     failures: list[JobRankingFailure] = Field(default_factory=list)

@@ -8,6 +8,7 @@ from app.schemas.matching import (
     RequirementMatchSet,
 )
 from app.services.factual_requirement_service import FactualRequirementService
+from app.services.candidate_profile_compaction import candidate_matching_profile
 
 
 class RequirementMatchingService:
@@ -50,7 +51,7 @@ class RequirementMatchingService:
 
             semantic_result = self._matcher.match(
                 semantic_job_profile,
-                candidate_context,
+                candidate_matching_profile(candidate_context, semantic_job_profile),
             )
 
             for local_match, original_index in zip(

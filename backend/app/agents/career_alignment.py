@@ -9,6 +9,7 @@ from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
 from app.schemas.career_assessment import CareerAlignmentJudgement
 from app.schemas.job import JobProfile
+from app.services.candidate_profile_compaction import candidate_career_profile
 
 
 class CareerAlignmentError(RuntimeError):
@@ -53,16 +54,10 @@ class OpenAICareerAlignmentAgent:
     ) -> CareerAlignmentJudgement:
         prompt = self._load_prompt()
         schema = CareerAlignmentJudgement.model_json_schema()
+        profile = candidate_career_profile(candidate_context)
         payload = {
             "job_profile": job_profile.model_dump(mode="json"),
-            "candidate_context": {
-                "profile_text": candidate_context.profile_text,
-                "career_strategy_text": candidate_context.career_strategy_text,
-                "job_search_criteria_text": (
-                    candidate_context.job_search_criteria_text
-                ),
-                "eligibility": candidate_context.eligibility.model_dump(mode="json"),
-            },
+            "candidate_context": profile.model_dump(mode="json"),
             "fit_assessment": fit_assessment.model_dump(mode="json"),
         }
 
