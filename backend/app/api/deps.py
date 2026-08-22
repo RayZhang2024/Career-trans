@@ -19,6 +19,7 @@ from app.services.career_assessment_service import CareerAssessmentService
 from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.ats_resolver_service import AtsResolverService
+from app.services.company_source_discovery_service import CompanySourceDiscoveryService
 from app.services.job_discovery_service import JobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
@@ -132,6 +133,13 @@ def get_ats_resolver_service() -> AtsResolverService:
             LeverJobSourceProbe(),
         ]
     )
+
+
+def get_company_source_discovery_service(
+    db: DbSession,
+    resolver: Annotated[AtsResolverService, Depends(get_ats_resolver_service)],
+) -> CompanySourceDiscoveryService:
+    return CompanySourceDiscoveryService(session=db, resolver=resolver)
 
 
 @lru_cache
