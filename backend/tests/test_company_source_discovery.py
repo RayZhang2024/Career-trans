@@ -208,6 +208,32 @@ def test_ambiguous_sources_remain_distinct_from_unresolved_and_do_not_persist_a_
     assert result.results[0].provider is None
 
 
+def test_indeterminate_candidate_with_provider_failure_is_temporary_and_does_not_persist_mapping(db_session: Session) -> None:
+    resolver = FakeResolver(
+        {
+            "Example Co": CompanySourceResolution(
+                company="Example Co",
+                candidate_sources=[
+                    ResolvedJobSource(
+                        company="Example Co",
+                        provider="smartrecruiters",
+                        source_token="example-co",
+                        careers_url="https://careers.smartrecruiters.com/example-co",
+                    )
+                ],
+                error="workable: request failed",
+            )
+        }
+    )
+
+    result = service(db_session, resolver).resolve_sources(
+        CompanySourceDiscoveryRequest(companies=[{"name": "Example Co"}])
+    )
+
+    assert result.results[0].status is CompanySourceStatus.TEMPORARILY_FAILED
+    assert result.results[0].provider is None
+
+
 def test_watched_company_normalization_deduplicates_and_skips_disabled_targets(db_session: Session) -> None:
     resolver = FakeResolver({"Example Co": resolved("Example Co")})
 

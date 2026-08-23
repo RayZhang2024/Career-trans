@@ -141,12 +141,50 @@ def test_resolver_order_is_deterministic_for_a_single_new_provider_candidate() -
         [
             SmartRecruitersJobSourceProbe(fetch_json=lambda _: {"content": [{"id": "1", "company": {"identifier": "example", "name": "Example"}}]}),
             WorkableJobSourceProbe(fetch_json=lambda _: {}),
+            RecruiteeJobSourceProbe(fetch_json=lambda _: {"offers": [{"id": "other", "careers_url": "https://other.recruitee.com/o/1"}]}),
         ]
     ).resolve([CompanyTarget(name="Example")])
 
-    assert result.results[0].attempted_providers == ["smartrecruiters", "workable"]
+    assert result.results[0].attempted_providers == ["smartrecruiters", "workable", "recruitee"]
     assert result.results[0].resolved is not None
     assert result.results[0].resolved.provider == "smartrecruiters"
+
+
+def test_single_candidate_with_an_ambiguity_checked_provider_failure_is_indeterminate() -> None:
+    def server_error(_: str) -> dict[str, object]:
+        raise HTTPError("https://example.test", 503, "Unavailable", None, BytesIO())
+
+    result = AtsResolverService(
+        [
+            SmartRecruitersJobSourceProbe(
+                fetch_json=lambda _: {"content": [{"id": "1", "company": {"identifier": "example", "name": "Example"}}]}
+            ),
+            WorkableJobSourceProbe(fetch_json=server_error),
+            RecruiteeJobSourceProbe(fetch_json=lambda _: {"offers": [{"id": "other", "careers_url": "https://other.recruitee.com/o/1"}]}),
+        ]
+    ).resolve([CompanyTarget(name="Example")])
+
+    resolution = result.results[0]
+    assert resolution.resolved is None
+    assert [source.provider for source in resolution.candidate_sources] == ["smartrecruiters"]
+    assert resolution.error == "workable: request failed"
+
+
+def test_zero_job_candidate_does_not_resolve_when_another_new_provider_fails() -> None:
+    def server_error(_: str) -> dict[str, object]:
+        raise HTTPError("https://example.test", 503, "Unavailable", None, BytesIO())
+
+    result = AtsResolverService(
+        [
+            SmartRecruitersJobSourceProbe(fetch_json=lambda _: {"content": []}),
+            WorkableJobSourceProbe(fetch_json=server_error),
+            RecruiteeJobSourceProbe(fetch_json=lambda _: {"offers": [{"id": "other", "careers_url": "https://other.recruitee.com/o/1"}]}),
+        ]
+    ).resolve([CompanyTarget(name="Example")])
+
+    assert result.results[0].resolved is None
+    assert [source.provider for source in result.results[0].candidate_sources] == ["smartrecruiters"]
+    assert result.results[0].error == "workable: request failed"
 
 
 def test_non_matching_smartrecruiters_response_falls_through_to_confirmed_workable() -> None:
