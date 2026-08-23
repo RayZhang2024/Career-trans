@@ -178,6 +178,8 @@ class CompanySourceDiscoveryService:
             return CompanySourceStatus.UNRESOLVED
         if "request failed" in error or "probe failed" in error:
             return CompanySourceStatus.TEMPORARILY_FAILED
+        if "Multiple matching structured sources" in error:
+            return CompanySourceStatus.AMBIGUOUS
         if "No supported source" in error:
             return CompanySourceStatus.UNSUPPORTED
         return CompanySourceStatus.UNRESOLVED

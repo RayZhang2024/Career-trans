@@ -29,9 +29,13 @@ from app.services.requirement_matching_service import RequirementMatchingService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
+from app.providers.jobs.recruitee import RecruiteeJobSource
+from app.providers.jobs.smartrecruiters import SmartRecruitersJobSource
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
 from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
 from app.providers.jobs.probes.lever import LeverJobSourceProbe
+from app.providers.jobs.probes.recruitee import RecruiteeJobSourceProbe
+from app.providers.jobs.probes.smartrecruiters import SmartRecruitersJobSourceProbe
 from app.services.recommendation_service import RecommendationService
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
 from app.workflows.demo_analysis import DemoAnalysisWorkflow
@@ -115,6 +119,8 @@ def get_job_discovery_service() -> JobDiscoveryService:
     providers = []
     greenhouse_tokens = settings.configured_tokens(settings.greenhouse_board_tokens)
     lever_tokens = settings.configured_tokens(settings.lever_site_tokens)
+    smartrecruiters_ids = settings.configured_tokens(settings.smartrecruiters_company_ids)
+    recruitee_tokens = settings.configured_tokens(settings.recruitee_company_tokens)
     if greenhouse_tokens:
         providers.append(GreenhouseJobSource(greenhouse_tokens))
     ashby_tokens = settings.configured_tokens(settings.ashby_board_tokens)
@@ -122,6 +128,10 @@ def get_job_discovery_service() -> JobDiscoveryService:
         providers.append(AshbyJobSource(ashby_tokens))
     if lever_tokens:
         providers.append(LeverJobSource(lever_tokens))
+    if smartrecruiters_ids:
+        providers.append(SmartRecruitersJobSource(smartrecruiters_ids))
+    if recruitee_tokens:
+        providers.append(RecruiteeJobSource(recruitee_tokens))
     return JobDiscoveryService(providers=providers)
 
 
@@ -132,6 +142,8 @@ def get_ats_resolver_service() -> AtsResolverService:
             GreenhouseJobSourceProbe(),
             AshbyJobSourceProbe(),
             LeverJobSourceProbe(),
+            SmartRecruitersJobSourceProbe(),
+            RecruiteeJobSourceProbe(),
         ]
     )
 

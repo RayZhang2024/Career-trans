@@ -1,6 +1,7 @@
 import re
 import unicodedata
 from typing import Protocol
+from urllib.parse import urlparse
 
 from app.schemas.job_sources import CompanyTarget, ResolvedJobSource
 
@@ -32,3 +33,10 @@ def is_safe_slug(slug: str) -> bool:
 def require_safe_slug(slug: str) -> None:
     if not is_safe_slug(slug):
         raise ValueError("ATS slug contains unsafe characters.")
+
+
+def has_expected_host(url: object, host: str) -> bool:
+    """Confirm that a provider-returned job URL belongs to its requested tenant."""
+    if not isinstance(url, str):
+        return False
+    return urlparse(url).hostname == host
