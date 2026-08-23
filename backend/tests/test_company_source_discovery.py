@@ -190,9 +190,9 @@ def test_ambiguous_sources_remain_distinct_from_unresolved_and_do_not_persist_a_
                     ),
                     ResolvedJobSource(
                         company="Ambiguous Co",
-                        provider="workable",
+                        provider="recruitee",
                         source_token="ambiguous-co",
-                        careers_url="https://apply.workable.com/ambiguous-co",
+                        careers_url="https://ambiguous-co.recruitee.com",
                     ),
                 ],
                 error="Multiple matching structured sources were found.",
@@ -221,7 +221,7 @@ def test_indeterminate_candidate_with_provider_failure_is_temporary_and_does_not
                         careers_url="https://careers.smartrecruiters.com/example-co",
                     )
                 ],
-                error="workable: request failed",
+                error="recruitee: request failed",
             )
         }
     )

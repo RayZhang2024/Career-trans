@@ -4,7 +4,6 @@ from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.lever import LeverJobSource
 from app.providers.jobs.recruitee import RecruiteeJobSource
 from app.providers.jobs.smartrecruiters import SmartRecruitersJobSource
-from app.providers.jobs.workable import WorkableJobSource
 
 __all__ = [
     "AshbyJobSource",
@@ -13,5 +12,4 @@ __all__ = [
     "LeverJobSource",
     "RecruiteeJobSource",
     "SmartRecruitersJobSource",
-    "WorkableJobSource",
 ]

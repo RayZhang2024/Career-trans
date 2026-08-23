@@ -40,12 +40,3 @@ def has_expected_host(url: object, host: str) -> bool:
     if not isinstance(url, str):
         return False
     return urlparse(url).hostname == host
-
-
-def has_expected_host_path_prefix(url: object, host: str, path_prefix: str) -> bool:
-    """Confirm a provider URL belongs to a tenant encoded in its first path segment."""
-    if not isinstance(url, str):
-        return False
-    parsed = urlparse(url)
-    path_segments = [segment for segment in parsed.path.split("/") if segment]
-    return parsed.hostname == host and bool(path_segments) and path_segments[0] == path_prefix

@@ -14,7 +14,7 @@ from app.schemas.job_sources import (
 class AtsResolverService:
     """Resolve company targets to verified, supported public ATS sources."""
 
-    _AMBIGUITY_CHECKED_PROVIDERS = frozenset({"smartrecruiters", "workable", "recruitee"})
+    _AMBIGUITY_CHECKED_PROVIDERS = frozenset({"smartrecruiters", "recruitee"})
 
     def __init__(self, probes: list[JobSourceProbe]) -> None:
         self._probes = probes
