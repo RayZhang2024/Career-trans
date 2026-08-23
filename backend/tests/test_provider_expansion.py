@@ -44,9 +44,14 @@ def test_existing_provider_probes_keep_resolving(probe: object, expected_provide
 @pytest.mark.parametrize(
     ("probe", "expected_provider"),
     [
-        (SmartRecruitersJobSourceProbe(fetch_json=lambda _: {"content": [{"id": "1"}]}), "smartrecruiters"),
-        (WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "1"}]}), "workable"),
-        (RecruiteeJobSourceProbe(fetch_json=lambda _: {"offers": [{"id": "1"}]}), "recruitee"),
+        (
+            SmartRecruitersJobSourceProbe(
+                fetch_json=lambda _: {"content": [{"id": "1", "company": {"identifier": "example", "name": "Example"}}]}
+            ),
+            "smartrecruiters",
+        ),
+        (WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "1", "url": "https://example.workable.com/jobs/1"}]}), "workable"),
+        (RecruiteeJobSourceProbe(fetch_json=lambda _: {"offers": [{"id": "1", "careers_url": "https://example.recruitee.com/o/1"}]}), "recruitee"),
     ],
 )
 def test_new_provider_probes_resolve_fake_structured_responses(probe: object, expected_provider: str) -> None:
@@ -134,14 +139,48 @@ def test_new_sources_normalize_shared_job_contract(source: object, expected: tup
 def test_resolver_order_is_deterministic_and_first_confirmed_provider_wins() -> None:
     result = AtsResolverService(
         [
-            SmartRecruitersJobSourceProbe(fetch_json=lambda _: {"content": [{"id": "1"}]}),
-            WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "1"}]}),
+            SmartRecruitersJobSourceProbe(fetch_json=lambda _: {"content": [{"id": "1", "company": {"identifier": "example", "name": "Example"}}]}),
+            WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "1", "url": "https://example.workable.com/jobs/1"}]}),
         ]
     ).resolve([CompanyTarget(name="Example")])
 
     assert result.results[0].attempted_providers == ["smartrecruiters"]
     assert result.results[0].resolved is not None
     assert result.results[0].resolved.provider == "smartrecruiters"
+
+
+def test_non_matching_smartrecruiters_response_falls_through_to_confirmed_workable() -> None:
+    smartrecruiters = SmartRecruitersJobSourceProbe(
+        fetch_json=lambda _: {
+            "content": [
+                {"id": "other-1", "company": {"identifier": "other-company", "name": "Other Company"}}
+            ]
+        }
+    )
+    workable = WorkableJobSourceProbe(
+        fetch_json=lambda _: {"jobs": [{"id": "workable-1", "url": "https://and-digital.workable.com/jobs/1"}]}
+    )
+
+    result = AtsResolverService([smartrecruiters, workable]).resolve(
+        [CompanyTarget(name="AND Digital", slug="and-digital")]
+    )
+
+    assert result.results[0].attempted_providers == ["smartrecruiters", "workable"]
+    assert result.results[0].resolved is not None
+    assert result.results[0].resolved.provider == "workable"
+
+
+@pytest.mark.parametrize(
+    "probe",
+    [
+        WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "other-1", "url": "https://other.workable.com/jobs/1"}]}),
+        RecruiteeJobSourceProbe(fetch_json=lambda _: {"offers": [{"id": "other-1", "careers_url": "https://other.recruitee.com/o/1"}]}),
+    ],
+)
+def test_new_provider_probes_reject_non_matching_tenant_data(probe: object) -> None:
+    result = probe.probe(CompanyTarget(name="AND Digital", slug="and-digital"), "and-digital")  # type: ignore[attr-defined]
+
+    assert result is None
 
 
 def test_provider_failure_isolated_and_network_failure_maps_to_temporary_status(db_session) -> None:

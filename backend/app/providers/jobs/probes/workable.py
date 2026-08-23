@@ -1,7 +1,7 @@
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 
-from app.providers.jobs.probes.base import JobSourceProbeError, require_safe_slug
+from app.providers.jobs.probes.base import JobSourceProbeError, has_expected_host, require_safe_slug
 from app.providers.jobs.workable import WorkableJobSource
 from app.schemas.job_sources import CompanyTarget, ResolvedJobSource
 
@@ -26,4 +26,15 @@ class WorkableJobSourceProbe:
             raise JobSourceProbeError from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
             return None
+        jobs = payload["jobs"]
+        if jobs and not self._has_matching_account(jobs, slug):
+            return None
         return ResolvedJobSource(company=company.name, provider=self.name, source_token=slug, careers_url=WorkableJobSource.careers_url(slug))
+
+    @staticmethod
+    def _has_matching_account(jobs: list[object], slug: str) -> bool:
+        host = f"{slug}.workable.com"
+        return any(
+            isinstance(job, dict) and has_expected_host(job.get("url"), host)
+            for job in jobs
+        )
