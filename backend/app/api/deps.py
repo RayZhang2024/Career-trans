@@ -20,6 +20,7 @@ from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
+from app.services.employer_universe_service import EmployerUniverseService
 from app.services.job_discovery_service import JobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
@@ -140,6 +141,10 @@ def get_company_source_discovery_service(
     resolver: Annotated[AtsResolverService, Depends(get_ats_resolver_service)],
 ) -> CompanySourceDiscoveryService:
     return CompanySourceDiscoveryService(session=db, resolver=resolver)
+
+
+def get_employer_universe_service(db: DbSession) -> EmployerUniverseService:
+    return EmployerUniverseService(session=db)
 
 
 @lru_cache

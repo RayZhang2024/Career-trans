@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import (
     get_ats_resolver_service,
     get_company_source_discovery_service,
+    get_employer_universe_service,
     get_discover_and_rank_service,
     get_job_analysis_service,
     get_job_ranking_service,
@@ -10,6 +11,7 @@ from app.api.deps import (
 )
 from app.schemas.discovery import JobDiscoveryResponse, JobListing, JobSearchQuery
 from app.schemas.discovery_pipeline import DiscoverAndRankResponse
+from app.schemas.employer_universe import EmployerUniverseResponse
 from app.schemas.job_sources import AtsResolutionResponse, CompanySourceResolution, ResolvedJobSource
 from app.schemas.job_sources import CompanySourceDiscoveryResponse, CompanySourceDiscoveryResult, CompanySourceStatus
 from app.schemas.job_ranking import JobRankingResponse
@@ -212,6 +214,38 @@ def test_resolve_company_sources_returns_registry_diagnostics(client: TestClient
 
     assert response.status_code == 200
     assert response.json()["results"][0]["provenance"] == "registry_reuse"
+
+
+def test_build_employer_universe_returns_fake_structured_result(client: TestClient) -> None:
+    class FakeUniverseService:
+        def build(self, _: object) -> EmployerUniverseResponse:
+            return EmployerUniverseResponse(
+                companies=[
+                    {
+                        "company": {"name": "Example"},
+                        "canonical_company_key": "example",
+                        "provenance": [{"source": "watched"}],
+                    }
+                ],
+                input_count=1,
+                disabled_count=0,
+                deduplicated_count=0,
+                excluded_count=0,
+                output_count=1,
+                source_counts={"watched": 1},
+            )
+
+    fastapi_app.dependency_overrides[get_employer_universe_service] = FakeUniverseService
+    try:
+        response = client.post(
+            "/api/v1/jobs/companies/build-universe",
+            json={"watched_companies": [{"name": "Example"}]},
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_employer_universe_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["companies"][0]["canonical_company_key"] == "example"
 
 
 def test_rank_jobs_returns_fake_structured_results(client: TestClient) -> None:

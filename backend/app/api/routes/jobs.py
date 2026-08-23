@@ -7,6 +7,7 @@ from app.api.deps import (
     get_job_ranking_service,
     get_ats_resolver_service,
     get_company_source_discovery_service,
+    get_employer_universe_service,
     get_discover_and_rank_service,
     get_job_discovery_service,
     get_requirement_matching_service,
@@ -16,6 +17,7 @@ from app.schemas.discovery import (
     JobSearchQuery,
 )
 from app.schemas.discovery_pipeline import DiscoverAndRankRequest, DiscoverAndRankResponse
+from app.schemas.employer_universe import EmployerUniverseRequest, EmployerUniverseResponse
 from app.schemas.job_sources import (
     AtsResolutionRequest,
     AtsResolutionResponse,
@@ -28,6 +30,7 @@ from app.schemas.matching import JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
+from app.services.employer_universe_service import EmployerUniverseService
 from app.services.job_discovery_service import JobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.job_ranking_service import JobRankingService
@@ -60,6 +63,19 @@ def resolve_company_sources(
 ) -> CompanySourceDiscoveryResponse:
     """Reuse known public career sources or resolve and persist new mappings."""
     return service.resolve_sources(payload)
+
+
+@router.post(
+    "/companies/build-universe",
+    response_model=EmployerUniverseResponse,
+    status_code=status.HTTP_200_OK,
+)
+def build_employer_universe(
+    payload: EmployerUniverseRequest,
+    service: EmployerUniverseService = Depends(get_employer_universe_service),
+) -> EmployerUniverseResponse:
+    """Build a deterministic, source-provenance-aware company universe."""
+    return service.build(payload)
 
 
 @router.post("/rank", response_model=JobRankingResponse, status_code=status.HTTP_200_OK)
