@@ -36,7 +36,7 @@ class DiscoverAndRankService:
         ]
         collection = JobDiscoveryService(sources).collect(request.query)
         job_states = self._state_store.synchronize(
-            collection.deduplicated_listings,
+            collection.raw_listings,
             collection.authoritative_source_keys,
         )
         ranking = self._ranking_service.rank(

@@ -163,6 +163,86 @@ def test_pipeline_uses_resolved_source_once_persists_raw_jobs_and_ranks_screened
     assert result.lifecycle_counts.new == 1
 
 
+def test_pipeline_keeps_equivalent_authoritative_source_records_active(
+    monkeypatch, db_session: Session
+) -> None:
+    greenhouse_job = listing(
+        external_id="greenhouse-1",
+        source="greenhouse",
+        source_token="acme",
+        url="https://jobs.example.test/role-1?source=greenhouse",
+    )
+    lever_job = listing(
+        external_id="lever-1",
+        source="lever",
+        source_token="acme",
+        url="https://JOBS.example.test/role-1/#details",
+    )
+    resolved_sources = [
+        ResolvedJobSource(
+            company="Acme", provider="greenhouse", source_token="greenhouse-acme",
+            careers_url="https://job-boards.greenhouse.io/greenhouse-acme",
+        ),
+        ResolvedJobSource(
+            company="Acme", provider="lever", source_token="lever-acme",
+            careers_url="https://jobs.lever.co/lever-acme",
+        ),
+    ]
+
+    class FakeResolver:
+        def resolve(self, _: object) -> AtsResolutionResponse:
+            return AtsResolutionResponse(
+                results=[
+                    CompanySourceResolution(company=item.company, resolved=item)
+                    for item in resolved_sources
+                ]
+            )
+
+    class GreenhouseSource:
+        name = "greenhouse"
+        source_keys = ["greenhouse:acme"]
+
+        def search(self, _: JobSearchQuery) -> list[JobListing]:
+            return [greenhouse_job]
+
+    class LeverSource:
+        name = "lever"
+        source_keys = ["lever:acme"]
+
+        def search(self, _: JobSearchQuery) -> list[JobListing]:
+            return [lever_job]
+
+    class FakeRanking:
+        def rank(self, request: object) -> JobRankingResponse:
+            return JobRankingResponse(
+                discovered_count=len(request.jobs), gated_out_count=0,
+                relevance_screened_count=0, finalist_count=0, analysed_count=0,
+            )
+
+    monkeypatch.setattr(
+        "app.services.discover_and_rank_service.create_job_source",
+        lambda item: GreenhouseSource() if item.provider == "greenhouse" else LeverSource(),
+    )
+    service = DiscoverAndRankService(
+        resolver=FakeResolver(),
+        ranking_service=FakeRanking(),
+        state_store=SqlAlchemyDiscoveredJobStateStore(db_session),
+    )
+    request = DiscoverAndRankRequest(
+        companies=[{"name": "Acme"}],
+        query={"keywords": ["AI"]},
+        candidate_context=CandidateContext(),
+    )
+    assert service.discover_and_rank(request).lifecycle_counts.new == 2
+
+    refreshed = service.discover_and_rank(request)
+
+    assert len(refreshed.discovery.listings) == 1
+    assert refreshed.discovery.deduplicated_count == 1
+    assert refreshed.lifecycle_counts.unchanged == 2
+    assert refreshed.lifecycle_counts.inactive == 0
+
+
 @pytest.mark.parametrize(
     ("provider", "token"),
     [("greenhouse", "acme-gh"), ("ashby", "acme-ashby"), ("lever", "acme-lever")],

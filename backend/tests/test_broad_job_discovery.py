@@ -110,7 +110,7 @@ def test_adzuna_zero_results_and_temporary_failure_remain_distinct() -> None:
     assert failed_result.provider_errors == {"adzuna": "HTTPError: provider request failed"}
 
 
-def test_broad_results_deduplicate_with_direct_ats_before_persistence(db_session) -> None:
+def test_broad_results_deduplicate_for_output_but_preserve_raw_lifecycle_observations(db_session) -> None:
     direct = JobListing(
         source="greenhouse",
         source_token="acme",
@@ -153,8 +153,60 @@ def test_broad_results_deduplicate_with_direct_ats_before_persistence(db_session
     ).search(query())
 
     assert response.discovery.deduplicated_count == 1
-    assert response.lifecycle_counts.new == 1
-    assert set(response.job_states) == {"external:greenhouse:acme:direct-1"}
+    assert len(response.discovery.listings) == 1
+    assert response.lifecycle_counts.new == 2
+    assert set(response.job_states) == {
+        "external:greenhouse:acme:direct-1",
+        "external:adzuna:gb:broad-1",
+    }
+
+
+def test_broad_service_keeps_equivalent_authoritative_source_records_active(db_session) -> None:
+    first = JobListing(
+        source="greenhouse",
+        source_token="acme",
+        external_id="greenhouse-1",
+        title="AI Engineer",
+        company="Acme",
+        location="London",
+        url="https://jobs.example.test/role-1?source=greenhouse",
+    )
+    second = JobListing(
+        source="lever",
+        source_token="acme",
+        external_id="lever-1",
+        title="AI Engineer",
+        company="Acme",
+        location="London",
+        url="https://JOBS.example.test/role-1/#details",
+    )
+
+    class GreenhouseSource:
+        name = "greenhouse"
+        source_keys = ["greenhouse:acme"]
+
+        def search(self, _: JobSearchQuery) -> list[JobListing]:
+            return [first]
+
+    class LeverSource:
+        name = "lever"
+        source_keys = ["lever:acme"]
+
+        def search(self, _: JobSearchQuery) -> list[JobListing]:
+            return [second]
+
+    service = BroadJobDiscoveryService(
+        discovery_service=JobDiscoveryService([GreenhouseSource(), LeverSource()]),
+        state_store=SqlAlchemyDiscoveredJobStateStore(db_session),
+    )
+    assert service.search(query()).lifecycle_counts.new == 2
+
+    refreshed = service.search(query())
+
+    assert len(refreshed.discovery.listings) == 1
+    assert refreshed.discovery.deduplicated_count == 1
+    assert refreshed.lifecycle_counts.unchanged == 2
+    assert refreshed.lifecycle_counts.inactive == 0
 
 
 def test_broad_source_absence_never_marks_prior_job_inactive(db_session) -> None:

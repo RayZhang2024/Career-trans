@@ -23,7 +23,7 @@ class BroadJobDiscoveryService:
     def search(self, query: JobSearchQuery) -> BroadJobDiscoveryResponse:
         collection = self._discovery_service.collect(query)
         job_states = self._state_store.synchronize(
-            collection.deduplicated_listings,
+            collection.raw_listings,
             collection.authoritative_source_keys,
         )
         return BroadJobDiscoveryResponse(
