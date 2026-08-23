@@ -1,7 +1,11 @@
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 
-from app.providers.jobs.probes.base import JobSourceProbeError, has_expected_host, require_safe_slug
+from app.providers.jobs.probes.base import (
+    JobSourceProbeError,
+    has_expected_host_path_prefix,
+    require_safe_slug,
+)
 from app.providers.jobs.workable import WorkableJobSource
 from app.schemas.job_sources import CompanyTarget, ResolvedJobSource
 
@@ -33,8 +37,12 @@ class WorkableJobSourceProbe:
 
     @staticmethod
     def _has_matching_account(jobs: list[object], slug: str) -> bool:
-        host = f"{slug}.workable.com"
         return any(
-            isinstance(job, dict) and has_expected_host(job.get("url"), host)
+            isinstance(job, dict)
+            and has_expected_host_path_prefix(
+                job.get("url") or job.get("application_url"),
+                "apply.workable.com",
+                slug,
+            )
             for job in jobs
         )

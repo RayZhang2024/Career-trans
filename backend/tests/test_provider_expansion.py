@@ -50,7 +50,7 @@ def test_existing_provider_probes_keep_resolving(probe: object, expected_provide
             ),
             "smartrecruiters",
         ),
-        (WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "1", "url": "https://example.workable.com/jobs/1"}]}), "workable"),
+        (WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "1", "url": "https://apply.workable.com/example/j/ABC123/"}]}), "workable"),
         (RecruiteeJobSourceProbe(fetch_json=lambda _: {"offers": [{"id": "1", "careers_url": "https://example.recruitee.com/o/1"}]}), "recruitee"),
     ],
 )
@@ -196,7 +196,7 @@ def test_non_matching_smartrecruiters_response_falls_through_to_confirmed_workab
         }
     )
     workable = WorkableJobSourceProbe(
-        fetch_json=lambda _: {"jobs": [{"id": "workable-1", "url": "https://and-digital.workable.com/jobs/1"}]}
+        fetch_json=lambda _: {"jobs": [{"id": "workable-1", "url": "https://apply.workable.com/and-digital/j/ABC123/"}]}
     )
 
     result = AtsResolverService([smartrecruiters, workable]).resolve(
@@ -208,6 +208,45 @@ def test_non_matching_smartrecruiters_response_falls_through_to_confirmed_workab
     assert result.results[0].resolved.provider == "workable"
 
 
+def test_workable_probe_confirms_requested_account_from_hosted_careers_url() -> None:
+    probe = WorkableJobSourceProbe(
+        fetch_json=lambda _: {
+            "jobs": [
+                {
+                    "id": "workable-1",
+                    "url": "https://apply.workable.com/and-digital/j/ABC123/",
+                }
+            ]
+        }
+    )
+
+    result = probe.probe(
+        CompanyTarget(name="AND Digital", slug="and-digital"), "and-digital"
+    )
+
+    assert result is not None
+    assert result.provider == "workable"
+
+
+def test_workable_probe_rejects_a_different_hosted_careers_account() -> None:
+    probe = WorkableJobSourceProbe(
+        fetch_json=lambda _: {
+            "jobs": [
+                {
+                    "id": "other-1",
+                    "url": "https://apply.workable.com/other-company/j/ABC123/",
+                }
+            ]
+        }
+    )
+
+    result = probe.probe(
+        CompanyTarget(name="AND Digital", slug="and-digital"), "and-digital"
+    )
+
+    assert result is None
+
+
 def test_multiple_confirmed_new_provider_candidates_are_explicitly_ambiguous() -> None:
     smartrecruiters = SmartRecruitersJobSourceProbe(
         fetch_json=lambda _: {
@@ -217,7 +256,7 @@ def test_multiple_confirmed_new_provider_candidates_are_explicitly_ambiguous() -
         }
     )
     workable = WorkableJobSourceProbe(
-        fetch_json=lambda _: {"jobs": [{"id": "workable-1", "url": "https://and-digital.workable.com/jobs/1"}]}
+        fetch_json=lambda _: {"jobs": [{"id": "workable-1", "url": "https://apply.workable.com/and-digital/j/ABC123/"}]}
     )
 
     result = AtsResolverService([smartrecruiters, workable]).resolve(
@@ -233,7 +272,7 @@ def test_multiple_confirmed_new_provider_candidates_are_explicitly_ambiguous() -
 @pytest.mark.parametrize(
     "probe",
     [
-        WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "other-1", "url": "https://other.workable.com/jobs/1"}]}),
+        WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "other-1", "url": "https://apply.workable.com/other-company/j/ABC123/"}]}),
         RecruiteeJobSourceProbe(fetch_json=lambda _: {"offers": [{"id": "other-1", "careers_url": "https://other.recruitee.com/o/1"}]}),
     ],
 )
