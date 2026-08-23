@@ -1,9 +1,11 @@
+import http.client
+import socket
+import ssl
 from typing import Protocol
 from urllib.parse import urljoin
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.schemas.agentic_discovery import PageContent
-from app.providers.url_safety import HostResolver, validate_public_http_url
+from app.providers.url_safety import HostResolver, ValidatedPageTarget, resolve_public_http_target
 
 
 class PageFetcher(Protocol):
@@ -14,37 +16,74 @@ class PublicHttpPageFetcher:
     """Small bounded public-page fetcher; it does not automate browsers or log in."""
 
     _max_bytes = 1_000_000
+    _max_redirects = 5
 
     def __init__(
         self,
         *,
         resolve_host: HostResolver | None = None,
-        opener: object | None = None,
+        connection_factory: "ConnectionFactory | None" = None,
     ) -> None:
         self._resolve_host = resolve_host
-        self._opener = opener or build_opener(_SafeRedirectHandler(resolve_host=resolve_host))
+        self._connection_factory = connection_factory or _connection_for
 
     def fetch(self, url: str) -> PageContent:
-        validate_public_http_url(url, resolve_host=self._resolve_host)
-        request = Request(url, headers={"User-Agent": "Career-trans Job Discovery/1.0"})
-        with self._opener.open(request, timeout=10) as response:
-            validate_public_http_url(response.geturl(), resolve_host=self._resolve_host)
-            payload = response.read(self._max_bytes + 1)
-            if len(payload) > self._max_bytes:
-                raise ValueError("Page exceeded the discovery size limit.")
-            charset = response.headers.get_content_charset() or "utf-8"
-            return PageContent(
-                requested_url=url,
-                final_url=response.geturl(),
-                html=payload.decode(charset, errors="replace"),
-            )
+        requested_url = url
+        for _ in range(self._max_redirects + 1):
+            target = resolve_public_http_target(url, resolve_host=self._resolve_host)
+            connection = self._connection_factory(target, 10)
+            try:
+                connection.request("GET", target.path, headers={"User-Agent": "Career-trans Job Discovery/1.0"})
+                response = connection.getresponse()
+                if response.status in {301, 302, 303, 307, 308}:
+                    location = response.getheader("Location")
+                    response.close()
+                    if not location:
+                        raise ValueError("Page redirect did not provide a target.")
+                    url = urljoin(target.url, location)
+                    continue
+                if response.status >= 400:
+                    response.close()
+                    raise ValueError("Page request failed.")
+                payload = response.read(self._max_bytes + 1)
+                response.close()
+                if len(payload) > self._max_bytes:
+                    raise ValueError("Page exceeded the discovery size limit.")
+                charset = response.headers.get_content_charset() or "utf-8"
+                return PageContent(
+                    requested_url=requested_url,
+                    final_url=target.url,
+                    html=payload.decode(charset, errors="replace"),
+                )
+            finally:
+                connection.close()
+        raise ValueError("Page exceeded the redirect limit.")
 
 
-class _SafeRedirectHandler(HTTPRedirectHandler):
-    def __init__(self, *, resolve_host: HostResolver | None) -> None:
-        super().__init__()
-        self._resolve_host = resolve_host
+class ConnectionFactory(Protocol):
+    def __call__(self, target: ValidatedPageTarget, timeout: float): ...
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_public_http_url(urljoin(req.full_url, newurl), resolve_host=self._resolve_host)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+def _connection_for(target: ValidatedPageTarget, timeout: float):
+    if target.scheme == "https":
+        return _ValidatedHTTPSConnection(target, timeout)
+    return _ValidatedHTTPConnection(target, timeout)
+
+
+class _ValidatedHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, target: ValidatedPageTarget, timeout: float) -> None:
+        super().__init__(target.hostname, port=target.port, timeout=timeout)
+        self._address = target.address
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection((self._address, self.port), self.timeout)
+
+
+class _ValidatedHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, target: ValidatedPageTarget, timeout: float) -> None:
+        super().__init__(target.hostname, port=target.port, timeout=timeout, context=ssl.create_default_context())
+        self._address = target.address
+
+    def connect(self) -> None:
+        sock = socket.create_connection((self._address, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)

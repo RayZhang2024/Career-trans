@@ -2,6 +2,7 @@ import ipaddress
 import re
 import socket
 from collections.abc import Callable
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
@@ -13,7 +14,21 @@ HostResolver = Callable[[str], list[str]]
 _HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
 
 
-def validate_public_http_url(url: str, *, resolve_host: HostResolver | None = None) -> None:
+@dataclass(frozen=True)
+class ValidatedPageTarget:
+    url: str
+    scheme: str
+    hostname: str
+    port: int
+    address: str
+    path: str
+
+
+def resolve_public_http_target(
+    url: str,
+    *,
+    resolve_host: HostResolver | None = None,
+) -> ValidatedPageTarget:
     """Allow only publicly routable HTTP(S) page targets.
 
     Resolution is deliberately injected so unit tests can exercise safety rules without
@@ -22,7 +37,7 @@ def validate_public_http_url(url: str, *, resolve_host: HostResolver | None = No
     try:
         parsed = urlsplit(url)
         hostname = parsed.hostname
-        _ = parsed.port
+        port = parsed.port
     except ValueError as exc:
         raise UnsafePageUrlError("Malformed page URL.") from exc
     if parsed.scheme.casefold() not in {"http", "https"} or not hostname:
@@ -42,6 +57,20 @@ def validate_public_http_url(url: str, *, resolve_host: HostResolver | None = No
             raise UnsafePageUrlError("Page hostname resolved to an invalid address.") from exc
         if not ip.is_global:
             raise UnsafePageUrlError("Page URL resolves to a non-public address.")
+    scheme = parsed.scheme.casefold()
+    return ValidatedPageTarget(
+        url=url,
+        scheme=scheme,
+        hostname=hostname,
+        port=port or (443 if scheme == "https" else 80),
+        address=addresses[0],
+        path=(parsed.path or "/") + (f"?{parsed.query}" if parsed.query else ""),
+    )
+
+
+def validate_public_http_url(url: str, *, resolve_host: HostResolver | None = None) -> None:
+    """Validate a public HTTP(S) URL without exposing the resolved target."""
+    resolve_public_http_target(url, resolve_host=resolve_host)
 
 
 def _resolve_host(hostname: str) -> list[str]:
