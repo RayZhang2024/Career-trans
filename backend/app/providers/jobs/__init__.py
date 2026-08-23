@@ -7,9 +7,11 @@ from app.providers.jobs.smartrecruiters import SmartRecruitersJobSource
 
 __all__ = [
     "AshbyJobSource",
+    "AdzunaJobSource",
     "GreenhouseJobSource",
     "JobSource",
     "LeverJobSource",
     "RecruiteeJobSource",
     "SmartRecruitersJobSource",
 ]
+from app.providers.jobs.adzuna import AdzunaJobSource

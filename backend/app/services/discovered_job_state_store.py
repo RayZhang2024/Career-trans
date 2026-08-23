@@ -14,7 +14,7 @@ class DiscoveredJobStateStore(Protocol):
     def synchronize(
         self,
         listings: list[JobListing],
-        successful_source_keys: set[str],
+        authoritative_source_keys: set[str],
     ) -> dict[str, DiscoveredJobState]: ...
 
 
@@ -27,7 +27,7 @@ class SqlAlchemyDiscoveredJobStateStore:
     def synchronize(
         self,
         listings: list[JobListing],
-        successful_source_keys: set[str],
+        authoritative_source_keys: set[str],
     ) -> dict[str, DiscoveredJobState]:
         now = datetime.now(timezone.utc)
         observed_keys: set[str] = set()
@@ -77,7 +77,7 @@ class SqlAlchemyDiscoveredJobStateStore:
             select(DiscoveredJob).where(DiscoveredJob.state != DiscoveredJobState.INACTIVE)
         ).all()
         for record in active_records:
-            if self.source_key(record.source, record.source_token) not in successful_source_keys:
+            if self.source_key(record.source, record.source_token) not in authoritative_source_keys:
                 continue
             if record.identity_key in observed_keys:
                 continue

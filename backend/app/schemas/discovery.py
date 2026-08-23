@@ -30,6 +30,9 @@ class JobSearchQuery(BaseModel):
 
     keywords: list[str] = Field(min_length=1)
     locations: list[str] = Field(default_factory=list)
+    country: str = Field(default="gb", min_length=2, max_length=2)
+    salary_min: int | None = Field(default=None, ge=0)
+    posted_within_days: int | None = Field(default=None, ge=1, le=365)
     remote_ok: bool | None = None
     companies: list[str] = Field(default_factory=list)
     excluded_companies: list[str] = Field(default_factory=list)
@@ -56,3 +59,24 @@ class DiscoveredJobState(StrEnum):
     UPDATED = "updated"
     UNCHANGED = "unchanged"
     INACTIVE = "inactive"
+
+
+class DiscoveryLifecycleCounts(BaseModel):
+    """Lifecycle changes observed while synchronizing a discovery refresh."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    inactive: int = 0
+
+
+class BroadJobDiscoveryResponse(BaseModel):
+    """Broad structured search results and their non-user-specific lifecycle state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    discovery: JobDiscoveryResponse
+    job_states: dict[str, DiscoveredJobState] = Field(default_factory=dict)
+    lifecycle_counts: DiscoveryLifecycleCounts = Field(default_factory=DiscoveryLifecycleCounts)

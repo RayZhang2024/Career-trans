@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     lever_site_tokens: str = ""
     smartrecruiters_company_ids: str = ""
     recruitee_company_tokens: str = ""
+    adzuna_app_id: str | None = None
+    adzuna_app_key: str | None = None
 
     @staticmethod
     def configured_tokens(value: str) -> list[str]:

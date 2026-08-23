@@ -22,6 +22,7 @@ from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
 from app.services.employer_universe_service import EmployerUniverseService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.broad_job_discovery_service import BroadJobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.job_ranking_service import JobRankingService
@@ -31,6 +32,7 @@ from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
 from app.providers.jobs.recruitee import RecruiteeJobSource
 from app.providers.jobs.smartrecruiters import SmartRecruitersJobSource
+from app.providers.jobs.adzuna import AdzunaJobSource
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
 from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
 from app.providers.jobs.probes.lever import LeverJobSourceProbe
@@ -113,9 +115,7 @@ def get_requirement_matching_service() -> RequirementMatchingService:
     return RequirementMatchingService(matcher=matcher)
 
 
-@lru_cache
-def get_job_discovery_service() -> JobDiscoveryService:
-    settings = get_settings()
+def _configured_direct_job_sources(settings):
     providers = []
     greenhouse_tokens = settings.configured_tokens(settings.greenhouse_board_tokens)
     lever_tokens = settings.configured_tokens(settings.lever_site_tokens)
@@ -132,7 +132,32 @@ def get_job_discovery_service() -> JobDiscoveryService:
         providers.append(SmartRecruitersJobSource(smartrecruiters_ids))
     if recruitee_tokens:
         providers.append(RecruiteeJobSource(recruitee_tokens))
-    return JobDiscoveryService(providers=providers)
+    return providers
+
+
+@lru_cache
+def get_job_discovery_service() -> JobDiscoveryService:
+    settings = get_settings()
+    return JobDiscoveryService(providers=_configured_direct_job_sources(settings))
+
+
+def get_broad_job_discovery_service(db: DbSession) -> BroadJobDiscoveryService:
+    settings = get_settings()
+    if not settings.adzuna_app_id or not settings.adzuna_app_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Broad job discovery is not configured. Set ADZUNA_APP_ID and ADZUNA_APP_KEY in backend/.env.",
+        )
+    # Direct configured boards remain in the same collection so the existing
+    # deterministic deduplication retains one normalized listing per job.
+    providers = _configured_direct_job_sources(settings)
+    providers.append(
+        AdzunaJobSource(app_id=settings.adzuna_app_id, app_key=settings.adzuna_app_key)
+    )
+    return BroadJobDiscoveryService(
+        discovery_service=JobDiscoveryService(providers=providers),
+        state_store=SqlAlchemyDiscoveredJobStateStore(db),
+    )
 
 
 @lru_cache

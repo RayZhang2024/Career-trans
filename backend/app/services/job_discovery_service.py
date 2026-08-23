@@ -14,8 +14,10 @@ class DiscoveryCollection:
     """Source results retained before query screening for persistence reconciliation."""
 
     raw_listings: list[JobListing]
+    deduplicated_listings: list[JobListing]
     response: JobDiscoveryResponse
     successful_source_keys: set[str]
+    authoritative_source_keys: set[str]
 
 
 class JobDiscoveryService:
@@ -71,8 +73,17 @@ class JobDiscoveryService:
             )
             for key in source_keys
         }
+        authoritative_source_keys = {
+            key
+            for provider in self._providers
+            if getattr(provider, "lifecycle_authoritative", True)
+            for key in getattr(provider, "source_keys", [provider.name])
+            if key in successful_source_keys
+        }
         return DiscoveryCollection(
             raw_listings=raw_listings,
+            deduplicated_listings=deduplicated,
             response=response,
             successful_source_keys=successful_source_keys,
+            authoritative_source_keys=authoritative_source_keys,
         )

@@ -302,13 +302,16 @@ Planned:
 
 ## Job Discovery
 
-Planned:
+Implemented discovery foundations:
 
-- recurring searches;
-- deduplication;
-- filtering;
-- scoring;
-- shortlist generation.
+- structured Greenhouse, Ashby, Lever, SmartRecruiters, Recruitee, and Adzuna sources;
+- deterministic normalization, deduplication, cheap query screening, and bounded result sets;
+- source-aware persistent job lifecycle state;
+- job-first broad search through `POST /api/v1/jobs/search-broad` when Adzuna credentials are configured;
+- existing bounded semantic screening and finalist ranking through the discovery/ranking pipeline.
+
+Broad-source results are non-authoritative for job inactivity: an empty broad search never
+marks a previously seen job inactive.
 
 ---
 

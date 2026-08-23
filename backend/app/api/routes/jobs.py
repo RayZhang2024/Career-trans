@@ -9,10 +9,12 @@ from app.api.deps import (
     get_company_source_discovery_service,
     get_employer_universe_service,
     get_discover_and_rank_service,
+    get_broad_job_discovery_service,
     get_job_discovery_service,
     get_requirement_matching_service,
 )
 from app.schemas.discovery import (
+    BroadJobDiscoveryResponse,
     JobDiscoveryResponse,
     JobSearchQuery,
 )
@@ -32,6 +34,7 @@ from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
 from app.services.employer_universe_service import EmployerUniverseService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.broad_job_discovery_service import BroadJobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
@@ -98,6 +101,19 @@ def discover_jobs(
 ) -> JobDiscoveryResponse:
     """Discover public ATS listings without performing full career analysis."""
     return service.discover(payload)
+
+
+@router.post(
+    "/search-broad",
+    response_model=BroadJobDiscoveryResponse,
+    status_code=status.HTTP_200_OK,
+)
+def search_broad_jobs(
+    payload: JobSearchQuery,
+    service: BroadJobDiscoveryService = Depends(get_broad_job_discovery_service),
+) -> BroadJobDiscoveryResponse:
+    """Search configured direct boards and a non-authoritative broad structured source."""
+    return service.search(payload)
 
 
 @router.post(

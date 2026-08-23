@@ -3,13 +3,19 @@ from fastapi.testclient import TestClient
 from app.api.deps import (
     get_ats_resolver_service,
     get_company_source_discovery_service,
+    get_broad_job_discovery_service,
     get_employer_universe_service,
     get_discover_and_rank_service,
     get_job_analysis_service,
     get_job_ranking_service,
     get_job_discovery_service,
 )
-from app.schemas.discovery import JobDiscoveryResponse, JobListing, JobSearchQuery
+from app.schemas.discovery import (
+    BroadJobDiscoveryResponse,
+    JobDiscoveryResponse,
+    JobListing,
+    JobSearchQuery,
+)
 from app.schemas.discovery_pipeline import DiscoverAndRankResponse
 from app.schemas.employer_universe import EmployerUniverseResponse
 from app.schemas.job_sources import AtsResolutionResponse, CompanySourceResolution, ResolvedJobSource
@@ -24,6 +30,7 @@ from app.schemas.job import (
 )
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.broad_job_discovery_service import BroadJobDiscoveryService
 from app.services.job_ranking_service import JobRankingService
 
 
@@ -150,6 +157,29 @@ def test_discover_jobs_returns_normalized_fake_provider_results(client: TestClie
     assert response.status_code == 200
     assert response.json()["provider_counts"] == {"fake": 1}
     assert response.json()["listings"][0]["url"] == "https://jobs.example.test/123"
+
+
+def test_search_broad_returns_fake_lifecycle_diagnostics(client: TestClient) -> None:
+    class FakeBroadDiscoveryService:
+        def search(self, _: JobSearchQuery) -> BroadJobDiscoveryResponse:
+            return BroadJobDiscoveryResponse(
+                discovery=JobDiscoveryResponse(
+                    listings=[], provider_counts={"adzuna": 0}, raw_count=0,
+                    deduplicated_count=0, screened_out_count=0,
+                )
+            )
+
+    fastapi_app.dependency_overrides[get_broad_job_discovery_service] = FakeBroadDiscoveryService
+    try:
+        response = client.post(
+            "/api/v1/jobs/search-broad",
+            json={"keywords": ["AI Engineer"], "country": "gb"},
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_broad_job_discovery_service, None)
+
+    assert response.status_code == 200
+    assert response.json()["discovery"]["provider_counts"] == {"adzuna": 0}
 
 
 def test_resolve_job_sources_returns_structured_fake_results(client: TestClient) -> None:
