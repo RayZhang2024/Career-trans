@@ -136,15 +136,15 @@ def test_new_sources_normalize_shared_job_contract(source: object, expected: tup
     assert listing.description == "Build reliable platforms."
 
 
-def test_resolver_order_is_deterministic_and_first_confirmed_provider_wins() -> None:
+def test_resolver_order_is_deterministic_for_a_single_new_provider_candidate() -> None:
     result = AtsResolverService(
         [
             SmartRecruitersJobSourceProbe(fetch_json=lambda _: {"content": [{"id": "1", "company": {"identifier": "example", "name": "Example"}}]}),
-            WorkableJobSourceProbe(fetch_json=lambda _: {"jobs": [{"id": "1", "url": "https://example.workable.com/jobs/1"}]}),
+            WorkableJobSourceProbe(fetch_json=lambda _: {}),
         ]
     ).resolve([CompanyTarget(name="Example")])
 
-    assert result.results[0].attempted_providers == ["smartrecruiters"]
+    assert result.results[0].attempted_providers == ["smartrecruiters", "workable"]
     assert result.results[0].resolved is not None
     assert result.results[0].resolved.provider == "smartrecruiters"
 
@@ -168,6 +168,28 @@ def test_non_matching_smartrecruiters_response_falls_through_to_confirmed_workab
     assert result.results[0].attempted_providers == ["smartrecruiters", "workable"]
     assert result.results[0].resolved is not None
     assert result.results[0].resolved.provider == "workable"
+
+
+def test_multiple_confirmed_new_provider_candidates_are_explicitly_ambiguous() -> None:
+    smartrecruiters = SmartRecruitersJobSourceProbe(
+        fetch_json=lambda _: {
+            "content": [
+                {"id": "smart-1", "company": {"identifier": "and-digital", "name": "AND Digital"}}
+            ]
+        }
+    )
+    workable = WorkableJobSourceProbe(
+        fetch_json=lambda _: {"jobs": [{"id": "workable-1", "url": "https://and-digital.workable.com/jobs/1"}]}
+    )
+
+    result = AtsResolverService([smartrecruiters, workable]).resolve(
+        [CompanyTarget(name="AND Digital", slug="and-digital")]
+    )
+
+    resolution = result.results[0]
+    assert resolution.resolved is None
+    assert [source.provider for source in resolution.candidate_sources] == ["smartrecruiters", "workable"]
+    assert resolution.error == "Multiple matching structured sources were found."
 
 
 @pytest.mark.parametrize(

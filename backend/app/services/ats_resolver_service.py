@@ -14,6 +14,8 @@ from app.schemas.job_sources import (
 class AtsResolverService:
     """Resolve company targets to verified, supported public ATS sources."""
 
+    _AMBIGUITY_CHECKED_PROVIDERS = frozenset({"smartrecruiters", "workable", "recruitee"})
+
     def __init__(self, probes: list[JobSourceProbe]) -> None:
         self._probes = probes
 
@@ -29,6 +31,7 @@ class AtsResolverService:
 
         attempted: list[str] = []
         failures: list[str] = []
+        candidates = []
         for probe in self._probes:
             attempted.append(probe.name)
             try:
@@ -40,11 +43,29 @@ class AtsResolverService:
                 failures.append(f"{probe.name}: probe failed")
                 continue
             if resolved is not None:
+                if probe.name in self._AMBIGUITY_CHECKED_PROVIDERS:
+                    candidates.append(resolved)
+                    continue
                 return CompanySourceResolution(
                     company=company.name,
                     resolved=resolved,
                     attempted_providers=attempted,
                 )
+
+        if len(candidates) == 1:
+            return CompanySourceResolution(
+                company=company.name,
+                resolved=candidates[0],
+                candidate_sources=candidates,
+                attempted_providers=attempted,
+            )
+        if len(candidates) > 1:
+            return CompanySourceResolution(
+                company=company.name,
+                candidate_sources=candidates,
+                attempted_providers=attempted,
+                error="Multiple matching structured sources were found.",
+            )
 
         error = "; ".join(failures) if failures else "No supported source with published jobs was found."
         return CompanySourceResolution(

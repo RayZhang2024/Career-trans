@@ -31,6 +31,7 @@ class CompanySourceResolution(BaseModel):
 
     company: str
     resolved: ResolvedJobSource | None = None
+    candidate_sources: list[ResolvedJobSource] = Field(default_factory=list)
     attempted_providers: list[str] = Field(default_factory=list)
     error: str | None = None
 
@@ -52,6 +53,7 @@ class CompanySourceStatus(StrEnum):
     UNRESOLVED = "unresolved"
     UNSUPPORTED = "unsupported"
     TEMPORARILY_FAILED = "temporarily_failed"
+    AMBIGUOUS = "ambiguous"
 
 
 class CompanySourceProvenance(StrEnum):
