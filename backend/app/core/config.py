@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     greenhouse_board_tokens: str = ""
     ashby_board_tokens: str = ""
     lever_site_tokens: str = ""
+    smartrecruiters_company_ids: str = ""
+    workable_account_subdomains: str = ""
+    recruitee_company_tokens: str = ""
 
     @staticmethod
     def configured_tokens(value: str) -> list[str]:
