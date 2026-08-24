@@ -54,16 +54,27 @@ class ExtractedVacancy(BaseModel):
     work_arrangement: str | None = None
 
 
-class AgenticDiscoveryRequest(BaseModel):
+class AgenticDiscoveryOptions(BaseModel):
+    """Bounded discovery controls shared by explicit and authenticated requests."""
+
     model_config = ConfigDict(extra="forbid")
 
-    candidate_context: CandidateContext
     query: JobSearchQuery
     country: str = Field(default="gb", min_length=2, max_length=2)
     max_search_queries: int = Field(default=6, ge=1, le=100)
     max_search_results_per_query: int = Field(default=10, ge=1, le=50)
     max_pages_to_open: int = Field(default=12, ge=1, le=100)
     max_discovered_jobs: int = Field(default=20, ge=1, le=100)
+
+
+class AgenticDiscoveryRequest(AgenticDiscoveryOptions):
+    """Low-level development request with explicitly supplied candidate context."""
+
+    candidate_context: CandidateContext
+
+
+class AgenticDiscoveryMeRequest(AgenticDiscoveryOptions):
+    """Authenticated discovery request; context is loaded from confirmed persistence."""
 
 
 class AgenticDiscoveryDiagnostics(BaseModel):
