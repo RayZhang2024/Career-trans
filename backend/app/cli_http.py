@@ -17,6 +17,9 @@ DEFAULT_HTTP_TIMEOUT_SECONDS = 20
 RANKING_HTTP_TIMEOUT_SECONDS = 180
 """Bounded timeout for semantic and full-analysis ranking requests."""
 
+ENRICHMENT_HTTP_TIMEOUT_SECONDS = 180
+"""Bounded timeout for explicit direct-page job-detail enrichment requests."""
+
 
 class CareerTransApiError(RuntimeError):
     def __init__(self, status_code: int, detail: str) -> None:
@@ -123,7 +126,12 @@ class CareerTransApiClient:
         return self._request("GET", f"/api/v1/jobs/inbox?limit={limit}")
 
     def enrich_imported_jobs(self, limit: int) -> dict[str, Any]:
-        return self._request("POST", "/api/v1/jobs/enrich-imported", payload={"limit": limit})
+        return self._request(
+            "POST",
+            "/api/v1/jobs/enrich-imported",
+            payload={"limit": limit},
+            timeout_seconds=ENRICHMENT_HTTP_TIMEOUT_SECONDS,
+        )
 
     def _request(
         self,

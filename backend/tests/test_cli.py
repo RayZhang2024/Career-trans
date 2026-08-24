@@ -8,6 +8,7 @@ import pytest
 from app import cli
 from app.cli_http import (
     DEFAULT_HTTP_TIMEOUT_SECONDS,
+    ENRICHMENT_HTTP_TIMEOUT_SECONDS,
     RANKING_HTTP_TIMEOUT_SECONDS,
     CareerTransApiClient,
     CareerTransApiError,
@@ -472,7 +473,7 @@ def test_http_client_multipart_auth_and_error_mapping(tmp_path) -> None:
         CareerTransApiClient("http://example.test", "token", opener=invalid_token).get_cv("draft-1")
 
 
-def test_http_client_uses_long_finite_timeout_only_for_ranking() -> None:
+def test_http_client_uses_long_finite_timeouts_only_for_ranking_and_enrichment() -> None:
     observed_timeouts = []
 
     def opener(_request, *, timeout):
@@ -482,9 +483,15 @@ def test_http_client_uses_long_finite_timeout_only_for_ranking() -> None:
     client = CareerTransApiClient("http://example.test", "token", opener=opener)
     client.get_opportunity_inbox(5)
     client.rank_jobs_for_current_user([{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1"}])
+    client.enrich_imported_jobs(10)
 
-    assert observed_timeouts == [DEFAULT_HTTP_TIMEOUT_SECONDS, RANKING_HTTP_TIMEOUT_SECONDS]
+    assert observed_timeouts == [
+        DEFAULT_HTTP_TIMEOUT_SECONDS,
+        RANKING_HTTP_TIMEOUT_SECONDS,
+        ENRICHMENT_HTTP_TIMEOUT_SECONDS,
+    ]
     assert RANKING_HTTP_TIMEOUT_SECONDS > DEFAULT_HTTP_TIMEOUT_SECONDS
+    assert ENRICHMENT_HTTP_TIMEOUT_SECONDS > DEFAULT_HTTP_TIMEOUT_SECONDS
 
 
 @pytest.mark.parametrize("timeout_error", [TimeoutError("timed out"), socket.timeout("timed out")])
@@ -512,6 +519,20 @@ def test_http_client_normalizes_url_timeout_without_retry() -> None:
     with pytest.raises(CareerTransTimeoutError, match="timed out after 180 seconds"):
         client.rank_jobs_for_current_user([{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1"}])
     assert calls == [RANKING_HTTP_TIMEOUT_SECONDS]
+
+
+@pytest.mark.parametrize("timeout_error", [TimeoutError("timed out"), socket.timeout("timed out")])
+def test_enrichment_timeout_is_normalized_without_retry(timeout_error) -> None:
+    calls = []
+
+    def opener(_request, *, timeout):
+        calls.append(timeout)
+        raise timeout_error
+
+    client = CareerTransApiClient("http://example.test", "token", opener=opener)
+    with pytest.raises(CareerTransTimeoutError, match="timed out after 180 seconds"):
+        client.enrich_imported_jobs(10)
+    assert calls == [ENRICHMENT_HTTP_TIMEOUT_SECONDS]
 
 
 def test_cli_prints_actionable_timeout_message(monkeypatch, capsys) -> None:
