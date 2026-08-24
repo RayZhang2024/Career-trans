@@ -32,6 +32,9 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     openai_api_key: str | None = None
+    default_llm_provider: str = "openai"
+    llm_base_url: str | None = None
+    ollama_base_url: str = "http://localhost:11434"
     openai_job_extraction_model: str = "gpt-5.6-luna"
     openai_requirement_matching_model: str = "gpt-5.6-luna"
     openai_career_alignment_model: str = "gpt-5.6-luna"

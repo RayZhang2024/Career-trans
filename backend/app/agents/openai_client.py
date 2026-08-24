@@ -4,6 +4,6 @@ from langsmith.wrappers import wrap_openai
 from openai import OpenAI
 
 
-def create_traced_openai_client(*, api_key: str, trace_name: str) -> OpenAI:
+def create_traced_openai_client(*, api_key: str, trace_name: str, base_url: str | None = None) -> OpenAI:
     """Create an OpenAI Responses client with LangSmith-compatible tracing."""
-    return wrap_openai(OpenAI(api_key=api_key), chat_name=trace_name)
+    return wrap_openai(OpenAI(api_key=api_key, base_url=base_url), chat_name=trace_name)
