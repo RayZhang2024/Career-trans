@@ -41,6 +41,8 @@ class CVIngestionService:
 
     def interpret(self, user_id: str, draft_id: str) -> CVIngestionDraftRead:
         draft = self._draft(user_id, draft_id)
+        if draft.state != CVIngestionState.UPLOADED:
+            raise ValueError("Only an uploaded CV ingestion draft can be interpreted.")
         documents = self._documents(draft)
         imported: list[CandidateCVData] = []
         unstructured: list[ExtractedCVDocument] = []

@@ -207,6 +207,25 @@ def test_invalid_semantic_output_is_rejected_without_persistence(db_session) -> 
     assert db_session.scalars(select(CandidateStructuredProfile)).all() == []
 
 
+def test_interpret_state_machine_rejects_repeat_and_preserves_confirmed_data(db_session) -> None:
+    service = CVIngestionService(db_session, interpreter=FakeInterpreter())
+    draft = service.upload("user-1", [("cv.md", "text/markdown", b"# Experience\nPython engineer")])
+    reviewed = service.interpret("user-1", draft.id)
+    with pytest.raises(ValueError, match="Only an uploaded"):
+        service.interpret("user-1", draft.id)
+    assert service.read("user-1", draft.id).state == "review_ready"
+    assert service.confirm("user-1", draft.id) == 0
+    confirmed = service.read("user-1", draft.id)
+    persisted = db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == "user-1"))
+    assert confirmed.state == "confirmed"
+    assert persisted is not None
+    assert json.loads(persisted.structured_json) == reviewed.merged.model_dump(mode="json")
+    with pytest.raises(ValueError, match="Only an uploaded"):
+        service.interpret("user-1", draft.id)
+    assert service.read("user-1", draft.id).state == "confirmed"
+    assert db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == "user-1")).structured_json == persisted.structured_json
+
+
 def test_review_patch_is_owned_and_persists_only_after_confirm(client, db_session) -> None:
     service = CVIngestionService(db_session, interpreter=FakeInterpreter())
     app.dependency_overrides[get_cv_ingestion_service] = lambda: service
