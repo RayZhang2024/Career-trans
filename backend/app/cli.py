@@ -27,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     login = auth_commands.add_parser("login", help="Log in and print a bearer token")
     login.add_argument("--email", required=True)
 
+    config = commands.add_parser("config", help="Inspect running semantic LLM configuration")
+    config_commands = config.add_subparsers(dest="config_command", required=True)
+    config_commands.add_parser("show", help="Show safe effective LLM configuration")
+    config_commands.add_parser("check", help="Validate semantic LLM configuration without a live provider call")
+
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
     upload = cv_commands.add_parser("upload", help="Upload CV files")
@@ -52,6 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "auth":
             return _login(client, args)
+        if args.command == "config":
+            return _config(client, args)
         return _cv(client, args)
     except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError) as exc:
         _print_api_error(exc)
@@ -113,6 +120,13 @@ def _cv(client: CareerTransApiClient, args: argparse.Namespace) -> int:
     return 0
 
 
+def _config(client: CareerTransApiClient, args: argparse.Namespace) -> int:
+    config = client.get_llm_configuration() if args.config_command == "show" else client.check_llm_configuration()
+    for key, value in config.items():
+        print(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
+    return 0
+
+
 def _print_counts(draft: dict[str, Any]) -> None:
     merged = draft.get("merged") or {}
     print(f"Draft {draft.get('id')} ({draft.get('state')})")
@@ -143,6 +157,10 @@ def _print_api_error(exc: Exception) -> None:
             message = f"Not found: {exc.detail} Check the draft ID."
         elif exc.status_code in {409, 422}:
             message = f"Request rejected: {exc.detail} Check the draft state or review data."
+        elif exc.status_code == 503:
+            message = f"LLM provider configuration or availability error: {exc.detail}"
+        elif exc.status_code == 502:
+            message = f"Semantic provider error: {exc.detail}"
         elif exc.status_code >= 500:
             message = f"Server error: {exc.detail} Try again later."
         else:

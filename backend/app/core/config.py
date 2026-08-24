@@ -1,7 +1,7 @@
 from functools import lru_cache
 import os
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,13 +35,34 @@ class Settings(BaseSettings):
     default_llm_provider: str = "openai"
     llm_base_url: str | None = None
     ollama_base_url: str = "http://localhost:11434"
-    openai_job_extraction_model: str = "gpt-5.6-luna"
-    cv_semantic_extraction_model: str = "gpt-5.6-luna"
-    openai_requirement_matching_model: str = "gpt-5.6-luna"
-    openai_career_alignment_model: str = "gpt-5.6-luna"
-    openai_job_relevance_model: str = "gpt-5.6-luna"
-    openai_job_archetype_model: str = "gpt-5.6-luna"
-    openai_agentic_discovery_model: str = "gpt-5.6-luna"
+    job_extraction_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("JOB_EXTRACTION_MODEL", "OPENAI_JOB_EXTRACTION_MODEL", "job_extraction_model", "openai_job_extraction_model"),
+    )
+    cv_semantic_extraction_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("CV_SEMANTIC_EXTRACTION_MODEL", "OPENAI_CV_SEMANTIC_EXTRACTION_MODEL", "cv_semantic_extraction_model", "openai_cv_semantic_extraction_model"),
+    )
+    requirement_matching_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("REQUIREMENT_MATCHING_MODEL", "OPENAI_REQUIREMENT_MATCHING_MODEL", "requirement_matching_model", "openai_requirement_matching_model"),
+    )
+    career_alignment_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("CAREER_ALIGNMENT_MODEL", "OPENAI_CAREER_ALIGNMENT_MODEL", "career_alignment_model", "openai_career_alignment_model"),
+    )
+    job_relevance_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("JOB_RELEVANCE_MODEL", "OPENAI_JOB_RELEVANCE_MODEL", "job_relevance_model", "openai_job_relevance_model"),
+    )
+    job_archetype_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("JOB_ARCHETYPE_MODEL", "OPENAI_JOB_ARCHETYPE_MODEL", "job_archetype_model", "openai_job_archetype_model"),
+    )
+    agentic_discovery_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("AGENTIC_DISCOVERY_MODEL", "OPENAI_AGENTIC_DISCOVERY_MODEL", "agentic_discovery_model", "openai_agentic_discovery_model"),
+    )
     openai_web_search_model: str = "gpt-5.6-luna"
 
     langsmith_tracing: bool | None = None
@@ -60,6 +81,36 @@ class Settings(BaseSettings):
     @staticmethod
     def configured_tokens(value: str) -> list[str]:
         return [token.strip() for token in value.split(",") if token.strip()]
+
+    @property
+    def openai_job_extraction_model(self) -> str:
+        return self.job_extraction_model
+
+    @property
+    def openai_requirement_matching_model(self) -> str:
+        return self.requirement_matching_model
+
+    @property
+    def openai_career_alignment_model(self) -> str:
+        return self.career_alignment_model
+
+    @property
+    def openai_job_relevance_model(self) -> str:
+        return self.job_relevance_model
+
+    @property
+    def openai_job_archetype_model(self) -> str:
+        return self.job_archetype_model
+
+    @property
+    def openai_agentic_discovery_model(self) -> str:
+        return self.agentic_discovery_model
+
+    @property
+    def effective_llm_base_url(self) -> str | None:
+        if self.llm_base_url:
+            return self.llm_base_url
+        return self.ollama_base_url if self.default_llm_provider.casefold().strip() == "ollama" else None
 
 
 @lru_cache

@@ -4,6 +4,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
+from app.providers.llm import SemanticOutputError
 from app.schemas.cv_ingestion import CandidateCVData, ExtractedCVDocument
 
 
@@ -31,4 +32,4 @@ class SemanticCVInterpreter:
         try:
             return CandidateCVData.model_validate(json.loads(response.output_text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()))
         except (json.JSONDecodeError, ValidationError) as exc:
-            raise RuntimeError("CV interpretation returned invalid structured data.") from exc
+            raise SemanticOutputError("CV interpretation returned invalid structured data.") from exc

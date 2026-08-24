@@ -43,6 +43,7 @@ from app.providers.llm import (
     LLMProviderConfigurationError,
     LLMProviderFactory,
     SemanticResponseClient,
+    SemanticProviderConfigurationError,
 )
 from app.providers.web_search import BraveWebSearchProvider, OpenAIWebSearchProvider, WebSearchProvider
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
@@ -94,9 +95,7 @@ def get_semantic_response_client(
 ) -> SemanticResponseClient:
     """Resolve semantic LLMs independently of the configured web-search provider."""
     provider = settings.default_llm_provider.casefold().strip()
-    base_url = settings.llm_base_url or (
-        settings.ollama_base_url if provider == "ollama" else None
-    )
+    base_url = settings.effective_llm_base_url
     try:
         llm = LLMProviderFactory(
             EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
@@ -113,6 +112,35 @@ def get_semantic_response_client(
             detail=str(exc),
         ) from exc
     return SemanticResponseClient(llm, operation=operation)
+
+
+def validate_semantic_configuration(settings: Settings) -> None:
+    """Validate credentials/provider/model without making a provider network call."""
+    provider = settings.default_llm_provider.casefold().strip()
+    models = {
+        "CV_SEMANTIC_EXTRACTION_MODEL": settings.cv_semantic_extraction_model,
+        "JOB_EXTRACTION_MODEL": settings.job_extraction_model,
+        "REQUIREMENT_MATCHING_MODEL": settings.requirement_matching_model,
+        "CAREER_ALIGNMENT_MODEL": settings.career_alignment_model,
+        "JOB_RELEVANCE_MODEL": settings.job_relevance_model,
+        "JOB_ARCHETYPE_MODEL": settings.job_archetype_model,
+        "AGENTIC_DISCOVERY_MODEL": settings.agentic_discovery_model,
+    }
+    for name, model in models.items():
+        if not model.strip():
+            raise SemanticProviderConfigurationError(f"{name} must be configured.")
+    try:
+        LLMProviderFactory(
+            EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
+        ).create(
+            LLMProviderConfig(
+                provider=provider,
+                model=settings.cv_semantic_extraction_model,
+                base_url=settings.effective_llm_base_url,
+            )
+        )
+    except LLMProviderConfigurationError as exc:
+        raise SemanticProviderConfigurationError(str(exc)) from exc
 
 
 def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
@@ -138,10 +166,10 @@ def get_job_analysis_service() -> JobAnalysisService:
     settings = get_settings()
     extractor = OpenAIJobExtractor(
         api_key="",
-        model=settings.openai_job_extraction_model,
+        model=settings.job_extraction_model,
         client=get_semantic_response_client(
             settings,
-            model=settings.openai_job_extraction_model,
+            model=settings.job_extraction_model,
             operation="job_extraction",
         ),
     )
@@ -154,10 +182,10 @@ def get_requirement_matching_service() -> RequirementMatchingService:
     settings = get_settings()
     matcher = OpenAIRequirementMatcher(
         api_key="",
-        model=settings.openai_requirement_matching_model,
+        model=settings.requirement_matching_model,
         client=get_semantic_response_client(
             settings,
-            model=settings.openai_requirement_matching_model,
+            model=settings.requirement_matching_model,
             operation="requirement_matching",
         ),
     )
@@ -225,10 +253,10 @@ def get_agentic_job_discovery_service(db: DbSession) -> AgenticJobDiscoveryServi
     return AgenticJobDiscoveryService(
         strategy_generator=OpenAISearchStrategyGenerator(
             api_key="",
-            model=settings.openai_agentic_discovery_model,
+            model=settings.agentic_discovery_model,
             client=get_semantic_response_client(
                 settings,
-                model=settings.openai_agentic_discovery_model,
+                model=settings.agentic_discovery_model,
                 operation="search_strategy_generation",
             ),
         ),
@@ -236,10 +264,10 @@ def get_agentic_job_discovery_service(db: DbSession) -> AgenticJobDiscoveryServi
         page_fetcher=PublicHttpPageFetcher(),
         vacancy_extractor=OpenAIPageVacancyExtractor(
             api_key="",
-            model=settings.openai_agentic_discovery_model,
+            model=settings.agentic_discovery_model,
             client=get_semantic_response_client(
                 settings,
-                model=settings.openai_agentic_discovery_model,
+                model=settings.agentic_discovery_model,
                 operation="web_vacancy_extraction",
             ),
         ),
@@ -276,10 +304,10 @@ def get_job_relevance_agent() -> OpenAIJobRelevanceAgent:
     settings = get_settings()
     return OpenAIJobRelevanceAgent(
         api_key="",
-        model=settings.openai_job_relevance_model,
+        model=settings.job_relevance_model,
         client=get_semantic_response_client(
             settings,
-            model=settings.openai_job_relevance_model,
+            model=settings.job_relevance_model,
             operation="job_relevance",
         ),
     )
@@ -290,10 +318,10 @@ def get_job_archetype_agent() -> OpenAIJobArchetypeAgent:
     settings = get_settings()
     return OpenAIJobArchetypeAgent(
         api_key="",
-        model=settings.openai_job_archetype_model,
+        model=settings.job_archetype_model,
         client=get_semantic_response_client(
             settings,
-            model=settings.openai_job_archetype_model,
+            model=settings.job_archetype_model,
             operation="job_archetype",
         ),
     )
@@ -304,10 +332,10 @@ def get_career_assessment_service() -> CareerAssessmentService:
     settings = get_settings()
     agent = OpenAICareerAlignmentAgent(
         api_key="",
-        model=settings.openai_career_alignment_model,
+        model=settings.career_alignment_model,
         client=get_semantic_response_client(
             settings,
-            model=settings.openai_career_alignment_model,
+            model=settings.career_alignment_model,
             operation="career_alignment",
         ),
     )
