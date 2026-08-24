@@ -4,6 +4,16 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class JobProvenance(BaseModel):
+    """Bounded factual origin for a listing, never reasoning or agent scratchpad data."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    runtime: str = Field(min_length=1, max_length=64)
+    source_ref: str | None = Field(default=None, max_length=300)
+    discovered_via: str | None = Field(default=None, max_length=120)
+
+
 class JobListing(BaseModel):
     """A provider-neutral job listing suitable for inexpensive discovery."""
 
@@ -20,6 +30,7 @@ class JobListing(BaseModel):
     posted_at: datetime | None = None
     work_arrangement: str | None = None
     employment_type: str | None = None
+    provenance: JobProvenance | None = None
     discovered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.models.candidate_profile import CandidateProfile
 from app.schemas.candidate import CandidateContext
-from app.schemas.discovery import DiscoveredJobState, JobListing
+from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
 from app.schemas.external_discovery import (
     ExternalDiscoveredJob,
@@ -94,6 +94,11 @@ class ExternalDiscoveryImportService:
             posted_at=job.posted_at,
             employment_type=job.employment_type,
             work_arrangement=job.work_arrangement,
+            provenance=JobProvenance(
+                runtime=runtime.casefold(),
+                source_ref=job.provenance.source_ref,
+                discovered_via=job.provenance.discovered_via,
+            ),
         )
 
     @staticmethod

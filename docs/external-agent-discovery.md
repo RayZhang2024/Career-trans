@@ -12,4 +12,4 @@ Career-trans accepts factual public-vacancy evidence from an authenticated exter
 
 The import endpoint never invokes OpenAI web search and imported jobs are non-authoritative: a later omission or runtime failure cannot mark a prior imported job inactive.
 
-Only factual fields belong in an import: vacancy title, company, location, source URL, description where available, posted date, employment type, work arrangement, and short source provenance. Do not send prompts, credentials, hidden reasoning, or agent scratchpad content.
+Only factual fields belong in an import: vacancy title, company, location, source URL, description where available, posted date, employment type, work arrangement, and short source provenance. Career-trans retains bounded runtime, `source_ref`, and `discovered_via` evidence against the shared discovered-job record. Do not send prompts, credentials, hidden reasoning, or agent scratchpad content.

@@ -1,6 +1,7 @@
 from sqlalchemy import select
 
 from app.models.discovered_job import DiscoveredJob
+from app.models.discovered_job_provenance import DiscoveredJobProvenance
 
 
 def _auth_headers(client) -> dict[str, str]:
@@ -49,12 +50,24 @@ def test_authenticated_import_persists_runtime_provenance_and_is_non_authoritati
     assert body["accepted_jobs"][0]["source"] == "agent_runtime"
     assert body["accepted_jobs"][0]["source_token"] == "codex"
     assert body["accepted_jobs"][0]["url"] == "https://careers.example.test/jobs/forward-deployed-engineer"
+    assert body["accepted_jobs"][0]["provenance"] == {
+        "runtime": "codex",
+        "source_ref": "public-search-result",
+        "discovered_via": "web",
+    }
 
     record = db_session.scalar(select(DiscoveredJob))
     assert record is not None
     assert record.source == "agent_runtime"
     assert record.source_token == "codex"
     assert record.first_seen_at is not None
+    provenance = db_session.scalar(select(DiscoveredJobProvenance))
+    assert provenance is not None
+    assert provenance.job_id == record.id
+    assert provenance.runtime == "codex"
+    assert provenance.source_ref == "public-search-result"
+    assert provenance.discovered_via == "web"
+    assert provenance.imported_at is not None
 
 
 def test_import_requires_authentication(client) -> None:
