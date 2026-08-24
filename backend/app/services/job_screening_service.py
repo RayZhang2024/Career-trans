@@ -12,7 +12,13 @@ class JobScreeningService:
     def is_promising(self, listing: JobListing, query: JobSearchQuery) -> bool:
         return (
             self._matches_keywords(listing, query.keywords)
-            and self._matches_company(listing, query.companies)
+            and self.matches_hard_constraints(listing, query)
+        )
+
+    def matches_hard_constraints(self, listing: JobListing, query: JobSearchQuery) -> bool:
+        """Apply factual policy constraints without treating keywords as a relevance score."""
+        return (
+            self._matches_company(listing, query.companies)
             and self._does_not_match_excluded_company(listing, query.excluded_companies)
             and self._does_not_match_excluded_title(listing, query.excluded_title_terms)
             and self._matches_location(listing, query.locations, query.remote_ok)

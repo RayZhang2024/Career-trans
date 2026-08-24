@@ -24,6 +24,7 @@ from app.services.employer_universe_service import EmployerUniverseService
 from app.services.job_discovery_service import JobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
+from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
@@ -133,6 +134,14 @@ def get_job_discovery_service() -> JobDiscoveryService:
     if recruitee_tokens:
         providers.append(RecruiteeJobSource(recruitee_tokens))
     return JobDiscoveryService(providers=providers)
+
+
+def get_external_discovery_import_service(db: DbSession) -> ExternalDiscoveryImportService:
+    """External runtime imports use shared state but never authoritative source evidence."""
+    return ExternalDiscoveryImportService(
+        session=db,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db),
+    )
 
 
 @lru_cache
