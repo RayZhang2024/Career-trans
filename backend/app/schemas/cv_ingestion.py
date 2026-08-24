@@ -17,6 +17,7 @@ class ExtractedCVSegment(BaseModel):
     segment_id: str
     text: str
     page_number: int | None = None
+    heading: str | None = None
 
 
 class ExtractedCVDocument(BaseModel):

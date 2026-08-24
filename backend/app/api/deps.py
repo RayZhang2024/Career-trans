@@ -121,10 +121,10 @@ def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
         return SemanticCVInterpreter(
             get_semantic_response_client(
                 current_settings,
-                model=current_settings.openai_job_extraction_model,
+                model=current_settings.cv_semantic_extraction_model,
                 operation="cv_evidence_extraction",
             ),
-            current_settings.openai_job_extraction_model,
+            current_settings.cv_semantic_extraction_model,
         )
 
     return CVIngestionService(

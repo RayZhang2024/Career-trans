@@ -31,6 +31,7 @@ class CVIngestionService:
         self._merger = merger or CVMergeService()
 
     def upload(self, user_id: str, files: list[tuple[str, str | None, bytes]]) -> CVIngestionDraftRead:
+        self._extractor.validate_batch(files)
         documents = [self._extractor.extract(filename=name, content_type=media_type, content=content) for name, media_type, content in files]
         draft = CandidateCVIngestionDraft(user_id=user_id, state=CVIngestionState.UPLOADED, documents_json=json.dumps([item.model_dump(mode="json") for item in documents]))
         self._session.add(draft)
@@ -61,8 +62,19 @@ class CVIngestionService:
     def read(self, user_id: str, draft_id: str) -> CVIngestionDraftRead:
         return self._read(self._draft(user_id, draft_id))
 
+    def edit_review(self, user_id: str, draft_id: str, corrected: CandidateCVData) -> CVIngestionDraftRead:
+        draft = self._draft(user_id, draft_id)
+        if draft.state != CVIngestionState.REVIEW_READY:
+            raise ValueError("Only a review-ready CV ingestion draft can be edited.")
+        draft.merged_json = json.dumps(corrected.model_dump(mode="json"))
+        self._session.commit()
+        self._session.refresh(draft)
+        return self._read(draft)
+
     def confirm(self, user_id: str, draft_id: str) -> int:
         draft = self._draft(user_id, draft_id)
+        if draft.state == CVIngestionState.CONFIRMED:
+            return 0
         if draft.state != CVIngestionState.REVIEW_READY or not draft.merged_json:
             raise ValueError("CV ingestion draft is not ready for confirmation.")
         data = CandidateCVData.model_validate(json.loads(draft.merged_json))
