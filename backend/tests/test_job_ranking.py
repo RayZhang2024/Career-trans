@@ -357,6 +357,56 @@ def test_zero_requirement_extraction_is_unassessed_without_fit_assessment() -> N
     assert "no extractable requirements" in result.failures[0].error
 
 
+def test_incomplete_high_relevance_job_does_not_consume_deep_analysis_quota() -> None:
+    incomplete = job("Incomplete", description=None, url="https://jobs.example.test/incomplete")
+    complete = job("Complete", description="Complete role", url="https://jobs.example.test/complete")
+    graph_calls: list[str] = []
+
+    class FakeRelevance:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            score = 0.97 if listing.title == "Incomplete" else 0.90
+            return JobRelevanceAssessment(relevant=True, score=score, reasoning="Relevant.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class CompleteOnlyGraph:
+        def invoke(self, *, job_text: str, **_: object) -> dict[str, object]:
+            graph_calls.append(job_text)
+            assert job_text == "Complete role"
+            fit = FitAssessment(fit_score=70.0, essential_score=70.0)
+            career = CareerAssessment(career_alignment_score=70.0, confidence=AlignmentConfidence.HIGH, dimensions=[], reasoning="Good.")
+            return {
+                "job_profile": JobProfile(title="Complete", requirements=[JobRequirement(text="Python")]),
+                "requirement_matches": [],
+                "fit_assessment": fit,
+                "career_assessment": career,
+                "recommendation_assessment": recommendation(Recommendation.CONSIDER, 70.0, 70.0),
+            }
+
+    result = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=CompleteOnlyGraph(),  # type: ignore[arg-type]
+    ).rank(
+        JobRankingRequest(
+            jobs=[incomplete, complete],
+            candidate_context=CandidateContext(),
+            max_semantic_candidates=2,
+            max_full_analyses=1,
+        )
+    )
+
+    assert graph_calls == ["Complete role"]
+    assert result.finalist_count == 1
+    assert result.analysed_count == 1
+    assert [item.job.title for item in result.results] == ["Complete"]
+    assert [failure.stage for failure in result.failures] == ["insufficient_job_detail"]
+    assert [item.job.title for item in result.semantic_screening] == ["Incomplete", "Complete"]
+    assert all(item.archetype is not None for item in result.semantic_screening)
+
+
 def test_legitimacy_is_separate_from_assessment_scores() -> None:
     now = datetime(2026, 8, 22, tzinfo=timezone.utc)
     recent = PostingLegitimacyService().assess(job("Recent", posted_at=now - timedelta(days=5)), now)
