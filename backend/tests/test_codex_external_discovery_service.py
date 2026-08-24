@@ -63,9 +63,9 @@ def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_o
         CodexExternalDiscoveryRunner(executable_lookup=lambda _: None).discover(_context())
 
     def failure(command, **_kwargs):
-        return subprocess.CompletedProcess(command, 1, "", "private stderr")
+        return subprocess.CompletedProcess(command, 1, b"", b"private stderr")
 
-    with pytest.raises(CodexExternalDiscoveryError, match="failed"):
+    with pytest.raises(CodexExternalDiscoveryError, match="exit code 1.*private stderr"):
         CodexExternalDiscoveryRunner(runner=failure, executable_lookup=lambda _: "codex").discover(_context())
 
     def timeout(_command, **_kwargs):
@@ -80,3 +80,43 @@ def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_o
 
     with pytest.raises(CodexExternalDiscoveryError, match="invalid discovery JSON"):
         CodexExternalDiscoveryRunner(runner=invalid, executable_lookup=lambda _: "codex").discover(_context())
+
+
+def test_codex_runner_surfaces_bounded_sanitized_non_utf8_failure_diagnostics() -> None:
+    secret = "super-secret-value"
+    openai_secret = "openai-secret-value"
+    github_secret = "github-secret-value"
+
+    def failure(command, **_kwargs):
+        stderr = (b"discarded-" * 500) + b"failure \xb2 " + (
+            f"API_KEY={secret} OPENAI_API_KEY={openai_secret} "
+            f"GITHUB_TOKEN={github_secret} Context: private candidate data"
+        ).encode()
+        return subprocess.CompletedProcess(command, 17, b"", stderr)
+
+    with pytest.raises(CodexExternalDiscoveryError) as error:
+        CodexExternalDiscoveryRunner(runner=failure, executable_lookup=lambda _: "codex").discover(_context())
+
+    message = str(error.value)
+    assert "exit code 17" in message
+    assert "\ufffd" in message
+    assert secret not in message
+    assert openai_secret not in message
+    assert github_secret not in message
+    assert "private candidate data" not in message
+    assert "[REDACTED]" in message
+    assert len(message) <= 1_100
+
+
+def test_codex_runner_uses_stdout_only_when_stderr_is_empty_and_handles_empty_diagnostics() -> None:
+    def stdout_failure(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 2, b"short fallback diagnostic", b"")
+
+    with pytest.raises(CodexExternalDiscoveryError, match="exit code 2.*short fallback diagnostic"):
+        CodexExternalDiscoveryRunner(runner=stdout_failure, executable_lookup=lambda _: "codex").discover(_context())
+
+    def empty_failure(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 3, b"", b"")
+
+    with pytest.raises(CodexExternalDiscoveryError, match=r"exit code 3\)\. Retry or run Codex directly"):
+        CodexExternalDiscoveryRunner(runner=empty_failure, executable_lookup=lambda _: "codex").discover(_context())
