@@ -6,7 +6,6 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from app.schemas.external_discovery import (
     CodexExternalDiscoveryOutput,
@@ -25,7 +24,7 @@ class CodexExternalDiscoveryRunner:
     def __init__(
         self,
         *,
-        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
         executable_lookup: Callable[[str], str | None] = shutil.which,
         timeout_seconds: int = 240,
     ) -> None:
@@ -49,7 +48,9 @@ class CodexExternalDiscoveryRunner:
                 result = self._runner(
                     command,
                     capture_output=True,
-                    text=True,
+                    # The JSON output file is authoritative. Keep console diagnostics as
+                    # bytes so Windows code-page output cannot crash Python decoding.
+                    text=False,
                     timeout=self._timeout_seconds,
                     check=False,
                 )
