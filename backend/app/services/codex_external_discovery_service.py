@@ -18,7 +18,9 @@ from app.schemas.external_discovery import (
 _DIAGNOSTIC_TAIL_BYTES = 2_048
 _MAX_DIAGNOSTIC_CHARS = 1_024
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)\b(api[_-]?key|token|authorization|password|secret)\b\s*[:=]\s*[^\s,;]+"),
+    # Covers standalone keys and common prefixed environment names such as
+    # OPENAI_API_KEY and GITHUB_TOKEN.
+    re.compile(r"(?i)\b(?:[a-z][a-z0-9_-]*[_-])?(?:api[_-]?key|token|authorization|password|secret)\b\s*[:=]\s*[^\s,;]+"),
     re.compile(r"(?i)\bbearer\s+[a-z0-9._~-]+"),
     re.compile(r"\b(?:sk|lsv2|gho)_[A-Za-z0-9_-]+"),
 )
