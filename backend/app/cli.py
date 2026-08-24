@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show existing requirement, fit, career, and recommendation diagnostics",
     )
+    enrich_imported = jobs_commands.add_parser(
+        "enrich-imported",
+        help="Fetch known vacancy URLs to recover usable persisted job detail",
+    )
+    enrich_imported.add_argument("--limit", type=int, default=20)
 
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
@@ -214,6 +219,17 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             if args.details:
                 _print_ranking_details(result)
         _print_unassessed_ranking_failures(ranking)
+        return 0
+    if args.jobs_command == "enrich-imported":
+        response = client.enrich_imported_jobs(args.limit)
+        for outcome in response.get("outcomes", []):
+            status = str(outcome.get("status", "failed")).upper()
+            print(
+                f"{status} | {outcome.get('title', 'Untitled')} | "
+                f"{outcome.get('company') or 'Unknown company'}"
+            )
+            if outcome.get("reason"):
+                print(f"Reason: {outcome['reason']}")
         return 0
     query: dict[str, Any] = {
         "keywords": args.keywords,

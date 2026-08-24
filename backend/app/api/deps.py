@@ -28,6 +28,7 @@ from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.opportunity_inbox_service import OpportunityInboxService
+from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 from app.services.cv_ingestion_service import CVIngestionService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.schemas.candidate import CandidateContext
@@ -249,6 +250,25 @@ def get_external_discovery_import_service(db: DbSession) -> ExternalDiscoveryImp
 def get_opportunity_inbox_service(db: DbSession) -> OpportunityInboxService:
     """Request-scoped read service for persisted external discoveries."""
     return OpportunityInboxService(db)
+
+
+def get_job_detail_enrichment_service(db: DbSession) -> JobDetailEnrichmentService:
+    settings = get_settings()
+    return JobDetailEnrichmentService(
+        session=db,
+        page_fetcher=PublicHttpPageFetcher(),
+        vacancy_extractor=OpenAIPageVacancyExtractor(
+            api_key="",
+            model=settings.agentic_discovery_model,
+            client=get_semantic_response_client(
+                settings,
+                model=settings.agentic_discovery_model,
+                operation="web_vacancy_extraction",
+            ),
+        ),
+        job_analysis_service=get_job_analysis_service(),
+        state_store=SqlAlchemyDiscoveredJobStateStore(db),
+    )
 
 
 def get_agentic_web_search_provider(settings: Settings) -> WebSearchProvider:

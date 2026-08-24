@@ -115,6 +115,10 @@ class FakeClient:
             ],
         }
 
+    def enrich_imported_jobs(self, limit: int) -> dict:
+        self.calls.append(("enrich_imported", limit))
+        return {"outcomes": [{"job_id": "job-1", "title": "Applied AI Engineer", "company": "Example Systems", "status": "enriched"}]}
+
 
 def _fake_client(monkeypatch) -> list[FakeClient]:
     holder: list[FakeClient] = []
@@ -394,6 +398,13 @@ def test_cli_rank_imported_surfaces_unassessed_incomplete_role(monkeypatch, caps
     assert "Reason: Job detail is insufficient" in output
     assert "Fit:" not in output
     assert [call[0] for call in created[0].calls] == ["inbox", "rank_me"]
+
+
+def test_cli_enrich_imported_reports_explicit_outcomes_without_ranking(monkeypatch, capsys) -> None:
+    clients = _fake_client(monkeypatch)
+    assert cli.main(["--token", "token", "jobs", "enrich-imported", "--limit", "3"]) == 0
+    assert "ENRICHED | Applied AI Engineer | Example Systems" in capsys.readouterr().out
+    assert clients[0].calls == [("enrich_imported", 3)]
 
 
 def test_cli_interpret_reports_provider_configuration_without_generic_500(monkeypatch, capsys) -> None:

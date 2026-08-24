@@ -122,6 +122,9 @@ class CareerTransApiClient:
     def get_opportunity_inbox(self, limit: int) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/jobs/inbox?limit={limit}")
 
+    def enrich_imported_jobs(self, limit: int) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/jobs/enrich-imported", payload={"limit": limit})
+
     def _request(
         self,
         method: str,

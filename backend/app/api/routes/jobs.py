@@ -15,6 +15,7 @@ from app.api.deps import (
     get_job_discovery_service,
     get_external_discovery_import_service,
     get_opportunity_inbox_service,
+    get_job_detail_enrichment_service,
     get_requirement_matching_service,
 )
 from app.schemas.discovery import (
@@ -42,6 +43,7 @@ from app.schemas.job_sources import (
 )
 from app.schemas.job_ranking import JobRankingMeRequest, JobRankingRequest, JobRankingResponse
 from app.schemas.opportunity_inbox import OpportunityInboxResponse
+from app.schemas.job_enrichment import JobEnrichmentRequest, JobEnrichmentResponse
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
@@ -54,6 +56,7 @@ from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.job_ranking_service import JobRankingService
 from app.services.opportunity_inbox_service import OpportunityInboxService
+from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 from app.services.requirement_matching_service import RequirementMatchingService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -97,6 +100,17 @@ def list_opportunity_inbox(
     """Inspect recent shared external discoveries without starting a runtime or ranking job."""
     del current_user  # Authentication gates public-job inspection; candidate data is never returned.
     return service.list_recent(limit=limit)
+
+
+@router.post("/enrich-imported", response_model=JobEnrichmentResponse, status_code=status.HTTP_200_OK)
+def enrich_imported_jobs(
+    payload: JobEnrichmentRequest,
+    current_user: CurrentUser,
+    service: JobDetailEnrichmentService = Depends(get_job_detail_enrichment_service),
+) -> JobEnrichmentResponse:
+    """Explicitly enrich recent persisted external vacancies from their known public URLs."""
+    del current_user
+    return service.enrich_recent(limit=payload.limit)
 
 
 @router.post(
