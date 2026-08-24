@@ -92,10 +92,15 @@ class JobScreeningService:
     def _matches_employment_type(listing: JobListing, employment_types: list[str]) -> bool:
         if not employment_types or not listing.employment_type:
             return True
-        employment_type = listing.employment_type.casefold()
+        employment_type = JobScreeningService._normalize_employment_type(listing.employment_type)
         return any(
-            term.casefold().strip() in employment_type
-            or employment_type in term.casefold().strip()
+            normalized_term in employment_type
+            or employment_type in normalized_term
             for term in employment_types
-            if term.strip()
+            if (normalized_term := JobScreeningService._normalize_employment_type(term))
         )
+
+    @staticmethod
+    def _normalize_employment_type(value: str) -> str:
+        """Normalize harmless spacing and hyphen variants, without broadening role policy."""
+        return re.sub(r"[\s-]+", " ", value.casefold().strip())
