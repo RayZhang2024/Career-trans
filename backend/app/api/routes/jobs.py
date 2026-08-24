@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.agents.job_extraction import JobExtractionError
 from app.agents.requirement_matching import RequirementMatchingError
 from app.api.deps import (
+    CurrentUser,
     get_job_analysis_service,
     get_job_ranking_service,
     get_ats_resolver_service,
@@ -10,6 +11,7 @@ from app.api.deps import (
     get_employer_universe_service,
     get_discover_and_rank_service,
     get_job_discovery_service,
+    get_external_discovery_import_service,
     get_requirement_matching_service,
 )
 from app.schemas.discovery import (
@@ -17,6 +19,12 @@ from app.schemas.discovery import (
     JobSearchQuery,
 )
 from app.schemas.discovery_pipeline import DiscoverAndRankRequest, DiscoverAndRankResponse
+from app.schemas.external_discovery import (
+    ExternalDiscoveryImportRequest,
+    ExternalDiscoveryImportResponse,
+    ExternalDiscoverySearchContextRequest,
+    ExternalDiscoverySearchContextResponse,
+)
 from app.schemas.employer_universe import EmployerUniverseRequest, EmployerUniverseResponse
 from app.schemas.job_sources import (
     AtsResolutionRequest,
@@ -33,10 +41,43 @@ from app.services.company_source_discovery_service import CompanySourceDiscovery
 from app.services.employer_universe_service import EmployerUniverseService
 from app.services.job_discovery_service import JobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
+from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@router.post(
+    "/external-discovery/search-context",
+    response_model=ExternalDiscoverySearchContextResponse,
+    status_code=status.HTTP_200_OK,
+)
+def external_discovery_search_context(
+    payload: ExternalDiscoverySearchContextRequest,
+    current_user: CurrentUser,
+    service: ExternalDiscoveryImportService = Depends(get_external_discovery_import_service),
+) -> ExternalDiscoverySearchContextResponse:
+    """Return only the authenticated user's compact context needed by an external runtime."""
+    context = service.search_context(current_user.id, payload)
+    if context is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found.")
+    return context
+
+
+@router.post(
+    "/import-discovered",
+    response_model=ExternalDiscoveryImportResponse,
+    status_code=status.HTTP_200_OK,
+)
+def import_external_discoveries(
+    payload: ExternalDiscoveryImportRequest,
+    current_user: CurrentUser,
+    service: ExternalDiscoveryImportService = Depends(get_external_discovery_import_service),
+) -> ExternalDiscoveryImportResponse:
+    """Persist bounded external-agent evidence without executing a runtime or web search."""
+    del current_user  # Authentication gates the endpoint; imported public jobs remain shared records.
+    return service.import_jobs(payload)
 
 
 @router.post(

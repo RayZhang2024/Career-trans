@@ -131,6 +131,20 @@ def test_screening_supports_conservative_exclusions_and_employment_type() -> Non
     assert result == [accepted]
 
 
+def test_employment_type_normalizes_full_time_separator_variants() -> None:
+    service = JobScreeningService()
+
+    assert service._matches_employment_type(listing(employment_type="Full time"), ["Full-time"])
+    assert service._matches_employment_type(listing(employment_type="full-time"), ["full time"])
+
+
+def test_employment_type_does_not_conflate_contract_and_permanent() -> None:
+    assert not JobScreeningService()._matches_employment_type(
+        listing(employment_type="Contract"),
+        ["Permanent"],
+    )
+
+
 def test_discovery_combines_sources_and_tolerates_a_provider_failure() -> None:
     class WorkingSource:
         name = "working"

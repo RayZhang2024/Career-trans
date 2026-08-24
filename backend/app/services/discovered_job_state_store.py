@@ -6,7 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.discovered_job import DiscoveredJob
-from app.schemas.discovery import DiscoveredJobState, JobListing
+from app.models.discovered_job_provenance import DiscoveredJobProvenance
+from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance
 from app.services.job_deduplication_service import JobDeduplicationService
 
 
@@ -62,11 +63,14 @@ class SqlAlchemyDiscoveredJobStateStore:
                     last_changed_at=now,
                 )
                 self._session.add(record)
+                self._session.flush()
+                self._record_provenance(record, listing.provenance, now)
                 transitions[identity_key] = DiscoveredJobState.NEW
                 continue
 
             changed = record.content_hash != content_hash
             self._apply_listing(record, listing, content_hash, now)
+            self._record_provenance(record, listing.provenance, now)
             record.state = DiscoveredJobState.UPDATED if changed else DiscoveredJobState.UNCHANGED
             if changed:
                 record.last_changed_at = now
@@ -136,3 +140,35 @@ class SqlAlchemyDiscoveredJobStateStore:
         record.employment_type = listing.employment_type
         record.content_hash = content_hash
         record.last_seen_at = now
+
+    def _record_provenance(
+        self,
+        record: DiscoveredJob,
+        provenance: JobProvenance | None,
+        now: datetime,
+    ) -> None:
+        if provenance is None:
+            return
+        fingerprint = sha256(
+            "\x1f".join(
+                value or ""
+                for value in (provenance.runtime, provenance.source_ref, provenance.discovered_via)
+            ).encode("utf-8")
+        ).hexdigest()
+        existing = self._session.scalar(
+            select(DiscoveredJobProvenance).where(
+                DiscoveredJobProvenance.job_id == record.id,
+                DiscoveredJobProvenance.fingerprint == fingerprint,
+            )
+        )
+        if existing is None:
+            self._session.add(
+                DiscoveredJobProvenance(
+                    job_id=record.id,
+                    runtime=provenance.runtime,
+                    source_ref=provenance.source_ref,
+                    discovered_via=provenance.discovered_via,
+                    fingerprint=fingerprint,
+                    imported_at=now,
+                )
+            )
