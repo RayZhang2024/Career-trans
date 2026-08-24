@@ -27,7 +27,11 @@ from app.schemas.external_discovery import (
     ExternalDiscoverySearchContextRequest,
     ExternalDiscoverySearchContextResponse,
 )
-from app.schemas.agentic_discovery import AgenticDiscoveryRequest, AgenticDiscoveryResponse
+from app.schemas.agentic_discovery import (
+    AgenticDiscoveryMeRequest,
+    AgenticDiscoveryRequest,
+    AgenticDiscoveryResponse,
+)
 from app.schemas.employer_universe import EmployerUniverseRequest, EmployerUniverseResponse
 from app.schemas.job_sources import (
     AtsResolutionRequest,
@@ -174,6 +178,25 @@ def discover_agentic_jobs(
 ) -> AgenticDiscoveryResponse:
     """Search a bounded public-web frontier, then persist non-authoritative vacancies."""
     return service.discover(payload)
+
+
+@router.post(
+    "/discover-agentic-me",
+    response_model=AgenticDiscoveryResponse,
+    status_code=status.HTTP_200_OK,
+)
+def discover_agentic_jobs_for_current_user(
+    payload: AgenticDiscoveryMeRequest,
+    candidate_context: PersistedCandidateContext,
+    service: AgenticJobDiscoveryService = Depends(get_agentic_job_discovery_service),
+) -> AgenticDiscoveryResponse:
+    """Discover bounded public vacancies using only the caller's confirmed context."""
+    return service.discover(
+        AgenticDiscoveryRequest(
+            candidate_context=candidate_context,
+            **payload.model_dump(),
+        )
+    )
 
 
 @router.post(
