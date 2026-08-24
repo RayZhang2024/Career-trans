@@ -82,6 +82,30 @@ class FakeClient:
         self.calls.append(("rank_me", jobs))
         return {"discovered_count": len(jobs), "finalist_count": 0, "analysed_count": 0}
 
+    def get_opportunity_inbox(self, limit: int) -> dict:
+        self.calls.append(("inbox", limit))
+        return {
+            "limit": limit,
+            "jobs": [
+                {
+                    "id": "job-1",
+                    "job": {
+                        "source": "agent_runtime",
+                        "source_token": "codex",
+                        "title": "Applied AI Engineer",
+                        "company": "Example Systems",
+                        "location": "London, UK",
+                        "url": "https://jobs.example.test/1",
+                        "description": "Build systems.",
+                    },
+                    "state": "new",
+                    "first_seen_at": "2026-01-01T00:00:00Z",
+                    "last_seen_at": "2026-01-01T00:00:00Z",
+                    "provenance": [{"runtime": "codex", "source_ref": "public", "discovered_via": "web", "imported_at": "2026-01-01T00:00:00Z"}],
+                }
+            ],
+        }
+
 
 def _fake_client(monkeypatch) -> list[FakeClient]:
     holder: list[FakeClient] = []
@@ -245,6 +269,36 @@ def test_cli_codex_external_discovery_imports_and_optionally_ranks(monkeypatch, 
     output = capsys.readouterr().out
     assert "Imported 1 jobs" in output
     assert "Ranked 1 jobs" in output
+
+
+def test_cli_lists_and_reranks_persisted_inbox_without_discovery(monkeypatch, capsys) -> None:
+    clients = _fake_client(monkeypatch)
+    assert cli.main(["--token", "token", "jobs", "list", "--limit", "5"]) == 0
+    listing = capsys.readouterr().out
+    assert "Applied AI Engineer | Example Systems | London, UK" in listing
+    assert "https://jobs.example.test/1" in listing
+    assert clients[0].calls == [("inbox", 5)]
+
+    class RankedInboxClient(FakeClient):
+        def rank_jobs_for_current_user(self, jobs: list[dict]) -> dict:
+            self.calls.append(("rank_me", jobs))
+            return {
+                "results": [
+                    {
+                        "rank": 1,
+                        "job": jobs[0],
+                        "relevance": {"score": 0.91},
+                        "archetype": {"archetype": "ai_solutions_architect"},
+                        "recommendation_assessment": {"recommendation": "apply", "fit_score": 82, "career_alignment_score": 79, "reasoning": "Strong supported fit."},
+                    }
+                ]
+            }
+    monkeypatch.setattr(cli, "CareerTransApiClient", RankedInboxClient)
+    assert cli.main(["--token", "token", "jobs", "rank-imported", "--limit", "5"]) == 0
+    output = capsys.readouterr().out
+    assert "#1 APPLY" in output
+    assert "Relevance: 0.91 | Fit: 82 | Career alignment: 79" in output
+    assert "Rationale: Strong supported fit." in output
 
 
 def test_cli_interpret_reports_provider_configuration_without_generic_500(monkeypatch, capsys) -> None:

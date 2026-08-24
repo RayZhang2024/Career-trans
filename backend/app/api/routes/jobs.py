@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.agents.job_extraction import JobExtractionError
 from app.agents.requirement_matching import RequirementMatchingError
@@ -14,6 +14,7 @@ from app.api.deps import (
     get_agentic_job_discovery_service,
     get_job_discovery_service,
     get_external_discovery_import_service,
+    get_opportunity_inbox_service,
     get_requirement_matching_service,
 )
 from app.schemas.discovery import (
@@ -40,6 +41,7 @@ from app.schemas.job_sources import (
     CompanySourceDiscoveryResponse,
 )
 from app.schemas.job_ranking import JobRankingMeRequest, JobRankingRequest, JobRankingResponse
+from app.schemas.opportunity_inbox import OpportunityInboxResponse
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
@@ -51,6 +53,7 @@ from app.services.agentic_job_discovery_service import AgenticJobDiscoveryServic
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.job_ranking_service import JobRankingService
+from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.requirement_matching_service import RequirementMatchingService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -83,6 +86,17 @@ def import_external_discoveries(
     """Persist bounded external-agent evidence without executing a runtime or web search."""
     del current_user  # Authentication gates the endpoint; imported public jobs remain shared records.
     return service.import_jobs(payload)
+
+
+@router.get("/inbox", response_model=OpportunityInboxResponse, status_code=status.HTTP_200_OK)
+def list_opportunity_inbox(
+    current_user: CurrentUser,
+    limit: int = Query(default=20, ge=1, le=100),
+    service: OpportunityInboxService = Depends(get_opportunity_inbox_service),
+) -> OpportunityInboxResponse:
+    """Inspect recent shared external discoveries without starting a runtime or ranking job."""
+    del current_user  # Authentication gates public-job inspection; candidate data is never returned.
+    return service.list_recent(limit=limit)
 
 
 @router.post(
