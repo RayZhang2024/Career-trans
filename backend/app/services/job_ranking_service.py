@@ -75,11 +75,22 @@ class JobRankingService:
                     SemanticScreeningDiagnostic(job=job, relevance=relevance)
                 )
 
-        finalists = sorted(screened, key=lambda item: (-item[2].score, item[0]))[:request.max_full_analyses]
+        screened.sort(key=lambda item: (-item[2].score, item[0]))
+        finalist_count = 0
         opportunities: list[tuple[int, RankedJobOpportunity]] = []
-        for index, job, relevance, archetype in finalists:
+        for index, job, relevance, archetype in screened:
+            if not job.description or not job.description.strip():
+                failures.append(self._insufficient_detail_failure(job, "missing or blank job description"))
+                continue
+            if finalist_count >= request.max_full_analyses:
+                continue
             try:
-                state = self._career_analysis_graph.invoke(job_text=job.description or "", candidate_context=request.candidate_context)
+                state = self._career_analysis_graph.invoke(job_text=job.description, candidate_context=request.candidate_context)
+                job_profile = state.get("job_profile")
+                if job_profile is not None and not job_profile.requirements:
+                    failures.append(self._insufficient_detail_failure(job, "no extractable requirements"))
+                    continue
+                finalist_count += 1
                 opportunity = RankedJobOpportunity(
                     job=job,
                     relevance=relevance,
@@ -93,6 +104,7 @@ class JobRankingService:
                     requirement_matches=state.get("requirement_matches", []),
                 )
             except Exception as exc:
+                finalist_count += 1
                 logger.exception("Career analysis failed for a public job listing.")
                 failures.append(
                     JobRankingFailure(
@@ -107,7 +119,7 @@ class JobRankingService:
         priority = {Recommendation.APPLY: 0, Recommendation.CONSIDER: 1, Recommendation.SKIP: 2}
         opportunities.sort(key=lambda item: (priority[item[1].recommendation_assessment.recommendation], -item[1].fit_assessment.fit_score, -item[1].career_assessment.career_alignment_score, -item[1].relevance.score, item[0]))
         results = [opportunity.model_copy(update={"rank": rank}) for rank, (_, opportunity) in enumerate(opportunities, start=1)]
-        return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=gated_out_count, relevance_screened_count=len(semantic_candidates), finalist_count=len(finalists), analysed_count=len(results), semantic_screening=semantic_screening, results=results, failures=failures)
+        return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=gated_out_count, relevance_screened_count=len(semantic_candidates), finalist_count=finalist_count, analysed_count=len(results), semantic_screening=semantic_screening, results=results, failures=failures)
 
     @staticmethod
     def _select_semantic_candidates(
@@ -139,4 +151,12 @@ class JobRankingService:
         if root is exc:
             return f"{prefix}: {type(exc).__name__}."
         return f"{prefix}: {type(exc).__name__} (caused by {type(root).__name__})."
+
+    @staticmethod
+    def _insufficient_detail_failure(job: JobListing, reason: str) -> JobRankingFailure:
+        return JobRankingFailure(
+            job=job,
+            stage="insufficient_job_detail",
+            error=f"Job detail is insufficient for deep fit assessment: {reason}.",
+        )
 import logging

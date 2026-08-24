@@ -1,7 +1,7 @@
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
 from app.schemas.career_assessment import AlignmentConfidence, CareerAssessment
-from app.schemas.job import JobProfile
+from app.schemas.job import JobProfile, JobRequirement
 from app.schemas.matching import RequirementMatch, RequirementMatchSet
 from app.schemas.recommendation import (
     Recommendation,
@@ -13,7 +13,7 @@ from app.workflows.career_analysis_graph import CareerAnalysisGraph
 def test_graph_runs_existing_services_in_order_and_returns_final_state() -> None:
     calls: list[str] = []
     candidate = CandidateContext(source_name="synthetic_candidate")
-    job_profile = JobProfile(title="AI Engineer")
+    job_profile = JobProfile(title="AI Engineer", requirements=[JobRequirement(text="Python")])
     fit_assessment = FitAssessment(fit_score=82.0, essential_score=82.0)
     career_assessment = CareerAssessment(
         career_alignment_score=78.0,
@@ -106,3 +106,29 @@ def test_graph_runs_existing_services_in_order_and_returns_final_state() -> None
     assert state["fit_assessment"] is fit_assessment
     assert state["career_assessment"] is career_assessment
     assert state["recommendation_assessment"] is recommendation
+
+
+def test_graph_stops_after_zero_requirement_extraction() -> None:
+    calls: list[str] = []
+
+    class EmptyExtractor:
+        def analyse_text(self, _: str) -> JobProfile:
+            calls.append("extract")
+            return JobProfile(title="Incomplete", requirements=[])
+
+    class MustNotRun:
+        def __getattr__(self, _name: str):
+            raise AssertionError("Deep scoring must not run for zero extracted requirements.")
+
+    graph = CareerAnalysisGraph(
+        job_analysis_service=EmptyExtractor(),  # type: ignore[arg-type]
+        requirement_matching_service=MustNotRun(),  # type: ignore[arg-type]
+        fit_assessment_service=MustNotRun(),  # type: ignore[arg-type]
+        career_assessment_service=MustNotRun(),  # type: ignore[arg-type]
+        recommendation_service=MustNotRun(),  # type: ignore[arg-type]
+    )
+
+    state = graph.invoke(job_text="Role text", candidate_context=CandidateContext())
+    assert calls == ["extract"]
+    assert state["job_profile"].requirements == []
+    assert "fit_assessment" not in state

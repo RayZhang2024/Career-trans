@@ -60,8 +60,8 @@ def test_hard_gate_rejects_clear_invalid_jobs_and_preserves_ambiguity() -> None:
 
     survivors, rejected = JobRankingGateService().gate([valid, missing_description, invalid_url])
 
-    assert survivors == [(0, valid)]
-    assert rejected == 2
+    assert survivors == [(0, valid), (1, missing_description)]
+    assert rejected == 1
 
 
 def test_openai_relevance_and_archetype_agents_validate_structured_output() -> None:
@@ -293,6 +293,118 @@ def test_ranking_preserves_existing_graph_diagnostics_without_changing_scores() 
     assert opportunity.job_profile is not None
     assert opportunity.job_profile.requirements == [requirement]
     assert opportunity.requirement_matches == [match]
+
+
+def test_missing_or_blank_description_is_unassessed_after_semantic_diagnostics() -> None:
+    jobs = [
+        job("Missing", description=None, url="https://jobs.example.test/missing"),
+        job("Blank", description="  ", url="https://jobs.example.test/blank"),
+    ]
+    graph_calls = []
+
+    class FakeRelevance:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9, reasoning=f"{listing.title} is relevant.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class FailingIfInvokedGraph:
+        def invoke(self, **_: object) -> dict[str, object]:
+            graph_calls.append(True)
+            raise AssertionError("Incomplete descriptions must not enter deep analysis.")
+
+    result = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=FailingIfInvokedGraph(),  # type: ignore[arg-type]
+    ).rank(JobRankingRequest(jobs=jobs, candidate_context=CandidateContext(), max_full_analyses=2))
+
+    assert result.results == []
+    assert result.analysed_count == 0
+    assert graph_calls == []
+    assert [item.relevance.score for item in result.semantic_screening if item.relevance] == [0.9, 0.9]
+    assert all(item.archetype is not None for item in result.semantic_screening)
+    assert [failure.stage for failure in result.failures] == ["insufficient_job_detail", "insufficient_job_detail"]
+    assert all("missing or blank job description" in failure.error for failure in result.failures)
+
+
+def test_zero_requirement_extraction_is_unassessed_without_fit_assessment() -> None:
+    listing = job("No requirements", description="Descriptive text", url="https://jobs.example.test/no-requirements")
+
+    class FakeRelevance:
+        def assess(self, _: JobListing, __: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9, reasoning="Relevant.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class EmptyExtractionGraph:
+        def invoke(self, **_: object) -> dict[str, object]:
+            return {"job_profile": JobProfile(title="No requirements", requirements=[])}
+
+    result = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=EmptyExtractionGraph(),  # type: ignore[arg-type]
+    ).rank(JobRankingRequest(jobs=[listing], candidate_context=CandidateContext()))
+
+    assert result.results == []
+    assert result.analysed_count == 0
+    assert result.failures[0].stage == "insufficient_job_detail"
+    assert "no extractable requirements" in result.failures[0].error
+
+
+def test_incomplete_high_relevance_job_does_not_consume_deep_analysis_quota() -> None:
+    incomplete = job("Incomplete", description=None, url="https://jobs.example.test/incomplete")
+    complete = job("Complete", description="Complete role", url="https://jobs.example.test/complete")
+    graph_calls: list[str] = []
+
+    class FakeRelevance:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            score = 0.97 if listing.title == "Incomplete" else 0.90
+            return JobRelevanceAssessment(relevant=True, score=score, reasoning="Relevant.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class CompleteOnlyGraph:
+        def invoke(self, *, job_text: str, **_: object) -> dict[str, object]:
+            graph_calls.append(job_text)
+            assert job_text == "Complete role"
+            fit = FitAssessment(fit_score=70.0, essential_score=70.0)
+            career = CareerAssessment(career_alignment_score=70.0, confidence=AlignmentConfidence.HIGH, dimensions=[], reasoning="Good.")
+            return {
+                "job_profile": JobProfile(title="Complete", requirements=[JobRequirement(text="Python")]),
+                "requirement_matches": [],
+                "fit_assessment": fit,
+                "career_assessment": career,
+                "recommendation_assessment": recommendation(Recommendation.CONSIDER, 70.0, 70.0),
+            }
+
+    result = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=CompleteOnlyGraph(),  # type: ignore[arg-type]
+    ).rank(
+        JobRankingRequest(
+            jobs=[incomplete, complete],
+            candidate_context=CandidateContext(),
+            max_semantic_candidates=2,
+            max_full_analyses=1,
+        )
+    )
+
+    assert graph_calls == ["Complete role"]
+    assert result.finalist_count == 1
+    assert result.analysed_count == 1
+    assert [item.job.title for item in result.results] == ["Complete"]
+    assert [failure.stage for failure in result.failures] == ["insufficient_job_detail"]
+    assert [item.job.title for item in result.semantic_screening] == ["Incomplete", "Complete"]
+    assert all(item.archetype is not None for item in result.semantic_screening)
 
 
 def test_legitimacy_is_separate_from_assessment_scores() -> None:

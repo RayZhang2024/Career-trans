@@ -5,7 +5,7 @@ from app.services.job_deduplication_service import JobDeduplicationService
 
 
 class JobRankingGateService:
-    """Conservative validation and deduplication before LLM screening."""
+    """URL validation and deduplication before bounded semantic screening."""
 
     def gate(self, jobs: list[JobListing]) -> tuple[list[tuple[int, JobListing]], int]:
         valid = [(index, job) for index, job in enumerate(jobs) if self._is_analysable(job)]
@@ -16,4 +16,6 @@ class JobRankingGateService:
     @staticmethod
     def _is_analysable(job: JobListing) -> bool:
         parts = urlsplit(job.url)
-        return bool(job.description and job.description.strip() and parts.scheme in {"http", "https"} and parts.netloc)
+        # Description completeness is assessed after relevance/archetype screening.
+        # Missing public-job detail is not a reason to hide a potentially relevant role.
+        return bool(parts.scheme in {"http", "https"} and parts.netloc)
