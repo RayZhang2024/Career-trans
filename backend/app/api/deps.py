@@ -27,6 +27,8 @@ from app.services.agentic_job_discovery_service import AgenticJobDiscoveryServic
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
+from app.services.cv_ingestion_service import CVIngestionService
+from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
@@ -111,6 +113,24 @@ def get_semantic_response_client(
             detail=str(exc),
         ) from exc
     return SemanticResponseClient(llm, operation=operation)
+
+
+def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
+    def build_interpreter() -> SemanticCVInterpreter:
+        current_settings = get_settings()
+        return SemanticCVInterpreter(
+            get_semantic_response_client(
+                current_settings,
+                model=current_settings.openai_job_extraction_model,
+                operation="cv_evidence_extraction",
+            ),
+            current_settings.openai_job_extraction_model,
+        )
+
+    return CVIngestionService(
+        db,
+        interpreter_factory=build_interpreter,
+    )
 
 
 @lru_cache
