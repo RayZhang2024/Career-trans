@@ -55,7 +55,9 @@ class CodexExternalDiscoveryRunner:
             output_path = Path(directory) / "discovered-jobs.json"
             # --search is a global Codex flag and must precede `exec`; current-vacancy
             # discovery requires live rather than cached web search.
-            command = [executable, "--search", "exec", "--output-last-message", str(output_path), prompt]
+            # Codex documents `-` as stdin prompt input. Keeping the full task off the
+            # command line avoids cmd.exe reparsing prompt metacharacters via its .cmd shim.
+            command = [executable, "--search", "exec", "--output-last-message", str(output_path), "-"]
             try:
                 result = self._runner(
                     command,
@@ -63,8 +65,10 @@ class CodexExternalDiscoveryRunner:
                     # The JSON output file is authoritative. Keep console diagnostics as
                     # bytes so Windows code-page output cannot crash Python decoding.
                     text=False,
+                    input=prompt.encode("utf-8"),
                     timeout=self._timeout_seconds,
                     check=False,
+                    shell=False,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise CodexExternalDiscoveryError(
