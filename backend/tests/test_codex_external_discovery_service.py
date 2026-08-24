@@ -21,7 +21,7 @@ def _context() -> ExternalDiscoverySearchContextResponse:
     )
 
 
-def test_codex_runner_uses_bounded_context_and_validates_json_output() -> None:
+def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_output_file() -> None:
     commands = []
 
     def runner(command, **kwargs):
@@ -41,7 +41,7 @@ def test_codex_runner_uses_bounded_context_and_validates_json_output() -> None:
             ),
             encoding="utf-8",
         )
-        return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, b"\xb2", b"\xb2")
 
     jobs = CodexExternalDiscoveryRunner(
         runner=runner,
@@ -55,6 +55,7 @@ def test_codex_runner_uses_bounded_context_and_validates_json_output() -> None:
     assert "up to 2" in command[-1]
     assert kwargs["timeout"] == 240
     assert kwargs["check"] is False
+    assert kwargs["text"] is False
 
 
 def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_output() -> None:
