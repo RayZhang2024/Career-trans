@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rank recent persisted external discoveries against your confirmed profile",
     )
     rank_imported.add_argument("--limit", type=int, default=20)
+    rank_imported.add_argument(
+        "--details",
+        action="store_true",
+        help="Show existing requirement, fit, career, and recommendation diagnostics",
+    )
 
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
@@ -206,6 +211,8 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             )
             if recommendation.get("reasoning"):
                 print(f"Rationale: {recommendation['reasoning']}")
+            if args.details:
+                _print_ranking_details(result)
         return 0
     query: dict[str, Any] = {
         "keywords": args.keywords,
@@ -244,6 +251,66 @@ def _print_counts(draft: dict[str, Any]) -> None:
     print(f"Draft {draft.get('id')} ({draft.get('state')})")
     for field in ("employment", "education", "skills", "projects", "achievements", "evidence"):
         print(f"{field}: {len(merged.get(field, []))}")
+
+
+def _print_ranking_details(result: dict[str, Any]) -> None:
+    """Render existing ranking response fields only; this performs no extra analysis."""
+    print("Requirements")
+    matches = result.get("requirement_matches", [])
+    if not matches:
+        print("- No retained requirement matches.")
+    for match in matches:
+        requirement = match.get("requirement", {})
+        evidence_ids = ", ".join(match.get("evidence_ids", [])) or "none retained"
+        references = [
+            reference.get("source_ref", "")
+            for reference in match.get("evidence_refs", [])
+            if isinstance(reference, dict) and reference.get("source_ref")
+        ]
+        evidence = evidence_ids
+        if references:
+            evidence = f"{evidence}; refs: {', '.join(references)}"
+        print(
+            f"- [{str(match.get('match_type', 'unknown')).upper()}] "
+            f"{requirement.get('text', 'Unspecified requirement')} "
+            f"({requirement.get('importance', 'unspecified')}, score={match.get('score', 'n/a')}) "
+            f"— evidence: {evidence}"
+        )
+        if match.get("reasoning"):
+            print(f"  Reasoning: {match['reasoning']}")
+
+    fit = result.get("fit_assessment", {})
+    print("Fit drivers")
+    print(
+        f"- total={fit.get('fit_score', 'n/a')}; essential={fit.get('essential_score', 'n/a')}; "
+        f"desirable={fit.get('desirable_score', 'n/a')}; strengths={fit.get('strengths', [])}"
+    )
+    print(f"- hard blockers: {fit.get('hard_blockers', [])}")
+    for gap in fit.get("gaps", []):
+        requirement = gap.get("requirement", {})
+        print(
+            f"- {gap.get('gap_type', 'gap')} [{gap.get('severity', 'unknown')}]: "
+            f"{requirement.get('text', 'Unspecified requirement')} — {gap.get('reason', '')}"
+        )
+
+    career = result.get("career_assessment", {})
+    print("Career drivers")
+    print(f"- score={career.get('career_alignment_score', 'n/a')}; confidence={career.get('confidence', 'unknown')}")
+    for strength in career.get("strategic_strengths", []):
+        print(f"+ {strength}")
+    for tradeoff in career.get("strategic_tradeoffs", []):
+        print(f"- {tradeoff}")
+    if career.get("reasoning"):
+        print(f"Reasoning: {career['reasoning']}")
+
+    recommendation = result.get("recommendation_assessment", {})
+    print("Recommendation rule")
+    print(f"- rule_id: {recommendation.get('rule_id', 'unknown')}")
+    print(f"- strengths: {recommendation.get('key_strengths', [])}")
+    print(f"- trade-offs: {recommendation.get('key_tradeoffs', [])}")
+    print(f"- hard blockers: {recommendation.get('hard_blockers', [])}")
+    if recommendation.get("reasoning"):
+        print(f"- reasoning: {recommendation['reasoning']}")
 
 
 def _show_human(draft: dict[str, Any]) -> None:

@@ -7,6 +7,8 @@ from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
 from app.schemas.career_assessment import CareerAssessment
 from app.schemas.discovery import JobListing
+from app.schemas.job import JobProfile
+from app.schemas.matching import RequirementMatch
 from app.schemas.recommendation import RecommendationAssessment
 
 
@@ -100,6 +102,10 @@ class RankedJobOpportunity(BaseModel):
     recommendation_assessment: RecommendationAssessment
     legitimacy: PostingLegitimacyAssessment
     rank: int
+    # These are already produced by CareerAnalysisGraph. They are optional solely
+    # for compatibility with legacy/custom graph implementations.
+    job_profile: JobProfile | None = None
+    requirement_matches: list[RequirementMatch] = Field(default_factory=list)
 
 
 class JobRankingResponse(BaseModel):

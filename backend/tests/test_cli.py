@@ -310,6 +310,62 @@ def test_cli_lists_and_reranks_persisted_inbox_without_discovery(monkeypatch, ca
     assert "Rationale: Strong supported fit." in output
 
 
+def test_cli_rank_imported_details_renders_existing_diagnostics_without_extra_calls(monkeypatch, capsys) -> None:
+    created: list[FakeClient] = []
+
+    class DetailedInboxClient(FakeClient):
+        def __init__(self, base_url: str, token: str | None) -> None:
+            super().__init__(base_url, token)
+            created.append(self)
+
+        def rank_jobs_for_current_user(self, jobs: list[dict]) -> dict:
+            self.calls.append(("rank_me", jobs))
+            return {
+                "results": [
+                    {
+                        "rank": 1,
+                        "job": jobs[0],
+                        "relevance": {"score": 0.96},
+                        "archetype": {"archetype": "agentic_automation"},
+                        "requirement_matches": [
+                            {
+                                "requirement_index": 0,
+                                "requirement": {"text": "Python", "importance": "essential"},
+                                "match_type": "missing",
+                                "score": 0.0,
+                                "evidence_ids": ["ev-2"],
+                                "evidence_refs": [{"source_ref": "employment:1"}],
+                                "reasoning": "No supported evidence.",
+                            }
+                        ],
+                        "fit_assessment": {
+                            "fit_score": 0.0,
+                            "essential_score": 0.0,
+                            "desirable_score": None,
+                            "strengths": [],
+                            "hard_blockers": [0],
+                            "gaps": [{"gap_type": "hard_blocker", "severity": "high", "requirement": {"text": "Python"}, "reason": "No supporting evidence."}],
+                        },
+                        "career_assessment": {"career_alignment_score": 50.0, "confidence": "medium", "strategic_strengths": ["Relevant direction"], "strategic_tradeoffs": ["Limited evidence"], "reasoning": "Neutral alignment."},
+                        "recommendation_assessment": {"recommendation": "skip", "fit_score": 0.0, "career_alignment_score": 50.0, "rule_id": "hard_blocker", "key_strengths": ["Relevant direction"], "key_tradeoffs": ["Limited evidence"], "hard_blockers": [0], "reasoning": "Blocked by missing essential evidence."},
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", DetailedInboxClient)
+    assert cli.main(["--token", "token", "jobs", "rank-imported", "--limit", "5", "--details"]) == 0
+    output = capsys.readouterr().out
+    assert "Requirements" in output
+    assert "[MISSING] Python (essential, score=0.0) — evidence: ev-2; refs: employment:1" in output
+    assert "Fit drivers" in output
+    assert "total=0.0; essential=0.0" in output
+    assert "hard blockers: [0]" in output
+    assert "Career drivers" in output
+    assert "Recommendation rule" in output
+    assert "rule_id: hard_blocker" in output
+    assert [call[0] for call in created[0].calls] == ["inbox", "rank_me"]
+
+
 def test_cli_interpret_reports_provider_configuration_without_generic_500(monkeypatch, capsys) -> None:
     class FailingClient(FakeClient):
         def interpret_cv(self, _draft_id: str) -> dict:
