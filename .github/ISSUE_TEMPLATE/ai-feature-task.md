@@ -145,6 +145,28 @@ List likely areas, but treat this as guidance rather than permission to rewrite 
 9. Report branch, commit SHA, PR number, files changed, tests/results, known limitations, and excluded follow-up work.
 10. Do **not** merge unless the product owner explicitly authorizes it.
 
+## PR as the cross-agent handoff channel
+
+Once a draft PR exists, treat that PR as the primary communication channel between implementation and review agents.
+
+The implementation agent must keep the PR description current with:
+
+- necessity-gate outcome;
+- implementation summary;
+- important architecture decisions;
+- branch name and latest commit SHA;
+- files/components changed;
+- focused test commands and results;
+- full applicable test-suite result;
+- known limitations or unresolved design questions;
+- intentionally excluded follow-up work.
+
+Review findings should be recorded as PR review comments or PR conversation comments whenever practical. The implementation agent should read those comments, push fixes to the **same branch/PR**, update the PR description if the implementation status changes, and report the new commit/tests there.
+
+Do not create a new PR for ordinary review fixes. Do not require the product owner to relay long implementation or review messages between agents when GitHub can hold the shared state.
+
+The product owner may still make the final decisions on scope, issue disposition, and merge authorization.
+
 ## Branch
 
 `feature/...`
