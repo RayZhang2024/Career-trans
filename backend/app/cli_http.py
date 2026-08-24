@@ -80,6 +80,9 @@ class CareerTransApiClient:
     def check_llm_configuration(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/config/llm/check")
 
+    def get_candidate_context_summary(self) -> dict[str, Any]:
+        return self._request("GET", "/api/v1/profile/context-summary")
+
     def _request(
         self,
         method: str,

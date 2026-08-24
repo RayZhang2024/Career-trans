@@ -34,6 +34,18 @@ class CandidateContext(BaseModel):
     evidence: list[CareerEvidence] = Field(default_factory=list)
 
 
+class CandidateContextSummary(BaseModel):
+    """Safe readiness diagnostic for confirmed persisted candidate context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ready: bool
+    employment_count: int = Field(ge=0)
+    education_count: int = Field(ge=0)
+    skill_count: int = Field(ge=0)
+    evidence_count: int = Field(ge=0)
+
+
 class CandidateSearchProfile(BaseModel):
     """Small, purpose-built candidate context for job relevance screening."""
 
