@@ -1,0 +1,162 @@
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+from app.api import deps
+from app.core.config import Settings
+from app.providers.llm import (
+    EnvironmentCredentialResolver,
+    LLMCapability,
+    LLMProviderConfig,
+    LLMProviderConfigurationError,
+    LLMProviderFactory,
+    OllamaSemanticLLM,
+    OpenAISemanticLLM,
+    SemanticResponseClient,
+)
+from app.providers.web_search import BraveWebSearchProvider
+
+
+class FakeSemanticLLM:
+    capabilities = frozenset({LLMCapability.STRUCTURED_OUTPUT})
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def generate(self, **kwargs: object) -> str:
+        self.calls.append(kwargs)
+        return '{"ok": true}'
+
+
+def test_openai_is_the_compatible_default_and_requires_safe_credential() -> None:
+    settings = Settings(openai_api_key="server-secret")
+    client = deps.get_semantic_response_client(settings, model="existing-task-model", operation="job_extraction")
+
+    assert isinstance(client.responses._llm, OpenAISemanticLLM)
+    with pytest.raises(HTTPException, match="OPENAI_API_KEY") as exc_info:
+        deps.get_semantic_response_client(Settings(openai_api_key=None), model="existing-task-model", operation="job_extraction")
+    assert "server-secret" not in str(exc_info.value.detail)
+
+
+def test_ollama_requires_no_cloud_key_and_respects_configured_base_url() -> None:
+    transport_calls: list[tuple[str, dict[str, object]]] = []
+    ollama = OllamaSemanticLLM(
+        base_url="http://localhost:12345/",
+        transport=lambda url, payload: transport_calls.append((url, payload)) or {"message": {"content": "{}"}},
+    )
+
+    assert ollama.generate(
+        model="local-model",
+        system_prompt="system",
+        user_prompt="user",
+        operation="job_extraction",
+        required_capabilities=frozenset({LLMCapability.STRUCTURED_OUTPUT}),
+    ) == "{}"
+    assert transport_calls[0][0] == "http://localhost:12345/api/chat"
+    resolved = LLMProviderFactory(EnvironmentCredentialResolver()).create(
+        LLMProviderConfig(provider="ollama", model="local-model", base_url="http://localhost:12345")
+    )
+    assert isinstance(resolved, OllamaSemanticLLM)
+
+
+def test_unsupported_provider_and_capabilities_fail_without_secrets() -> None:
+    factory = LLMProviderFactory(EnvironmentCredentialResolver(openai_api_key="do-not-expose"))
+
+    with pytest.raises(LLMProviderConfigurationError, match="Unsupported LLM provider") as provider_error:
+        factory.create(LLMProviderConfig(provider="unknown", model="model"))
+    assert "do-not-expose" not in str(provider_error.value)
+    with pytest.raises(LLMProviderConfigurationError, match="hosted_web_search"):
+        factory.create(
+            LLMProviderConfig(
+                provider="ollama",
+                model="local-model",
+                required_capabilities=frozenset({LLMCapability.HOSTED_WEB_SEARCH}),
+            )
+        )
+
+
+def test_semantic_response_facade_preserves_existing_agent_message_shape() -> None:
+    llm = FakeSemanticLLM()
+    client = SemanticResponseClient(llm, operation="requirement_matching")
+
+    response = client.responses.create(
+        model="test-model",
+        input=[
+            {"role": "system", "content": "unchanged system prompt"},
+            {"role": "user", "content": "unchanged user payload"},
+        ],
+    )
+
+    assert response.output_text == '{"ok": true}'
+    assert llm.calls == [
+        {
+            "model": "test-model",
+            "system_prompt": "unchanged system prompt",
+            "user_prompt": "unchanged user payload",
+            "operation": "requirement_matching",
+            "required_capabilities": frozenset({LLMCapability.STRUCTURED_OUTPUT}),
+        }
+    ]
+
+
+def test_migrated_dependency_construction_accepts_ollama_without_openai(monkeypatch) -> None:
+    settings = Settings(default_llm_provider="ollama", ollama_base_url="http://localhost:11434", openai_api_key=None)
+    monkeypatch.setattr(deps, "get_settings", lambda: settings)
+    deps.get_job_analysis_service.cache_clear()
+    try:
+        service = deps.get_job_analysis_service()
+        assert isinstance(service._extractor._client, SemanticResponseClient)
+        assert isinstance(service._extractor._client.responses._llm, OllamaSemanticLLM)
+    finally:
+        deps.get_job_analysis_service.cache_clear()
+
+
+def test_all_migrated_semantic_components_receive_provider_neutral_clients(monkeypatch) -> None:
+    settings = Settings(
+        default_llm_provider="ollama",
+        openai_api_key=None,
+        agentic_search_provider="brave",
+        brave_search_api_key="test-brave-key",
+    )
+    monkeypatch.setattr(deps, "get_settings", lambda: settings)
+    cached = (
+        deps.get_job_analysis_service,
+        deps.get_requirement_matching_service,
+        deps.get_job_relevance_agent,
+        deps.get_job_archetype_agent,
+        deps.get_career_assessment_service,
+    )
+    for dependency in cached:
+        dependency.cache_clear()
+    try:
+        clients = [
+            deps.get_job_analysis_service()._extractor._client,
+            deps.get_requirement_matching_service()._matcher._client,
+            deps.get_job_relevance_agent()._client,
+            deps.get_job_archetype_agent()._client,
+            deps.get_career_assessment_service()._agent._client,
+            deps.get_agentic_job_discovery_service(object())._strategy_generator._client,
+            deps.get_agentic_job_discovery_service(object())._vacancy_extractor._client,
+        ]
+        assert all(isinstance(client, SemanticResponseClient) for client in clients)
+        assert all(isinstance(client.responses._llm, OllamaSemanticLLM) for client in clients)
+    finally:
+        for dependency in cached:
+            dependency.cache_clear()
+
+
+def test_search_provider_selection_remains_independent_from_llm_provider() -> None:
+    settings = Settings(
+        default_llm_provider="ollama",
+        openai_api_key=None,
+        agentic_search_provider="brave",
+        brave_search_api_key="brave-server-secret",
+    )
+
+    assert isinstance(deps.get_agentic_web_search_provider(settings), BraveWebSearchProvider)
+
+
+def test_factory_rejects_missing_model() -> None:
+    with pytest.raises(Exception, match="String should have at least 1 character"):
+        LLMProviderConfig(provider="ollama", model="")

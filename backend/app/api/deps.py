@@ -35,6 +35,13 @@ from app.providers.jobs.lever import LeverJobSource
 from app.providers.jobs.recruitee import RecruiteeJobSource
 from app.providers.jobs.smartrecruiters import SmartRecruitersJobSource
 from app.providers.page_fetch import PublicHttpPageFetcher
+from app.providers.llm import (
+    EnvironmentCredentialResolver,
+    LLMProviderConfig,
+    LLMProviderConfigurationError,
+    LLMProviderFactory,
+    SemanticResponseClient,
+)
 from app.providers.web_search import BraveWebSearchProvider, OpenAIWebSearchProvider, WebSearchProvider
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
 from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
@@ -77,22 +84,46 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def get_semantic_response_client(
+    settings: Settings,
+    *,
+    model: str,
+    operation: str,
+) -> SemanticResponseClient:
+    """Resolve semantic LLMs independently of the configured web-search provider."""
+    provider = settings.default_llm_provider.casefold().strip()
+    base_url = settings.llm_base_url or (
+        settings.ollama_base_url if provider == "ollama" else None
+    )
+    try:
+        llm = LLMProviderFactory(
+            EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
+        ).create(
+            LLMProviderConfig(
+                provider=provider,
+                model=model,
+                base_url=base_url,
+            )
+        )
+    except LLMProviderConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    return SemanticResponseClient(llm, operation=operation)
+
+
 @lru_cache
 def get_job_analysis_service() -> JobAnalysisService:
     settings = get_settings()
-
-    if not settings.openai_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Job analysis is not configured. "
-                "Set OPENAI_API_KEY in backend/.env."
-            ),
-        )
-
     extractor = OpenAIJobExtractor(
-        api_key=settings.openai_api_key,
+        api_key="",
         model=settings.openai_job_extraction_model,
+        client=get_semantic_response_client(
+            settings,
+            model=settings.openai_job_extraction_model,
+            operation="job_extraction",
+        ),
     )
 
     return JobAnalysisService(extractor=extractor)
@@ -101,19 +132,14 @@ def get_job_analysis_service() -> JobAnalysisService:
 @lru_cache
 def get_requirement_matching_service() -> RequirementMatchingService:
     settings = get_settings()
-
-    if not settings.openai_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Requirement matching is not configured. "
-                "Set OPENAI_API_KEY in backend/.env."
-            ),
-        )
-
     matcher = OpenAIRequirementMatcher(
-        api_key=settings.openai_api_key,
+        api_key="",
         model=settings.openai_requirement_matching_model,
+        client=get_semantic_response_client(
+            settings,
+            model=settings.openai_requirement_matching_model,
+            operation="requirement_matching",
+        ),
     )
     return RequirementMatchingService(matcher=matcher)
 
@@ -176,21 +202,26 @@ def get_agentic_web_search_provider(settings: Settings) -> WebSearchProvider:
 
 def get_agentic_job_discovery_service(db: DbSession) -> AgenticJobDiscoveryService:
     settings = get_settings()
-    if not settings.openai_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Agentic discovery is not configured. Set OPENAI_API_KEY in backend/.env.",
-        )
     return AgenticJobDiscoveryService(
         strategy_generator=OpenAISearchStrategyGenerator(
-            api_key=settings.openai_api_key,
+            api_key="",
             model=settings.openai_agentic_discovery_model,
+            client=get_semantic_response_client(
+                settings,
+                model=settings.openai_agentic_discovery_model,
+                operation="search_strategy_generation",
+            ),
         ),
         search_provider=get_agentic_web_search_provider(settings),
         page_fetcher=PublicHttpPageFetcher(),
         vacancy_extractor=OpenAIPageVacancyExtractor(
-            api_key=settings.openai_api_key,
+            api_key="",
             model=settings.openai_agentic_discovery_model,
+            client=get_semantic_response_client(
+                settings,
+                model=settings.openai_agentic_discovery_model,
+                operation="web_vacancy_extraction",
+            ),
         ),
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
     )
@@ -223,35 +254,42 @@ def get_employer_universe_service(db: DbSession) -> EmployerUniverseService:
 @lru_cache
 def get_job_relevance_agent() -> OpenAIJobRelevanceAgent:
     settings = get_settings()
-    if not settings.openai_api_key:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job ranking is not configured. Set OPENAI_API_KEY in backend/.env.")
-    return OpenAIJobRelevanceAgent(api_key=settings.openai_api_key, model=settings.openai_job_relevance_model)
+    return OpenAIJobRelevanceAgent(
+        api_key="",
+        model=settings.openai_job_relevance_model,
+        client=get_semantic_response_client(
+            settings,
+            model=settings.openai_job_relevance_model,
+            operation="job_relevance",
+        ),
+    )
 
 
 @lru_cache
 def get_job_archetype_agent() -> OpenAIJobArchetypeAgent:
     settings = get_settings()
-    if not settings.openai_api_key:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Job ranking is not configured. Set OPENAI_API_KEY in backend/.env.")
-    return OpenAIJobArchetypeAgent(api_key=settings.openai_api_key, model=settings.openai_job_archetype_model)
+    return OpenAIJobArchetypeAgent(
+        api_key="",
+        model=settings.openai_job_archetype_model,
+        client=get_semantic_response_client(
+            settings,
+            model=settings.openai_job_archetype_model,
+            operation="job_archetype",
+        ),
+    )
 
 
 @lru_cache
 def get_career_assessment_service() -> CareerAssessmentService:
     settings = get_settings()
-
-    if not settings.openai_api_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Career alignment is not configured. "
-                "Set OPENAI_API_KEY in backend/.env."
-            ),
-        )
-
     agent = OpenAICareerAlignmentAgent(
-        api_key=settings.openai_api_key,
+        api_key="",
         model=settings.openai_career_alignment_model,
+        client=get_semantic_response_client(
+            settings,
+            model=settings.openai_career_alignment_model,
+            operation="career_alignment",
+        ),
     )
     return CareerAssessmentService(agent=agent)
 
