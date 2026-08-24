@@ -50,13 +50,13 @@ class AgenticJobDiscoveryService:
         raw_results = self._search(strategies, request, diagnostics)
         candidates = self._select_pages(raw_results, request, diagnostics)
         listings = self._extract(candidates, request, diagnostics)
-        deduplicated, removed = self._deduplicator.deduplicate(listings)
-        accepted = [
+        screened = [
             listing
-            for listing in deduplicated
+            for listing in listings
             if self._screening.matches_hard_constraints(listing, request.query)
         ]
-        final_listings = accepted[: request.max_discovered_jobs]
+        deduplicated, removed = self._deduplicator.deduplicate(screened)
+        final_listings = deduplicated[: request.max_discovered_jobs]
         # Web evidence is non-authoritative: only accepted public vacancies are persisted,
         # and successful source keys are deliberately empty so omission cannot inactivate jobs.
         job_states = self._state_store.synchronize(final_listings, set())

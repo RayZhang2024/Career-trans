@@ -285,22 +285,31 @@ def test_agentic_hard_constraints_block_exclusions_location_and_incompatible_emp
 
 
 def test_agentic_deduplicates_caps_and_synchronizes_only_returned_jobs(db_session) -> None:
-    first_url = "https://jobs.example.test/jobs/one"
-    duplicate_url = "https://jobs.other.test/jobs/one"
+    failing_duplicate_url = "https://jobs.example.test/jobs/one-fixed-term"
+    accepted_duplicate_url = "https://jobs.other.test/jobs/one-full-time"
+    duplicate_url = "https://jobs.third.test/jobs/one-full-time"
     capped_url = "https://jobs.example.test/jobs/two"
     discovery, _, _, _, _ = service(
         db_session,
         strategies=[strategy("bounded")],
-        results={"bounded": [result("Role", first_url), result("Role", duplicate_url, rank=2), result("Role", capped_url, rank=3)]},
-        pages={url: page(url) for url in [first_url, duplicate_url, capped_url]},
+        results={
+            "bounded": [
+                result("Role", failing_duplicate_url),
+                result("Role", accepted_duplicate_url, rank=2),
+                result("Role", duplicate_url, rank=3),
+                result("Role", capped_url, rank=4),
+            ]
+        },
+        pages={url: page(url) for url in [failing_duplicate_url, accepted_duplicate_url, duplicate_url, capped_url]},
         extracted={
-            first_url: ExtractedVacancy(title="Adjacent Engineer", company="Example", location="London"),
-            duplicate_url: ExtractedVacancy(title="Adjacent Engineer", company="Example", location="London"),
-            capped_url: ExtractedVacancy(title="Scientific Engineer", company="Other", location="London"),
+            failing_duplicate_url: ExtractedVacancy(title="Adjacent Engineer", company="Example", location="London", employment_type="Fixed-term"),
+            accepted_duplicate_url: ExtractedVacancy(title="Adjacent Engineer", company="Example", location="London", employment_type="Full time"),
+            duplicate_url: ExtractedVacancy(title="Adjacent Engineer", company="Example", location="London", employment_type="full-time"),
+            capped_url: ExtractedVacancy(title="Scientific Engineer", company="Other", location="London", employment_type="Full-time"),
         },
     )
 
-    response = discovery.discover(request(max_discovered_jobs=1))
+    response = discovery.discover(request(max_discovered_jobs=1, query={"keywords": ["AI Engineer"], "locations": ["London"], "employment_types": ["Full-time"]}))
     records = list(db_session.scalars(select(DiscoveredJob).where(DiscoveredJob.source == "agentic_web")))
 
     assert len(response.listings) == 1
@@ -308,6 +317,7 @@ def test_agentic_deduplicates_caps_and_synchronizes_only_returned_jobs(db_sessio
     assert response.diagnostics.duplicate_jobs_removed == 1
     assert len(records) == 1
     assert records[0].url == response.listings[0].url
+    assert response.listings[0].url == accepted_duplicate_url
     assert set(response.job_states) == {SqlAlchemyDiscoveredJobStateStore.identity_key(response.listings[0])}
 
 
