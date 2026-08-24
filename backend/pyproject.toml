@@ -31,6 +31,9 @@ dev = [
   "pytest-cov>=6.2,<7.0",
 ]
 
+[project.scripts]
+career-trans = "app.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
