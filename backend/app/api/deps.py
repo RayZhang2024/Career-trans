@@ -248,6 +248,14 @@ def get_external_discovery_import_service(db: DbSession) -> ExternalDiscoveryImp
 def get_agentic_web_search_provider(settings: Settings) -> WebSearchProvider:
     """Build only the configured search capability, independently of reasoning models."""
     provider = settings.agentic_search_provider.casefold().strip()
+    if provider == "disabled":
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Agentic web discovery is disabled. Use the external discovery runtime "
+                "or explicitly configure a supported search provider."
+            ),
+        )
     if provider == "openai":
         if not settings.openai_api_key:
             raise HTTPException(
@@ -267,12 +275,15 @@ def get_agentic_web_search_provider(settings: Settings) -> WebSearchProvider:
         return BraveWebSearchProvider(api_key=settings.brave_search_api_key)
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Unsupported AGENTIC_SEARCH_PROVIDER. Supported values: openai, brave.",
+        detail="Unsupported AGENTIC_SEARCH_PROVIDER. Supported values: disabled, openai, brave.",
     )
 
 
 def get_agentic_job_discovery_service(db: DbSession) -> AgenticJobDiscoveryService:
     settings = get_settings()
+    # Resolve the search capability first so disabled mode fails before any in-process
+    # semantic components are constructed.
+    search_provider = get_agentic_web_search_provider(settings)
     return AgenticJobDiscoveryService(
         strategy_generator=OpenAISearchStrategyGenerator(
             api_key="",
@@ -283,7 +294,7 @@ def get_agentic_job_discovery_service(db: DbSession) -> AgenticJobDiscoveryServi
                 operation="search_strategy_generation",
             ),
         ),
-        search_provider=get_agentic_web_search_provider(settings),
+        search_provider=search_provider,
         page_fetcher=PublicHttpPageFetcher(),
         vacancy_extractor=OpenAIPageVacancyExtractor(
             api_key="",

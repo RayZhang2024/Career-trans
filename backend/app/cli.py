@@ -14,6 +14,11 @@ from app.cli_http import (
     CareerTransConfigurationError,
     CareerTransConnectionError,
 )
+from app.schemas.external_discovery import ExternalDiscoverySearchContextResponse
+from app.services.codex_external_discovery_service import (
+    CodexExternalDiscoveryError,
+    CodexExternalDiscoveryRunner,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +40,23 @@ def build_parser() -> argparse.ArgumentParser:
     profile = commands.add_parser("profile", help="Inspect authenticated candidate profile state")
     profile_commands = profile.add_subparsers(dest="profile_command", required=True)
     profile_commands.add_parser("context-summary", help="Show confirmed candidate-context readiness")
+
+    jobs = commands.add_parser("jobs", help="Run authenticated job-discovery workflows")
+    jobs_commands = jobs.add_subparsers(dest="jobs_command", required=True)
+    discover_external = jobs_commands.add_parser(
+        "discover-external",
+        help="Use local Codex to find public vacancies, then import them through Career-trans",
+    )
+    discover_external.add_argument("--keyword", dest="keywords", action="append", required=True)
+    discover_external.add_argument("--location", dest="locations", action="append", default=[])
+    discover_external.add_argument("--company", dest="companies", action="append", default=[])
+    discover_external.add_argument("--max-results", type=int, default=20)
+    discover_external.add_argument("--remote-ok", action="store_true", default=None)
+    discover_external.add_argument(
+        "--rank",
+        action="store_true",
+        help="Pass imported accepted jobs to the existing authenticated ranking endpoint",
+    )
 
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
@@ -65,8 +87,10 @@ def main(argv: list[str] | None = None) -> int:
             return _config(client, args)
         if args.command == "profile":
             return _profile(client, args)
+        if args.command == "jobs":
+            return _jobs(client, args)
         return _cv(client, args)
-    except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError) as exc:
+    except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError, CodexExternalDiscoveryError) as exc:
         _print_api_error(exc)
         return 2
     except (OSError, ValueError) as exc:
@@ -137,6 +161,41 @@ def _profile(client: CareerTransApiClient, args: argparse.Namespace) -> int:
     if args.profile_command == "context-summary":
         for key, value in client.get_candidate_context_summary().items():
             print(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
+    return 0
+
+
+def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
+    if args.jobs_command != "discover-external":
+        return 0
+    query: dict[str, Any] = {
+        "keywords": args.keywords,
+        "locations": args.locations,
+        "companies": args.companies,
+        "max_results": args.max_results,
+    }
+    if args.remote_ok is not None:
+        query["remote_ok"] = args.remote_ok
+    context = ExternalDiscoverySearchContextResponse.model_validate(
+        client.get_external_discovery_search_context(query)
+    )
+    jobs = CodexExternalDiscoveryRunner().discover(context)
+    imported = client.import_discovered_jobs(
+        runtime="codex",
+        jobs=[job.model_dump(mode="json") for job in jobs],
+        query=query,
+    )
+    print(
+        f"Imported {len(imported.get('accepted_jobs', []))} jobs "
+        f"(rejected={imported.get('rejected_count', 0)}, "
+        f"deduplicated={imported.get('deduplicated_count', 0)})."
+    )
+    if args.rank and imported.get("accepted_jobs"):
+        ranking = client.rank_jobs_for_current_user(imported["accepted_jobs"])
+        print(
+            f"Ranked {ranking.get('discovered_count', 0)} jobs "
+            f"(finalists={ranking.get('finalist_count', 0)}, "
+            f"analysed={ranking.get('analysed_count', 0)})."
+        )
     return 0
 
 

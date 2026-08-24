@@ -20,6 +20,7 @@ def _safe_configuration(settings: Settings) -> dict[str, object]:
         "job_relevance_model": settings.job_relevance_model,
         "job_archetype_model": settings.job_archetype_model,
         "agentic_discovery_model": settings.agentic_discovery_model,
+        "agentic_search_provider": settings.agentic_search_provider.casefold().strip(),
         "openai_web_search_model": settings.openai_web_search_model,
         "openai_api_key_configured": bool(settings.openai_api_key),
     }

@@ -66,6 +66,22 @@ class FakeClient:
         self.calls.append(("context_summary",))
         return {"ready": True, "employment_count": 1, "education_count": 1, "skill_count": 2, "evidence_count": 2}
 
+    def get_external_discovery_search_context(self, query: dict) -> dict:
+        self.calls.append(("external_context", query))
+        return {
+            "search_profile": {"profile_summary": "Generic profile", "skills": ["Python"]},
+            "query": query,
+            "runtime_guidance": "factual jobs only",
+        }
+
+    def import_discovered_jobs(self, *, runtime: str, jobs: list[dict], query: dict) -> dict:
+        self.calls.append(("import_discovered", runtime, jobs, query))
+        return {"accepted_jobs": jobs, "rejected_count": 0, "deduplicated_count": 0}
+
+    def rank_jobs_for_current_user(self, jobs: list[dict]) -> dict:
+        self.calls.append(("rank_me", jobs))
+        return {"discovered_count": len(jobs), "finalist_count": 0, "analysed_count": 0}
+
 
 def _fake_client(monkeypatch) -> list[FakeClient]:
     holder: list[FakeClient] = []
@@ -193,6 +209,42 @@ def test_cli_profile_context_summary(monkeypatch, capsys) -> None:
     assert "ready=true" in output
     assert "evidence_count=2" in output
     assert clients[0].calls == [("context_summary",)]
+
+
+def test_cli_codex_external_discovery_imports_and_optionally_ranks(monkeypatch, capsys) -> None:
+    clients = _fake_client(monkeypatch)
+
+    class FakeRunner:
+        def discover(self, context):
+            assert context.search_profile.skills == ["Python"]
+            from app.schemas.external_discovery import ExternalDiscoveredJob
+
+            return [
+                ExternalDiscoveredJob(
+                    title="Engineer",
+                    company="Example",
+                    url="https://jobs.example.test/1",
+                    provenance={"source_ref": "public", "discovered_via": "web"},
+                )
+            ]
+
+    monkeypatch.setattr(cli, "CodexExternalDiscoveryRunner", FakeRunner)
+    assert cli.main(
+        [
+            "--token", "token", "jobs", "discover-external", "--keyword", "Engineer",
+            "--location", "London", "--rank",
+        ]
+    ) == 0
+    calls = clients[0].calls
+    assert calls[0] == (
+        "external_context",
+        {"keywords": ["Engineer"], "locations": ["London"], "companies": [], "max_results": 20},
+    )
+    assert calls[1][0:2] == ("import_discovered", "codex")
+    assert calls[2][0] == "rank_me"
+    output = capsys.readouterr().out
+    assert "Imported 1 jobs" in output
+    assert "Ranked 1 jobs" in output
 
 
 def test_cli_interpret_reports_provider_configuration_without_generic_500(monkeypatch, capsys) -> None:

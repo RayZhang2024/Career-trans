@@ -134,6 +134,7 @@ def test_safe_protected_configuration_endpoint_and_check(client, monkeypatch) ->
     assert response.status_code == 200
     assert response.json()["openai_api_key_configured"] is True
     assert response.json()["cv_semantic_extraction_model"] == "local-model"
+    assert response.json()["agentic_search_provider"] == "disabled"
     assert secret not in response.text
     assert client.get("/api/v1/config/llm/check", headers=headers).json()["ready"] is True
     assert client.get("/api/v1/config/llm").status_code == 401

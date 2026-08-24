@@ -2,7 +2,6 @@
 
 from sqlalchemy.orm import Session
 
-from app.models.candidate_profile import CandidateProfile
 from app.schemas.candidate import CandidateContext
 from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
@@ -17,7 +16,6 @@ from app.services.candidate_profile_compaction import candidate_search_profile
 from app.services.discovered_job_state_store import DiscoveredJobStateStore
 from app.services.job_deduplication_service import JobDeduplicationService
 from app.services.job_screening_service import JobScreeningService
-from app.services.profile_service import get_profile_for_user
 
 
 class ExternalDiscoveryImportService:
@@ -62,14 +60,11 @@ class ExternalDiscoveryImportService:
 
     def search_context(
         self,
-        user_id: str,
+        candidate_context: CandidateContext,
         request: ExternalDiscoverySearchContextRequest,
-    ) -> ExternalDiscoverySearchContextResponse | None:
-        profile = get_profile_for_user(self._session, user_id)
-        if profile is None:
-            return None
+    ) -> ExternalDiscoverySearchContextResponse:
         return ExternalDiscoverySearchContextResponse(
-            search_profile=candidate_search_profile(self._candidate_context(profile)),
+            search_profile=candidate_search_profile(candidate_context),
             query=request.query,
             runtime_guidance=(
                 "Use this compact context only to find public vacancy pages with your own tools. "
@@ -99,18 +94,4 @@ class ExternalDiscoveryImportService:
                 source_ref=job.provenance.source_ref,
                 discovered_via=job.provenance.discovered_via,
             ),
-        )
-
-    @staticmethod
-    def _candidate_context(profile: CandidateProfile) -> CandidateContext:
-        profile_text = " ".join(
-            value
-            for value in (profile.headline, profile.current_role, profile.summary)
-            if value
-        )
-        criteria = " ".join(value for value in (profile.location,) if value)
-        return CandidateContext(
-            profile_text=profile_text,
-            career_strategy_text=profile.career_goal or "",
-            job_search_criteria_text=criteria,
         )

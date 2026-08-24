@@ -76,7 +76,8 @@ class Settings(BaseSettings):
     smartrecruiters_company_ids: str = ""
     recruitee_company_tokens: str = ""
     brave_search_api_key: str | None = None
-    agentic_search_provider: str = "openai"
+    # Paid OpenAI web search is opt-in. Semantic OpenAI operations remain independent.
+    agentic_search_provider: str = "disabled"
 
     @staticmethod
     def configured_tokens(value: str) -> list[str]:
