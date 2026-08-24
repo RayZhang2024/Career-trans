@@ -102,6 +102,9 @@ class CareerTransApiClient:
     def rank_jobs_for_current_user(self, jobs: list[dict[str, Any]]) -> dict[str, Any]:
         return self._request("POST", "/api/v1/jobs/rank-me", payload={"jobs": jobs})
 
+    def get_opportunity_inbox(self, limit: int) -> dict[str, Any]:
+        return self._request("GET", f"/api/v1/jobs/inbox?limit={limit}")
+
     def _request(
         self,
         method: str,

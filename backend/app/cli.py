@@ -57,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Pass imported accepted jobs to the existing authenticated ranking endpoint",
     )
+    list_jobs = jobs_commands.add_parser("list", help="List recent persisted external discoveries")
+    list_jobs.add_argument("--limit", type=int, default=20)
+    rank_imported = jobs_commands.add_parser(
+        "rank-imported",
+        help="Rank recent persisted external discoveries against your confirmed profile",
+    )
+    rank_imported.add_argument("--limit", type=int, default=20)
 
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
@@ -165,7 +172,39 @@ def _profile(client: CareerTransApiClient, args: argparse.Namespace) -> int:
 
 
 def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
-    if args.jobs_command != "discover-external":
+    if args.jobs_command == "list":
+        inbox = client.get_opportunity_inbox(args.limit)
+        for item in inbox.get("jobs", []):
+            job = item.get("job", {})
+            print(f"{job.get('title', 'Untitled')} | {job.get('company') or 'Unknown company'} | {job.get('location') or 'Unknown location'}")
+            print(job.get("url", ""))
+        return 0
+    if args.jobs_command == "rank-imported":
+        inbox = client.get_opportunity_inbox(args.limit)
+        jobs = [item["job"] for item in inbox.get("jobs", []) if isinstance(item, dict) and isinstance(item.get("job"), dict)]
+        if not jobs:
+            print("No persisted external discoveries to rank.")
+            return 0
+        ranking = client.rank_jobs_for_current_user(jobs)
+        for result in ranking.get("results", []):
+            job = result.get("job", {})
+            relevance = result.get("relevance", {})
+            recommendation = result.get("recommendation_assessment", {})
+            archetype = result.get("archetype", {})
+            print(
+                f"#{result.get('rank')} {recommendation.get('recommendation', 'unknown').upper()} | "
+                f"{job.get('title', 'Untitled')} | {job.get('company') or 'Unknown company'} | "
+                f"{job.get('location') or 'Unknown location'}"
+            )
+            print(
+                f"URL: {job.get('url', '')}\n"
+                f"Relevance: {relevance.get('score', 'n/a')} | "
+                f"Fit: {recommendation.get('fit_score', 'n/a')} | "
+                f"Career alignment: {recommendation.get('career_alignment_score', 'n/a')} | "
+                f"Archetype: {archetype.get('archetype', 'unknown')}"
+            )
+            if recommendation.get("reasoning"):
+                print(f"Rationale: {recommendation['reasoning']}")
         return 0
     query: dict[str, Any] = {
         "keywords": args.keywords,

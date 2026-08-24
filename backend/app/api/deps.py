@@ -27,6 +27,7 @@ from app.services.agentic_job_discovery_service import AgenticJobDiscoveryServic
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
+from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.cv_ingestion_service import CVIngestionService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.schemas.candidate import CandidateContext
@@ -243,6 +244,11 @@ def get_external_discovery_import_service(db: DbSession) -> ExternalDiscoveryImp
         session=db,
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
     )
+
+
+def get_opportunity_inbox_service(db: DbSession) -> OpportunityInboxService:
+    """Request-scoped read service for persisted external discoveries."""
+    return OpportunityInboxService(db)
 
 
 def get_agentic_web_search_provider(settings: Settings) -> WebSearchProvider:
