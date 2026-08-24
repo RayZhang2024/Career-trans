@@ -54,6 +54,14 @@ class FakeClient:
         self.calls.append(("confirm", draft_id))
         return {"draft_id": draft_id, "confirmed_evidence_count": 1}
 
+    def get_llm_configuration(self) -> dict:
+        self.calls.append(("config_show",))
+        return {"default_llm_provider": "ollama", "cv_semantic_extraction_model": "local-model", "openai_api_key_configured": False}
+
+    def check_llm_configuration(self) -> dict:
+        self.calls.append(("config_check",))
+        return {"ready": True, "default_llm_provider": "ollama", "openai_api_key_configured": False}
+
 
 def _fake_client(monkeypatch) -> list[FakeClient]:
     holder: list[FakeClient] = []
@@ -149,7 +157,7 @@ def test_invalid_review_json_and_http_error_messages(monkeypatch, tmp_path, caps
         (404, "CV ingestion draft not found.", "Check the draft ID"),
         (409, "Only a review-ready CV ingestion draft can be edited.", "Request rejected"),
         (422, "Unsupported CV file type.", "Request rejected"),
-        (502, "CV semantic extraction failed.", "Server error"),
+        (502, "CV semantic extraction failed.", "Semantic provider error"),
     ],
 )
 def test_cli_maps_draft_state_validation_and_semantic_errors(monkeypatch, capsys, status, detail, expected) -> None:
@@ -160,6 +168,31 @@ def test_cli_maps_draft_state_validation_and_semantic_errors(monkeypatch, capsys
     monkeypatch.setattr(cli, "CareerTransApiClient", FailingClient)
     assert cli.main(["--token", "token", "cv", "show", "draft-1"]) == 2
     assert expected in capsys.readouterr().err
+
+
+def test_cli_config_show_and_check_are_safe_and_actionable(monkeypatch, capsys) -> None:
+    clients = _fake_client(monkeypatch)
+    assert cli.main(["--token", "token", "config", "show"]) == 0
+    show = capsys.readouterr().out
+    assert "default_llm_provider=ollama" in show
+    assert "openai_api_key_configured=false" in show
+    assert "test-token" not in show
+    assert cli.main(["--token", "token", "config", "check"]) == 0
+    assert "ready=true" in capsys.readouterr().out
+    assert clients[-1].calls == [("config_check",)]
+
+
+def test_cli_interpret_reports_provider_configuration_without_generic_500(monkeypatch, capsys) -> None:
+    class FailingClient(FakeClient):
+        def interpret_cv(self, _draft_id: str) -> dict:
+            raise CareerTransApiError(503, "OpenAI semantic LLM requires OPENAI_API_KEY.")
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", FailingClient)
+    assert cli.main(["--token", "token", "cv", "interpret", "draft-1"]) == 2
+    error = capsys.readouterr().err
+    assert "LLM provider configuration or availability error" in error
+    assert "OPENAI_API_KEY" in error
+    assert "HTTP 500" not in error
 
 
 class _Response:

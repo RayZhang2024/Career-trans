@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import SimpleNamespace
 from typing import Callable, Protocol
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,8 +23,24 @@ class LLMCapability(StrEnum):
     STREAMING = "streaming"
 
 
-class LLMProviderConfigurationError(ValueError):
+class SemanticProviderConfigurationError(ValueError):
     """A safe operator-facing configuration error that never includes credentials."""
+
+
+class LLMProviderConfigurationError(SemanticProviderConfigurationError):
+    """Backward-compatible name for semantic provider configuration failures."""
+
+
+class SemanticProviderUnavailableError(RuntimeError):
+    """The configured semantic provider could not be reached safely."""
+
+
+class SemanticProviderRequestError(RuntimeError):
+    """The semantic provider rejected a model or request without exposing payloads."""
+
+
+class SemanticOutputError(RuntimeError):
+    """The provider returned output that cannot satisfy the semantic contract."""
 
 
 class LLMProviderConfig(BaseModel):
@@ -101,13 +120,22 @@ class OpenAISemanticLLM:
             trace_name=operation,
             base_url=self._base_url,
         )
-        response = client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
+        try:
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+        except (APIConnectionError, APITimeoutError) as exc:
+            raise SemanticProviderUnavailableError("OpenAI semantic provider is unavailable. Check connectivity and retry.") from exc
+        except APIStatusError as exc:
+            if exc.status_code >= 500:
+                raise SemanticProviderUnavailableError("OpenAI semantic provider is temporarily unavailable. Retry later.") from exc
+            raise SemanticProviderRequestError(
+                f"OpenAI rejected semantic model '{model}'. Check the configured model and provider access."
+            ) from exc
         return response.output_text
 
 
@@ -136,22 +164,31 @@ class OllamaSemanticLLM:
     ) -> str:
         del operation  # Ollama has no hosted tracing capability in this bounded adapter.
         _require_capabilities("ollama", self.capabilities, required_capabilities)
-        payload = self._transport(
-            f"{self._base_url}/api/chat",
-            {
-                "model": model,
-                "stream": False,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "format": "json",
-            },
-        )
+        try:
+            payload = self._transport(
+                f"{self._base_url}/api/chat",
+                {
+                    "model": model,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "format": "json",
+                },
+            )
+        except HTTPError as exc:
+            if exc.code >= 500:
+                raise SemanticProviderUnavailableError("Ollama semantic provider is temporarily unavailable. Retry later.") from exc
+            raise SemanticProviderRequestError(
+                f"Ollama rejected semantic model '{model}'. Check the configured model."
+            ) from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise SemanticProviderUnavailableError("Ollama semantic provider is unavailable. Check OLLAMA_BASE_URL and retry.") from exc
         message = payload.get("message") if isinstance(payload, dict) else None
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
-            raise RuntimeError("Ollama returned no text content.")
+            raise SemanticOutputError("Ollama returned no usable semantic output.")
         return content
 
     @staticmethod

@@ -74,6 +74,12 @@ class CareerTransApiClient:
     def confirm_cv(self, draft_id: str) -> dict[str, Any]:
         return self._request("POST", f"/api/v1/cv-ingestion/{draft_id}/confirm")
 
+    def get_llm_configuration(self) -> dict[str, Any]:
+        return self._request("GET", "/api/v1/config/llm")
+
+    def check_llm_configuration(self) -> dict[str, Any]:
+        return self._request("GET", "/api/v1/config/llm/check")
+
     def _request(
         self,
         method: str,
