@@ -78,8 +78,15 @@ class JobRankingService:
         finalists = sorted(screened, key=lambda item: (-item[2].score, item[0]))[:request.max_full_analyses]
         opportunities: list[tuple[int, RankedJobOpportunity]] = []
         for index, job, relevance, archetype in finalists:
+            if not job.description or not job.description.strip():
+                failures.append(self._insufficient_detail_failure(job, "missing or blank job description"))
+                continue
             try:
-                state = self._career_analysis_graph.invoke(job_text=job.description or "", candidate_context=request.candidate_context)
+                state = self._career_analysis_graph.invoke(job_text=job.description, candidate_context=request.candidate_context)
+                job_profile = state.get("job_profile")
+                if job_profile is not None and not job_profile.requirements:
+                    failures.append(self._insufficient_detail_failure(job, "no extractable requirements"))
+                    continue
                 opportunity = RankedJobOpportunity(
                     job=job,
                     relevance=relevance,
@@ -139,4 +146,12 @@ class JobRankingService:
         if root is exc:
             return f"{prefix}: {type(exc).__name__}."
         return f"{prefix}: {type(exc).__name__} (caused by {type(root).__name__})."
+
+    @staticmethod
+    def _insufficient_detail_failure(job: JobListing, reason: str) -> JobRankingFailure:
+        return JobRankingFailure(
+            job=job,
+            stage="insufficient_job_detail",
+            error=f"Job detail is insufficient for deep fit assessment: {reason}.",
+        )
 import logging

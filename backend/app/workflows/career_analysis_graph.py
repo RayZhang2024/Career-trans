@@ -77,7 +77,11 @@ class CareerAnalysisGraph:
         builder.add_node("build_recommendation", self._build_recommendation)
 
         builder.add_edge(START, "extract_job")
-        builder.add_edge("extract_job", "match_requirements")
+        builder.add_conditional_edges(
+            "extract_job",
+            self._route_after_extraction,
+            {"continue": "match_requirements", "insufficient": END},
+        )
         builder.add_edge("match_requirements", "assess_fit")
         builder.add_edge("assess_fit", "assess_career_alignment")
         builder.add_edge("assess_career_alignment", "build_recommendation")
@@ -100,6 +104,13 @@ class CareerAnalysisGraph:
             self._candidate_context(state),
         )
         return {"requirement_matches": match_set.matches}
+
+    @staticmethod
+    def _route_after_extraction(state: CareerAnalysisState) -> str:
+        """Do not turn an empty requirement set into a zero-fit assessment."""
+        if not state["job_profile"].requirements:
+            return "insufficient"
+        return "continue"
 
     def _assess_fit(self, state: CareerAnalysisState) -> CareerAnalysisState:
         return {

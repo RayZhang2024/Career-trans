@@ -213,6 +213,7 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
                 print(f"Rationale: {recommendation['reasoning']}")
             if args.details:
                 _print_ranking_details(result)
+        _print_unassessed_ranking_failures(ranking)
         return 0
     query: dict[str, Any] = {
         "keywords": args.keywords,
@@ -311,6 +312,32 @@ def _print_ranking_details(result: dict[str, Any]) -> None:
     print(f"- hard blockers: {recommendation.get('hard_blockers', [])}")
     if recommendation.get("reasoning"):
         print(f"- reasoning: {recommendation['reasoning']}")
+
+
+def _print_unassessed_ranking_failures(ranking: dict[str, Any]) -> None:
+    """Surface incomplete deep-analysis inputs without presenting a false score."""
+    screening_by_url = {
+        item.get("job", {}).get("url"): item
+        for item in ranking.get("semantic_screening", [])
+        if isinstance(item, dict) and isinstance(item.get("job"), dict)
+    }
+    for failure in ranking.get("failures", []):
+        if not isinstance(failure, dict) or failure.get("stage") != "insufficient_job_detail":
+            continue
+        job = failure.get("job", {})
+        screening = screening_by_url.get(job.get("url"), {})
+        relevance = screening.get("relevance", {})
+        archetype = screening.get("archetype", {})
+        print(
+            f"UNASSESSED | {job.get('title', 'Untitled')} | "
+            f"{job.get('company') or 'Unknown company'} | "
+            f"{job.get('location') or 'Unknown location'}"
+        )
+        print(
+            f"Relevance: {relevance.get('score', 'n/a')} | "
+            f"Archetype: {archetype.get('archetype', 'unknown')}"
+        )
+        print(f"Reason: {failure.get('error', 'Insufficient job detail for deep fit assessment.')}")
 
 
 def _show_human(draft: dict[str, Any]) -> None:

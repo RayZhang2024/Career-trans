@@ -366,6 +366,36 @@ def test_cli_rank_imported_details_renders_existing_diagnostics_without_extra_ca
     assert [call[0] for call in created[0].calls] == ["inbox", "rank_me"]
 
 
+def test_cli_rank_imported_surfaces_unassessed_incomplete_role(monkeypatch, capsys) -> None:
+    created: list[FakeClient] = []
+
+    class IncompleteInboxClient(FakeClient):
+        def __init__(self, base_url: str, token: str | None) -> None:
+            super().__init__(base_url, token)
+            created.append(self)
+
+        def rank_jobs_for_current_user(self, jobs: list[dict]) -> dict:
+            self.calls.append(("rank_me", jobs))
+            return {
+                "results": [],
+                "semantic_screening": [
+                    {"job": jobs[0], "relevance": {"score": 0.97}, "archetype": {"archetype": "agentic_automation"}}
+                ],
+                "failures": [
+                    {"job": jobs[0], "stage": "insufficient_job_detail", "error": "Job detail is insufficient for deep fit assessment: missing or blank job description."}
+                ],
+            }
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", IncompleteInboxClient)
+    assert cli.main(["--token", "token", "jobs", "rank-imported", "--details"]) == 0
+    output = capsys.readouterr().out
+    assert "UNASSESSED | Applied AI Engineer | Example Systems | London, UK" in output
+    assert "Relevance: 0.97 | Archetype: agentic_automation" in output
+    assert "Reason: Job detail is insufficient" in output
+    assert "Fit:" not in output
+    assert [call[0] for call in created[0].calls] == ["inbox", "rank_me"]
+
+
 def test_cli_interpret_reports_provider_configuration_without_generic_500(monkeypatch, capsys) -> None:
     class FailingClient(FakeClient):
         def interpret_cv(self, _draft_id: str) -> dict:
