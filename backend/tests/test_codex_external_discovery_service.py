@@ -26,7 +26,7 @@ def test_codex_runner_uses_bounded_context_and_validates_json_output() -> None:
 
     def runner(command, **kwargs):
         commands.append((command, kwargs))
-        Path(command[3]).write_text(
+        Path(command[4]).write_text(
             json.dumps(
                 {
                     "jobs": [
@@ -50,7 +50,7 @@ def test_codex_runner_uses_bounded_context_and_validates_json_output() -> None:
 
     assert jobs[0].title == "Engineer"
     command, kwargs = commands[0]
-    assert command[0:3] == ["codex", "exec", "--output-last-message"]
+    assert command[0:4] == ["codex", "--search", "exec", "--output-last-message"]
     assert "Generic engineer" in command[-1]
     assert "up to 2" in command[-1]
     assert kwargs["timeout"] == 240
@@ -74,7 +74,7 @@ def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_o
         CodexExternalDiscoveryRunner(runner=timeout, executable_lookup=lambda _: "codex").discover(_context())
 
     def invalid(command, **_kwargs):
-        Path(command[3]).write_text("not json", encoding="utf-8")
+        Path(command[4]).write_text("not json", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     with pytest.raises(CodexExternalDiscoveryError, match="invalid discovery JSON"):

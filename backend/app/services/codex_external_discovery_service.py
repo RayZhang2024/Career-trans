@@ -42,7 +42,9 @@ class CodexExternalDiscoveryRunner:
         prompt = self._prompt(context)
         with tempfile.TemporaryDirectory(prefix="career-trans-codex-") as directory:
             output_path = Path(directory) / "discovered-jobs.json"
-            command = [executable, "exec", "--output-last-message", str(output_path), prompt]
+            # --search is a global Codex flag and must precede `exec`; current-vacancy
+            # discovery requires live rather than cached web search.
+            command = [executable, "--search", "exec", "--output-last-message", str(output_path), prompt]
             try:
                 result = self._runner(
                     command,
