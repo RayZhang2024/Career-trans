@@ -14,7 +14,10 @@ from app.services.codex_external_discovery_service import (
 def _context() -> ExternalDiscoverySearchContextResponse:
     return ExternalDiscoverySearchContextResponse.model_validate(
         {
-            "search_profile": {"profile_summary": "Generic engineer", "skills": ["Python"]},
+            "search_profile": {
+                "profile_summary": 'Software & AI | Muon (D) "C:\\work\\100%^"',
+                "skills": ["Python"],
+            },
             "query": {"keywords": ["Engineer"], "locations": ["London"], "max_results": 2},
             "runtime_guidance": "factual jobs only",
         }
@@ -51,11 +54,14 @@ def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_outpu
     assert jobs[0].title == "Engineer"
     command, kwargs = commands[0]
     assert command[0:4] == ["codex", "--search", "exec", "--output-last-message"]
-    assert "Generic engineer" in command[-1]
-    assert "up to 2" in command[-1]
+    assert command[-1] == "-"
+    assert not any("Software & AI" in argument or "Muon" in argument for argument in command)
+    assert b"Software & AI | Muon (D)" in kwargs["input"]
+    assert b"up to 2" in kwargs["input"]
     assert kwargs["timeout"] == 240
     assert kwargs["check"] is False
     assert kwargs["text"] is False
+    assert kwargs["shell"] is False
 
 
 def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_output() -> None:
