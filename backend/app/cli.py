@@ -13,6 +13,7 @@ from app.cli_http import (
     CareerTransApiError,
     CareerTransConfigurationError,
     CareerTransConnectionError,
+    CareerTransTimeoutError,
 )
 from app.schemas.external_discovery import ExternalDiscoverySearchContextResponse
 from app.services.codex_external_discovery_service import (
@@ -257,7 +258,9 @@ def _show_human(draft: dict[str, Any]) -> None:
 
 
 def _print_api_error(exc: Exception) -> None:
-    if isinstance(exc, CareerTransConnectionError):
+    if isinstance(exc, CareerTransTimeoutError):
+        message = str(exc)
+    elif isinstance(exc, CareerTransConnectionError):
         message = f"Server unavailable: {exc} Start the API or set CAREER_TRANS_BASE_URL."
     elif isinstance(exc, CareerTransConfigurationError):
         message = str(exc)

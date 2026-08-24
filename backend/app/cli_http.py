@@ -2,12 +2,20 @@
 
 import json
 import mimetypes
+import socket
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+
+DEFAULT_HTTP_TIMEOUT_SECONDS = 20
+"""Bounded timeout for ordinary, fast Career-trans API operations."""
+
+RANKING_HTTP_TIMEOUT_SECONDS = 180
+"""Bounded timeout for semantic and full-analysis ranking requests."""
 
 
 class CareerTransApiError(RuntimeError):
@@ -19,6 +27,10 @@ class CareerTransApiError(RuntimeError):
 
 class CareerTransConnectionError(RuntimeError):
     pass
+
+
+class CareerTransTimeoutError(CareerTransConnectionError):
+    """A finite client-side operation timeout; callers must choose whether to retry."""
 
 
 class CareerTransConfigurationError(RuntimeError):
@@ -100,7 +112,12 @@ class CareerTransApiClient:
         )
 
     def rank_jobs_for_current_user(self, jobs: list[dict[str, Any]]) -> dict[str, Any]:
-        return self._request("POST", "/api/v1/jobs/rank-me", payload={"jobs": jobs})
+        return self._request(
+            "POST",
+            "/api/v1/jobs/rank-me",
+            payload={"jobs": jobs},
+            timeout_seconds=RANKING_HTTP_TIMEOUT_SECONDS,
+        )
 
     def get_opportunity_inbox(self, limit: int) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/jobs/inbox?limit={limit}")
@@ -114,6 +131,7 @@ class CareerTransApiClient:
         data: bytes | None = None,
         content_type: str = "application/json",
         authenticated: bool = True,
+        timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         if authenticated and not self._token:
             raise CareerTransConfigurationError("No API token configured. Use --token or CAREER_TRANS_TOKEN.")
@@ -126,8 +144,16 @@ class CareerTransApiClient:
             headers["Authorization"] = f"Bearer {self._token}"
         url = f"{self._base_url}{path}"
         try:
-            with self._opener(Request(url, data=data, headers=headers, method=method), timeout=20) as response:
+            with self._opener(
+                Request(url, data=data, headers=headers, method=method),
+                timeout=timeout_seconds,
+            ) as response:
                 return self._decode_json(response.read(), response.geturl())
+        except (TimeoutError, socket.timeout) as exc:
+            raise CareerTransTimeoutError(
+                f"Career-trans request timed out after {timeout_seconds:g} seconds. "
+                "The server may still be processing it; do not retry automatically."
+            ) from exc
         except HTTPError as exc:
             try:
                 body = self._decode_json(exc.read(), url)
@@ -136,6 +162,11 @@ class CareerTransApiClient:
                 detail = f"HTTP {exc.code}"
             raise CareerTransApiError(exc.code, detail) from exc
         except URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                raise CareerTransTimeoutError(
+                    f"Career-trans request timed out after {timeout_seconds:g} seconds. "
+                    "The server may still be processing it; do not retry automatically."
+                ) from exc
             raise CareerTransConnectionError(f"Cannot reach Career-trans at {self._base_url}.") from exc
 
     @staticmethod
