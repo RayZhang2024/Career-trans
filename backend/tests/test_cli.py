@@ -1,11 +1,20 @@
 import io
 import json
+import socket
 from urllib.error import HTTPError, URLError
 
 import pytest
 
 from app import cli
-from app.cli_http import CareerTransApiClient, CareerTransApiError, CareerTransConfigurationError, CareerTransConnectionError
+from app.cli_http import (
+    DEFAULT_HTTP_TIMEOUT_SECONDS,
+    RANKING_HTTP_TIMEOUT_SECONDS,
+    CareerTransApiClient,
+    CareerTransApiError,
+    CareerTransConfigurationError,
+    CareerTransConnectionError,
+    CareerTransTimeoutError,
+)
 
 
 def _draft() -> dict:
@@ -343,13 +352,13 @@ def test_http_client_multipart_auth_and_error_mapping(tmp_path) -> None:
     client = CareerTransApiClient("http://example.test/", "token", opener=opener)
     client.upload_cv([file])
     request, timeout = requests[0]
-    assert timeout == 20
+    assert timeout == DEFAULT_HTTP_TIMEOUT_SECONDS
     assert request.get_header("Authorization") == "Bearer token"
     assert b'filename="cv.md"' in request.data
     assert b"CV text" in request.data
 
     def unavailable(_request, *, timeout):
-        assert timeout == 20
+        assert timeout == DEFAULT_HTTP_TIMEOUT_SECONDS
         raise URLError("offline")
 
     with pytest.raises(CareerTransConnectionError):
@@ -359,8 +368,62 @@ def test_http_client_multipart_auth_and_error_mapping(tmp_path) -> None:
         CareerTransApiClient("http://example.test").get_cv("draft-1")
 
     def invalid_token(request, *, timeout):
-        assert timeout == 20
+        assert timeout == DEFAULT_HTTP_TIMEOUT_SECONDS
         raise HTTPError(request.full_url, 401, "Unauthorized", hdrs=None, fp=io.BytesIO(b'{"detail":"Invalid token"}'))
 
     with pytest.raises(CareerTransApiError, match="Invalid token"):
         CareerTransApiClient("http://example.test", "token", opener=invalid_token).get_cv("draft-1")
+
+
+def test_http_client_uses_long_finite_timeout_only_for_ranking() -> None:
+    observed_timeouts = []
+
+    def opener(_request, *, timeout):
+        observed_timeouts.append(timeout)
+        return _Response({"discovered_count": 0})
+
+    client = CareerTransApiClient("http://example.test", "token", opener=opener)
+    client.get_opportunity_inbox(5)
+    client.rank_jobs_for_current_user([{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1"}])
+
+    assert observed_timeouts == [DEFAULT_HTTP_TIMEOUT_SECONDS, RANKING_HTTP_TIMEOUT_SECONDS]
+    assert RANKING_HTTP_TIMEOUT_SECONDS > DEFAULT_HTTP_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("timeout_error", [TimeoutError("timed out"), socket.timeout("timed out")])
+def test_http_client_normalizes_timeout_without_retry(timeout_error) -> None:
+    calls = []
+
+    def opener(_request, *, timeout):
+        calls.append(timeout)
+        raise timeout_error
+
+    client = CareerTransApiClient("http://example.test", "token", opener=opener)
+    with pytest.raises(CareerTransTimeoutError, match="timed out after 180 seconds"):
+        client.rank_jobs_for_current_user([{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1"}])
+    assert calls == [RANKING_HTTP_TIMEOUT_SECONDS]
+
+
+def test_http_client_normalizes_url_timeout_without_retry() -> None:
+    calls = []
+
+    def opener(_request, *, timeout):
+        calls.append(timeout)
+        raise URLError(socket.timeout("timed out"))
+
+    client = CareerTransApiClient("http://example.test", "token", opener=opener)
+    with pytest.raises(CareerTransTimeoutError, match="timed out after 180 seconds"):
+        client.rank_jobs_for_current_user([{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1"}])
+    assert calls == [RANKING_HTTP_TIMEOUT_SECONDS]
+
+
+def test_cli_prints_actionable_timeout_message(monkeypatch, capsys) -> None:
+    class TimingOutClient(FakeClient):
+        def get_opportunity_inbox(self, _limit: int) -> dict:
+            raise CareerTransTimeoutError("Career-trans request timed out after 20 seconds. The server may still be processing it; do not retry automatically.")
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", TimingOutClient)
+    assert cli.main(["--token", "token", "jobs", "list"]) == 2
+    error = capsys.readouterr().err
+    assert "timed out after 20 seconds" in error
+    assert "do not retry automatically" in error
