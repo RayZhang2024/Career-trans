@@ -80,7 +80,18 @@ class JobRankingService:
         for index, job, relevance, archetype in finalists:
             try:
                 state = self._career_analysis_graph.invoke(job_text=job.description or "", candidate_context=request.candidate_context)
-                opportunity = RankedJobOpportunity(job=job, relevance=relevance, archetype=archetype, fit_assessment=state["fit_assessment"], career_assessment=state["career_assessment"], recommendation_assessment=state["recommendation_assessment"], legitimacy=self._legitimacy_service.assess(job), rank=0)
+                opportunity = RankedJobOpportunity(
+                    job=job,
+                    relevance=relevance,
+                    archetype=archetype,
+                    fit_assessment=state["fit_assessment"],
+                    career_assessment=state["career_assessment"],
+                    recommendation_assessment=state["recommendation_assessment"],
+                    legitimacy=self._legitimacy_service.assess(job),
+                    rank=0,
+                    job_profile=state.get("job_profile"),
+                    requirement_matches=state.get("requirement_matches", []),
+                )
             except Exception as exc:
                 logger.exception("Career analysis failed for a public job listing.")
                 failures.append(

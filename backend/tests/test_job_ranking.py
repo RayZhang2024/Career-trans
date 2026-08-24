@@ -14,7 +14,7 @@ from app.schemas.career_assessment import (
     CareerAssessment,
 )
 from app.schemas.discovery import JobListing
-from app.schemas.job import JobProfile
+from app.schemas.job import JobProfile, JobRequirement, RequirementImportance
 from app.schemas.job_ranking import (
     JobArchetype,
     JobArchetypeAssessment,
@@ -22,6 +22,7 @@ from app.schemas.job_ranking import (
     JobRelevanceAssessment,
     PostingLegitimacy,
 )
+from app.schemas.matching import MatchType, RequirementMatch
 from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.services.job_ranking_gate_service import JobRankingGateService
 from app.services.job_ranking_service import JobRankingService
@@ -247,6 +248,51 @@ def test_career_analysis_failure_preserves_safe_root_exception_diagnostic() -> N
     assert result.failures[0].error == (
         "Career analysis failed: JobExtractionError (caused by JSONDecodeError)."
     )
+
+
+def test_ranking_preserves_existing_graph_diagnostics_without_changing_scores() -> None:
+    listing = job("Diagnosed", description="Diagnosed", url="https://jobs.example.test/diagnosed")
+    requirement = JobRequirement(text="Python", importance=RequirementImportance.ESSENTIAL)
+    match = RequirementMatch(
+        requirement_index=0,
+        requirement=requirement,
+        match_type=MatchType.MISSING,
+        score=0.0,
+        evidence_ids=["evidence-1"],
+        reasoning="No supported evidence.",
+    )
+
+    class FakeRelevance:
+        def assess(self, _: JobListing, __: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9, reasoning="Relevant.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class DiagnosticGraph:
+        def invoke(self, **_: object) -> dict[str, object]:
+            fit = FitAssessment(fit_score=0.0, essential_score=0.0, hard_blockers=[0])
+            career = CareerAssessment(career_alignment_score=50.0, confidence=AlignmentConfidence.MEDIUM, dimensions=[], reasoning="Neutral.")
+            return {
+                "job_profile": JobProfile(title="Diagnosed", requirements=[requirement]),
+                "requirement_matches": [match],
+                "fit_assessment": fit,
+                "career_assessment": career,
+                "recommendation_assessment": recommendation(Recommendation.SKIP, 0.0, 50.0),
+            }
+
+    result = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=DiagnosticGraph(),  # type: ignore[arg-type]
+    ).rank(JobRankingRequest(jobs=[listing], candidate_context=CandidateContext()))
+
+    opportunity = result.results[0]
+    assert opportunity.fit_assessment.fit_score == 0.0
+    assert opportunity.job_profile is not None
+    assert opportunity.job_profile.requirements == [requirement]
+    assert opportunity.requirement_matches == [match]
 
 
 def test_legitimacy_is_separate_from_assessment_scores() -> None:
