@@ -4,6 +4,7 @@ from app.agents.job_extraction import JobExtractionError
 from app.agents.requirement_matching import RequirementMatchingError
 from app.api.deps import (
     CurrentUser,
+    PersistedCandidateContext,
     get_job_analysis_service,
     get_job_ranking_service,
     get_ats_resolver_service,
@@ -34,9 +35,9 @@ from app.schemas.job_sources import (
     CompanySourceDiscoveryRequest,
     CompanySourceDiscoveryResponse,
 )
-from app.schemas.job_ranking import JobRankingRequest, JobRankingResponse
+from app.schemas.job_ranking import JobRankingMeRequest, JobRankingRequest, JobRankingResponse
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
-from app.schemas.matching import JobMatchRequest, JobMatchResponse
+from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
@@ -131,6 +132,24 @@ def rank_jobs(
     return service.rank(payload)
 
 
+@router.post("/rank-me", response_model=JobRankingResponse, status_code=status.HTTP_200_OK)
+def rank_jobs_for_current_user(
+    payload: JobRankingMeRequest,
+    candidate_context: PersistedCandidateContext,
+    service: JobRankingService = Depends(get_job_ranking_service),
+) -> JobRankingResponse:
+    """Rank jobs against only the authenticated user's confirmed CV-derived context."""
+    return service.rank(
+        JobRankingRequest(
+            jobs=payload.jobs,
+            candidate_context=candidate_context,
+            max_semantic_candidates=payload.max_semantic_candidates,
+            max_full_analyses=payload.max_full_analyses,
+            min_relevance_score=payload.min_relevance_score,
+        )
+    )
+
+
 @router.post(
     "/discover",
     response_model=JobDiscoveryResponse,
@@ -213,4 +232,21 @@ def match_job(
             detail=str(exc),
         ) from exc
 
+    return JobMatchResponse(matches=result.matches)
+
+
+@router.post("/match-me", response_model=JobMatchResponse, status_code=status.HTTP_200_OK)
+def match_job_for_current_user(
+    payload: JobMatchMeRequest,
+    candidate_context: PersistedCandidateContext,
+    service: RequirementMatchingService = Depends(get_requirement_matching_service),
+) -> JobMatchResponse:
+    """Match a job using confirmed persisted evidence for the authenticated user."""
+    try:
+        result = service.match(payload.job_profile, candidate_context)
+    except RequirementMatchingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
     return JobMatchResponse(matches=result.matches)

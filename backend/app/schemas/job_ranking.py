@@ -58,6 +58,17 @@ class JobRankingRequest(BaseModel):
     min_relevance_score: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class JobRankingMeRequest(BaseModel):
+    """Authenticated ranking input without caller-supplied candidate context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[JobListing] = Field(min_length=1)
+    max_semantic_candidates: int = Field(default=30, ge=1, le=100)
+    max_full_analyses: int = Field(default=10, ge=1, le=30)
+    min_relevance_score: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
 class JobRankingFailure(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

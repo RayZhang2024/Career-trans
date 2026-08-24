@@ -28,6 +28,8 @@ from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.cv_ingestion_service import CVIngestionService
+from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.schemas.candidate import CandidateContext
 from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
@@ -159,6 +161,27 @@ def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
         db,
         interpreter_factory=build_interpreter,
     )
+
+
+def get_persisted_candidate_context_loader(db: DbSession) -> PersistedCandidateContextLoader:
+    """Request-scoped loader; user-specific contexts must never be globally cached."""
+    return PersistedCandidateContextLoader(db)
+
+
+def get_confirmed_candidate_context(
+    current_user: CurrentUser,
+    loader: Annotated[PersistedCandidateContextLoader, Depends(get_persisted_candidate_context_loader)],
+) -> CandidateContext:
+    context = loader.load_confirmed(current_user.id)
+    if context is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Candidate profile is not ready. Upload, review and confirm a CV first.",
+        )
+    return context
+
+
+PersistedCandidateContext = Annotated[CandidateContext, Depends(get_confirmed_candidate_context)]
 
 
 @lru_cache

@@ -62,6 +62,10 @@ class FakeClient:
         self.calls.append(("config_check",))
         return {"ready": True, "default_llm_provider": "ollama", "openai_api_key_configured": False}
 
+    def get_candidate_context_summary(self) -> dict:
+        self.calls.append(("context_summary",))
+        return {"ready": True, "employment_count": 1, "education_count": 1, "skill_count": 2, "evidence_count": 2}
+
 
 def _fake_client(monkeypatch) -> list[FakeClient]:
     holder: list[FakeClient] = []
@@ -180,6 +184,15 @@ def test_cli_config_show_and_check_are_safe_and_actionable(monkeypatch, capsys) 
     assert cli.main(["--token", "token", "config", "check"]) == 0
     assert "ready=true" in capsys.readouterr().out
     assert clients[-1].calls == [("config_check",)]
+
+
+def test_cli_profile_context_summary(monkeypatch, capsys) -> None:
+    clients = _fake_client(monkeypatch)
+    assert cli.main(["--token", "token", "profile", "context-summary"]) == 0
+    output = capsys.readouterr().out
+    assert "ready=true" in output
+    assert "evidence_count=2" in output
+    assert clients[0].calls == [("context_summary",)]
 
 
 def test_cli_interpret_reports_provider_configuration_without_generic_500(monkeypatch, capsys) -> None:

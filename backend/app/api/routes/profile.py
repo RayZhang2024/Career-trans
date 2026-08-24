@@ -1,6 +1,8 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import CurrentUser, DbSession
+from app.api.deps import CurrentUser, DbSession, get_persisted_candidate_context_loader
+from app.schemas.candidate import CandidateContextSummary
+from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.schemas.candidate_profile import (
     CandidateProfileCreate,
     CandidateProfileRead,
@@ -13,6 +15,14 @@ from app.services.profile_service import (
 )
 
 router = APIRouter(prefix="/profile", tags=["profile"])
+
+
+@router.get("/context-summary", response_model=CandidateContextSummary)
+def context_summary(
+    current_user: CurrentUser,
+    loader: PersistedCandidateContextLoader = Depends(get_persisted_candidate_context_loader),
+) -> CandidateContextSummary:
+    return loader.summary(current_user.id)
 
 
 @router.get("", response_model=CandidateProfileRead)

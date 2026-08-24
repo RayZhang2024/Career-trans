@@ -54,6 +54,14 @@ class JobMatchRequest(BaseModel):
     candidate_context: CandidateContext
 
 
+class JobMatchMeRequest(BaseModel):
+    """Authenticated matching input; candidate context comes from confirmed persistence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_profile: JobProfile
+
+
 class JobMatchResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

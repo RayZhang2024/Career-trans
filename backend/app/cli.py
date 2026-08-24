@@ -32,6 +32,10 @@ def build_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("show", help="Show safe effective LLM configuration")
     config_commands.add_parser("check", help="Validate semantic LLM configuration without a live provider call")
 
+    profile = commands.add_parser("profile", help="Inspect authenticated candidate profile state")
+    profile_commands = profile.add_subparsers(dest="profile_command", required=True)
+    profile_commands.add_parser("context-summary", help="Show confirmed candidate-context readiness")
+
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
     upload = cv_commands.add_parser("upload", help="Upload CV files")
@@ -59,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
             return _login(client, args)
         if args.command == "config":
             return _config(client, args)
+        if args.command == "profile":
+            return _profile(client, args)
         return _cv(client, args)
     except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError) as exc:
         _print_api_error(exc)
@@ -124,6 +130,13 @@ def _config(client: CareerTransApiClient, args: argparse.Namespace) -> int:
     config = client.get_llm_configuration() if args.config_command == "show" else client.check_llm_configuration()
     for key, value in config.items():
         print(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
+    return 0
+
+
+def _profile(client: CareerTransApiClient, args: argparse.Namespace) -> int:
+    if args.profile_command == "context-summary":
+        for key, value in client.get_candidate_context_summary().items():
+            print(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
     return 0
 
 

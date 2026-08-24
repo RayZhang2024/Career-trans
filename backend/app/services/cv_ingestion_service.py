@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.candidate_profile import CandidateProfile
-from app.schemas.candidate import CandidateContext, CareerEvidence
+from app.schemas.candidate import CandidateContext, CandidateContextSummary, CareerEvidence
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, CareerEvidenceDraft, EvidenceProvenance, ExtractedCVDocument
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_interpretation_service import CVSemanticInterpreter
@@ -150,4 +150,39 @@ class PersistedCandidateContextLoader:
             career_strategy_text=profile.career_goal if profile and profile.career_goal else "",
             job_search_criteria_text="",
             evidence=[CareerEvidence(evidence_id=record.id, title=record.title, text=record.text, skills=json.loads(record.skills_json)) for record in records],
+        )
+
+    def load_confirmed(self, user_id: str) -> CandidateContext | None:
+        """Return only confirmed CV-derived context; never fall back to demo data."""
+        structured = self._session.scalar(
+            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
+        )
+        return self.load(user_id) if structured is not None else None
+
+    def summary(self, user_id: str) -> CandidateContextSummary:
+        structured = self._session.scalar(
+            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
+        )
+        if structured is None:
+            return CandidateContextSummary(
+                ready=False,
+                employment_count=0,
+                education_count=0,
+                skill_count=0,
+                evidence_count=0,
+            )
+        data = CandidateCVData.model_validate(json.loads(structured.structured_json))
+        evidence_count = len(
+            list(
+                self._session.scalars(
+                    select(CandidateEvidenceRecord.id).where(CandidateEvidenceRecord.user_id == user_id)
+                )
+            )
+        )
+        return CandidateContextSummary(
+            ready=True,
+            employment_count=len(data.employment),
+            education_count=len(data.education),
+            skill_count=len(data.skills),
+            evidence_count=evidence_count,
         )
