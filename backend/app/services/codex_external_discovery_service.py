@@ -1,6 +1,7 @@
 """Bounded local Codex CLI adapter for external, non-authoritative job discovery."""
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,15 @@ from app.schemas.external_discovery import (
     CodexExternalDiscoveryOutput,
     ExternalDiscoveredJob,
     ExternalDiscoverySearchContextResponse,
+)
+
+
+_DIAGNOSTIC_TAIL_BYTES = 2_048
+_MAX_DIAGNOSTIC_CHARS = 1_024
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(api[_-]?key|token|authorization|password|secret)\b\s*[:=]\s*[^\s,;]+"),
+    re.compile(r"(?i)\bbearer\s+[a-z0-9._~-]+"),
+    re.compile(r"\b(?:sk|lsv2|gho)_[A-Za-z0-9_-]+"),
 )
 
 
@@ -63,8 +73,14 @@ class CodexExternalDiscoveryRunner:
                     "Codex CLI could not be started. Check the local Codex installation and authentication."
                 ) from exc
             if result.returncode != 0:
+                diagnostic = self._safe_diagnostic(result.stderr) or self._safe_diagnostic(result.stdout)
+                if diagnostic:
+                    raise CodexExternalDiscoveryError(
+                        f"Codex discovery failed (exit code {result.returncode}): {diagnostic}"
+                    )
                 raise CodexExternalDiscoveryError(
-                    "Codex discovery failed. Check that Codex is authenticated, then retry."
+                    f"Codex discovery failed (exit code {result.returncode}). "
+                    "Retry or run Codex directly for diagnostics."
                 )
             try:
                 raw_output = output_path.read_text(encoding="utf-8")
@@ -78,6 +94,21 @@ class CodexExternalDiscoveryRunner:
             raise CodexExternalDiscoveryError(
                 "Codex returned invalid discovery JSON; no jobs were imported."
             ) from exc
+
+    @staticmethod
+    def _safe_diagnostic(value: bytes | str | None) -> str:
+        """Expose a small, sanitized terminal tail without making it part of the result contract."""
+        if not value:
+            return ""
+        if isinstance(value, bytes):
+            text = value[-_DIAGNOSTIC_TAIL_BYTES:].decode("utf-8", errors="replace")
+        else:
+            text = value[-_DIAGNOSTIC_TAIL_BYTES:]
+        # Codex should not echo the supplied task, but never surface one if it does.
+        text = re.sub(r"(?is)\b(?:career-trans\s+)?(?:context|prompt|input)\s*:\s*.*", "[redacted task]", text)
+        for pattern in _SECRET_PATTERNS:
+            text = pattern.sub("[REDACTED]", text)
+        return " ".join(text.split())[-_MAX_DIAGNOSTIC_CHARS:]
 
     @staticmethod
     def _prompt(context: ExternalDiscoverySearchContextResponse) -> str:
