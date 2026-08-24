@@ -144,6 +144,8 @@ def get_external_discovery_import_service(db: DbSession) -> ExternalDiscoveryImp
     """External runtime imports use shared state but never authoritative source evidence."""
     return ExternalDiscoveryImportService(
         session=db,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db),
+    )
 
 
 def get_agentic_job_discovery_service(db: DbSession) -> AgenticJobDiscoveryService:

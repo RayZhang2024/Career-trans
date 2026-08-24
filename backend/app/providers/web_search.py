@@ -37,7 +37,7 @@ class BraveWebSearchProvider:
             url = self._text(result.get("url"))
             if not title or not url:
                 continue
-            domain = urlsplit(url).netloc.casefold()
+            domain = (urlsplit(url).hostname or "").casefold()
             if not domain:
                 continue
             results.append(

@@ -81,6 +81,7 @@ class AgenticDiscoveryDiagnostics(BaseModel):
     extraction_failures: int = 0
     normalized_jobs: int = 0
     deduplicated_jobs: int = 0
+    duplicate_jobs_removed: int = 0
     unique_employers: int = 0
     source_counts: dict[str, int] = Field(default_factory=dict)
     domain_counts: dict[str, int] = Field(default_factory=dict)

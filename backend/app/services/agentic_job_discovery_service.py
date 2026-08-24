@@ -51,11 +51,18 @@ class AgenticJobDiscoveryService:
         candidates = self._select_pages(raw_results, request, diagnostics)
         listings = self._extract(candidates, request, diagnostics)
         deduplicated, removed = self._deduplicator.deduplicate(listings)
-        screened = self._screening.screen(deduplicated, request.query)
-        final_listings = screened[: request.max_discovered_jobs]
-        job_states = self._state_store.synchronize(listings, set())
+        accepted = [
+            listing
+            for listing in deduplicated
+            if self._screening.matches_hard_constraints(listing, request.query)
+        ]
+        final_listings = accepted[: request.max_discovered_jobs]
+        # Web evidence is non-authoritative: only accepted public vacancies are persisted,
+        # and successful source keys are deliberately empty so omission cannot inactivate jobs.
+        job_states = self._state_store.synchronize(final_listings, set())
         diagnostics.normalized_jobs = len(listings)
-        diagnostics.deduplicated_jobs = removed
+        diagnostics.deduplicated_jobs = len(deduplicated)
+        diagnostics.duplicate_jobs_removed = removed
         diagnostics.unique_employers = len({job.company.casefold() for job in final_listings if job.company})
         diagnostics.source_counts = dict(Counter(job.source for job in final_listings))
         return AgenticDiscoveryResponse(
@@ -176,7 +183,7 @@ class AgenticJobDiscoveryService:
         if extracted is None or not extracted.title or not extracted.title.strip():
             return None
         url = AgenticJobDiscoveryService._canonical_url(page.final_url)
-        domain = urlsplit(url).netloc.casefold()
+        domain = (urlsplit(url).hostname or "").casefold()
         return JobListing(
             source="agentic_web",
             source_token=domain or None,
@@ -202,10 +209,21 @@ class AgenticJobDiscoveryService:
             return False
         if request.query.locations:
             locations = [value.casefold() for value in request.query.locations if value.strip()]
-            country = request.country.casefold()
-            if locations and not any(value in text for value in locations) and country not in text:
+            country_terms = AgenticJobDiscoveryService._country_terms(request.country)
+            if (
+                locations
+                and not any(value in text for value in locations)
+                and not any(re.search(rf"\b{re.escape(value)}\b", text) for value in country_terms)
+            ):
                 return False
         return True
+
+    @staticmethod
+    def _country_terms(country: str) -> tuple[str, ...]:
+        """Use meaningful country names, never a two-letter substring fallback."""
+        return {
+            "gb": ("united kingdom", "great britain", "uk"),
+        }.get(country.casefold(), ())
 
     @staticmethod
     def _result_score(result: SearchResult, request: AgenticDiscoveryRequest) -> int:
