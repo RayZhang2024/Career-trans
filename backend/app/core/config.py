@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     openai_career_alignment_model: str = "gpt-5.6-luna"
     openai_job_relevance_model: str = "gpt-5.6-luna"
     openai_job_archetype_model: str = "gpt-5.6-luna"
+    openai_agentic_discovery_model: str = "gpt-5.6-luna"
 
     langsmith_tracing: bool | None = None
     langsmith_api_key: str | None = None
@@ -48,6 +49,7 @@ class Settings(BaseSettings):
     lever_site_tokens: str = ""
     smartrecruiters_company_ids: str = ""
     recruitee_company_tokens: str = ""
+    brave_search_api_key: str | None = None
 
     @staticmethod
     def configured_tokens(value: str) -> list[str]:

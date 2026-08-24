@@ -302,13 +302,14 @@ Planned:
 
 ## Job Discovery
 
-Planned:
+Implemented foundations:
 
-- recurring searches;
-- deduplication;
-- filtering;
-- scoring;
-- shortlist generation.
+- bounded agentic public-web discovery from a supplied candidate context and search criteria;
+- structured search strategies, provider-neutral web-search and page-fetch boundaries;
+- deterministic URL filtering, page caps, vacancy normalization, deduplication, and non-authoritative lifecycle persistence;
+- existing downstream screening and ranking APIs for normalized listings.
+
+Agentic discovery never submits applications and does not treat web-search omission as proof that a posting is inactive.
 
 ---
 

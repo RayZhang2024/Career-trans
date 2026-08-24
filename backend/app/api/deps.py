@@ -10,6 +10,7 @@ from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_extraction import OpenAIJobExtractor
 from app.agents.job_relevance import OpenAIJobRelevanceAgent
 from app.agents.requirement_matching import OpenAIRequirementMatcher
+from app.agents.agentic_discovery import OpenAIPageVacancyExtractor, OpenAISearchStrategyGenerator
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.security import decode_access_token
@@ -22,6 +23,7 @@ from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
 from app.services.employer_universe_service import EmployerUniverseService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
@@ -32,6 +34,8 @@ from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
 from app.providers.jobs.recruitee import RecruiteeJobSource
 from app.providers.jobs.smartrecruiters import SmartRecruitersJobSource
+from app.providers.page_fetch import PublicHttpPageFetcher
+from app.providers.web_search import BraveWebSearchProvider
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
 from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
 from app.providers.jobs.probes.lever import LeverJobSourceProbe
@@ -140,6 +144,28 @@ def get_external_discovery_import_service(db: DbSession) -> ExternalDiscoveryImp
     """External runtime imports use shared state but never authoritative source evidence."""
     return ExternalDiscoveryImportService(
         session=db,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db),
+    )
+
+
+def get_agentic_job_discovery_service(db: DbSession) -> AgenticJobDiscoveryService:
+    settings = get_settings()
+    if not settings.openai_api_key or not settings.brave_search_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Agentic discovery is not configured. Set OPENAI_API_KEY and BRAVE_SEARCH_API_KEY in backend/.env.",
+        )
+    return AgenticJobDiscoveryService(
+        strategy_generator=OpenAISearchStrategyGenerator(
+            api_key=settings.openai_api_key,
+            model=settings.openai_agentic_discovery_model,
+        ),
+        search_provider=BraveWebSearchProvider(api_key=settings.brave_search_api_key),
+        page_fetcher=PublicHttpPageFetcher(),
+        vacancy_extractor=OpenAIPageVacancyExtractor(
+            api_key=settings.openai_api_key,
+            model=settings.openai_agentic_discovery_model,
+        ),
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
     )
 

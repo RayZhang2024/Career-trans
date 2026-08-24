@@ -10,6 +10,7 @@ from app.api.deps import (
     get_company_source_discovery_service,
     get_employer_universe_service,
     get_discover_and_rank_service,
+    get_agentic_job_discovery_service,
     get_job_discovery_service,
     get_external_discovery_import_service,
     get_requirement_matching_service,
@@ -25,6 +26,7 @@ from app.schemas.external_discovery import (
     ExternalDiscoverySearchContextRequest,
     ExternalDiscoverySearchContextResponse,
 )
+from app.schemas.agentic_discovery import AgenticDiscoveryRequest, AgenticDiscoveryResponse
 from app.schemas.employer_universe import EmployerUniverseRequest, EmployerUniverseResponse
 from app.schemas.job_sources import (
     AtsResolutionRequest,
@@ -40,6 +42,7 @@ from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
 from app.services.employer_universe_service import EmployerUniverseService
 from app.services.job_discovery_service import JobDiscoveryService
+from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.job_ranking_service import JobRankingService
@@ -138,6 +141,19 @@ def discover_jobs(
     service: JobDiscoveryService = Depends(get_job_discovery_service),
 ) -> JobDiscoveryResponse:
     """Discover public ATS listings without performing full career analysis."""
+    return service.discover(payload)
+
+
+@router.post(
+    "/discover-agentic",
+    response_model=AgenticDiscoveryResponse,
+    status_code=status.HTTP_200_OK,
+)
+def discover_agentic_jobs(
+    payload: AgenticDiscoveryRequest,
+    service: AgenticJobDiscoveryService = Depends(get_agentic_job_discovery_service),
+) -> AgenticDiscoveryResponse:
+    """Search a bounded public-web frontier, then persist non-authoritative vacancies."""
     return service.discover(payload)
 
 
