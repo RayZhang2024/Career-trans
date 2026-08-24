@@ -63,14 +63,11 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 )
 def external_discovery_search_context(
     payload: ExternalDiscoverySearchContextRequest,
-    current_user: CurrentUser,
+    candidate_context: PersistedCandidateContext,
     service: ExternalDiscoveryImportService = Depends(get_external_discovery_import_service),
 ) -> ExternalDiscoverySearchContextResponse:
     """Return only the authenticated user's compact context needed by an external runtime."""
-    context = service.search_context(current_user.id, payload)
-    if context is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found.")
-    return context
+    return service.search_context(candidate_context, payload)
 
 
 @router.post(

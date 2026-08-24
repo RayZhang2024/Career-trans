@@ -1,6 +1,14 @@
 # External runtime job discovery
 
-Career-trans accepts factual public-vacancy evidence from an authenticated external coding-agent runtime. The server does not start Codex, Qwen, Claude Code, a browser, or a shell process.
+Career-trans accepts factual public-vacancy evidence from an authenticated external coding-agent runtime. The API server does not start Codex, Qwen, Claude Code, a browser, or a shell process.
+
+For the supported local Codex path, use the HTTP CLI client instead:
+
+```powershell
+career-trans --token $env:CAREER_TRANS_TOKEN jobs discover-external --keyword "AI Engineer" --location "United Kingdom"
+```
+
+The CLI obtains the authenticated user's compact confirmed context, invokes the locally authenticated Codex CLI, validates its JSON-only final output, then calls the existing import endpoint. Add `--rank` to pass accepted listings to the existing authenticated ranking endpoint. No Career-trans token or other credentials are included in the Codex task.
 
 ## Codex-first V1 flow
 

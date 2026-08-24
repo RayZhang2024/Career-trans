@@ -46,6 +46,14 @@ class ExternalDiscoveredJob(BaseModel):
         return value
 
 
+class CodexExternalDiscoveryOutput(BaseModel):
+    """Strict final-message contract for the local Codex discovery runtime."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    jobs: list[ExternalDiscoveredJob] = Field(min_length=1, max_length=_MAX_IMPORTED_JOBS)
+
+
 class ExternalDiscoveryImportRequest(BaseModel):
     """Bounded, provider-neutral import request for an external agent runtime."""
 

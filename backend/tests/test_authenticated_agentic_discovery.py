@@ -122,9 +122,13 @@ def test_discover_agentic_me_uses_current_users_context_and_flows_to_rank_me(cli
 def test_discover_agentic_me_rejects_caller_supplied_context(client, db_session) -> None:
     headers, email = _auth(client, "discovery-schema@example.com")
     _confirm_context(db_session, email, evidence_title="Evidence")
-    response = client.post(
-        "/api/v1/jobs/discover-agentic-me",
-        headers=headers,
-        json={**_payload(), "candidate_context": {"profile_text": "not accepted"}},
-    )
+    app.dependency_overrides[get_agentic_job_discovery_service] = lambda: None
+    try:
+        response = client.post(
+            "/api/v1/jobs/discover-agentic-me",
+            headers=headers,
+            json={**_payload(), "candidate_context": {"profile_text": "not accepted"}},
+        )
+    finally:
+        app.dependency_overrides.pop(get_agentic_job_discovery_service, None)
     assert response.status_code == 422

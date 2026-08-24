@@ -16,6 +16,7 @@ class LLMConfigurationRead(BaseModel):
     job_relevance_model: str
     job_archetype_model: str
     agentic_discovery_model: str
+    agentic_search_provider: str
     openai_web_search_model: str
     openai_api_key_configured: bool
 

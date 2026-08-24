@@ -1,7 +1,8 @@
 import pytest
 from fastapi import HTTPException
 
-from app.api.deps import get_agentic_web_search_provider
+from app.api import deps
+from app.api.deps import get_agentic_job_discovery_service, get_agentic_web_search_provider
 from app.core.config import Settings
 from app.providers.web_search import BraveWebSearchProvider, OpenAIWebSearchProvider
 
@@ -78,7 +79,7 @@ def test_openai_web_search_provider_failure_propagates_for_existing_workflow_iso
         provider.search("roles", 5)
 
 
-def test_search_provider_selection_defaults_to_openai_without_brave_key() -> None:
+def test_openai_search_provider_is_available_only_when_explicitly_selected() -> None:
     settings = Settings(
         openai_api_key="test-key",
         openai_web_search_model="search-model",
@@ -91,6 +92,33 @@ def test_search_provider_selection_defaults_to_openai_without_brave_key() -> Non
 
     assert isinstance(provider, OpenAIWebSearchProvider)
     assert provider._model == "search-model"
+
+
+def test_search_provider_defaults_to_disabled_without_constructing_openai(monkeypatch) -> None:
+    constructed = []
+
+    class UnexpectedOpenAIProvider:
+        def __init__(self, *_args, **_kwargs) -> None:
+            constructed.append(True)
+
+    monkeypatch.setattr("app.api.deps.OpenAIWebSearchProvider", UnexpectedOpenAIProvider)
+
+    with pytest.raises(HTTPException, match="Agentic web discovery is disabled"):
+        get_agentic_web_search_provider(Settings(openai_api_key="semantic-key"))
+
+    assert constructed == []
+
+
+def test_disabled_discovery_fails_before_semantic_components_are_constructed(monkeypatch) -> None:
+    monkeypatch.setattr(deps, "get_settings", lambda: Settings(agentic_search_provider="disabled"))
+    monkeypatch.setattr(
+        deps,
+        "get_semantic_response_client",
+        lambda *_args, **_kwargs: pytest.fail("disabled discovery must not construct semantic clients"),
+    )
+
+    with pytest.raises(HTTPException, match="Agentic web discovery is disabled"):
+        get_agentic_job_discovery_service(object())
 
 
 def test_brave_remains_available_only_when_explicitly_selected() -> None:

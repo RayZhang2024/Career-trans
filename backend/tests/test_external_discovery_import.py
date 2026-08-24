@@ -1,11 +1,16 @@
+import json
+
 from sqlalchemy import select
 
+from app.models.user import User
 from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
+from app.schemas.cv_ingestion import CandidateCVData
+from app.services.cv_ingestion_service import CVIngestionService
 
 
-def _auth_headers(client) -> dict[str, str]:
-    credentials = {"email": "runtime-user@example.com", "password": "strong-password"}
+def _auth_headers(client, email: str = "runtime-user@example.com") -> dict[str, str]:
+    credentials = {"email": email, "password": "strong-password"}
     assert client.post("/api/v1/auth/register", json=credentials).status_code == 201
     token = client.post("/api/v1/auth/login", json=credentials).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -33,6 +38,31 @@ def _job(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def _confirm_context(db_session, email: str, *, skill: str = "Python") -> None:
+    user_id = db_session.scalar(select(User.id).where(User.email == email))
+    assert user_id is not None
+    data = CandidateCVData.model_validate(
+        {
+            "skills": [{"name": skill}],
+            "evidence": [
+                {
+                    "evidence_type": "project",
+                    "title": "Delivered systems",
+                    "text": "Delivered reliable production systems.",
+                    "skills": [skill],
+                }
+            ],
+        }
+    )
+    service = CVIngestionService(db_session)
+    draft = service.upload(
+        user_id,
+        [("cv.json", "application/json", json.dumps(data.model_dump(mode="json")).encode())],
+    )
+    service.interpret(user_id, draft.id)
+    service.confirm(user_id, draft.id)
 
 
 def test_authenticated_import_persists_runtime_provenance_and_is_non_authoritative(client, db_session) -> None:
@@ -177,18 +207,9 @@ def test_later_external_import_never_marks_omitted_job_inactive(client, db_sessi
     assert all(record.state != "inactive" for record in db_session.scalars(select(DiscoveredJob)).all())
 
 
-def test_authenticated_search_context_is_compact_and_contains_no_credentials(client) -> None:
+def test_authenticated_search_context_uses_confirmed_persisted_context_and_contains_no_credentials(client, db_session) -> None:
     headers = _auth_headers(client)
-    assert client.post(
-        "/api/v1/profile",
-        json={
-            "headline": "Technical engineer",
-            "summary": "Builds production software.",
-            "location": "London, UK",
-            "career_goal": "Move into applied AI delivery.",
-        },
-        headers=headers,
-    ).status_code == 201
+    _confirm_context(db_session, "runtime-user@example.com")
 
     response = client.post(
         "/api/v1/jobs/external-discovery/search-context",
@@ -197,10 +218,35 @@ def test_authenticated_search_context_is_compact_and_contains_no_credentials(cli
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["search_profile"]["profile_summary"] == "Technical engineer Builds production software."
+    assert body["search_profile"]["skills"] == ["Python"]
     assert body["query"]["locations"] == ["London"]
     assert "API_KEY" not in str(body)
     assert "password" not in str(body).casefold()
+
+
+def test_search_context_requires_confirmed_context(client) -> None:
+    response = client.post(
+        "/api/v1/jobs/external-discovery/search-context",
+        json={"query": {"keywords": ["Engineer"]}},
+        headers=_auth_headers(client),
+    )
+    assert response.status_code == 409
+    assert "Upload, review and confirm" in response.json()["detail"]
+
+
+def test_search_context_isolated_to_the_authenticated_users_confirmed_data(client, db_session) -> None:
+    headers_a = _auth_headers(client, "runtime-a@example.com")
+    headers_b = _auth_headers(client, "runtime-b@example.com")
+    _confirm_context(db_session, "runtime-a@example.com", skill="Python")
+    _confirm_context(db_session, "runtime-b@example.com", skill="Rust")
+    payload = {"query": {"keywords": ["Engineer"]}}
+
+    context_a = client.post("/api/v1/jobs/external-discovery/search-context", json=payload, headers=headers_a)
+    context_b = client.post("/api/v1/jobs/external-discovery/search-context", json=payload, headers=headers_b)
+
+    assert context_a.status_code == context_b.status_code == 200
+    assert context_a.json()["search_profile"]["skills"] == ["Python"]
+    assert context_b.json()["search_profile"]["skills"] == ["Rust"]
 
 
 def test_import_endpoint_has_no_openai_web_search_dependency(client) -> None:

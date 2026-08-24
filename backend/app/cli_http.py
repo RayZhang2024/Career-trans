@@ -83,6 +83,25 @@ class CareerTransApiClient:
     def get_candidate_context_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/profile/context-summary")
 
+    def get_external_discovery_search_context(self, query: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/jobs/external-discovery/search-context", payload={"query": query})
+
+    def import_discovered_jobs(
+        self,
+        *,
+        runtime: str,
+        jobs: list[dict[str, Any]],
+        query: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/api/v1/jobs/import-discovered",
+            payload={"runtime": runtime, "jobs": jobs, "query": query},
+        )
+
+    def rank_jobs_for_current_user(self, jobs: list[dict[str, Any]]) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/jobs/rank-me", payload={"jobs": jobs})
+
     def _request(
         self,
         method: str,
