@@ -16,7 +16,11 @@ from app.providers.llm import (
 )
 from app.schemas.candidate import CandidateMatchingProfile
 from app.schemas.job import JobProfile
-from app.schemas.matching import RequirementMatchSet
+from app.schemas.matching import (
+    RequirementMatch,
+    RequirementMatchSet,
+    SemanticRequirementMatchSet,
+)
 
 
 class RequirementMatchingError(RuntimeError):
@@ -82,7 +86,7 @@ class OpenAIRequirementMatcher:
                     payload=payload,
                 )
                 self._validate_result(result, job_profile, candidate_context)
-                return result
+                return self._attach_canonical_requirements(result, job_profile)
             except RequirementMatchingError as exc:
                 if exc.kind not in self._RETRYABLE_FAILURE_KINDS or attempt + 1 == self._MAX_STRUCTURAL_ATTEMPTS:
                     raise
@@ -95,7 +99,7 @@ class OpenAIRequirementMatcher:
         prompt: str,
         schema: dict[str, Any],
         payload: dict[str, object],
-    ) -> RequirementMatchSet:
+    ) -> SemanticRequirementMatchSet:
         try:
             response = self._client.responses.create(
                 model=self._model,
@@ -148,16 +152,16 @@ class OpenAIRequirementMatcher:
             raw_output = self._strip_json_fence(raw_output)
 
         try:
-            return RequirementMatchSet.model_validate(json.loads(raw_output))
+            return SemanticRequirementMatchSet.model_validate(json.loads(raw_output))
         except (json.JSONDecodeError, ValidationError) as exc:
             raise RequirementMatchingError(
-                "The model returned output that did not validate as RequirementMatchSet.",
+                "The model returned output that did not validate as semantic requirement matches.",
                 kind="invalid_output",
             ) from exc
 
     def _validate_result(
         self,
-        result: RequirementMatchSet,
+        result: SemanticRequirementMatchSet,
         job_profile: JobProfile,
         candidate_context: CandidateMatchingProfile,
     ) -> None:
@@ -179,13 +183,6 @@ class OpenAIRequirementMatcher:
         valid_evidence_ids = {item.evidence_id for item in candidate_context.evidence}
 
         for match in result.matches:
-            canonical_requirement = requirements[match.requirement_index]
-            if match.requirement != canonical_requirement:
-                raise RequirementMatchingError(
-                    "The matcher altered a job requirement instead of preserving it.",
-                    kind="altered_requirement",
-                )
-
             unknown_ids = set(match.evidence_ids) - valid_evidence_ids
             if unknown_ids:
                 raise RequirementMatchingError(
@@ -193,6 +190,25 @@ class OpenAIRequirementMatcher:
                     "candidate context.",
                     kind="unknown_evidence_ids",
                 )
+
+    @staticmethod
+    def _attach_canonical_requirements(
+        result: SemanticRequirementMatchSet,
+        job_profile: JobProfile,
+    ) -> RequirementMatchSet:
+        return RequirementMatchSet(
+            matches=[
+                RequirementMatch(
+                    requirement_index=match.requirement_index,
+                    requirement=job_profile.requirements[match.requirement_index],
+                    match_type=match.match_type,
+                    score=match.score,
+                    evidence_ids=match.evidence_ids,
+                    reasoning=match.reasoning,
+                )
+                for match in result.matches
+            ]
+        )
 
     def _load_prompt(self) -> str:
         try:
@@ -208,7 +224,6 @@ class OpenAIRequirementMatcher:
             "invalid_output",
             "wrong_match_count",
             "invalid_indexes",
-            "altered_requirement",
             "unknown_evidence_ids",
         }
     )
@@ -226,7 +241,7 @@ class OpenAIRequirementMatcher:
                 kind="structured_output_sdk_unsupported",
             ) from exc
 
-        response_format = type_to_response_format_param(RequirementMatchSet)
+        response_format = type_to_response_format_param(SemanticRequirementMatchSet)
         json_schema = response_format.get("json_schema")
         schema = json_schema.get("schema") if isinstance(json_schema, dict) else None
         if not isinstance(schema, dict):
