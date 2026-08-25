@@ -131,3 +131,20 @@ def test_security_clearance_matching_is_deterministic_and_unknown_when_absent() 
     assert demonstrated.evidence_refs[0].source_ref == "security_clearances"
     assert incompatible.match_type is MatchType.INCOMPATIBLE
     assert unknown.match_type is MatchType.UNKNOWN
+
+
+def test_unrecognised_named_security_clearance_remains_unknown() -> None:
+    requirement = JobRequirement(
+        text="NATO security clearance is required.",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.SECURITY,
+    )
+
+    result = FactualRequirementService().match(
+        0,
+        requirement,
+        CandidateContext(eligibility=CandidateEligibility(security_clearances=["SC"])),
+    )
+
+    assert result.match_type is MatchType.UNKNOWN
+    assert result.score == 0.0

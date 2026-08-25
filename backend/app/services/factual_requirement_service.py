@@ -95,7 +95,20 @@ class FactualRequirementService:
 
         required_clearances = self._clearance_terms(requirement.text)
         candidate_clearances = self._clearance_terms(" ".join(candidate_values))
-        if not required_clearances or required_clearances & candidate_clearances:
+        if not required_clearances:
+            return RequirementMatch(
+                requirement_index=requirement_index,
+                requirement=requirement,
+                match_type=MatchType.UNKNOWN,
+                score=0.0,
+                evidence_ids=[],
+                reasoning=(
+                    "Structured candidate security-clearance eligibility cannot "
+                    "confirm the named clearance requirement."
+                ),
+            )
+
+        if required_clearances & candidate_clearances:
             return RequirementMatch(
                 requirement_index=requirement_index,
                 requirement=requirement,
