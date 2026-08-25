@@ -14,6 +14,9 @@ from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobState
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 
 
+USABLE_DETAIL = " ".join(["Recovered candidate-criteria detail."] * 20)
+
+
 def _record(db_session, *, description: str | None = None) -> DiscoveredJob:
     now = datetime.now(timezone.utc)
     record = DiscoveredJob(
@@ -60,7 +63,7 @@ class FakeVacancyExtractor:
 
 
 class FakeJobAnalysis:
-    def __init__(self, *, usable_text: str = "Recovered detail") -> None:
+    def __init__(self, *, usable_text: str = USABLE_DETAIL) -> None:
         self.usable_text = usable_text
         self.calls: list[str] = []
 
@@ -100,7 +103,7 @@ def test_missing_or_blank_detail_enriches_existing_record_and_records_direct_pag
     description: str | None,
 ) -> None:
     record = _record(db_session, description=description)
-    fetcher = FakeFetcher(_page("Recovered detail"))
+    fetcher = FakeFetcher(_page(USABLE_DETAIL))
     extractor = FakeVacancyExtractor(None)
     service = _service(
         db_session,
@@ -115,7 +118,7 @@ def test_missing_or_blank_detail_enriches_existing_record_and_records_direct_pag
     assert fetcher.urls == [record.url]
     assert extractor.calls == 0
     refreshed = db_session.scalar(select(DiscoveredJob).where(DiscoveredJob.id == record.id))
-    assert refreshed is not None and refreshed.description == "Recovered detail"
+    assert refreshed is not None and refreshed.description == USABLE_DETAIL
     assert len(db_session.scalars(select(DiscoveredJob)).all()) == 1
     provenance = db_session.scalar(select(DiscoveredJobProvenance).where(DiscoveredJobProvenance.job_id == record.id))
     assert provenance is not None
@@ -129,7 +132,7 @@ def test_nonempty_unusable_detail_is_enriched_but_usable_existing_detail_is_skip
     analysis = FakeJobAnalysis()
     service = _service(
         db_session,
-        fetcher=FakeFetcher(_page("Recovered detail")),
+        fetcher=FakeFetcher(_page(USABLE_DETAIL)),
         extractor=FakeVacancyExtractor(None),
         analysis=analysis,
     )
@@ -142,6 +145,39 @@ def test_nonempty_unusable_detail_is_enriched_but_usable_existing_detail_is_skip
         analysis=analysis,
     )
     assert second.enrich_recent(limit=10).outcomes[0].status is JobEnrichmentStatus.SKIPPED
+
+
+def test_short_detail_with_one_extractable_requirement_is_reenriched_for_coverage(db_session) -> None:
+    summary = "A concise vacancy summary naming Python as one requirement."
+    record = _record(db_session, description=summary)
+
+    class SingleRequirementAnalysis:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def analyse_text(self, text: str) -> JobProfile:
+            self.calls.append(text)
+            return JobProfile(
+                title="Applied AI Engineer",
+                requirements=[JobRequirement(text="Python")],
+            )
+
+    analysis = SingleRequirementAnalysis()
+    fetcher = FakeFetcher(_page(USABLE_DETAIL))
+    result = _service(
+        db_session,
+        fetcher=fetcher,
+        extractor=FakeVacancyExtractor(None),
+        analysis=analysis,
+    ).enrich_recent(limit=10)
+
+    assert len(summary) < JobDetailEnrichmentService.MIN_USABLE_DESCRIPTION_CHARACTERS
+    assert result.outcomes[0].status is JobEnrichmentStatus.ENRICHED
+    assert fetcher.urls == [record.url]
+    # The short summary is not sent to semantic extraction before direct-page
+    # recovery; only the recovered detail is assessed.
+    assert analysis.calls == [USABLE_DETAIL]
+    assert db_session.get(DiscoveredJob, record.id).description == USABLE_DETAIL
 
 
 def test_still_unusable_or_failed_fetch_never_overwrites_existing_description(db_session) -> None:
