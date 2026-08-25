@@ -209,6 +209,16 @@ def test_later_external_import_never_marks_omitted_job_inactive(client, db_sessi
     assert all(record.state != "inactive" for record in db_session.scalars(select(DiscoveredJob)).all())
 
 
+def test_repeated_external_import_is_unchanged_not_new(client, db_session) -> None:
+    headers = _auth_headers(client)
+    first = client.post("/api/v1/jobs/import-discovered", json=_payload(_job()), headers=headers)
+    second = client.post("/api/v1/jobs/import-discovered", json=_payload(_job()), headers=headers)
+
+    assert first.json()["lifecycle_counts"]["new"] == 1
+    assert second.json()["lifecycle_counts"] == {"new": 0, "updated": 0, "unchanged": 1, "inactive": 0}
+    assert len(db_session.scalars(select(DiscoveredJob)).all()) == 1
+
+
 def test_authenticated_search_context_uses_confirmed_persisted_context_and_contains_no_credentials(client, db_session) -> None:
     headers = _auth_headers(client)
     user_id = _confirm_context(db_session, "runtime-user@example.com")
@@ -244,6 +254,21 @@ def test_search_context_requires_confirmed_context(client) -> None:
     )
     assert response.status_code == 409
     assert "Upload, review and confirm" in response.json()["detail"]
+
+
+def test_discover_broad_is_an_authenticated_codex_context_boundary(client, db_session) -> None:
+    headers = _auth_headers(client)
+    _confirm_context(db_session, "runtime-user@example.com")
+    response = client.post(
+        "/api/v1/jobs/discover-broad",
+        json={"query": {"keywords": ["Applied AI Engineer"], "locations": ["London"]}},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["query"]["keywords"] == ["Applied AI Engineer"]
+    assert response.json()["search_profile"]["skills"] == ["Python"]
+    assert "API_KEY" not in str(response.json())
 
 
 def test_search_context_isolated_to_the_authenticated_users_confirmed_data(client, db_session) -> None:

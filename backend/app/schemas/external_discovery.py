@@ -72,6 +72,7 @@ class ExternalDiscoveryImportResponse(BaseModel):
     accepted_jobs: list[JobListing] = Field(default_factory=list)
     rejected_count: int = 0
     deduplicated_count: int = 0
+    bounded_out_count: int = 0
     job_states: dict[str, DiscoveredJobState] = Field(default_factory=dict)
     lifecycle_counts: DiscoveryLifecycleCounts = Field(default_factory=DiscoveryLifecycleCounts)
 

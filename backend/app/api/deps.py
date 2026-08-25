@@ -30,7 +30,6 @@ from app.services.external_discovery_import_service import ExternalDiscoveryImpo
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
-from app.services.broad_job_discovery_service import BroadJobDiscoveryService
 from app.services.cv_ingestion_service import CVIngestionService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.schemas.candidate import CandidateContext
@@ -42,7 +41,6 @@ from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
 from app.providers.jobs.recruitee import RecruiteeJobSource
 from app.providers.jobs.smartrecruiters import SmartRecruitersJobSource
-from app.providers.jobs.adzuna import AdzunaJobSource
 from app.providers.jobs.workday import WorkdayJobDetailExtractor
 from app.providers.page_fetch import PublicHttpPageFetcher
 from app.providers.llm import (
@@ -258,24 +256,6 @@ def get_structured_ats_discovery_service(db: DbSession) -> StructuredAtsDiscover
     """Known-source ATS scans are deterministic and construct no semantic clients."""
     return StructuredAtsDiscoveryService(
         session=db,
-        state_store=SqlAlchemyDiscoveredJobStateStore(db),
-    )
-
-
-def get_broad_job_discovery_service(db: DbSession) -> BroadJobDiscoveryService:
-    """Build the Adzuna-only job-first acquisition service without semantic clients."""
-    current_settings = get_settings()
-    if not current_settings.adzuna_app_id or not current_settings.adzuna_app_key:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Adzuna broad discovery is not configured. Set ADZUNA_APP_ID and ADZUNA_APP_KEY in backend/.env.",
-        )
-    return BroadJobDiscoveryService(
-        session=db,
-        source=AdzunaJobSource(
-            app_id=current_settings.adzuna_app_id,
-            app_key=current_settings.adzuna_app_key,
-        ),
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
     )
 
