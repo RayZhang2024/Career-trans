@@ -1,10 +1,3 @@
-from types import SimpleNamespace
-from uuid import uuid4
-
-from langchain_core.callbacks import CallbackManager
-from langchain_core.tracers.langchain import LangChainTracer
-from langsmith import run_helpers
-
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
 from app.schemas.career_assessment import AlignmentConfidence, CareerAssessment
@@ -16,13 +9,6 @@ from app.schemas.recommendation import (
     RecommendationAssessment,
 )
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
-
-
-class _NoopLangChainTracer(LangChainTracer):
-    """Keep the callback-boundary test entirely local (no LangSmith network)."""
-
-    def _persist_run_single(self, run) -> None:  # type: ignore[no-untyped-def]
-        return None
 
 
 def test_graph_runs_existing_services_in_order_and_returns_final_state() -> None:
@@ -121,33 +107,6 @@ def test_graph_runs_existing_services_in_order_and_returns_final_state() -> None
     assert state["fit_assessment"] is fit_assessment
     assert state["career_assessment"] is career_assessment
     assert state["recommendation_assessment"] is recommendation
-
-
-def test_match_node_bridges_langgraph_callback_parent_for_attempt_spans() -> None:
-    observed_parent_names: list[str | None] = []
-    candidate = CandidateContext(source_name="synthetic_candidate")
-    job_profile = JobProfile(title="AI Engineer", requirements=[JobRequirement(text="Python")])
-
-    class MatchingService:
-        def match(self, _job: JobProfile, _candidate: CandidateContext) -> RequirementMatchSet:
-            parent = run_helpers.get_current_run_tree()
-            observed_parent_names.append(parent.name if parent else None)
-            return RequirementMatchSet(matches=[])
-
-    graph = CareerAnalysisGraph.__new__(CareerAnalysisGraph)
-    graph._requirement_matching_service = MatchingService()  # type: ignore[attr-defined]
-
-    tracer = _NoopLangChainTracer(project_name="synthetic", client=SimpleNamespace())
-    parent_id = uuid4()
-    tracer.on_chain_start({}, {}, run_id=parent_id, name="match_requirements")
-    config = {"callbacks": CallbackManager([tracer], parent_run_id=parent_id)}
-
-    graph._match_requirements(  # type: ignore[attr-defined]
-        {"job_profile": job_profile, "candidate_context": candidate},
-        config,
-    )
-
-    assert observed_parent_names == ["match_requirements"]
 
 
 def test_graph_stops_after_zero_requirement_extraction() -> None:

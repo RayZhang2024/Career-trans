@@ -1,9 +1,13 @@
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 
+from langchain_core.runnables import RunnableConfig
+from langsmith import traceable
+from langsmith.run_trees import RunTree
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
-from langsmith import trace
 from pydantic import ValidationError
 
 from app.agents.openai_client import create_traced_openai_client
@@ -39,6 +43,24 @@ class RequirementMatcher(Protocol):
         candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         """Match every job requirement against candidate evidence."""
+
+
+_runnable_config: ContextVar[RunnableConfig | None] = ContextVar(
+    "requirement_matching_runnable_config",
+    default=None,
+)
+
+
+@contextmanager
+def requirement_matching_tracing_config(
+    config: RunnableConfig | None,
+) -> Iterator[None]:
+    """Make the active LangGraph config available to the traced attempt boundary."""
+    token = _runnable_config.set(config)
+    try:
+        yield
+    finally:
+        _runnable_config.reset(token)
 
 
 def _default_prompt_path() -> Path:
@@ -91,50 +113,92 @@ class OpenAIRequirementMatcher:
                 "failure_kind": None,
                 "retrying": False,
             }
-            result: SemanticRequirementMatchSet | None = None
-            with trace(
-                "requirement_matching_attempt",
-                run_type="chain",
-                metadata=metadata,
-            ) as attempt_run:
-                try:
-                    result = self._match_once(
-                        prompt=prompt,
-                        schema=schema,
-                        payload=payload,
-                    )
-                    self._validate_result(result, job_profile, candidate_context)
-                except RequirementMatchingError as exc:
-                    retryable = (
-                        exc.kind in self._RETRYABLE_FAILURE_KINDS
-                        and attempt_number < self._MAX_STRUCTURAL_ATTEMPTS
-                    )
-                    attempt_run.metadata.update(
-                        {
-                            "validation_status": "failed",
-                            "failure_kind": exc.kind,
-                            "retrying": retryable,
-                            "result_match_count": (
-                                len(result.matches)
-                                if result is not None
-                                else None
-                            ),
-                        }
-                    )
-                    if not retryable:
-                        raise
-                else:
-                    attempt_run.metadata.update(
-                        {
-                            "validation_status": "passed",
-                            "failure_kind": None,
-                            "retrying": False,
-                            "result_match_count": len(result.matches),
-                        }
-                    )
-                    return self._attach_canonical_requirements(result, job_profile)
+            try:
+                return self._run_attempt(
+                    prompt=prompt,
+                    schema=schema,
+                    payload=payload,
+                    job_profile=job_profile,
+                    candidate_context=candidate_context,
+                    attempt_number=attempt_number,
+                    metadata=metadata,
+                    config=_runnable_config.get(),
+                    langsmith_extra={"metadata": metadata},
+                )
+            except RequirementMatchingError as exc:
+                if (
+                    exc.kind not in self._RETRYABLE_FAILURE_KINDS
+                    or attempt_number == self._MAX_STRUCTURAL_ATTEMPTS
+                ):
+                    raise
 
         raise AssertionError("Requirement matching attempts were exhausted unexpectedly.")
+
+    @traceable(
+        name="requirement_matching_attempt",
+        run_type="chain",
+        process_inputs=lambda _inputs: {},
+        process_outputs=lambda _outputs: {},
+    )
+    def _run_attempt(
+        self,
+        *,
+        prompt: str,
+        schema: dict[str, Any],
+        payload: dict[str, object],
+        job_profile: JobProfile,
+        candidate_context: CandidateMatchingProfile,
+        attempt_number: int,
+        metadata: dict[str, object],
+        config: RunnableConfig | None = None,
+        run_tree: RunTree | None = None,
+    ) -> RequirementMatchSet:
+        """Perform one application structural attempt under an explicit graph parent."""
+        del config  # Consumed by LangSmith's traceable wrapper for parent propagation.
+        result: SemanticRequirementMatchSet | None = None
+        try:
+            result = self._match_once(
+                prompt=prompt,
+                schema=schema,
+                payload=payload,
+            )
+            self._validate_result(result, job_profile, candidate_context)
+        except RequirementMatchingError as exc:
+            retryable = (
+                exc.kind in self._RETRYABLE_FAILURE_KINDS
+                and attempt_number < self._MAX_STRUCTURAL_ATTEMPTS
+            )
+            self._record_attempt_metadata(
+                run_tree,
+                {
+                    **metadata,
+                    "validation_status": "failed",
+                    "failure_kind": exc.kind,
+                    "retrying": retryable,
+                    "result_match_count": len(result.matches) if result is not None else None,
+                },
+            )
+            raise
+
+        self._record_attempt_metadata(
+            run_tree,
+            {
+                **metadata,
+                "validation_status": "passed",
+                "failure_kind": None,
+                "retrying": False,
+                "result_match_count": len(result.matches),
+            },
+        )
+        return self._attach_canonical_requirements(result, job_profile)
+
+    @staticmethod
+    def _record_attempt_metadata(
+        run_tree: RunTree | None,
+        metadata: dict[str, object],
+    ) -> None:
+        if run_tree is not None:
+            run_tree.metadata.update(metadata)
 
     def _match_once(
         self,

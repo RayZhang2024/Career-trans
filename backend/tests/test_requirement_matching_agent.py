@@ -1,7 +1,11 @@
 import json
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
+from langchain_core.callbacks import CallbackManager
+from langchain_core.tracers.langchain import LangChainTracer
+from langsmith import run_helpers
 
 from app.agents.requirement_matching import (
     OpenAIRequirementMatcher,
@@ -11,7 +15,7 @@ from app.providers.llm import (
     SemanticProviderRequestError,
     SemanticStructuredOutputSchemaError,
 )
-from app.schemas.candidate import CandidateMatchingProfile, CareerEvidence
+from app.schemas.candidate import CandidateContext, CandidateMatchingProfile, CareerEvidence
 from app.schemas.job import (
     JobProfile,
     JobRequirement,
@@ -23,6 +27,8 @@ from app.schemas.matching import (
     SemanticRequirementMatch,
     SemanticRequirementMatchSet,
 )
+from app.services.requirement_matching_service import RequirementMatchingService
+from app.workflows.career_analysis_graph import CareerAnalysisGraph
 
 
 REQUIREMENTS = [
@@ -55,9 +61,11 @@ class _FakeResponses:
     def __init__(self, outputs: list[str | Exception]) -> None:
         self._outputs = iter(outputs)
         self.calls: list[dict[str, object]] = []
+        self.current_run_trees: list[object | None] = []
 
     def create(self, **kwargs: object) -> SimpleNamespace:
         self.calls.append(kwargs)
+        self.current_run_trees.append(run_helpers.get_current_run_tree())
         output = next(self._outputs)
         if isinstance(output, Exception):
             raise output
@@ -89,23 +97,19 @@ def _matcher(outputs: list[str | Exception]) -> tuple[OpenAIRequirementMatcher, 
     return OpenAIRequirementMatcher(api_key="", model="test-model", client=client), client.responses
 
 
-class _TraceRecorder:
+class _MetadataRecorder:
     def __init__(self) -> None:
         self.runs: list[dict[str, object]] = []
 
-    def __call__(self, _name: str, *, metadata: dict[str, object], **_kwargs: object):
-        recorder = self
+    def __call__(self, _run_tree: object | None, metadata: dict[str, object]) -> None:
+        self.runs.append(dict(metadata))
 
-        class _Run:
-            def __enter__(self):
-                recorder.runs.append(metadata)
-                self.metadata = metadata
-                return self
 
-            def __exit__(self, *_exc: object) -> bool:
-                return False
+class _NoopLangChainTracer(LangChainTracer):
+    """Exercise callback propagation without making a LangSmith network request."""
 
-        return _Run()
+    def _persist_run_single(self, run) -> None:  # type: ignore[no-untyped-def]
+        return None
 
 
 def test_matcher_uses_native_strict_schema_and_accepts_valid_result() -> None:
@@ -312,11 +316,12 @@ def test_many_requirement_fixture_completes_with_canonical_results() -> None:
 
 
 def test_valid_first_attempt_is_traced_once_with_safe_metadata(monkeypatch) -> None:
-    recorder = _TraceRecorder()
-    monkeypatch.setattr("app.agents.requirement_matching.trace", recorder)
+    recorder = _MetadataRecorder()
     matcher, responses = _matcher([_valid_result()])
+    monkeypatch.setattr(matcher, "_record_attempt_metadata", recorder)
 
-    matcher.match(JOB_PROFILE, CANDIDATE)
+    with run_helpers.tracing_context(enabled=False):
+        matcher.match(JOB_PROFILE, CANDIDATE)
 
     assert len(responses.calls) == 1
     assert recorder.runs == [
@@ -335,11 +340,12 @@ def test_valid_first_attempt_is_traced_once_with_safe_metadata(monkeypatch) -> N
 
 
 def test_retryable_failure_exposes_failure_kind_and_retrying_without_sensitive_data(monkeypatch) -> None:
-    recorder = _TraceRecorder()
-    monkeypatch.setattr("app.agents.requirement_matching.trace", recorder)
+    recorder = _MetadataRecorder()
     matcher, responses = _matcher(["not json", _valid_result()])
+    monkeypatch.setattr(matcher, "_record_attempt_metadata", recorder)
 
-    matcher.match(JOB_PROFILE, CANDIDATE)
+    with run_helpers.tracing_context(enabled=False):
+        matcher.match(JOB_PROFILE, CANDIDATE)
 
     assert len(responses.calls) == 2
     assert recorder.runs[0]["validation_status"] == "failed"
@@ -354,11 +360,11 @@ def test_retryable_failure_exposes_failure_kind_and_retrying_without_sensitive_d
 
 
 def test_provider_failure_is_not_a_structural_retry_and_is_observable(monkeypatch) -> None:
-    recorder = _TraceRecorder()
-    monkeypatch.setattr("app.agents.requirement_matching.trace", recorder)
+    recorder = _MetadataRecorder()
     matcher, responses = _matcher([SemanticProviderRequestError("secret-provider-detail")])
+    monkeypatch.setattr(matcher, "_record_attempt_metadata", recorder)
 
-    with pytest.raises(RequirementMatchingError):
+    with run_helpers.tracing_context(enabled=False), pytest.raises(RequirementMatchingError):
         matcher.match(JOB_PROFILE, CANDIDATE)
 
     assert len(responses.calls) == 1
@@ -368,8 +374,7 @@ def test_provider_failure_is_not_a_structural_retry_and_is_observable(monkeypatc
 
 
 def test_brown_style_24_requirement_fixture_passes_validation_and_uses_one_attempt(monkeypatch) -> None:
-    recorder = _TraceRecorder()
-    monkeypatch.setattr("app.agents.requirement_matching.trace", recorder)
+    recorder = _MetadataRecorder()
     requirements = [
         JobRequirement(
             text=f"Synthetic Brown requirement {index}",
@@ -385,8 +390,10 @@ def test_brown_style_24_requirement_fixture_passes_validation_and_uses_one_attem
     profile = JobProfile(title="Synthetic AI Engineer", requirements=requirements)
     payload = _valid_result(requirements=requirements)
     matcher, responses = _matcher([payload])
+    monkeypatch.setattr(matcher, "_record_attempt_metadata", recorder)
 
-    result = matcher.match(profile, CANDIDATE)
+    with run_helpers.tracing_context(enabled=False):
+        result = matcher.match(profile, CANDIDATE)
 
     # This is the synthetic replay of the first observed 24-requirement shape;
     # it satisfies _validate_result() and therefore must not trigger a retry.
@@ -399,3 +406,43 @@ def test_brown_style_24_requirement_fixture_passes_validation_and_uses_one_attem
     assert len(responses.calls) == 1
     assert recorder.runs[0]["requirement_count"] == 24
     assert recorder.runs[0]["validation_status"] == "passed"
+
+
+def test_attempt_span_is_created_under_langgraph_callback_parent(monkeypatch) -> None:
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    tracer = _NoopLangChainTracer(
+        project_name="synthetic",
+        client=SimpleNamespace(otel_exporter=None),
+    )
+    parent_id = uuid4()
+    tracer.on_chain_start({}, {}, run_id=parent_id, name="match_requirements")
+    config = {"callbacks": CallbackManager([tracer], parent_run_id=parent_id)}
+    matcher, responses = _matcher([_valid_result()])
+    attempt_runs: list[object | None] = []
+    original_recorder = matcher._record_attempt_metadata
+
+    def capture_attempt_run(run_tree: object | None, metadata: dict[str, object]) -> None:
+        attempt_runs.append(run_tree)
+        original_recorder(run_tree, metadata)
+
+    monkeypatch.setattr(matcher, "_record_attempt_metadata", capture_attempt_run)
+
+    graph = CareerAnalysisGraph.__new__(CareerAnalysisGraph)
+    graph._requirement_matching_service = RequirementMatchingService(matcher=matcher)  # type: ignore[attr-defined]
+    graph._match_requirements(  # type: ignore[attr-defined]
+        {
+            "job_profile": JOB_PROFILE,
+            "candidate_context": CandidateContext(
+                profile_text=CANDIDATE.profile_summary,
+                evidence=CANDIDATE.evidence,
+            ),
+        },
+        config,
+    )
+
+    attempt_run = attempt_runs[0]
+    provider_parent = responses.current_run_trees[0]
+    assert attempt_run is not None
+    assert getattr(attempt_run, "name") == "requirement_matching_attempt"
+    assert getattr(attempt_run, "parent_run_id") == parent_id
+    assert provider_parent is attempt_run
