@@ -119,10 +119,33 @@ class CVIngestionService:
 
     @staticmethod
     def _enrich_provenance(data: CandidateCVData, documents: list[ExtractedCVDocument]) -> CandidateCVData:
-        fallback = [EvidenceProvenance(document_sha256=document.provenance.document_sha256, segment_ids=document.provenance.segment_ids) for document in documents]
+        available_segments = {
+            document.provenance.document_sha256: set(document.provenance.segment_ids)
+            for document in documents
+        }
+        fallback = [
+            EvidenceProvenance(
+                document_sha256=document.provenance.document_sha256,
+                segment_ids=document.provenance.segment_ids,
+            )
+            for document in documents
+        ]
         for item in data.evidence:
             if not item.provenance:
                 item.provenance = list(fallback)
+                continue
+            for provenance in item.provenance:
+                segment_ids = set(provenance.segment_ids)
+                if (
+                    provenance.document_sha256 not in available_segments
+                    or not segment_ids
+                    or not segment_ids.issubset(
+                        available_segments[provenance.document_sha256]
+                    )
+                ):
+                    raise ValueError(
+                        "CV evidence provenance must reference supplied source segments."
+                    )
         return data
 
     @staticmethod
