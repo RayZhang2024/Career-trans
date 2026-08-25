@@ -96,8 +96,59 @@ def test_semantic_response_facade_preserves_existing_agent_message_shape() -> No
             "user_prompt": "unchanged user payload",
             "operation": "requirement_matching",
             "required_capabilities": frozenset({LLMCapability.STRUCTURED_OUTPUT}),
+            "output_schema": None,
         }
     ]
+
+
+def test_semantic_response_facade_passes_json_schema_to_provider() -> None:
+    llm = FakeSemanticLLM()
+    client = SemanticResponseClient(llm, operation="requirement_matching")
+    schema = {"type": "object", "properties": {"matches": {"type": "array"}}}
+
+    client.responses.create(
+        model="test-model",
+        input=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "user"},
+        ],
+        text={"format": {"type": "json_schema", "schema": schema}},
+    )
+
+    assert llm.calls[0]["output_schema"] == schema
+
+
+def test_openai_semantic_llm_uses_native_responses_json_schema(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeResponses:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(output_text='{"matches": []}')
+
+    monkeypatch.setattr(
+        "app.providers.llm.create_traced_openai_client",
+        lambda **_: SimpleNamespace(responses=FakeResponses()),
+    )
+    schema = {"type": "object", "properties": {"matches": {"type": "array"}}}
+
+    output = OpenAISemanticLLM(api_key="server-secret").generate(
+        model="test-model",
+        system_prompt="system",
+        user_prompt="user",
+        operation="requirement_matching",
+        output_schema=schema,
+    )
+
+    assert output == '{"matches": []}'
+    assert calls[0]["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "requirement_matching",
+            "strict": True,
+            "schema": schema,
+        }
+    }
 
 
 def test_migrated_dependency_construction_accepts_ollama_without_openai(monkeypatch) -> None:
