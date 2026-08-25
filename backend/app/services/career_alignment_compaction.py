@@ -12,7 +12,9 @@ from app.services.candidate_profile_compaction import candidate_career_profile
 
 
 _RESPONSIBILITY_LIMIT = 8
+_TECHNICAL_SKILL_LIMIT = 12
 _DOMAIN_LIMIT = 8
+_CONSTRAINT_LIMIT = 6
 _THEME_TEXT_LIMIT = 240
 
 
@@ -42,9 +44,21 @@ def career_alignment_input(
                 job_profile.responsibilities,
                 limit=_RESPONSIBILITY_LIMIT,
             ),
+            technical_skills=_compact_themes(
+                job_profile.technical_skills,
+                limit=_TECHNICAL_SKILL_LIMIT,
+            ),
             domain_knowledge=_compact_themes(
                 job_profile.domain_knowledge,
                 limit=_DOMAIN_LIMIT,
+            ),
+            security_requirements=_compact_themes(
+                job_profile.security_requirements,
+                limit=_CONSTRAINT_LIMIT,
+            ),
+            work_authorization_requirements=_compact_themes(
+                job_profile.work_authorization_requirements,
+                limit=_CONSTRAINT_LIMIT,
             ),
         ),
         candidate_context=candidate_career_profile(candidate_context),

@@ -65,7 +65,10 @@ class CareerAlignmentJobProfile(BaseModel):
     employment_type: str | None = None
     application_deadline: str | None = None
     responsibilities: list[str] = Field(default_factory=list)
+    technical_skills: list[str] = Field(default_factory=list)
     domain_knowledge: list[str] = Field(default_factory=list)
+    security_requirements: list[str] = Field(default_factory=list)
+    work_authorization_requirements: list[str] = Field(default_factory=list)
 
 
 class CareerAlignmentFitSummary(BaseModel):

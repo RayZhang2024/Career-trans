@@ -29,10 +29,16 @@ def test_career_alignment_input_preserves_strategy_and_safe_job_signals_only() -
             "Build reliable applied systems for customers.",
         ],
         requirements=[requirement],
-        technical_skills=["Private technology inventory"],
+        technical_skills=["Python", " python ", "Kubernetes"],
         domain_knowledge=["Applied AI"],
-        security_requirements=["Private security constraint"],
-        work_authorization_requirements=["Private eligibility constraint"],
+        security_requirements=[
+            "Active security clearance",
+            "active security clearance",
+        ],
+        work_authorization_requirements=[
+            "Right to work in the UK",
+            "right to work in the uk",
+        ],
     )
     candidate = CandidateContext(
         profile_text="Technical delivery background.",
@@ -70,7 +76,10 @@ def test_career_alignment_input_preserves_strategy_and_safe_job_signals_only() -
         "employment_type": "Permanent",
         "application_deadline": None,
         "responsibilities": ["Build reliable applied systems for customers."],
+        "technical_skills": ["Python", "Kubernetes"],
         "domain_knowledge": ["Applied AI"],
+        "security_requirements": ["Active security clearance"],
+        "work_authorization_requirements": ["Right to work in the UK"],
     }
     assert payload["fit_assessment"] == {
         "fit_score": 74.0,
@@ -81,6 +90,26 @@ def test_career_alignment_input_preserves_strategy_and_safe_job_signals_only() -
         "hard_blocker_count": 0,
     }
     rendered = str(payload)
+    assert "requirements" not in payload["job_profile"]
     assert "Private source wording" not in rendered
-    assert "Private technology inventory" not in rendered
     assert "Private detailed fit explanation" not in rendered
+
+
+def test_career_alignment_signal_lists_are_hard_bounded() -> None:
+    payload = career_alignment_input(
+        CandidateContext(),
+        JobProfile(
+            technical_skills=[f"Technical skill {index}" for index in range(20)],
+            security_requirements=[
+                f"Security constraint {index}" for index in range(10)
+            ],
+            work_authorization_requirements=[
+                f"Work authorization {index}" for index in range(10)
+            ],
+        ),
+        FitAssessment(fit_score=50.0),
+    ).model_dump(mode="json")
+
+    assert len(payload["job_profile"]["technical_skills"]) == 12
+    assert len(payload["job_profile"]["security_requirements"]) == 6
+    assert len(payload["job_profile"]["work_authorization_requirements"]) == 6
