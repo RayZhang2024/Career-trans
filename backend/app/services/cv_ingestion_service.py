@@ -51,10 +51,22 @@ class CVIngestionService:
             if parsed is None:
                 unstructured.append(document)
             else:
-                imported.append(CandidateCVData.model_validate(parsed))
+                imported_data = CandidateCVData.model_validate(parsed)
+                self._enrich_provenance(
+                    imported_data,
+                    [document],
+                    allow_missing_provenance=True,
+                )
+                imported.append(imported_data)
         if unstructured:
-            imported.append(self._semantic_interpreter().interpret(unstructured))
-        merged = self._enrich_provenance(self._merger.merge(imported), documents)
+            semantic_data = self._semantic_interpreter().interpret(unstructured)
+            self._enrich_provenance(
+                semantic_data,
+                unstructured,
+                allow_missing_provenance=False,
+            )
+            imported.append(semantic_data)
+        merged = self._merger.merge(imported)
         draft.merged_json = json.dumps(merged.model_dump(mode="json"))
         draft.state = CVIngestionState.REVIEW_READY
         self._session.commit()
@@ -118,7 +130,12 @@ class CVIngestionService:
         return [ExtractedCVDocument.model_validate(value) for value in json.loads(draft.documents_json)]
 
     @staticmethod
-    def _enrich_provenance(data: CandidateCVData, documents: list[ExtractedCVDocument]) -> CandidateCVData:
+    def _enrich_provenance(
+        data: CandidateCVData,
+        documents: list[ExtractedCVDocument],
+        *,
+        allow_missing_provenance: bool,
+    ) -> CandidateCVData:
         available_segments = {
             document.provenance.document_sha256: set(document.provenance.segment_ids)
             for document in documents
@@ -132,6 +149,10 @@ class CVIngestionService:
         ]
         for item in data.evidence:
             if not item.provenance:
+                if not allow_missing_provenance:
+                    raise ValueError(
+                        "Semantic CV evidence must identify supplied source segments."
+                    )
                 item.provenance = list(fallback)
                 continue
             for provenance in item.provenance:

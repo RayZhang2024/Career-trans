@@ -211,6 +211,76 @@ def test_invalid_evidence_segment_provenance_is_rejected(db_session) -> None:
         service.interpret("user-1", draft.id)
 
 
+def test_semantic_evidence_without_provenance_is_rejected_without_fallback(db_session) -> None:
+    class _MissingProvenanceInterpreter:
+        def interpret(self, _documents):
+            return CandidateCVData(
+                evidence=[
+                    CareerEvidenceDraft(
+                        evidence_type="project",
+                        title="Ungrounded technical claim",
+                        text="Implemented an API service.",
+                        skills=["API"],
+                        provenance=[],
+                    )
+                ]
+            )
+
+    service = CVIngestionService(db_session, interpreter=_MissingProvenanceInterpreter())
+    draft = service.upload(
+        "user-1",
+        [("cv.md", "text/markdown", b"# Project\nImplemented an API service.")],
+    )
+
+    with pytest.raises(ValueError, match="Semantic CV evidence must identify"):
+        service.interpret("user-1", draft.id)
+
+    assert service.read("user-1", draft.id).state == "uploaded"
+    assert db_session.scalars(select(CandidateEvidenceRecord)).all() == []
+
+
+def test_semantic_evidence_can_preserve_multiple_valid_source_segments(db_session) -> None:
+    class _MultiSegmentInterpreter:
+        def interpret(self, documents):
+            document = documents[0]
+            return CandidateCVData(
+                evidence=[
+                    CareerEvidenceDraft(
+                        evidence_type="project",
+                        title="Service delivery",
+                        text="Built a service and tested it with pytest.",
+                        skills=["pytest"],
+                        provenance=[
+                            EvidenceProvenance(
+                                document_sha256=document.provenance.document_sha256,
+                                segment_ids=[
+                                    document.segments[0].segment_id,
+                                    document.segments[1].segment_id,
+                                ],
+                            )
+                        ],
+                    )
+                ]
+            )
+
+    service = CVIngestionService(db_session, interpreter=_MultiSegmentInterpreter())
+    draft = service.upload(
+        "user-1",
+        [
+            (
+                "cv.md",
+                "text/markdown",
+                b"# Build\nBuilt a service.\n# Test\nTested it with pytest.",
+            )
+        ],
+    )
+
+    reviewed = service.interpret("user-1", draft.id)
+
+    assert reviewed.merged is not None
+    assert len(reviewed.merged.evidence[0].provenance[0].segment_ids) == 2
+
+
 def test_technical_evidence_prompt_requires_source_grounded_detail() -> None:
     prompt = (Path(__file__).resolve().parents[2] / "prompts" / "cv_evidence_extraction.md").read_text(
         encoding="utf-8"
