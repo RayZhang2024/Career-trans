@@ -36,10 +36,29 @@ Use the closest supported category:
 
 ## Importance
 
-Use:
+Classify importance only from the employer's wording and the item's section
+context. Do not use generic assumptions about what sounds important for a role.
 
-- `essential` when the advert clearly requires the item;
-- `desirable` when the advert describes the item as preferred, desirable, beneficial, advantageous, or equivalent;
-- `unspecified` when importance is unclear.
+Use `essential` only when the advert clearly makes the candidate qualification
+mandatory. Clear support includes direct wording such as must, required, need
+to, expected to, minimum qualification, or basic qualification. A bullet in a
+clearly candidate-oriented required-qualifications section (for example,
+Requirements, Qualifications, What you need, or Minimum qualifications) can
+also support `essential` when the section makes its qualification purpose clear.
+
+Use `desirable` only when the advert explicitly frames the item as optional or
+preferred, such as preferred, nice to have, bonus, advantageous, beneficial,
+plus, or equivalent wording. A bullet in a clearly preferred-qualifications
+section (for example, Preferred qualifications, Nice to have, or Bonus) can
+also support `desirable`.
+
+Use `unspecified` whenever that evidence is absent or ambiguous. In
+particular, ordinary responsibility or role-description sections do not make a
+requirement `essential` merely because the work is central to the role.
+
+For every non-`unspecified` importance label, include the short employer
+wording or heading that supports it in `source_text`. Preserve the distinction
+between an employer requirement and a responsibility; do not promote a
+requirement based on model intuition.
 
 Your task is extraction, not candidate assessment.
