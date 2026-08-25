@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+from langsmith import trace
 from pydantic import ValidationError
 
 from app.agents.openai_client import create_traced_openai_client
@@ -79,17 +80,59 @@ class OpenAIRequirementMatcher:
         }
 
         for attempt in range(self._MAX_STRUCTURAL_ATTEMPTS):
-            try:
-                result = self._match_once(
-                    prompt=prompt,
-                    schema=schema,
-                    payload=payload,
-                )
-                self._validate_result(result, job_profile, candidate_context)
-                return self._attach_canonical_requirements(result, job_profile)
-            except RequirementMatchingError as exc:
-                if exc.kind not in self._RETRYABLE_FAILURE_KINDS or attempt + 1 == self._MAX_STRUCTURAL_ATTEMPTS:
-                    raise
+            attempt_number = attempt + 1
+            metadata = {
+                "attempt": attempt_number,
+                "max_attempts": self._MAX_STRUCTURAL_ATTEMPTS,
+                "requirement_count": len(job_profile.requirements),
+                "candidate_evidence_count": len(candidate_context.evidence),
+                "attempt_scope": "application_structural",
+                "validation_status": "pending",
+                "failure_kind": None,
+                "retrying": False,
+            }
+            result: SemanticRequirementMatchSet | None = None
+            with trace(
+                "requirement_matching_attempt",
+                run_type="chain",
+                metadata=metadata,
+            ) as attempt_run:
+                try:
+                    result = self._match_once(
+                        prompt=prompt,
+                        schema=schema,
+                        payload=payload,
+                    )
+                    self._validate_result(result, job_profile, candidate_context)
+                except RequirementMatchingError as exc:
+                    retryable = (
+                        exc.kind in self._RETRYABLE_FAILURE_KINDS
+                        and attempt_number < self._MAX_STRUCTURAL_ATTEMPTS
+                    )
+                    attempt_run.metadata.update(
+                        {
+                            "validation_status": "failed",
+                            "failure_kind": exc.kind,
+                            "retrying": retryable,
+                            "result_match_count": (
+                                len(result.matches)
+                                if result is not None
+                                else None
+                            ),
+                        }
+                    )
+                    if not retryable:
+                        raise
+                else:
+                    attempt_run.metadata.update(
+                        {
+                            "validation_status": "passed",
+                            "failure_kind": None,
+                            "retrying": False,
+                            "result_match_count": len(result.matches),
+                        }
+                    )
+                    return self._attach_canonical_requirements(result, job_profile)
 
         raise AssertionError("Requirement matching attempts were exhausted unexpectedly.")
 

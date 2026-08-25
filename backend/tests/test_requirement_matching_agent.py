@@ -89,6 +89,25 @@ def _matcher(outputs: list[str | Exception]) -> tuple[OpenAIRequirementMatcher, 
     return OpenAIRequirementMatcher(api_key="", model="test-model", client=client), client.responses
 
 
+class _TraceRecorder:
+    def __init__(self) -> None:
+        self.runs: list[dict[str, object]] = []
+
+    def __call__(self, _name: str, *, metadata: dict[str, object], **_kwargs: object):
+        recorder = self
+
+        class _Run:
+            def __enter__(self):
+                recorder.runs.append(metadata)
+                self.metadata = metadata
+                return self
+
+            def __exit__(self, *_exc: object) -> bool:
+                return False
+
+        return _Run()
+
+
 def test_matcher_uses_native_strict_schema_and_accepts_valid_result() -> None:
     matcher, responses = _matcher([_valid_result()])
 
@@ -290,3 +309,93 @@ def test_many_requirement_fixture_completes_with_canonical_results() -> None:
 
     assert [match.requirement for match in result.matches] == requirements
     assert len(responses.calls) == 1
+
+
+def test_valid_first_attempt_is_traced_once_with_safe_metadata(monkeypatch) -> None:
+    recorder = _TraceRecorder()
+    monkeypatch.setattr("app.agents.requirement_matching.trace", recorder)
+    matcher, responses = _matcher([_valid_result()])
+
+    matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert len(responses.calls) == 1
+    assert recorder.runs == [
+        {
+            "attempt": 1,
+            "max_attempts": 2,
+            "requirement_count": 2,
+            "candidate_evidence_count": 1,
+            "attempt_scope": "application_structural",
+            "validation_status": "passed",
+            "failure_kind": None,
+            "retrying": False,
+            "result_match_count": 2,
+        }
+    ]
+
+
+def test_retryable_failure_exposes_failure_kind_and_retrying_without_sensitive_data(monkeypatch) -> None:
+    recorder = _TraceRecorder()
+    monkeypatch.setattr("app.agents.requirement_matching.trace", recorder)
+    matcher, responses = _matcher(["not json", _valid_result()])
+
+    matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert len(responses.calls) == 2
+    assert recorder.runs[0]["validation_status"] == "failed"
+    assert recorder.runs[0]["failure_kind"] == "invalid_output"
+    assert recorder.runs[0]["retrying"] is True
+    assert recorder.runs[1]["validation_status"] == "passed"
+    assert recorder.runs[1]["retrying"] is False
+    serialized = str(recorder.runs)
+    assert "EVIDENCE-1" not in serialized
+    assert "Delivered Python systems" not in serialized
+    assert "not json" not in serialized
+
+
+def test_provider_failure_is_not_a_structural_retry_and_is_observable(monkeypatch) -> None:
+    recorder = _TraceRecorder()
+    monkeypatch.setattr("app.agents.requirement_matching.trace", recorder)
+    matcher, responses = _matcher([SemanticProviderRequestError("secret-provider-detail")])
+
+    with pytest.raises(RequirementMatchingError):
+        matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert len(responses.calls) == 1
+    assert recorder.runs[0]["failure_kind"] == "provider_failure"
+    assert recorder.runs[0]["retrying"] is False
+    assert "secret-provider-detail" not in str(recorder.runs)
+
+
+def test_brown_style_24_requirement_fixture_passes_validation_and_uses_one_attempt(monkeypatch) -> None:
+    recorder = _TraceRecorder()
+    monkeypatch.setattr("app.agents.requirement_matching.trace", recorder)
+    requirements = [
+        JobRequirement(
+            text=f"Synthetic Brown requirement {index}",
+            category=RequirementCategory.TECHNICAL,
+            importance=(
+                RequirementImportance.ESSENTIAL
+                if index < 12
+                else RequirementImportance.DESIRABLE
+            ),
+        )
+        for index in range(24)
+    ]
+    profile = JobProfile(title="Synthetic AI Engineer", requirements=requirements)
+    payload = _valid_result(requirements=requirements)
+    matcher, responses = _matcher([payload])
+
+    result = matcher.match(profile, CANDIDATE)
+
+    # This is the synthetic replay of the first observed 24-requirement shape;
+    # it satisfies _validate_result() and therefore must not trigger a retry.
+    matcher._validate_result(  # noqa: SLF001 - explicit regression of the invariant
+        SemanticRequirementMatchSet.model_validate(json.loads(payload)),
+        profile,
+        CANDIDATE,
+    )
+    assert len(result.matches) == 24
+    assert len(responses.calls) == 1
+    assert recorder.runs[0]["requirement_count"] == 24
+    assert recorder.runs[0]["validation_status"] == "passed"
