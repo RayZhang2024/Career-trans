@@ -13,7 +13,7 @@ def test_broad_discovery_has_no_adzuna_or_paid_search_api_configuration() -> Non
     assert "adzuna_app" not in template
 
 
-def test_cli_discover_broad_reuses_codex_runner_and_shared_import_without_ranking(monkeypatch, capsys) -> None:
+def test_companyless_discover_external_is_broad_codex_path_without_ranking(monkeypatch, capsys) -> None:
     clients = []
 
     class _Client:
@@ -21,8 +21,8 @@ def test_cli_discover_broad_reuses_codex_runner_and_shared_import_without_rankin
             self.calls = []
             clients.append(self)
 
-        def get_broad_discovery_context(self, query):
-            self.calls.append(("broad_context", query))
+        def get_external_discovery_search_context(self, query):
+            self.calls.append(("external_context", query))
             return {
                 "search_profile": {"profile_summary": "Technical candidate", "skills": ["Python"]},
                 "query": query,
@@ -35,7 +35,7 @@ def test_cli_discover_broad_reuses_codex_runner_and_shared_import_without_rankin
                 "accepted_jobs": kwargs["jobs"],
                 "rejected_count": 0,
                 "deduplicated_count": 0,
-                "bounded_out_count": 0,
+                "bounded_out_count": 1,
                 "lifecycle_counts": {"new": 1, "updated": 0, "unchanged": 0, "inactive": 0},
             }
 
@@ -54,14 +54,14 @@ def test_cli_discover_broad_reuses_codex_runner_and_shared_import_without_rankin
 
     monkeypatch.setattr(cli, "CareerTransApiClient", _Client)
     monkeypatch.setattr(cli, "CodexExternalDiscoveryRunner", _Runner)
-    assert cli.main(
-        ["--token", "token", "jobs", "discover-broad", "--keyword", "AI Engineer", "--location", "London"]
-    ) == 0
+    assert cli.main(["--token", "token", "jobs", "discover-external", "--keyword", "AI Engineer", "--location", "London"]) == 0
 
     assert clients[0].calls[0] == (
-        "broad_context",
-        {"keywords": ["AI Engineer"], "locations": ["London"], "max_results": 20},
+        "external_context",
+        {"keywords": ["AI Engineer"], "locations": ["London"], "companies": [], "max_results": 20},
     )
     assert clients[0].calls[1][0] == "import_discovered"
     assert clients[0].calls[1][1]["runtime"] == "codex"
-    assert "Broad scan: raw=1 normalized=1" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "broad employer-agnostic" in output
+    assert "bounded_out=1" in output

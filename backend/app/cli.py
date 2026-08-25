@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_commands = jobs.add_subparsers(dest="jobs_command", required=True)
     discover_external = jobs_commands.add_parser(
         "discover-external",
-        help="Use local Codex to find public vacancies, then import them through Career-trans",
+        help="Use local Codex for broad employer-agnostic search (or target companies optionally), then import vacancies",
     )
     discover_external.add_argument("--keyword", dest="keywords", action="append", required=True)
     discover_external.add_argument("--location", dest="locations", action="append", default=[])
@@ -87,14 +87,6 @@ def build_parser() -> argparse.ArgumentParser:
     discover_ats.add_argument("--max-sources", type=int, default=20)
     discover_ats.add_argument("--provider", dest="providers", action="append", default=[])
     discover_ats.add_argument("--company", dest="companies", action="append", default=[])
-    discover_broad = jobs_commands.add_parser(
-        "discover-broad",
-        help="Use local Codex live search for bounded job-first discovery without ranking or enrichment",
-    )
-    discover_broad.add_argument("--keyword", dest="keywords", action="append", required=True)
-    discover_broad.add_argument("--location", dest="locations", action="append", default=[])
-    discover_broad.add_argument("--limit", type=int, default=20, choices=range(1, 26))
-    discover_broad.add_argument("--remote-ok", action="store_true", default=None)
 
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
@@ -229,30 +221,6 @@ def _print_profile(profile: dict[str, Any]) -> None:
 
 
 def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
-    if args.jobs_command == "discover-broad":
-        query: dict[str, Any] = {
-            "keywords": args.keywords,
-            "locations": args.locations,
-            "max_results": args.limit,
-        }
-        if args.remote_ok is not None:
-            query["remote_ok"] = args.remote_ok
-        context = ExternalDiscoverySearchContextResponse.model_validate(
-            client.get_broad_discovery_context(query)
-        )
-        jobs = CodexExternalDiscoveryRunner().discover(context)
-        imported = _import_codex_discoveries(client, jobs, query)
-        lifecycle = imported.get("lifecycle_counts", {})
-        print(
-            "Broad scan: "
-            f"raw={len(jobs)} normalized={len(jobs)} "
-            f"rejected={imported.get('rejected_count', 0)} deduplicated={imported.get('deduplicated_count', 0)} "
-            f"bounded={len(imported.get('accepted_jobs', []))} "
-            f"bounded_out={imported.get('bounded_out_count', 0)} new={lifecycle.get('new', 0)} "
-            f"updated={lifecycle.get('updated', 0)} unchanged={lifecycle.get('unchanged', 0)}"
-        )
-        print(f"OK | codex | raw={len(jobs)} normalized={len(jobs)}")
-        return 0
     if args.jobs_command == "discover-ats":
         response = client.discover_known_ats_sources(
             {
@@ -343,10 +311,14 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
     )
     jobs = CodexExternalDiscoveryRunner().discover(context)
     imported = _import_codex_discoveries(client, jobs, query)
+    scope = "broad employer-agnostic" if not args.companies else "company-targeted"
+    lifecycle = imported.get("lifecycle_counts", {})
     print(
-        f"Imported {len(imported.get('accepted_jobs', []))} jobs "
-        f"(rejected={imported.get('rejected_count', 0)}, "
-        f"deduplicated={imported.get('deduplicated_count', 0)})."
+        f"Imported {len(imported.get('accepted_jobs', []))} jobs ({scope}; "
+        f"raw={len(jobs)}, normalized={len(jobs)}, rejected={imported.get('rejected_count', 0)}, "
+        f"deduplicated={imported.get('deduplicated_count', 0)}, bounded_out={imported.get('bounded_out_count', 0)}, "
+        f"new={lifecycle.get('new', 0)}, updated={lifecycle.get('updated', 0)}, "
+        f"unchanged={lifecycle.get('unchanged', 0)})."
     )
     if args.rank and imported.get("accepted_jobs"):
         ranking = client.rank_jobs_for_current_user(imported["accepted_jobs"])

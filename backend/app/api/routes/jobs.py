@@ -112,20 +112,6 @@ def discover_known_ats_sources(
     return service.discover(payload)
 
 
-@router.post(
-    "/discover-broad",
-    response_model=ExternalDiscoverySearchContextResponse,
-    status_code=status.HTTP_200_OK,
-)
-def discover_broad_jobs(
-    payload: ExternalDiscoverySearchContextRequest,
-    candidate_context: PersistedCandidateContext,
-    service: ExternalDiscoveryImportService = Depends(get_external_discovery_import_service),
-) -> ExternalDiscoverySearchContextResponse:
-    """Prepare authenticated job-first context for the local Codex discovery runtime."""
-    return service.search_context(candidate_context, payload)
-
-
 @router.get("/inbox", response_model=OpportunityInboxResponse, status_code=status.HTTP_200_OK)
 def list_opportunity_inbox(
     current_user: CurrentUser,

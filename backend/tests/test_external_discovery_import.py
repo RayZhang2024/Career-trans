@@ -256,21 +256,6 @@ def test_search_context_requires_confirmed_context(client) -> None:
     assert "Upload, review and confirm" in response.json()["detail"]
 
 
-def test_discover_broad_is_an_authenticated_codex_context_boundary(client, db_session) -> None:
-    headers = _auth_headers(client)
-    _confirm_context(db_session, "runtime-user@example.com")
-    response = client.post(
-        "/api/v1/jobs/discover-broad",
-        json={"query": {"keywords": ["Applied AI Engineer"], "locations": ["London"]}},
-        headers=headers,
-    )
-
-    assert response.status_code == 200
-    assert response.json()["query"]["keywords"] == ["Applied AI Engineer"]
-    assert response.json()["search_profile"]["skills"] == ["Python"]
-    assert "API_KEY" not in str(response.json())
-
-
 def test_search_context_isolated_to_the_authenticated_users_confirmed_data(client, db_session) -> None:
     headers_a = _auth_headers(client, "runtime-a@example.com")
     headers_b = _auth_headers(client, "runtime-b@example.com")
