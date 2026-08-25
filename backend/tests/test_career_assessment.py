@@ -12,6 +12,7 @@ from app.schemas.career_assessment import (
     CareerDimensionAssessment,
 )
 from app.schemas.job import JobProfile
+from app.workflows.career_analysis_graph import CareerAnalysisGraph
 from app.services.career_assessment_service import CareerAssessmentService
 
 
@@ -201,6 +202,26 @@ def test_unknown_job_facts_reduce_confidence_without_reducing_alignment() -> Non
 
     assert assessment.career_alignment_score == 80.0
     assert assessment.confidence == AlignmentConfidence.MEDIUM
+
+
+def test_confidence_cap_counts_merged_known_listing_metadata() -> None:
+    candidate = rich_candidate()
+    extracted = JobProfile(title="Extracted title")
+    from app.schemas.discovery import JobListing
+
+    merged = CareerAnalysisGraph._merge_known_listing_metadata(
+        extracted,
+        JobListing(
+            source="external",
+            title="Known title",
+            location="London",
+            work_arrangement="Hybrid",
+            employment_type="Permanent",
+            url="https://jobs.example.test/known",
+        ),
+    )
+
+    assert CareerAssessmentService._confidence_cap(candidate, merged) is AlignmentConfidence.HIGH
 
 
 @pytest.mark.parametrize(

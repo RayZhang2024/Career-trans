@@ -85,7 +85,11 @@ class JobRankingService:
             if finalist_count >= request.max_full_analyses:
                 continue
             try:
-                state = self._career_analysis_graph.invoke(job_text=job.description, candidate_context=request.candidate_context)
+                state = self._career_analysis_graph.invoke(
+                    job_text=job.description,
+                    candidate_context=request.candidate_context,
+                    job_listing=job,
+                )
                 job_profile = state.get("job_profile")
                 if job_profile is not None and not job_profile.requirements:
                     failures.append(self._insufficient_detail_failure(job, "no extractable requirements"))
