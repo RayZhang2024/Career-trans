@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.agents.job_extraction import OpenAIJobExtractor
-from app.schemas.job import RequirementImportance
+from app.schemas.job import JobRequirement, RequirementImportance
 
 
 class _FakeResponses:
@@ -27,7 +27,7 @@ def _extract(
     text: str,
     importance: RequirementImportance,
     source_text: str,
-) -> tuple[RequirementImportance, _FakeResponses]:
+) -> tuple[JobRequirement, _FakeResponses]:
     client = _FakeClient(
         {
             "requirements": [
@@ -43,7 +43,7 @@ def _extract(
     profile = OpenAIJobExtractor(api_key="", model="test", client=client).extract(
         "A sufficiently long job advert used only for extraction testing."
     )
-    return profile.requirements[0].importance, client.responses
+    return profile.requirements[0], client.responses
 
 
 @pytest.mark.parametrize(
@@ -70,9 +70,34 @@ def _extract(
             "Minimum qualifications: distributed systems experience.",
         ),
         (
+            "Shipping LLM product experiences",
+            RequirementImportance.ESSENTIAL,
+            "You may be a good fit if: you have shipped LLM product experiences.",
+        ),
+        (
+            "End-to-end ownership",
+            RequirementImportance.ESSENTIAL,
+            "What we're looking for: ownership of ambiguous problems end to end.",
+        ),
+        (
+            "Customer-facing engineering experience",
+            RequirementImportance.ESSENTIAL,
+            "Who you are: a customer-facing engineer who communicates clearly.",
+        ),
+        (
             "Start-up experience",
             RequirementImportance.DESIRABLE,
             "Preferred qualifications: start-up experience.",
+        ),
+        (
+            "Evaluation framework experience",
+            RequirementImportance.DESIRABLE,
+            "Nice to have: evaluation framework experience.",
+        ),
+        (
+            "Developer tooling experience",
+            RequirementImportance.DESIRABLE,
+            "Bonus / a plus: developer tooling experience.",
         ),
         (
             "Own ambiguous problems",
@@ -86,23 +111,25 @@ def test_extraction_preserves_evidence_supported_importance_labels(
     importance: RequirementImportance,
     source_text: str,
 ) -> None:
-    actual_importance, _ = _extract(
+    requirement, _ = _extract(
         text=text,
         importance=importance,
         source_text=source_text,
     )
 
-    assert actual_importance == importance
+    assert requirement.importance == importance
+    if importance is not RequirementImportance.UNSPECIFIED:
+        assert requirement.source_text == source_text
 
 
 def test_extraction_keeps_unspecified_without_textual_importance_evidence() -> None:
-    actual_importance, _ = _extract(
+    requirement, _ = _extract(
         text="Strong software engineering ability",
         importance=RequirementImportance.UNSPECIFIED,
         source_text="Strong software engineering ability.",
     )
 
-    assert actual_importance == RequirementImportance.UNSPECIFIED
+    assert requirement.importance == RequirementImportance.UNSPECIFIED
 
 
 def test_extraction_uses_one_model_call_and_supplies_conservative_importance_contract() -> None:
@@ -117,6 +144,10 @@ def test_extraction_uses_one_model_call_and_supplies_conservative_importance_con
     normalized_prompt = " ".join(system_prompt.split())
     assert "section context" in normalized_prompt
     assert "must, required, need" in system_prompt
-    assert "Preferred qualifications" in system_prompt
+    assert "You may be a good fit if" in system_prompt
+    assert "What we’re looking for" in system_prompt
+    assert "primary candidate-criteria section" in normalized_prompt
+    assert "Preferred qualifications" in normalized_prompt
+    assert "Better to have" in normalized_prompt
     assert "ordinary responsibility" in system_prompt
     assert "model intuition" in system_prompt

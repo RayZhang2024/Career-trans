@@ -39,26 +39,36 @@ Use the closest supported category:
 Classify importance only from the employer's wording and the item's section
 context. Do not use generic assumptions about what sounds important for a role.
 
-Use `essential` only when the advert clearly makes the candidate qualification
-mandatory. Clear support includes direct wording such as must, required, need
-to, expected to, minimum qualification, or basic qualification. A bullet in a
-clearly candidate-oriented required-qualifications section (for example,
-Requirements, Qualifications, What you need, or Minimum qualifications) can
-also support `essential` when the section makes its qualification purpose clear.
+Use `essential` when the advert makes an item a core candidate criterion. Clear
+support includes direct wording such as must, required, need to, expected to,
+minimum qualification, or basic qualification. It also includes bullets in a
+clearly primary candidate-criteria section, even if its introductory language
+is soft. For example, sections serving the function of “You may be a good fit
+if”, “You’ll be a good fit if”, “What we’re looking for”, “Who you are”,
+“About you”, “You have”, Requirements, Qualifications, What you need, or
+Minimum qualifications establish core criteria when they clearly describe the
+candidate rather than the work.
+
+Do not treat “may” in “You may be a good fit if” as an optional/desirable
+signal. The section’s candidate-qualification function matters more than that
+literal softness. Apply the same reasoning to equivalent primary
+candidate-criteria sections; this list is illustrative, not exhaustive.
 
 Use `desirable` only when the advert explicitly frames the item as optional or
 preferred, such as preferred, nice to have, bonus, advantageous, beneficial,
-plus, or equivalent wording. A bullet in a clearly preferred-qualifications
-section (for example, Preferred qualifications, Nice to have, or Bonus) can
-also support `desirable`.
+plus, better to have, or equivalent wording. A bullet in a clearly
+additional/preferred-qualifications section (for example, Preferred
+qualifications, Nice to have, Bonus, A plus, or Better to have) can also
+support `desirable`. Apply the same reasoning to equivalent explicitly
+optional/additional sections.
 
 Use `unspecified` whenever that evidence is absent or ambiguous. In
 particular, ordinary responsibility or role-description sections do not make a
 requirement `essential` merely because the work is central to the role.
 
 For every non-`unspecified` importance label, include the short employer
-wording or heading that supports it in `source_text`. Preserve the distinction
-between an employer requirement and a responsibility; do not promote a
-requirement based on model intuition.
+wording and, where relevant, the section heading that supports it in
+`source_text`. Preserve the distinction between an employer requirement and a
+responsibility; do not promote a requirement based on model intuition.
 
 Your task is extraction, not candidate assessment.
