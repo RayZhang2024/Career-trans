@@ -14,6 +14,7 @@ from app.api.deps import (
     get_agentic_job_discovery_service,
     get_job_discovery_service,
     get_external_discovery_import_service,
+    get_structured_ats_discovery_service,
     get_opportunity_inbox_service,
     get_job_detail_enrichment_service,
     get_requirement_matching_service,
@@ -23,6 +24,10 @@ from app.schemas.discovery import (
     JobSearchQuery,
 )
 from app.schemas.discovery_pipeline import DiscoverAndRankRequest, DiscoverAndRankResponse
+from app.schemas.structured_ats_discovery import (
+    StructuredAtsDiscoveryRequest,
+    StructuredAtsDiscoveryResponse,
+)
 from app.schemas.external_discovery import (
     ExternalDiscoveryImportRequest,
     ExternalDiscoveryImportResponse,
@@ -54,6 +59,7 @@ from app.services.job_discovery_service import JobDiscoveryService
 from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
+from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
 from app.services.job_ranking_service import JobRankingService
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
@@ -89,6 +95,21 @@ def import_external_discoveries(
     """Persist bounded external-agent evidence without executing a runtime or web search."""
     del current_user  # Authentication gates the endpoint; imported public jobs remain shared records.
     return service.import_jobs(payload)
+
+
+@router.post(
+    "/discover-ats",
+    response_model=StructuredAtsDiscoveryResponse,
+    status_code=status.HTTP_200_OK,
+)
+def discover_known_ats_sources(
+    payload: StructuredAtsDiscoveryRequest,
+    current_user: CurrentUser,
+    service: StructuredAtsDiscoveryService = Depends(get_structured_ats_discovery_service),
+) -> StructuredAtsDiscoveryResponse:
+    """Scan persisted resolved ATS sources without web search, enrichment, or ranking."""
+    del current_user
+    return service.discover(payload)
 
 
 @router.get("/inbox", response_model=OpportunityInboxResponse, status_code=status.HTTP_200_OK)
