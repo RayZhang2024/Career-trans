@@ -28,6 +28,13 @@ missing fields remain zero. Requirement-matching retries are counted from
 `extra.metadata.application_attempt`, distinguishing the application retry from
 provider/SDK behavior.
 
+The parser also accepts the single-run export shape used by Issue #106, where
+safe fields are top-level `metadata`, `outputs`, `error`, and `langsmith`
+objects. Stage/model names are read from explicit safe metadata/output fields;
+`outputs.usage_metadata.input_token_details.cache_read` and
+`outputs.usage_metadata.output_token_details.reasoning` are supported, as are
+`outputs.created_at`/`completed_at` timestamps.
+
 ## Canonical benchmark shapes
 
 Use the same deterministic persisted jobs and candidate context for both runs:
@@ -47,3 +54,10 @@ tokens, latency, successes, failures, and retries. Also record input, gated-out,
 relevance-screened, archetyped, finalists, and deeply analysed counts. Repeat an
 identical benchmark where practical and compare cache reads, call counts, and
 judgement stability. This issue intentionally does not optimize any result.
+
+The deterministic test fixture contains ten jobs: two objective URL gate
+failures, two relevance rejections, one relevant incomplete job, and five
+complete relevant jobs. Fake relevance/archetype agents and a fake graph verify
+that all eight survivors are screened, six are archetyped, the incomplete job
+does not consume a deep-analysis slot, and a two-job deep-analysis cap is
+respected.

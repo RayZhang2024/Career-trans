@@ -466,6 +466,74 @@ def test_incomplete_high_relevance_job_does_not_consume_deep_analysis_quota() ->
     assert all(item.archetype is not None for item in result.semantic_screening)
 
 
+def test_ten_job_funnel_fixture_exercises_gate_screen_archetype_and_deep_caps() -> None:
+    jobs = [
+        job("Invalid URL 1", url="not-a-url"),
+        job("Invalid URL 2", url="also-not-a-url"),
+        job("Irrelevant 1", description="Adjacent role", url="https://jobs.example.test/i1"),
+        job("Irrelevant 2", description="Adjacent role", url="https://jobs.example.test/i2"),
+        job("Incomplete", description=None, url="https://jobs.example.test/incomplete"),
+    ]
+    jobs.extend(
+        job(f"Relevant {index}", description=f"Complete role {index}", url=f"https://jobs.example.test/r{index}")
+        for index in range(1, 6)
+    )
+    assessed: list[str] = []
+    archetyped: list[str] = []
+    analysed: list[str] = []
+
+    class Relevance:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            assessed.append(listing.title)
+            relevant = not listing.title.startswith("Irrelevant")
+            score = 0.95 - (0.02 * len(assessed)) if relevant else 0.1
+            return JobRelevanceAssessment(relevant=relevant, score=score, reasoning="Synthetic.")
+
+    class Archetype:
+        def classify(self, listing: JobListing) -> JobArchetypeAssessment:
+            archetyped.append(listing.title)
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class Graph:
+        def invoke(self, *, job_text: str, **_: object) -> dict[str, object]:
+            analysed.append(job_text)
+            return {
+                "job_profile": JobProfile(title=job_text, requirements=[JobRequirement(text="Python")]),
+                "fit_assessment": FitAssessment(fit_score=70, essential_score=70),
+                "career_assessment": CareerAssessment(
+                    career_alignment_score=70,
+                    confidence=AlignmentConfidence.HIGH,
+                    dimensions=[],
+                    reasoning="Synthetic.",
+                ),
+                "recommendation_assessment": recommendation(Recommendation.CONSIDER, 70, 70),
+            }
+
+    result = JobRankingService(
+        relevance_agent=Relevance(),
+        archetype_agent=Archetype(),
+        career_analysis_graph=Graph(),  # type: ignore[arg-type]
+    ).rank(
+        JobRankingRequest(
+            jobs=jobs,
+            candidate_context=CandidateContext(),
+            max_semantic_candidates=10,
+            max_full_analyses=2,
+        )
+    )
+
+    assert result.discovered_count == 10
+    assert result.gated_out_count == 2
+    assert result.relevance_screened_count == 8
+    assert len(assessed) == 8
+    assert [item.job.title for item in result.semantic_screening if item.archetype is not None] == archetyped
+    assert len(archetyped) == 6
+    assert analysed == ["Complete role 1", "Complete role 2"]
+    assert result.finalist_count == 2
+    assert result.analysed_count == 2
+    assert any(failure.stage == "insufficient_job_detail" for failure in result.failures)
+
+
 def test_ranking_passes_existing_listing_metadata_to_career_analysis_graph() -> None:
     listing = JobListing(
         source="agent_runtime",
