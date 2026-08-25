@@ -541,6 +541,119 @@ def test_cli_rank_imported_surfaces_unassessed_incomplete_role(monkeypatch, caps
     assert [call[0] for call in created[0].calls] == ["inbox", "rank_me"]
 
 
+def test_cli_rank_imported_explains_relevance_rejection_and_zero_result_funnel(monkeypatch, capsys) -> None:
+    class RejectedInboxClient(FakeClient):
+        def rank_jobs_for_current_user(self, jobs: list[dict]) -> dict:
+            self.calls.append(("rank_me", jobs))
+            return {
+                "discovered_count": 1,
+                "gated_out_count": 0,
+                "relevance_screened_count": 1,
+                "finalist_count": 0,
+                "analysed_count": 0,
+                "results": [],
+                "semantic_screening": [
+                    {
+                        "job": jobs[0],
+                        "relevance": {"relevant": False, "score": 0.21, "reasoning": "The role is outside the supplied direction."},
+                    }
+                ],
+                "failures": [],
+            }
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", RejectedInboxClient)
+    assert cli.main(["--token", "token", "jobs", "rank-imported", "--limit", "1"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Ranking funnel: discovered=1, gated_out=0, relevance_screened=1, finalists=0, analysed=0." in output
+    assert "SCREENED OUT | Applied AI Engineer | Example Systems | London, UK" in output
+    assert "Relevance: 0.21 | Archetype: unknown | Relevant: false" in output
+    assert "Reason: semantic relevance decision was relevant=false." in output
+    assert "No ranked results were produced" in output
+
+
+def test_cli_rank_imported_explains_below_threshold_and_safe_stage_failures(monkeypatch, capsys) -> None:
+    class DiagnosticInboxClient(FakeClient):
+        def get_opportunity_inbox(self, limit: int) -> dict:
+            inbox = super().get_opportunity_inbox(limit)
+            job = inbox["jobs"][0]["job"]
+            second = job | {"title": "Second role", "url": "https://jobs.example.test/2"}
+            third = job | {"title": "Third role", "url": "https://jobs.example.test/3"}
+            return inbox | {"jobs": [{"job": job}, {"job": second}, {"job": third}]}
+
+        def rank_jobs_for_current_user(self, jobs: list[dict]) -> dict:
+            self.calls.append(("rank_me", jobs))
+            return {
+                "discovered_count": 3,
+                "gated_out_count": 0,
+                "relevance_screened_count": 3,
+                "finalist_count": 1,
+                "analysed_count": 0,
+                "results": [],
+                "semantic_screening": [
+                    {"job": jobs[0], "relevance": {"relevant": True, "score": 0.32, "reasoning": "Adjacent role."}},
+                    {"job": jobs[1], "failure_stage": "semantic_relevance", "error": "Relevance screening failed."},
+                    {
+                        "job": jobs[2],
+                        "relevance": {"relevant": True, "score": 0.9, "reasoning": "Strong relevance."},
+                        "archetype": {"archetype": "ai_platform_llmops"},
+                    },
+                ],
+                "failures": [
+                    {"job": jobs[1], "stage": "semantic_relevance", "error": "Relevance screening failed."},
+                    {"job": jobs[2], "stage": "career_analysis", "error": "Career analysis failed: RuntimeError."},
+                ],
+            }
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", DiagnosticInboxClient)
+    assert cli.main(["--token", "token", "jobs", "rank-imported", "--limit", "3"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Reason: relevance score was below the configured threshold." in output
+    assert "FAILED | semantic_relevance | Second role | Example Systems | London, UK" in output
+    assert "FAILED | career_analysis | Third role | Example Systems | London, UK" in output
+    assert "Career analysis failed: RuntimeError." in output
+    assert "candidate_context" not in output
+
+
+def test_cli_rank_imported_prints_mixed_result_and_failure_diagnostics(monkeypatch, capsys) -> None:
+    class MixedInboxClient(FakeClient):
+        def get_opportunity_inbox(self, limit: int) -> dict:
+            inbox = super().get_opportunity_inbox(limit)
+            job = inbox["jobs"][0]["job"]
+            failed = job | {"title": "Failed role", "url": "https://jobs.example.test/failed"}
+            return inbox | {"jobs": [{"job": job}, {"job": failed}]}
+
+        def rank_jobs_for_current_user(self, jobs: list[dict]) -> dict:
+            self.calls.append(("rank_me", jobs))
+            return {
+                "discovered_count": 2,
+                "gated_out_count": 0,
+                "relevance_screened_count": 2,
+                "finalist_count": 1,
+                "analysed_count": 1,
+                "results": [
+                    {
+                        "rank": 1,
+                        "job": jobs[0],
+                        "relevance": {"score": 0.91},
+                        "archetype": {"archetype": "ai_solutions_architect"},
+                        "recommendation_assessment": {"recommendation": "consider", "fit_score": 72, "career_alignment_score": 70},
+                    }
+                ],
+                "semantic_screening": [{"job": jobs[1], "failure_stage": "role_archetype", "error": "Role archetype classification failed."}],
+                "failures": [{"job": jobs[1], "stage": "role_archetype", "error": "Role archetype classification failed."}],
+            }
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", MixedInboxClient)
+    assert cli.main(["--token", "token", "jobs", "rank-imported", "--limit", "2", "--details"]) == 0
+
+    output = capsys.readouterr().out
+    assert "#1 CONSIDER" in output
+    assert "FAILED | role_archetype | Failed role | Example Systems | London, UK" in output
+    assert "Ranking funnel: discovered=2, gated_out=0, relevance_screened=2, finalists=1, analysed=1." in output
+
+
 def test_cli_enrich_imported_reports_explicit_outcomes_without_ranking(monkeypatch, capsys) -> None:
     clients = _fake_client(monkeypatch)
     assert cli.main(["--token", "token", "jobs", "enrich-imported", "--limit", "3"]) == 0
