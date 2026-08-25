@@ -1,7 +1,11 @@
 from typing import TypedDict, cast
 
+from contextlib import nullcontext
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from langsmith import run_helpers
+from langsmith.run_trees import RunTree
+from langchain_core.runnables import RunnableConfig
 
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
@@ -140,11 +144,23 @@ class CareerAnalysisGraph:
     def _match_requirements(
         self,
         state: CareerAnalysisState,
+        config: RunnableConfig | None = None,
     ) -> CareerAnalysisState:
-        match_set = self._requirement_matching_service.match(
-            state["job_profile"],
-            self._candidate_context(state),
+        # LangGraph carries the active LangSmith callback parent in its
+        # RunnableConfig rather than the run_helpers contextvars used by
+        # traceable/trace. Bridge that supported boundary so application
+        # attempt spans become children of the match_requirements node.
+        parent = RunTree.from_runnable_config(config)
+        tracing_scope = (
+            run_helpers.tracing_context(parent=parent)
+            if parent is not None
+            else nullcontext()
         )
+        with tracing_scope:
+            match_set = self._requirement_matching_service.match(
+                state["job_profile"],
+                self._candidate_context(state),
+            )
         return {"requirement_matches": match_set.matches}
 
     @staticmethod
