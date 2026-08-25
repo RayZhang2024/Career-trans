@@ -33,7 +33,9 @@ class FitAssessment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     fit_score: float = Field(ge=0.0, le=100.0)
-    essential_score: float = Field(ge=0.0, le=100.0)
+    # None distinguishes no classified essential requirements from a genuine
+    # 0% match against one or more essential requirements.
+    essential_score: float | None = Field(default=None, ge=0.0, le=100.0)
     desirable_score: float | None = Field(default=None, ge=0.0, le=100.0)
 
     strengths: list[int] = Field(default_factory=list)

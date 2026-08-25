@@ -327,10 +327,14 @@ def _print_ranking_details(result: dict[str, Any]) -> None:
             print(f"  Reasoning: {match['reasoning']}")
 
     fit = result.get("fit_assessment", {})
+    essential_score = fit.get("essential_score")
+    desirable_score = fit.get("desirable_score")
     print("Fit drivers")
     print(
-        f"- total={fit.get('fit_score', 'n/a')}; essential={fit.get('essential_score', 'n/a')}; "
-        f"desirable={fit.get('desirable_score', 'n/a')}; strengths={fit.get('strengths', [])}"
+        f"- total={fit.get('fit_score', 'n/a')}; essential="
+        f"{'None' if essential_score is None else essential_score}; "
+        f"desirable={'None' if desirable_score is None else desirable_score}; "
+        f"strengths={fit.get('strengths', [])}"
     )
     print(f"- hard blockers: {fit.get('hard_blockers', [])}")
     for gap in fit.get("gaps", []):

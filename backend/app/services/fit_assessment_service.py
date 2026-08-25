@@ -28,7 +28,11 @@ class FitAssessmentService:
             if match.requirement.importance == RequirementImportance.DESIRABLE
         ]
 
-        essential_score = self._simple_score(essential_matches)
+        essential_score = (
+            self._simple_score(essential_matches)
+            if essential_matches
+            else None
+        )
         desirable_score = (
             self._simple_score(desirable_matches)
             if desirable_matches
@@ -59,7 +63,11 @@ class FitAssessmentService:
 
         return FitAssessment(
             fit_score=round(fit_score, 1),
-            essential_score=round(essential_score, 1),
+            essential_score=(
+                round(essential_score, 1)
+                if essential_score is not None
+                else None
+            ),
             desirable_score=(
                 round(desirable_score, 1)
                 if desirable_score is not None

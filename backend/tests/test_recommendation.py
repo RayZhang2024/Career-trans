@@ -54,6 +54,16 @@ def test_hard_blocker_always_produces_skip() -> None:
     assert result.hard_blockers == [2]
 
 
+def test_recommendation_uses_total_fit_when_essential_diagnostic_is_absent() -> None:
+    result = RecommendationService().assess(
+        FitAssessment(fit_score=80.0, essential_score=None),
+        career_assessment(70.0),
+    )
+
+    assert result.recommendation == Recommendation.APPLY
+    assert result.rule_id == "strong_fit_strong_alignment"
+
+
 @pytest.mark.parametrize(
     ("fit", "alignment", "expected", "rule_id"),
     [
