@@ -4,16 +4,22 @@ from app.schemas.discovery import JobListing, JobSearchQuery
 
 
 class JobScreeningService:
-    """Conservative, deterministic first-pass discovery filter."""
+    """Apply only explicit, factual discovery constraints.
+
+    Positive query keywords are discovery seeds.  Semantic relevance belongs to
+    the bounded relevance stage, not to this deterministic filter.
+    """
 
     def screen(self, listings: list[JobListing], query: JobSearchQuery) -> list[JobListing]:
-        return [listing for listing in listings if self.is_promising(listing, query)]
+        return [
+            listing
+            for listing in listings
+            if self.matches_hard_constraints(listing, query)
+        ]
 
     def is_promising(self, listing: JobListing, query: JobSearchQuery) -> bool:
-        return (
-            self._matches_keywords(listing, query.keywords)
-            and self.matches_hard_constraints(listing, query)
-        )
+        """Compatibility alias for callers using the former screening name."""
+        return self.matches_hard_constraints(listing, query)
 
     def matches_hard_constraints(self, listing: JobListing, query: JobSearchQuery) -> bool:
         """Apply factual policy constraints without treating keywords as a relevance score."""
@@ -24,21 +30,6 @@ class JobScreeningService:
             and self._matches_location(listing, query.locations, query.remote_ok)
             and self._matches_employment_type(listing, query.employment_types)
         )
-
-    def _matches_keywords(self, listing: JobListing, keywords: list[str]) -> bool:
-        if not keywords:
-            return True
-        searchable = " ".join(filter(None, [listing.title, listing.description])).casefold()
-        for keyword in keywords:
-            normalized = keyword.casefold().strip()
-            if not normalized:
-                continue
-            if normalized in searchable:
-                return True
-            words = [word for word in re.findall(r"[a-z0-9+#.]+", normalized) if len(word) >= 3]
-            if words and all(word in searchable for word in words):
-                return True
-        return False
 
     @staticmethod
     def _matches_company(listing: JobListing, companies: list[str]) -> bool:

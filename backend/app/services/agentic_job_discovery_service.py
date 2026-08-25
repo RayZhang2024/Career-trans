@@ -200,6 +200,12 @@ class AgenticJobDiscoveryService:
 
     @staticmethod
     def _is_promising_result(result: SearchResult, request: AgenticDiscoveryRequest) -> bool:
+        """Reject only objective non-vacancy pages and explicit exclusions.
+
+        Search-result metadata is incomplete evidence.  It cannot prove a
+        location mismatch, and title/snippet relevance is reserved for the
+        bounded semantic screening stage after a vacancy is discovered.
+        """
         text = f"{result.title} {result.snippet} {result.url}".casefold()
         if any(term in text for term in ("salary guide", "course", "training", "news", "blog", "article")):
             return False
@@ -207,23 +213,7 @@ class AgenticJobDiscoveryService:
             return False
         if any(term.casefold() in text for term in request.query.excluded_title_terms):
             return False
-        if request.query.locations:
-            locations = [value.casefold() for value in request.query.locations if value.strip()]
-            country_terms = AgenticJobDiscoveryService._country_terms(request.country)
-            if (
-                locations
-                and not any(value in text for value in locations)
-                and not any(re.search(rf"\b{re.escape(value)}\b", text) for value in country_terms)
-            ):
-                return False
         return True
-
-    @staticmethod
-    def _country_terms(country: str) -> tuple[str, ...]:
-        """Use meaningful country names, never a two-letter substring fallback."""
-        return {
-            "gb": ("united kingdom", "great britain", "uk"),
-        }.get(country.casefold(), ())
 
     @staticmethod
     def _result_score(result: SearchResult, request: AgenticDiscoveryRequest) -> int:
@@ -233,11 +223,6 @@ class AgenticJobDiscoveryService:
             score += 4
         if any(term in text for term in ("/jobs", "/job/", "/careers", "/positions", "/vacancies")):
             score += 2
-        if any(term in result.title.casefold() for term in ("job", "engineer", "analyst", "scientist", "architect")):
-            score += 1
-        keywords = " ".join(request.query.keywords).casefold()
-        if keywords and any(term in f"{result.title} {result.snippet}".casefold() for term in keywords.split() if len(term) >= 3):
-            score += 1
         return score
 
     @staticmethod
