@@ -42,7 +42,7 @@ class FakeGraph:
         self._values = values
         self._failing_titles = failing_titles or set()
 
-    def invoke(self, *, job_text: str, candidate_context: CandidateContext) -> dict[str, object]:
+    def invoke(self, *, job_text: str, candidate_context: CandidateContext, **_: object) -> dict[str, object]:
         if job_text in self._failing_titles:
             raise RuntimeError("synthetic failure")
         value, fit, alignment = self._values[job_text]
@@ -405,6 +405,51 @@ def test_incomplete_high_relevance_job_does_not_consume_deep_analysis_quota() ->
     assert [failure.stage for failure in result.failures] == ["insufficient_job_detail"]
     assert [item.job.title for item in result.semantic_screening] == ["Incomplete", "Complete"]
     assert all(item.archetype is not None for item in result.semantic_screening)
+
+
+def test_ranking_passes_existing_listing_metadata_to_career_analysis_graph() -> None:
+    listing = JobListing(
+        source="agent_runtime",
+        title="Known title",
+        company="Known company",
+        location="London",
+        work_arrangement="Hybrid",
+        employment_type="Permanent",
+        url="https://jobs.example.test/known",
+        description="Canonical description for semantic extraction.",
+    )
+
+    class Relevance:
+        def assess(self, _: JobListing, __: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9, reasoning="Relevant.")
+
+    class Archetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class RecordingGraph:
+        def invoke(self, *, job_text: str, candidate_context: CandidateContext, job_listing: JobListing) -> dict[str, object]:
+            assert job_text == "Canonical description for semantic extraction."
+            assert job_listing is listing
+            assert candidate_context == CandidateContext()
+            fit = FitAssessment(fit_score=70.0, essential_score=70.0)
+            career = CareerAssessment(career_alignment_score=70.0, confidence=AlignmentConfidence.HIGH, dimensions=[], reasoning="Synthetic.")
+            return {
+                "job_profile": JobProfile(title="Known title", location="London", requirements=[JobRequirement(text="Python")]),
+                "requirement_matches": [],
+                "fit_assessment": fit,
+                "career_assessment": career,
+                "recommendation_assessment": recommendation(Recommendation.CONSIDER, 70.0, 70.0),
+            }
+
+    result = JobRankingService(
+        relevance_agent=Relevance(),
+        archetype_agent=Archetype(),
+        career_analysis_graph=RecordingGraph(),  # type: ignore[arg-type]
+    ).rank(JobRankingRequest(jobs=[listing], candidate_context=CandidateContext()))
+
+    assert result.analysed_count == 1
+    assert result.results[0].job_profile.location == "London"
 
 
 def test_legitimacy_is_separate_from_assessment_scores() -> None:

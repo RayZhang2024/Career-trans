@@ -6,6 +6,7 @@ from langgraph.graph.state import CompiledStateGraph
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
 from app.schemas.career_assessment import CareerAssessment
+from app.schemas.discovery import JobListing
 from app.schemas.job import JobProfile
 from app.schemas.matching import RequirementMatch
 from app.schemas.recommendation import RecommendationAssessment
@@ -18,6 +19,7 @@ from app.services.requirement_matching_service import RequirementMatchingService
 
 class CareerAnalysisState(TypedDict, total=False):
     job_text: str
+    job_listing: JobListing | None
     candidate_context: CandidateContext | dict[str, object]
     job_profile: JobProfile
     requirement_matches: list[RequirementMatch]
@@ -56,10 +58,12 @@ class CareerAnalysisGraph:
         *,
         job_text: str,
         candidate_context: CandidateContext,
+        job_listing: JobListing | None = None,
     ) -> CareerAnalysisState:
         result = self._graph.invoke(
             {
                 "job_text": job_text,
+                "job_listing": job_listing,
                 "candidate_context": candidate_context,
             }
         )
@@ -89,11 +93,49 @@ class CareerAnalysisGraph:
         return builder.compile()
 
     def _extract_job(self, state: CareerAnalysisState) -> CareerAnalysisState:
+        extracted = self._job_analysis_service.analyse_text(state["job_text"])
         return {
-            "job_profile": self._job_analysis_service.analyse_text(
-                state["job_text"]
+            "job_profile": self._merge_known_listing_metadata(
+                extracted,
+                state.get("job_listing"),
             )
         }
+
+    @staticmethod
+    def _merge_known_listing_metadata(
+        extracted: JobProfile,
+        listing: JobListing | None,
+    ) -> JobProfile:
+        """Keep explicit discovery facts authoritative over semantic extraction.
+
+        The description remains the sole semantic input for requirements and
+        responsibilities. For overlapping factual fields, a non-blank,
+        non-placeholder listing value wins deterministically; extraction fills
+        only facts absent from discovery. This avoids silently reconciling
+        contradictory public-source and description claims.
+        """
+        if listing is None:
+            return extracted
+
+        updates: dict[str, str | None] = {}
+        for field, value in {
+            "title": listing.title,
+            "company": listing.company,
+            "location": listing.location,
+            "work_arrangement": listing.work_arrangement,
+            "employment_type": listing.employment_type,
+        }.items():
+            updates[field] = CareerAnalysisGraph._known_text(value) or getattr(extracted, field)
+        return extracted.model_copy(update=updates)
+
+    @staticmethod
+    def _known_text(value: str | None) -> str | None:
+        if not value or not value.strip():
+            return None
+        cleaned = value.strip()
+        if cleaned.casefold() in {"unknown", "unspecified", "not specified", "n/a"}:
+            return None
+        return cleaned
 
     def _match_requirements(
         self,
