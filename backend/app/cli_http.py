@@ -126,6 +126,9 @@ class CareerTransApiClient:
     def discover_known_ats_sources(self, request: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/v1/jobs/discover-ats", payload=request)
 
+    def discover_broad_jobs(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/jobs/discover-broad", payload=request)
+
     def rank_jobs_for_current_user(self, jobs: list[dict[str, Any]]) -> dict[str, Any]:
         return self._request(
             "POST",

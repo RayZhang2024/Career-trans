@@ -87,6 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
     discover_ats.add_argument("--max-sources", type=int, default=20)
     discover_ats.add_argument("--provider", dest="providers", action="append", default=[])
     discover_ats.add_argument("--company", dest="companies", action="append", default=[])
+    discover_broad = jobs_commands.add_parser(
+        "discover-broad",
+        help="Search Adzuna by job criteria without ranking or enrichment",
+    )
+    discover_broad.add_argument("--keyword", dest="keywords", action="append", required=True)
+    discover_broad.add_argument("--location", dest="locations", action="append", default=[])
+    discover_broad.add_argument("--country", default="gb")
+    discover_broad.add_argument("--posted-within-days", type=int)
+    discover_broad.add_argument("--salary-min", type=int)
+    discover_broad.add_argument("--limit", type=int, default=50)
 
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
@@ -221,6 +231,31 @@ def _print_profile(profile: dict[str, Any]) -> None:
 
 
 def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
+    if args.jobs_command == "discover-broad":
+        response = client.discover_broad_jobs(
+            {
+                "keywords": args.keywords,
+                "locations": args.locations,
+                "country": args.country,
+                "posted_within_days": args.posted_within_days,
+                "salary_min": args.salary_min,
+                "max_results": args.limit,
+            }
+        )
+        lifecycle = response.get("lifecycle_counts", {})
+        print(
+            "Broad scan: "
+            f"raw={response.get('raw_count', 0)} normalized={response.get('normalized_count', 0)} "
+            f"rejected={response.get('rejected_count', 0)} deduplicated={response.get('deduplicated_count', 0)} "
+            f"bounded={response.get('bounded_count', 0)} new={lifecycle.get('new', 0)} "
+            f"updated={lifecycle.get('updated', 0)} unchanged={lifecycle.get('unchanged', 0)}"
+        )
+        for item in response.get("source_diagnostics", []):
+            status = "OK" if item.get("succeeded") else "FAILED"
+            print(f"{status} | {item.get('provider')} | raw={item.get('raw_count', 0)} normalized={item.get('normalized_count', 0)}")
+            if item.get("failure"):
+                print(f"Failure: {item['failure']}")
+        return 0
     if args.jobs_command == "discover-ats":
         response = client.discover_known_ats_sources(
             {

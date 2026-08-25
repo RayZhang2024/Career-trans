@@ -15,6 +15,7 @@ from app.api.deps import (
     get_job_discovery_service,
     get_external_discovery_import_service,
     get_structured_ats_discovery_service,
+    get_broad_job_discovery_service,
     get_opportunity_inbox_service,
     get_job_detail_enrichment_service,
     get_requirement_matching_service,
@@ -28,6 +29,7 @@ from app.schemas.structured_ats_discovery import (
     StructuredAtsDiscoveryRequest,
     StructuredAtsDiscoveryResponse,
 )
+from app.schemas.broad_job_discovery import BroadJobDiscoveryResponse, BroadJobSearchQuery
 from app.schemas.external_discovery import (
     ExternalDiscoveryImportRequest,
     ExternalDiscoveryImportResponse,
@@ -60,6 +62,7 @@ from app.services.agentic_job_discovery_service import AgenticJobDiscoveryServic
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
+from app.services.broad_job_discovery_service import BroadJobDiscoveryService
 from app.services.job_ranking_service import JobRankingService
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
@@ -108,6 +111,21 @@ def discover_known_ats_sources(
     service: StructuredAtsDiscoveryService = Depends(get_structured_ats_discovery_service),
 ) -> StructuredAtsDiscoveryResponse:
     """Scan persisted resolved ATS sources without web search, enrichment, or ranking."""
+    del current_user
+    return service.discover(payload)
+
+
+@router.post(
+    "/discover-broad",
+    response_model=BroadJobDiscoveryResponse,
+    status_code=status.HTTP_200_OK,
+)
+def discover_broad_jobs(
+    payload: BroadJobSearchQuery,
+    current_user: CurrentUser,
+    service: BroadJobDiscoveryService = Depends(get_broad_job_discovery_service),
+) -> BroadJobDiscoveryResponse:
+    """Acquire broad structured results only; no enrichment or ranking is started here."""
     del current_user
     return service.discover(payload)
 

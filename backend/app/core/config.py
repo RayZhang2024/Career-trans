@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     lever_site_tokens: str = ""
     smartrecruiters_company_ids: str = ""
     recruitee_company_tokens: str = ""
+    adzuna_app_id: str | None = None
+    adzuna_app_key: str | None = None
     brave_search_api_key: str | None = None
     # Paid OpenAI web search is opt-in. Semantic OpenAI operations remain independent.
     agentic_search_provider: str = "disabled"
