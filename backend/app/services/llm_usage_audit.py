@@ -10,6 +10,7 @@ copied into the result.
 from __future__ import annotations
 
 from datetime import datetime
+from collections.abc import Sequence
 from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -67,15 +68,46 @@ class LLMUsageAuditSummary(BaseModel):
     funnel: FunnelCounts = Field(default_factory=FunnelCounts)
 
 
-def normalize_trace_exports(exports: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def normalize_trace_exports(
+    exports: Mapping[str, Any] | Sequence[tuple[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
     """Normalize explicitly labelled UI exports into parser input.
 
-    ``exports`` maps one of the exact supported stage names to a decoded
-    single-run export.  Only safe stage/model/usage/timestamp/status metadata is
-    copied; raw inputs, outputs, prompts, and provider errors are discarded.
+    ``exports`` may be a mapping of exact stage names to decoded exports, or a
+    sequence of ``(stage, export)`` pairs.  The sequence form deliberately
+    preserves repeated provider calls (including repeated requirement-matching
+    attempts) instead of collapsing them by stage.  Only safe
+    stage/model/usage/timestamp/status metadata is copied; raw inputs,
+    outputs, prompts, and provider errors are discarded.
     """
-    runs = [normalize_trace_export(stage, export) for stage, export in exports.items()]
+    labelled: Any
+    if isinstance(exports, Mapping):
+        labelled = (
+            (stage, item)
+            for stage, value in exports.items()
+            for item in (value if isinstance(value, list) else [value])
+        )
+    else:
+        labelled = exports
+    runs = [normalize_trace_export(stage, export) for stage, export in labelled]
     return {"runs": runs}
+
+
+def combine_normalized_trace_exports(
+    normalized: Mapping[str, Any], funnel_diagnostics: Any | None = None
+) -> dict[str, Any]:
+    """Attach only safe ranking funnel counters to normalized provider runs.
+
+    Ranking responses contain job and candidate payloads.  This adapter copies
+    neither; it extracts only the numeric funnel counters already understood by
+    the offline parser and the derived semantic-screening counts.
+    """
+    runs = normalized.get("runs") if isinstance(normalized.get("runs"), list) else []
+    combined: dict[str, Any] = {"runs": [run for run in runs if isinstance(run, dict)]}
+    if funnel_diagnostics is not None:
+        values = _funnel_values(funnel_diagnostics, [])
+        combined["funnel"] = {key: value for key, value in values.items() if value is not None}
+    return combined
 
 
 def normalize_trace_export(stage: str, export: Any) -> dict[str, Any]:

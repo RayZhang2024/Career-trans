@@ -269,6 +269,59 @@ def test_cli_config_show_and_check_are_safe_and_actionable(monkeypatch, capsys) 
     assert clients[-1].calls == [("config_check",)]
 
 
+def test_cli_normalizes_repeated_stage_exports_and_safe_funnel(tmp_path, capsys) -> None:
+    first = tmp_path / "relevance-1.json"
+    second = tmp_path / "relevance-2.json"
+    diagnostics = tmp_path / "rank.json"
+    provider = {
+        "outputs": {
+            "model": "gpt-5.6-luna",
+            "usage_metadata": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+        },
+        "metadata": {"ls_model_name": "gpt-5.6-luna"},
+    }
+    first.write_text(json.dumps(provider), encoding="utf-8")
+    second.write_text(json.dumps(provider), encoding="utf-8")
+    diagnostics.write_text(
+        json.dumps(
+            {
+                "results": [{"job": "private job", "candidate_context": "private candidate"}],
+                "discovered_count": 2,
+                "gated_out_count": 1,
+                "semantic_screening": [{"archetype": {"name": "systems"}}],
+                "finalist_count": 1,
+                "analysed_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert cli.main(
+        [
+            "dev",
+            "normalize-llm-traces",
+            "--stage",
+            f"job_relevance={first}",
+            "--stage",
+            f"job_relevance={second}",
+            "--funnel",
+            str(diagnostics),
+        ]
+    ) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert len(output["runs"]) == 2
+    assert output["funnel"] == {
+        "input_jobs": 2,
+        "gated_out": 1,
+        "relevance_screened": 1,
+        "archetyped": 1,
+        "finalists": 1,
+        "deep_analysed": 1,
+    }
+    assert "private job" not in json.dumps(output)
+    assert "private candidate" not in json.dumps(output)
+
+
 def test_cli_profile_context_summary(monkeypatch, capsys) -> None:
     clients = _fake_client(monkeypatch)
     assert cli.main(["--token", "token", "profile", "context-summary"]) == 0

@@ -48,6 +48,25 @@ provide the exact stage label during the development-only normalization step:
   --output normalized-trace.json
 ```
 
+`--stage` is repeatable, including for the same stage. Preserve each provider
+export when collecting a multi-job benchmark or a requirement-matching retry:
+
+```powershell
+.\.venv\Scripts\career-trans.exe dev normalize-llm-traces `
+  --stage job_relevance=job-1-relevance.json `
+  --stage job_relevance=job-2-relevance.json `
+  --stage requirement_matching=matching-attempt-1.json `
+  --stage requirement_matching=matching-attempt-2.json `
+  --funnel rank-diagnostics.json `
+  --output normalized-trace.json
+```
+
+The optional `--funnel` (also accepted as `--diagnostics`) reads a ranking
+response or diagnostics export and retains only the numeric funnel counters and
+derived semantic-screening counts. Job listings, candidate context, prompts,
+evidence, and other payloads are never copied. Run `analyse-llm-trace` on the
+combined file to report provider usage alongside the funnel.
+
 Only safe stage/model/usage/timestamp/status fields are retained in the
 normalized file. The five exact stage labels above are the complete supported
 set; no substring or orchestration-name inference is used for the other
@@ -74,6 +93,26 @@ tokens, latency, successes, failures, and retries. Also record input, gated-out,
 relevance-screened, archetyped, finalists, and deeply analysed counts. Repeat an
 identical benchmark where practical and compare cache reads, call counts, and
 judgement stability. This issue intentionally does not optimize any result.
+
+### Authoritative warm-cache 1-job baseline
+
+The first controlled warm-cache benchmark was recorded at revision `5f1cc05`.
+All five provider calls used `gpt-5.6-luna`; the values below are the sanitized
+provider export totals and are locked by an offline regression fixture (no paid
+benchmark is run by the test):
+
+| Stage | Input | Cached input | Output | Reasoning | Total |
+|---|---:|---:|---:|---:|---:|
+| `job_relevance` | 1,829 | 1,826 | 153 | 0 | 1,982 |
+| `job_archetype` | 1,259 | 1,256 | 174 | 117 | 1,433 |
+| `job_extraction` | 2,331 | 2,328 | 3,226 | 361 | 5,557 |
+| `requirement_matching` | 4,675 | 0 | 3,025 | 708 | 7,700 |
+| `career_alignment` | 5,464 | 0 | 1,008 | 134 | 6,472 |
+| **Total** | **15,558** | **5,410** | **7,586** | **1,320** | **23,144** |
+
+The measured wall-clock time was approximately 63 seconds (the sum of the
+provider-stage timings was approximately 63 seconds). This is an observational
+baseline, not a target or an optimization claim.
 
 The deterministic test fixture contains ten jobs: two objective URL gate
 failures, two relevance rejections, one relevant incomplete job, and five
