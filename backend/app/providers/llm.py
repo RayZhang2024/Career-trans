@@ -84,6 +84,7 @@ class SemanticLLM(Protocol):
         user_prompt: str,
         operation: str,
         required_capabilities: frozenset[LLMCapability] = frozenset(),
+        output_schema: dict[str, object] | None = None,
     ) -> str: ...
 
 
@@ -113,6 +114,7 @@ class OpenAISemanticLLM:
         user_prompt: str,
         operation: str,
         required_capabilities: frozenset[LLMCapability] = frozenset(),
+        output_schema: dict[str, object] | None = None,
     ) -> str:
         _require_capabilities("openai", self.capabilities, required_capabilities)
         client = create_traced_openai_client(
@@ -120,14 +122,24 @@ class OpenAISemanticLLM:
             trace_name=operation,
             base_url=self._base_url,
         )
+        request: dict[str, object] = {
+            "model": model,
+            "input": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        if output_schema is not None:
+            request["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": operation,
+                    "strict": True,
+                    "schema": output_schema,
+                }
+            }
         try:
-            response = client.responses.create(
-                model=model,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
+            response = client.responses.create(**request)
         except (APIConnectionError, APITimeoutError) as exc:
             raise SemanticProviderUnavailableError("OpenAI semantic provider is unavailable. Check connectivity and retry.") from exc
         except APIStatusError as exc:
@@ -161,8 +173,9 @@ class OllamaSemanticLLM:
         user_prompt: str,
         operation: str,
         required_capabilities: frozenset[LLMCapability] = frozenset(),
+        output_schema: dict[str, object] | None = None,
     ) -> str:
-        del operation  # Ollama has no hosted tracing capability in this bounded adapter.
+        del operation, output_schema  # Ollama has no hosted tracing capability in this bounded adapter.
         _require_capabilities("ollama", self.capabilities, required_capabilities)
         try:
             payload = self._transport(
@@ -253,8 +266,20 @@ class _SemanticResponses:
                 user_prompt=user_prompt,
                 operation=self._operation,
                 required_capabilities=frozenset(required),
+                output_schema=_json_schema_from_response_text(kwargs.get("text")),
             )
         )
+
+
+def _json_schema_from_response_text(value: object) -> dict[str, object] | None:
+    """Translate the narrow Responses compatibility shape into a semantic schema."""
+    if not isinstance(value, dict):
+        return None
+    response_format = value.get("format")
+    if not isinstance(response_format, dict):
+        return None
+    schema = response_format.get("schema")
+    return schema if response_format.get("type") == "json_schema" and isinstance(schema, dict) else None
 
 
 def _messages(value: object) -> tuple[str, str]:
