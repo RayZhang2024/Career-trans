@@ -21,6 +21,11 @@ from app.services.job_analysis_service import JobAnalysisService
 class JobDetailEnrichmentService:
     """Fetch a known public vacancy URL; never search, rank, or use candidate data."""
 
+    # A short search-result summary can name one real skill while omitting most
+    # of an advert's candidate criteria. It is evidence for discovery, but not
+    # enough detail to trust as a complete ranking input.
+    MIN_USABLE_DESCRIPTION_CHARACTERS = 500
+
     def __init__(
         self,
         *,
@@ -94,10 +99,13 @@ class JobDetailEnrichmentService:
         return self._outcome(record, JobEnrichmentStatus.ENRICHED)
 
     def _needs_enrichment(self, record: DiscoveredJob) -> bool:
-        if not record.description or not record.description.strip():
+        description = self._text(record.description)
+        if description is None:
+            return True
+        if len(description) < self.MIN_USABLE_DESCRIPTION_CHARACTERS:
             return True
         try:
-            return not self._job_analysis_service.analyse_text(record.description).requirements
+            return not self._job_analysis_service.analyse_text(description).requirements
         except Exception:
             return True
 
