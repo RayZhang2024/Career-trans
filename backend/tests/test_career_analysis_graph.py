@@ -273,9 +273,3 @@ def test_metadata_merge_fills_listing_gaps_and_listing_conflicts_win_determinist
     assert merged.location == "Edinburgh"
     assert merged.work_arrangement == "Hybrid"
     assert merged.employment_type == "Contract"
-from types import SimpleNamespace
-from uuid import uuid4
-
-from langchain_core.callbacks import CallbackManager
-from langchain_core.tracers.langchain import LangChainTracer
-from langsmith import run_helpers
