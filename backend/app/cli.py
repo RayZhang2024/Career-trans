@@ -79,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fetch known vacancy URLs to recover usable persisted job detail",
     )
     enrich_imported.add_argument("--limit", type=int, default=20)
+    discover_ats = jobs_commands.add_parser(
+        "discover-ats",
+        help="Scan persisted resolved ATS sources without web search or ranking",
+    )
+    discover_ats.add_argument("--limit", type=int, default=100)
+    discover_ats.add_argument("--max-sources", type=int, default=20)
+    discover_ats.add_argument("--provider", dest="providers", action="append", default=[])
+    discover_ats.add_argument("--company", dest="companies", action="append", default=[])
 
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
@@ -213,6 +221,30 @@ def _print_profile(profile: dict[str, Any]) -> None:
 
 
 def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
+    if args.jobs_command == "discover-ats":
+        response = client.discover_known_ats_sources(
+            {
+                "max_results": args.limit,
+                "max_sources": args.max_sources,
+                "providers": args.providers,
+                "companies": args.companies,
+            }
+        )
+        print(
+            f"ATS scan: {len(response.get('listings', []))} jobs "
+            f"(raw={response.get('raw_count', 0)}, rejected={response.get('rejected_count', 0)}, "
+            f"deduplicated={response.get('deduplicated_count', 0)})."
+        )
+        for item in response.get("source_diagnostics", []):
+            status = "OK" if item.get("succeeded") else "FAILED"
+            print(
+                f"{status} | {item.get('company')} | {item.get('provider')}:{item.get('source_token')} | "
+                f"discovered={item.get('discovered_count', 0)} imported={item.get('imported_count', 0)} "
+                f"deduplicated={item.get('deduplicated_count', 0)} rejected={item.get('rejected_count', 0)}"
+            )
+            if item.get("failure"):
+                print(f"Failure: {item['failure']}")
+        return 0
     if args.jobs_command == "list":
         inbox = client.get_opportunity_inbox(args.limit)
         for item in inbox.get("jobs", []):

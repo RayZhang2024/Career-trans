@@ -1,0 +1,176 @@
+"""Bounded collection from persisted, resolved public ATS sources."""
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.company_career_source import CompanyCareerSource
+from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance, JobSearchQuery
+from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
+from app.schemas.job_sources import CompanySourceStatus, ResolvedJobSource
+from app.schemas.structured_ats_discovery import (
+    StructuredAtsDiscoveryRequest,
+    StructuredAtsDiscoveryResponse,
+    StructuredAtsSourceDiagnostic,
+)
+from app.services.company_source_discovery_service import canonical_company_key
+from app.services.discovered_job_state_store import DiscoveredJobStateStore
+from app.services.job_deduplication_service import JobDeduplicationService
+from app.services.job_screening_service import JobScreeningService
+from app.services.job_source_factory import create_job_source
+
+
+class StructuredAtsDiscoveryService:
+    """Collect known public ATS boards without semantic, web-search, or ranking work."""
+
+    def __init__(
+        self,
+        *,
+        session: Session,
+        state_store: DiscoveredJobStateStore,
+        deduplicator: JobDeduplicationService | None = None,
+        screening: JobScreeningService | None = None,
+    ) -> None:
+        self._session = session
+        self._state_store = state_store
+        self._deduplicator = deduplicator or JobDeduplicationService()
+        self._screening = screening or JobScreeningService()
+
+    def discover(self, request: StructuredAtsDiscoveryRequest) -> StructuredAtsDiscoveryResponse:
+        query = JobSearchQuery(
+            # A seed is required by the existing query contract but is deliberately
+            # not used as a positive title filter by JobScreeningService.
+            keywords=["structured ATS"],
+            locations=request.locations,
+            remote_ok=request.remote_ok,
+            companies=request.companies,
+            excluded_companies=request.excluded_companies,
+            excluded_title_terms=request.excluded_title_terms,
+            employment_types=request.employment_types,
+            max_results=request.max_results,
+        )
+        records = self._records(request)
+        diagnostics: list[StructuredAtsSourceDiagnostic] = []
+        accepted_by_source: dict[str, list[JobListing]] = {}
+        raw: list[JobListing] = []
+        successful_source_keys: set[str] = set()
+
+        for record in records:
+            source_key = self._source_key(record)
+            try:
+                listings = self._collect_source(record, query)
+            except Exception as exc:
+                diagnostics.append(
+                    StructuredAtsSourceDiagnostic(
+                        company=record.company_name,
+                        provider=record.provider or "unknown",
+                        source_token=record.source_token or "",
+                        succeeded=False,
+                        discovered_count=0,
+                        imported_count=0,
+                        deduplicated_count=0,
+                        rejected_count=0,
+                        failure=f"{type(exc).__name__}: provider request failed",
+                    )
+                )
+                continue
+
+            record.last_successful_fetch_at = self._now()
+            successful_source_keys.add(source_key)
+            raw.extend(listings)
+            accepted = self._screening.screen(listings, query)
+            accepted_by_source[source_key] = accepted
+            diagnostics.append(
+                StructuredAtsSourceDiagnostic(
+                    company=record.company_name,
+                    provider=record.provider or "unknown",
+                    source_token=record.source_token or "",
+                    succeeded=True,
+                    discovered_count=len(listings),
+                    imported_count=0,
+                    deduplicated_count=0,
+                    rejected_count=len(listings) - len(accepted),
+                )
+            )
+
+        accepted = [listing for source in accepted_by_source.values() for listing in source]
+        deduplicated, duplicate_count = self._deduplicator.deduplicate(accepted)
+        retained_ids = {id(listing) for listing in deduplicated}
+        for diagnostic in diagnostics:
+            if not diagnostic.succeeded:
+                continue
+            source_key = f"{diagnostic.provider}:{diagnostic.source_token}"
+            source_accepted = accepted_by_source[source_key]
+            diagnostic.imported_count = sum(id(item) in retained_ids for item in source_accepted)
+            diagnostic.deduplicated_count = len(source_accepted) - diagnostic.imported_count
+
+        listings = deduplicated[: request.max_results]
+        states = self._state_store.synchronize(raw, successful_source_keys)
+        self._session.commit()
+        return StructuredAtsDiscoveryResponse(
+            listings=listings,
+            source_diagnostics=diagnostics,
+            raw_count=len(raw),
+            deduplicated_count=duplicate_count,
+            rejected_count=len(raw) - len(accepted),
+            job_states=states,
+            lifecycle_counts=DiscoveryLifecycleCounts(
+                new=sum(state is DiscoveredJobState.NEW for state in states.values()),
+                updated=sum(state is DiscoveredJobState.UPDATED for state in states.values()),
+                unchanged=sum(state is DiscoveredJobState.UNCHANGED for state in states.values()),
+                inactive=sum(state is DiscoveredJobState.INACTIVE for state in states.values()),
+            ),
+        )
+
+    def _records(self, request: StructuredAtsDiscoveryRequest) -> list[CompanyCareerSource]:
+        records = list(
+            self._session.scalars(
+                select(CompanyCareerSource)
+                .where(CompanyCareerSource.status == CompanySourceStatus.RESOLVED)
+                .order_by(CompanyCareerSource.canonical_company_key)
+            )
+        )
+        provider_filter = {value.casefold().strip() for value in request.providers if value.strip()}
+        company_filter = {canonical_company_key(value) for value in request.companies if value.strip()}
+        return [
+            record
+            for record in records
+            if record.provider
+            and record.source_token
+            and record.careers_url
+            and (not provider_filter or record.provider.casefold() in provider_filter)
+            and (not company_filter or record.canonical_company_key in company_filter)
+        ][: request.max_sources]
+
+    @staticmethod
+    def _source_key(record: CompanyCareerSource) -> str:
+        return f"{record.provider}:{record.source_token}"
+
+    @staticmethod
+    def _now():
+        from datetime import datetime, timezone
+
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _collect_source(record: CompanyCareerSource, query: JobSearchQuery) -> list[JobListing]:
+        source = create_job_source(
+            ResolvedJobSource(
+                company=record.company_name,
+                provider=record.provider or "",
+                source_token=record.source_token or "",
+                careers_url=record.careers_url or "",
+            )
+        )
+        return [
+            listing.model_copy(
+                update={
+                    "company": listing.company or record.company_name,
+                    "provenance": JobProvenance(
+                        runtime="career-trans",
+                        source_ref=record.careers_url,
+                        discovered_via="structured_ats",
+                    ),
+                }
+            )
+            for listing in source.search(query)
+        ]
