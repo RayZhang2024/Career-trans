@@ -248,7 +248,10 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
                 print(f"Rationale: {recommendation['reasoning']}")
             if args.details:
                 _print_ranking_details(result)
-        _print_unassessed_ranking_failures(ranking)
+        _print_ranking_funnel(ranking)
+        _print_unranked_job_diagnostics(ranking)
+        if not ranking.get("results", []):
+            print("No ranked results were produced; see the ranking funnel and job diagnostics above.")
         return 0
     if args.jobs_command == "enrich-imported":
         response = client.enrich_imported_jobs(args.limit)
@@ -364,30 +367,102 @@ def _print_ranking_details(result: dict[str, Any]) -> None:
         print(f"- reasoning: {recommendation['reasoning']}")
 
 
-def _print_unassessed_ranking_failures(ranking: dict[str, Any]) -> None:
-    """Surface incomplete deep-analysis inputs without presenting a false score."""
+def _print_ranking_funnel(ranking: dict[str, Any]) -> None:
+    """Render existing response-level counters without adding ranking decisions."""
+    print(
+        "Ranking funnel: "
+        f"discovered={ranking.get('discovered_count', 0)}, "
+        f"gated_out={ranking.get('gated_out_count', 0)}, "
+        f"relevance_screened={ranking.get('relevance_screened_count', 0)}, "
+        f"finalists={ranking.get('finalist_count', 0)}, "
+        f"analysed={ranking.get('analysed_count', 0)}."
+    )
+
+
+def _print_unranked_job_diagnostics(ranking: dict[str, Any]) -> None:
+    """Explain existing non-result diagnostics without exposing raw inputs/errors."""
+    ranked_job_keys = {
+        _job_key(result.get("job", {}))
+        for result in ranking.get("results", [])
+        if isinstance(result, dict) and isinstance(result.get("job"), dict)
+    }
     screening_by_url = {
-        item.get("job", {}).get("url"): item
+        _job_key(item.get("job", {})): item
         for item in ranking.get("semantic_screening", [])
         if isinstance(item, dict) and isinstance(item.get("job"), dict)
     }
+    failure_keys: set[str] = set()
     for failure in ranking.get("failures", []):
-        if not isinstance(failure, dict) or failure.get("stage") != "insufficient_job_detail":
+        if not isinstance(failure, dict) or not isinstance(failure.get("job"), dict):
             continue
         job = failure.get("job", {})
-        screening = screening_by_url.get(job.get("url"), {})
+        key = _job_key(job)
+        failure_keys.add(key)
+        if key in ranked_job_keys:
+            continue
+        screening = screening_by_url.get(key, {})
         relevance = screening.get("relevance", {})
         archetype = screening.get("archetype", {})
-        print(
-            f"UNASSESSED | {job.get('title', 'Untitled')} | "
-            f"{job.get('company') or 'Unknown company'} | "
-            f"{job.get('location') or 'Unknown location'}"
-        )
-        print(
-            f"Relevance: {relevance.get('score', 'n/a')} | "
-            f"Archetype: {archetype.get('archetype', 'unknown')}"
-        )
-        print(f"Reason: {failure.get('error', 'Insufficient job detail for deep fit assessment.')}")
+        if failure.get("stage") == "insufficient_job_detail":
+            print(f"UNASSESSED | {_job_label(job)}")
+        else:
+            print(f"FAILED | {failure.get('stage', 'ranking')} | {_job_label(job)}")
+        _print_semantic_context(relevance, archetype)
+        print(f"Reason: {failure.get('error', 'Ranking stage failed.')}")
+
+    for item in ranking.get("semantic_screening", []):
+        if not isinstance(item, dict) or not isinstance(item.get("job"), dict):
+            continue
+        job = item["job"]
+        key = _job_key(job)
+        if key in ranked_job_keys or key in failure_keys:
+            continue
+        relevance = item.get("relevance", {})
+        archetype = item.get("archetype", {})
+        if item.get("failure_stage"):
+            print(f"FAILED | {item['failure_stage']} | {_job_label(job)}")
+            _print_semantic_context(relevance, archetype)
+            print(f"Reason: {item.get('error', 'Semantic screening failed.')}")
+        elif isinstance(relevance, dict) and relevance:
+            if relevance.get("relevant") is False:
+                outcome = "semantic relevance decision was relevant=false"
+            elif relevance.get("relevant") is True and not archetype:
+                outcome = "relevance score was below the configured threshold"
+            elif relevance.get("relevant") is True:
+                outcome = "the job was not retained for bounded deep analysis"
+            else:
+                outcome = "semantic screening did not retain the job"
+            print(f"SCREENED OUT | {_job_label(job)}")
+            _print_semantic_context(relevance, archetype)
+            print(f"Reason: {outcome}.")
+            if relevance.get("reasoning"):
+                print(f"Rationale: {relevance['reasoning']}")
+        else:
+            print(f"NOT ANALYSED | {_job_label(job)}")
+            print("Reason: the job was not retained for bounded deep analysis.")
+
+
+def _print_semantic_context(relevance: object, archetype: object) -> None:
+    relevance_data = relevance if isinstance(relevance, dict) else {}
+    archetype_data = archetype if isinstance(archetype, dict) else {}
+    line = (
+        f"Relevance: {relevance_data.get('score', 'n/a')} | "
+        f"Archetype: {archetype_data.get('archetype', 'unknown')}"
+    )
+    if "relevant" in relevance_data:
+        line += f" | Relevant: {str(relevance_data['relevant']).lower()}"
+    print(line)
+
+
+def _job_key(job: dict[str, Any]) -> str:
+    return str(job.get("url") or "|".join(str(job.get(key, "")) for key in ("source", "external_id", "title", "company")))
+
+
+def _job_label(job: dict[str, Any]) -> str:
+    return (
+        f"{job.get('title', 'Untitled')} | {job.get('company') or 'Unknown company'} | "
+        f"{job.get('location') or 'Unknown location'}"
+    )
 
 
 def _show_human(draft: dict[str, Any]) -> None:
