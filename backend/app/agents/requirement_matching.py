@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Protocol
 
+from langsmith import run_helpers
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import ValidationError
 
@@ -78,18 +79,37 @@ class OpenAIRequirementMatcher:
             "candidate_context": candidate_context.model_dump(mode="json"),
         }
 
+        previous_failure_kind: str | None = None
         for attempt in range(self._MAX_STRUCTURAL_ATTEMPTS):
+            attempt_number = attempt + 1
+            metadata = {
+                "application_attempt": attempt_number,
+                "max_application_attempts": self._MAX_STRUCTURAL_ATTEMPTS,
+                "requirement_count": len(job_profile.requirements),
+                "candidate_evidence_count": len(candidate_context.evidence),
+                "attempt_scope": "application_structural",
+                "previous_failure_kind": previous_failure_kind,
+            }
             try:
-                result = self._match_once(
-                    prompt=prompt,
-                    schema=schema,
-                    payload=payload,
-                )
+                # The wrapped OpenAI ``requirement_matching`` run is the
+                # application boundary we need to annotate.  Scoping metadata
+                # here keeps it on that provider run without creating a
+                # duplicate custom span or exposing prompt/evidence content.
+                with run_helpers.tracing_context(metadata=metadata):
+                    result = self._match_once(
+                        prompt=prompt,
+                        schema=schema,
+                        payload=payload,
+                    )
                 self._validate_result(result, job_profile, candidate_context)
                 return self._attach_canonical_requirements(result, job_profile)
             except RequirementMatchingError as exc:
-                if exc.kind not in self._RETRYABLE_FAILURE_KINDS or attempt + 1 == self._MAX_STRUCTURAL_ATTEMPTS:
+                if (
+                    exc.kind not in self._RETRYABLE_FAILURE_KINDS
+                    or attempt_number == self._MAX_STRUCTURAL_ATTEMPTS
+                ):
                     raise
+                previous_failure_kind = exc.kind
 
         raise AssertionError("Requirement matching attempts were exhausted unexpectedly.")
 

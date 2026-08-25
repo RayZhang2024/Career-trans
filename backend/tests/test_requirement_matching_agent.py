@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from langsmith import run_helpers
 
 from app.agents.requirement_matching import (
     OpenAIRequirementMatcher,
@@ -55,9 +56,12 @@ class _FakeResponses:
     def __init__(self, outputs: list[str | Exception]) -> None:
         self._outputs = iter(outputs)
         self.calls: list[dict[str, object]] = []
+        self.trace_metadata: list[dict[str, object]] = []
 
     def create(self, **kwargs: object) -> SimpleNamespace:
         self.calls.append(kwargs)
+        context = run_helpers.get_tracing_context()
+        self.trace_metadata.append(dict(context.get("metadata") or {}))
         output = next(self._outputs)
         if isinstance(output, Exception):
             raise output
@@ -290,3 +294,84 @@ def test_many_requirement_fixture_completes_with_canonical_results() -> None:
 
     assert [match.requirement for match in result.matches] == requirements
     assert len(responses.calls) == 1
+
+
+def test_valid_first_attempt_provider_run_has_safe_application_metadata() -> None:
+    matcher, responses = _matcher([_valid_result()])
+
+    with run_helpers.tracing_context(enabled=False):
+        matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert len(responses.calls) == 1
+    assert responses.trace_metadata == [
+        {
+            "application_attempt": 1,
+            "max_application_attempts": 2,
+            "requirement_count": 2,
+            "candidate_evidence_count": 1,
+            "attempt_scope": "application_structural",
+            "previous_failure_kind": None,
+        }
+    ]
+
+
+def test_retryable_failure_annotates_next_provider_run_without_sensitive_data() -> None:
+    matcher, responses = _matcher(["not json", _valid_result()])
+
+    with run_helpers.tracing_context(enabled=False):
+        matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert len(responses.calls) == 2
+    assert responses.trace_metadata[0]["application_attempt"] == 1
+    assert responses.trace_metadata[0]["previous_failure_kind"] is None
+    assert responses.trace_metadata[1]["application_attempt"] == 2
+    assert responses.trace_metadata[1]["previous_failure_kind"] == "invalid_output"
+    serialized = str(responses.trace_metadata)
+    assert "EVIDENCE-1" not in serialized
+    assert "Delivered Python systems" not in serialized
+    assert "not json" not in serialized
+
+
+def test_provider_failure_is_not_a_structural_retry() -> None:
+    matcher, responses = _matcher([SemanticProviderRequestError("secret-provider-detail")])
+
+    with run_helpers.tracing_context(enabled=False), pytest.raises(RequirementMatchingError):
+        matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert len(responses.calls) == 1
+    assert responses.trace_metadata[0]["previous_failure_kind"] is None
+    assert "secret-provider-detail" not in str(responses.trace_metadata)
+
+
+def test_brown_style_24_requirement_fixture_passes_validation_and_uses_one_attempt() -> None:
+    requirements = [
+        JobRequirement(
+            text=f"Synthetic Brown requirement {index}",
+            category=RequirementCategory.TECHNICAL,
+            importance=(
+                RequirementImportance.ESSENTIAL
+                if index < 12
+                else RequirementImportance.DESIRABLE
+            ),
+        )
+        for index in range(24)
+    ]
+    profile = JobProfile(title="Synthetic AI Engineer", requirements=requirements)
+    payload = _valid_result(requirements=requirements)
+    matcher, responses = _matcher([payload])
+
+    with run_helpers.tracing_context(enabled=False):
+        result = matcher.match(profile, CANDIDATE)
+
+    # This is the synthetic replay of the first observed 24-requirement shape;
+    # it satisfies _validate_result() and therefore must not trigger a retry.
+    matcher._validate_result(  # noqa: SLF001 - explicit regression of the invariant
+        SemanticRequirementMatchSet.model_validate(json.loads(payload)),
+        profile,
+        CANDIDATE,
+    )
+    assert len(result.matches) == 24
+    assert len(responses.calls) == 1
+    assert responses.trace_metadata[0]["requirement_count"] == 24
+    assert responses.trace_metadata[0]["application_attempt"] == 1
+    assert responses.trace_metadata[0]["previous_failure_kind"] is None

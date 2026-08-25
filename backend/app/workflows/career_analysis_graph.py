@@ -137,10 +137,7 @@ class CareerAnalysisGraph:
             return None
         return cleaned
 
-    def _match_requirements(
-        self,
-        state: CareerAnalysisState,
-    ) -> CareerAnalysisState:
+    def _match_requirements(self, state: CareerAnalysisState) -> CareerAnalysisState:
         match_set = self._requirement_matching_service.match(
             state["job_profile"],
             self._candidate_context(state),
