@@ -1,12 +1,8 @@
 import json
-from contextlib import contextmanager
-from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
-from langchain_core.runnables import RunnableConfig
-from langsmith import traceable
-from langsmith.run_trees import RunTree
+from langsmith import run_helpers
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import ValidationError
 
@@ -43,24 +39,6 @@ class RequirementMatcher(Protocol):
         candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         """Match every job requirement against candidate evidence."""
-
-
-_runnable_config: ContextVar[RunnableConfig | None] = ContextVar(
-    "requirement_matching_runnable_config",
-    default=None,
-)
-
-
-@contextmanager
-def requirement_matching_tracing_config(
-    config: RunnableConfig | None,
-) -> Iterator[None]:
-    """Make the active LangGraph config available to the traced attempt boundary."""
-    token = _runnable_config.set(config)
-    try:
-        yield
-    finally:
-        _runnable_config.reset(token)
 
 
 def _default_prompt_path() -> Path:
@@ -101,108 +79,39 @@ class OpenAIRequirementMatcher:
             "candidate_context": candidate_context.model_dump(mode="json"),
         }
 
+        previous_failure_kind: str | None = None
         for attempt in range(self._MAX_STRUCTURAL_ATTEMPTS):
             attempt_number = attempt + 1
             metadata = {
-                "attempt": attempt_number,
-                "max_attempts": self._MAX_STRUCTURAL_ATTEMPTS,
+                "application_attempt": attempt_number,
+                "max_application_attempts": self._MAX_STRUCTURAL_ATTEMPTS,
                 "requirement_count": len(job_profile.requirements),
                 "candidate_evidence_count": len(candidate_context.evidence),
                 "attempt_scope": "application_structural",
-                "validation_status": "pending",
-                "failure_kind": None,
-                "retrying": False,
+                "previous_failure_kind": previous_failure_kind,
             }
-            config = _runnable_config.get()
             try:
-                return self._run_attempt(
-                    prompt=prompt,
-                    schema=schema,
-                    payload=payload,
-                    job_profile=job_profile,
-                    candidate_context=candidate_context,
-                    attempt_number=attempt_number,
-                    metadata=metadata,
-                    config=config,
-                    langsmith_extra={
-                        "metadata": metadata,
-                        "parent": RunTree.from_runnable_config(config),
-                    },
-                )
+                # The wrapped OpenAI ``requirement_matching`` run is the
+                # application boundary we need to annotate.  Scoping metadata
+                # here keeps it on that provider run without creating a
+                # duplicate custom span or exposing prompt/evidence content.
+                with run_helpers.tracing_context(metadata=metadata):
+                    result = self._match_once(
+                        prompt=prompt,
+                        schema=schema,
+                        payload=payload,
+                    )
+                self._validate_result(result, job_profile, candidate_context)
+                return self._attach_canonical_requirements(result, job_profile)
             except RequirementMatchingError as exc:
                 if (
                     exc.kind not in self._RETRYABLE_FAILURE_KINDS
                     or attempt_number == self._MAX_STRUCTURAL_ATTEMPTS
                 ):
                     raise
+                previous_failure_kind = exc.kind
 
         raise AssertionError("Requirement matching attempts were exhausted unexpectedly.")
-
-    @traceable(
-        name="requirement_matching_attempt",
-        run_type="chain",
-        process_inputs=lambda _inputs: {},
-        process_outputs=lambda _outputs: {},
-    )
-    def _run_attempt(
-        self,
-        *,
-        prompt: str,
-        schema: dict[str, Any],
-        payload: dict[str, object],
-        job_profile: JobProfile,
-        candidate_context: CandidateMatchingProfile,
-        attempt_number: int,
-        metadata: dict[str, object],
-        config: RunnableConfig | None = None,
-        run_tree: RunTree | None = None,
-    ) -> RequirementMatchSet:
-        """Perform one application structural attempt under an explicit graph parent."""
-        del config  # Consumed by LangSmith's traceable wrapper for parent propagation.
-        result: SemanticRequirementMatchSet | None = None
-        try:
-            result = self._match_once(
-                prompt=prompt,
-                schema=schema,
-                payload=payload,
-            )
-            self._validate_result(result, job_profile, candidate_context)
-        except RequirementMatchingError as exc:
-            retryable = (
-                exc.kind in self._RETRYABLE_FAILURE_KINDS
-                and attempt_number < self._MAX_STRUCTURAL_ATTEMPTS
-            )
-            self._record_attempt_metadata(
-                run_tree,
-                {
-                    **metadata,
-                    "validation_status": "failed",
-                    "failure_kind": exc.kind,
-                    "retrying": retryable,
-                    "result_match_count": len(result.matches) if result is not None else None,
-                },
-            )
-            raise
-
-        self._record_attempt_metadata(
-            run_tree,
-            {
-                **metadata,
-                "validation_status": "passed",
-                "failure_kind": None,
-                "retrying": False,
-                "result_match_count": len(result.matches),
-            },
-        )
-        return self._attach_canonical_requirements(result, job_profile)
-
-    @staticmethod
-    def _record_attempt_metadata(
-        run_tree: RunTree | None,
-        metadata: dict[str, object],
-    ) -> None:
-        if run_tree is not None:
-            run_tree.metadata.update(metadata)
 
     def _match_once(
         self,

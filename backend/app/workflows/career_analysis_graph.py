@@ -2,7 +2,6 @@ from typing import TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langchain_core.runnables import RunnableConfig
 
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
@@ -16,7 +15,6 @@ from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.recommendation_service import RecommendationService
 from app.services.requirement_matching_service import RequirementMatchingService
-from app.agents.requirement_matching import requirement_matching_tracing_config
 
 
 class CareerAnalysisState(TypedDict, total=False):
@@ -139,19 +137,11 @@ class CareerAnalysisGraph:
             return None
         return cleaned
 
-    def _match_requirements(
-        self,
-        state: CareerAnalysisState,
-        config: RunnableConfig | None = None,
-    ) -> CareerAnalysisState:
-        # Pass the actual LangGraph callback config to the matcher's traceable
-        # application-attempt boundary. LangSmith uses it to create a child run
-        # under this node rather than relying on reconstructed contextvars.
-        with requirement_matching_tracing_config(config):
-            match_set = self._requirement_matching_service.match(
-                state["job_profile"],
-                self._candidate_context(state),
-            )
+    def _match_requirements(self, state: CareerAnalysisState) -> CareerAnalysisState:
+        match_set = self._requirement_matching_service.match(
+            state["job_profile"],
+            self._candidate_context(state),
+        )
         return {"requirement_matches": match_set.matches}
 
     @staticmethod
