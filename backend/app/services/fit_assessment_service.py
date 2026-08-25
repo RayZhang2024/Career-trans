@@ -1,3 +1,5 @@
+import re
+
 from app.schemas.assessment import (
     FitAssessment,
     Gap,
@@ -12,6 +14,25 @@ class FitAssessmentService:
     ESSENTIAL_WEIGHT = 3.0
     DESIRABLE_WEIGHT = 1.0
     UNSPECIFIED_WEIGHT = 2.0
+    _ELIGIBILITY_CATEGORIES = {
+        RequirementCategory.LOCATION,
+        RequirementCategory.WORK_AUTHORIZATION,
+    }
+    _MANDATORY_CONSTRAINT = re.compile(
+        r"\b(must|mandatory|required|only\s+candidates|right\s+to\s+work|"
+        r"eligible\s+to\s+work|no\s+sponsorship)\b",
+        re.IGNORECASE,
+    )
+    _LICENCE_OR_REGISTRATION = re.compile(
+        r"\b(licen[cs](?:e|ed|ure)|registration|registered\s+professional|"
+        r"professional\s+certification|certif(?:ication|ied))\b",
+        re.IGNORECASE,
+    )
+    _SECURITY_OR_NATIONALITY_CONSTRAINT = re.compile(
+        r"\b((?:security|sc|dv)\s+clearance|developed\s+vetting|security\s+check|"
+        r"citizen(?:ship)?|nationality)\b",
+        re.IGNORECASE,
+    )
 
     def assess(self, matches: list[RequirementMatch]) -> FitAssessment:
         fit_score = self._weighted_score(matches)
@@ -109,31 +130,16 @@ class FitAssessmentService:
     ) -> Gap | None:
         importance = match.requirement.importance
 
-        if (
-            importance == RequirementImportance.ESSENTIAL
-            and match.match_type == MatchType.INCOMPATIBLE
-        ):
+        if self._is_confirmed_hard_blocker(match):
             return Gap(
                 requirement_index=match.requirement_index,
                 requirement=match.requirement,
                 gap_type=GapType.HARD_BLOCKER,
                 severity=GapSeverity.HIGH,
-                reason="Structured candidate eligibility conflicts with this essential requirement.",
-            )
-
-        if (
-            importance == RequirementImportance.ESSENTIAL
-            and match.match_type == MatchType.MISSING
-            and match.score < 0.2
-            and match.requirement.category
-            not in {RequirementCategory.LOCATION, RequirementCategory.WORK_AUTHORIZATION}
-        ):
-            return Gap(
-                requirement_index=match.requirement_index,
-                requirement=match.requirement,
-                gap_type=GapType.HARD_BLOCKER,
-                severity=GapSeverity.HIGH,
-                reason="An essential requirement has no supporting evidence.",
+                reason=(
+                    "A clearly mandatory eligibility or professional constraint "
+                    "conflicts with confirmed candidate evidence."
+                ),
             )
 
         if match.match_type == MatchType.UNKNOWN:
@@ -186,6 +192,25 @@ class FitAssessmentService:
             )
 
         return None
+
+    def _is_confirmed_hard_blocker(self, match: RequirementMatch) -> bool:
+        """Reserve blockers for mandatory constraints with confirmed incompatibility.
+
+        Essential describes importance to the role; it does not prove that a
+        skill or experience gap makes application objectively infeasible.
+        """
+        if match.match_type != MatchType.INCOMPATIBLE:
+            return False
+        text = "\n".join(
+            value for value in (match.requirement.text, match.requirement.source_text) if value
+        )
+        if not self._MANDATORY_CONSTRAINT.search(text):
+            return False
+        return (
+            match.requirement.category in self._ELIGIBILITY_CATEGORIES
+            or bool(self._SECURITY_OR_NATIONALITY_CONSTRAINT.search(text))
+            or bool(self._LICENCE_OR_REGISTRATION.search(text))
+        )
 
     def _weight(
         self,

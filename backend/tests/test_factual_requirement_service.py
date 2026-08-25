@@ -105,3 +105,29 @@ def test_country_matching_does_not_treat_must_as_the_us() -> None:
     )
 
     assert result.match_type == MatchType.INCOMPATIBLE
+
+
+def test_security_clearance_matching_is_deterministic_and_unknown_when_absent() -> None:
+    requirement = JobRequirement(
+        text="Active SC clearance is required.",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.SECURITY,
+    )
+    service = FactualRequirementService()
+
+    demonstrated = service.match(
+        0,
+        requirement,
+        CandidateContext(eligibility=CandidateEligibility(security_clearances=["SC"])),
+    )
+    incompatible = service.match(
+        0,
+        requirement,
+        CandidateContext(eligibility=CandidateEligibility(security_clearances=["DV clearance"])),
+    )
+    unknown = service.match(0, requirement, CandidateContext())
+
+    assert demonstrated.match_type is MatchType.DEMONSTRATED
+    assert demonstrated.evidence_refs[0].source_ref == "security_clearances"
+    assert incompatible.match_type is MatchType.INCOMPATIBLE
+    assert unknown.match_type is MatchType.UNKNOWN

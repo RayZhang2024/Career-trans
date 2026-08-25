@@ -12,6 +12,8 @@ from app.schemas.matching import (
 
 class FactualRequirementService:
     def can_handle(self, requirement: JobRequirement) -> bool:
+        if requirement.category == RequirementCategory.SECURITY:
+            return self._is_clearance_requirement(requirement)
         return requirement.category in {
             RequirementCategory.LOCATION,
             RequirementCategory.WORK_AUTHORIZATION,
@@ -31,6 +33,12 @@ class FactualRequirementService:
             )
         if requirement.category == RequirementCategory.LOCATION:
             return self._match_location(
+                requirement_index,
+                requirement,
+                candidate_context,
+            )
+        if requirement.category == RequirementCategory.SECURITY:
+            return self._match_security_clearance(
                 requirement_index,
                 requirement,
                 candidate_context,
@@ -66,6 +74,50 @@ class FactualRequirementService:
             candidate_values=candidate_context.eligibility.locations,
             source_ref="locations",
             label="location eligibility",
+        )
+
+    def _match_security_clearance(
+        self,
+        requirement_index: int,
+        requirement: JobRequirement,
+        candidate_context: CandidateContext,
+    ) -> RequirementMatch:
+        candidate_values = candidate_context.eligibility.security_clearances
+        if not candidate_values:
+            return RequirementMatch(
+                requirement_index=requirement_index,
+                requirement=requirement,
+                match_type=MatchType.UNKNOWN,
+                score=0.0,
+                evidence_ids=[],
+                reasoning="Structured candidate security-clearance eligibility is insufficient to confirm this requirement.",
+            )
+
+        required_clearances = self._clearance_terms(requirement.text)
+        candidate_clearances = self._clearance_terms(" ".join(candidate_values))
+        if not required_clearances or required_clearances & candidate_clearances:
+            return RequirementMatch(
+                requirement_index=requirement_index,
+                requirement=requirement,
+                match_type=MatchType.DEMONSTRATED,
+                score=1.0,
+                evidence_ids=[],
+                evidence_refs=[
+                    EvidenceRef(
+                        source_type=EvidenceSourceType.CANDIDATE_ELIGIBILITY,
+                        source_ref="security_clearances",
+                    )
+                ],
+                reasoning="Structured candidate eligibility confirms a security clearance.",
+            )
+
+        return RequirementMatch(
+            requirement_index=requirement_index,
+            requirement=requirement,
+            match_type=MatchType.INCOMPATIBLE,
+            score=0.0,
+            evidence_ids=[],
+            reasoning="Structured candidate security-clearance eligibility conflicts with the stated requirement.",
         )
 
     def _match_eligibility_values(
@@ -144,3 +196,25 @@ class FactualRequirementService:
             "united states": "United States",
             "canada": "Canada",
         }[country]
+
+    @staticmethod
+    def _clearance_terms(value: str) -> set[str]:
+        normalized = value.casefold()
+        terms = {
+            "dv": ("dv", "developed vetting"),
+            "sc": ("sc", "security check"),
+            "top_secret": ("top secret",),
+            "secret": ("secret clearance",),
+        }
+        return {
+            clearance
+            for clearance, aliases in terms.items()
+            if any(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", normalized) for alias in aliases)
+        }
+
+    @staticmethod
+    def _is_clearance_requirement(requirement: JobRequirement) -> bool:
+        text = "\n".join(
+            value for value in (requirement.text, requirement.source_text) if value
+        )
+        return bool(re.search(r"\b(clearance|developed vetting|security check)\b", text, re.IGNORECASE))
