@@ -110,9 +110,10 @@ benchmark is run by the test):
 | `career_alignment` | 5,464 | 0 | 1,008 | 134 | 6,472 |
 | **Total** | **15,558** | **5,410** | **7,586** | **1,320** | **23,144** |
 
-The measured wall-clock time was approximately 63 seconds (the sum of the
-provider-stage timings was approximately 63 seconds). This is an observational
-baseline, not a target or an optimization claim.
+The summed provider-stage time was approximately 63 seconds. The end-to-end
+wall-clock span, from the earliest `job_relevance` creation to the final
+`career_alignment` completion, was approximately 66 seconds. These are
+observational baselines, not targets or optimization claims.
 
 The deterministic test fixture contains ten jobs: two objective URL gate
 failures, two relevance rejections, one relevant incomplete job, and five

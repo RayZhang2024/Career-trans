@@ -358,3 +358,4 @@ def test_authoritative_warm_cache_one_job_baseline_totals_are_regression_locked(
     assert all(item.model == "gpt-5.6-luna" for item in summary.stages.values())
     assert summary.stages["job_relevance"].latency_ms == 3000
     assert summary.stages["job_extraction"].latency_ms == 21000
+    assert sum(item.latency_ms for item in summary.stages.values()) == 63000
