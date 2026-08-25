@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import ValidationError
@@ -11,6 +11,8 @@ from app.providers.llm import (
     SemanticProviderConfigurationError,
     SemanticProviderRequestError,
     SemanticProviderUnavailableError,
+    SemanticStructuredOutputModelError,
+    SemanticStructuredOutputSchemaError,
 )
 from app.schemas.candidate import CandidateMatchingProfile
 from app.schemas.job import JobProfile
@@ -65,7 +67,7 @@ class OpenAIRequirementMatcher:
         candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         prompt = self._load_prompt()
-        schema = RequirementMatchSet.model_json_schema()
+        schema = self._openai_strict_schema()
 
         payload = {
             "job_profile": job_profile.model_dump(mode="json"),
@@ -82,7 +84,7 @@ class OpenAIRequirementMatcher:
                 self._validate_result(result, job_profile, candidate_context)
                 return result
             except RequirementMatchingError as exc:
-                if exc.kind == "provider_failure" or attempt + 1 == self._MAX_STRUCTURAL_ATTEMPTS:
+                if exc.kind not in self._RETRYABLE_FAILURE_KINDS or attempt + 1 == self._MAX_STRUCTURAL_ATTEMPTS:
                     raise
 
         raise AssertionError("Requirement matching attempts were exhausted unexpectedly.")
@@ -91,7 +93,7 @@ class OpenAIRequirementMatcher:
         self,
         *,
         prompt: str,
-        schema: dict[str, object],
+        schema: dict[str, Any],
         payload: dict[str, object],
     ) -> RequirementMatchSet:
         try:
@@ -113,10 +115,20 @@ class OpenAIRequirementMatcher:
                         "type": "json_schema",
                         "name": "requirement_match_set",
                         "strict": True,
-                        "schema": self._strict_json_schema(schema),
+                        "schema": schema,
                     }
                 },
             )
+        except SemanticStructuredOutputModelError as exc:
+            raise RequirementMatchingError(
+                "The configured semantic model does not support requirement-matching Structured Outputs.",
+                kind="structured_output_model_unsupported",
+            ) from exc
+        except SemanticStructuredOutputSchemaError as exc:
+            raise RequirementMatchingError(
+                "The requirement-matching Structured Outputs schema was rejected by the provider.",
+                kind="structured_output_schema_rejected",
+            ) from exc
         except (
             APIConnectionError,
             APIStatusError,
@@ -191,25 +203,51 @@ class OpenAIRequirementMatcher:
                 kind="prompt_load_failure",
             ) from exc
 
-    @staticmethod
-    def _strict_json_schema(schema: dict[str, object]) -> dict[str, object]:
-        """Make the Pydantic schema compatible with Responses strict JSON Schema mode."""
-        strict_schema = json.loads(json.dumps(schema))
+    _RETRYABLE_FAILURE_KINDS = frozenset(
+        {
+            "invalid_output",
+            "wrong_match_count",
+            "invalid_indexes",
+            "altered_requirement",
+            "unknown_evidence_ids",
+        }
+    )
 
-        def visit(value: object) -> None:
+    @staticmethod
+    def _openai_strict_schema() -> dict[str, Any]:
+        """Use the SDK Pydantic builder, then remove unsupported default keywords."""
+        try:
+            # This is the same SDK helper used by ``responses.parse`` to derive
+            # a strict provider schema from a Pydantic model.
+            from openai.lib._parsing import type_to_response_format_param
+        except ImportError as exc:  # pragma: no cover - guarded by the installed SDK
+            raise RequirementMatchingError(
+                "The installed OpenAI SDK cannot build a native Structured Outputs schema.",
+                kind="structured_output_sdk_unsupported",
+            ) from exc
+
+        response_format = type_to_response_format_param(RequirementMatchSet)
+        json_schema = response_format.get("json_schema")
+        schema = json_schema.get("schema") if isinstance(json_schema, dict) else None
+        if not isinstance(schema, dict):
+            raise RequirementMatchingError(
+                "The OpenAI SDK could not build a native Structured Outputs schema.",
+                kind="structured_output_sdk_unsupported",
+            )
+
+        normalized = json.loads(json.dumps(schema))
+
+        def remove_defaults(value: object) -> None:
             if isinstance(value, dict):
-                properties = value.get("properties")
-                if isinstance(properties, dict):
-                    value["additionalProperties"] = False
-                    value["required"] = list(properties)
+                value.pop("default", None)
                 for child in value.values():
-                    visit(child)
+                    remove_defaults(child)
             elif isinstance(value, list):
                 for child in value:
-                    visit(child)
+                    remove_defaults(child)
 
-        visit(strict_schema)
-        return strict_schema
+        remove_defaults(normalized)
+        return normalized
 
     @staticmethod
     def _strip_json_fence(text: str) -> str:

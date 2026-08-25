@@ -7,7 +7,10 @@ from app.agents.requirement_matching import (
     OpenAIRequirementMatcher,
     RequirementMatchingError,
 )
-from app.providers.llm import SemanticProviderRequestError
+from app.providers.llm import (
+    SemanticProviderRequestError,
+    SemanticStructuredOutputSchemaError,
+)
 from app.schemas.candidate import CandidateMatchingProfile, CareerEvidence
 from app.schemas.job import (
     JobProfile,
@@ -95,6 +98,21 @@ def test_matcher_uses_native_strict_schema_and_accepts_valid_result() -> None:
     assert response_format["name"] == "requirement_match_set"
     assert response_format["strict"] is True
     assert response_format["schema"]["additionalProperties"] is False
+
+
+def test_sdk_schema_preserves_nested_nullable_fields_without_defaults() -> None:
+    schema = OpenAIRequirementMatcher._openai_strict_schema()
+
+    serialized = json.dumps(schema)
+    job_requirement = schema["$defs"]["JobRequirement"]
+    source_text = job_requirement["properties"]["source_text"]
+
+    assert '"default"' not in serialized
+    assert job_requirement["additionalProperties"] is False
+    assert set(job_requirement["required"]) == set(job_requirement["properties"])
+    assert {item["type"] for item in source_text["anyOf"]} == {"string", "null"}
+    assert schema["$defs"]["RequirementMatch"]["properties"]["score"]["minimum"] == 0.0
+    assert schema["$defs"]["RequirementMatch"]["properties"]["score"]["maximum"] == 1.0
 
 
 def test_malformed_output_retries_once_without_leaking_candidate_context() -> None:
@@ -229,6 +247,19 @@ def test_provider_failure_is_not_retried_or_exposed() -> None:
     assert exc_info.value.kind == "provider_failure"
     assert len(responses.calls) == 1
     assert "provider-secret" not in str(exc_info.value)
+
+
+def test_structured_schema_rejection_is_not_retried_or_exposed() -> None:
+    matcher, responses = _matcher(
+        [SemanticStructuredOutputSchemaError("provider-response-private-data")]
+    )
+
+    with pytest.raises(RequirementMatchingError) as exc_info:
+        matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert exc_info.value.kind == "structured_output_schema_rejected"
+    assert len(responses.calls) == 1
+    assert "provider-response-private-data" not in str(exc_info.value)
 
 
 def test_many_requirement_fixture_completes_with_canonical_results() -> None:

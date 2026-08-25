@@ -19,6 +19,7 @@ class LLMConfigurationRead(BaseModel):
     agentic_search_provider: str
     openai_web_search_model: str
     openai_api_key_configured: bool
+    requirement_matching_structured_output_capability: str
 
 
 class LLMConfigurationCheck(LLMConfigurationRead):

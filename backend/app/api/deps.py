@@ -49,6 +49,7 @@ from app.providers.llm import (
     LLMProviderFactory,
     SemanticResponseClient,
     SemanticProviderConfigurationError,
+    validate_openai_structured_output_model,
 )
 from app.providers.web_search import BraveWebSearchProvider, OpenAIWebSearchProvider, WebSearchProvider
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
@@ -144,6 +145,8 @@ def validate_semantic_configuration(settings: Settings) -> None:
                 base_url=settings.effective_llm_base_url,
             )
         )
+        if provider == "openai":
+            validate_openai_structured_output_model(settings.requirement_matching_model)
     except LLMProviderConfigurationError as exc:
         raise SemanticProviderConfigurationError(str(exc)) from exc
 

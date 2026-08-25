@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APIStatusError
 from fastapi import HTTPException
 
 from app.api import deps
@@ -13,7 +15,12 @@ from app.providers.llm import (
     LLMProviderFactory,
     OllamaSemanticLLM,
     OpenAISemanticLLM,
+    SemanticProviderConfigurationError,
+    SemanticProviderRequestError,
     SemanticResponseClient,
+    SemanticStructuredOutputModelError,
+    SemanticStructuredOutputSchemaError,
+    openai_structured_output_supported,
 )
 from app.providers.web_search import BraveWebSearchProvider
 
@@ -107,7 +114,7 @@ def test_semantic_response_facade_passes_json_schema_to_provider() -> None:
     schema = {"type": "object", "properties": {"matches": {"type": "array"}}}
 
     client.responses.create(
-        model="test-model",
+        model="gpt-5.6",
         input=[
             {"role": "system", "content": "system"},
             {"role": "user", "content": "user"},
@@ -133,7 +140,7 @@ def test_openai_semantic_llm_uses_native_responses_json_schema(monkeypatch) -> N
     schema = {"type": "object", "properties": {"matches": {"type": "array"}}}
 
     output = OpenAISemanticLLM(api_key="server-secret").generate(
-        model="test-model",
+        model="gpt-5.6",
         system_prompt="system",
         user_prompt="user",
         operation="requirement_matching",
@@ -149,6 +156,78 @@ def test_openai_semantic_llm_uses_native_responses_json_schema(monkeypatch) -> N
             "schema": schema,
         }
     }
+
+
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6"])
+def test_known_openai_structured_output_models_are_supported(model: str) -> None:
+    assert openai_structured_output_supported(model) is True
+
+
+def test_openai_rejects_unknown_structured_output_model_before_request() -> None:
+    assert openai_structured_output_supported("unknown-model") is False
+    with pytest.raises(SemanticProviderConfigurationError, match="known Structured Outputs"):
+        OpenAISemanticLLM(api_key="server-secret").generate(
+            model="unknown-model",
+            system_prompt="system",
+            user_prompt="user",
+            operation="requirement_matching",
+            output_schema={"type": "object"},
+        )
+
+
+def test_openai_structured_output_bad_requests_are_safely_classified(monkeypatch) -> None:
+    request = httpx.Request("POST", "https://api.example.test/responses")
+
+    def rejected(message: str):
+        class RejectedClient:
+            class responses:
+                @staticmethod
+                def create(**_kwargs):
+                    raise APIStatusError(message, response=httpx.Response(400, request=request), body=None)
+
+        return RejectedClient()
+
+    schema = {"type": "object"}
+    monkeypatch.setattr(
+        "app.providers.llm.create_traced_openai_client",
+        lambda **_kwargs: rejected("Invalid schema for response_format"),
+    )
+    with pytest.raises(SemanticStructuredOutputSchemaError) as schema_error:
+        OpenAISemanticLLM(api_key="server-secret").generate(
+            model="gpt-5.6",
+            system_prompt="system",
+            user_prompt="candidate-private-data",
+            operation="requirement_matching",
+            output_schema=schema,
+        )
+    assert "candidate-private-data" not in str(schema_error.value)
+
+    monkeypatch.setattr(
+        "app.providers.llm.create_traced_openai_client",
+        lambda **_kwargs: rejected("Model does not support structured outputs"),
+    )
+    with pytest.raises(SemanticStructuredOutputModelError):
+        OpenAISemanticLLM(api_key="server-secret").generate(
+            model="gpt-5.6",
+            system_prompt="system",
+            user_prompt="user",
+            operation="requirement_matching",
+            output_schema=schema,
+        )
+
+    monkeypatch.setattr(
+        "app.providers.llm.create_traced_openai_client",
+        lambda **_kwargs: rejected("Invalid parameter: temperature"),
+    )
+    with pytest.raises(SemanticProviderRequestError) as generic_error:
+        OpenAISemanticLLM(api_key="server-secret").generate(
+            model="gpt-5.6",
+            system_prompt="system",
+            user_prompt="user",
+            operation="requirement_matching",
+            output_schema=schema,
+        )
+    assert type(generic_error.value) is SemanticProviderRequestError
 
 
 def test_migrated_dependency_construction_accepts_ollama_without_openai(monkeypatch) -> None:
