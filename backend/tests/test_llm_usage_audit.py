@@ -1,4 +1,4 @@
-from app.services.llm_usage_audit import summarize_trace_export
+from app.services.llm_usage_audit import normalize_trace_exports, summarize_trace_export
 
 
 def _run(name: str, *, usage: dict[str, int], **extra: object) -> dict[str, object]:
@@ -180,3 +180,43 @@ def test_trace_parser_does_not_search_arbitrary_input_output_for_token_fields() 
     stage = summary.stages["job_relevance"]
     assert stage.input_tokens == 0
     assert stage.output_tokens == 0
+
+
+def test_five_real_style_unnamed_provider_exports_normalize_with_explicit_labels() -> None:
+    stages = (
+        "job_relevance",
+        "job_archetype",
+        "job_extraction",
+        "requirement_matching",
+        "career_alignment",
+    )
+    exports = {
+        stage: {
+            "inputs": {"private": "do not retain"},
+            "outputs": {
+                "model": "gpt-5.6-terra",
+                "created_at": "2026-08-25T20:00:00Z",
+                "completed_at": "2026-08-25T20:00:02Z",
+                "usage_metadata": {
+                    "input_tokens": 10,
+                    "input_token_details": {"cache_read": 3},
+                    "output_tokens": 4,
+                    "output_token_details": {"reasoning": 1},
+                    "total_tokens": 14,
+                },
+            },
+            "error": None,
+            "metadata": {"ls_model_name": "gpt-5.6-terra"},
+            "langsmith": {"run_id": "safe-id"},
+        }
+        for stage in stages
+    }
+
+    normalized = normalize_trace_exports(exports)
+    assert [run["name"] for run in normalized["runs"]] == list(stages)
+    assert set(normalized["runs"][0]) == {"name", "metadata", "outputs", "error"}
+    assert "private" not in str(normalized)
+    summary = summarize_trace_export(normalized)
+    assert set(summary.stages) == set(stages)
+    assert sum(stage.call_count for stage in summary.stages.values()) == 5
+    assert sum(stage.total_tokens for stage in summary.stages.values()) == 70

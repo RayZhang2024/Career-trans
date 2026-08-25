@@ -10,7 +10,7 @@ copied into the result.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,6 +29,7 @@ _STAGE_ALIASES = {
     "requirement_matching_agent": "requirement_matching",
     "career_alignment_agent": "career_alignment",
 }
+_SUPPORTED_STAGES = frozenset(_STAGES)
 
 
 class StageUsage(BaseModel):
@@ -64,6 +65,83 @@ class LLMUsageAuditSummary(BaseModel):
 
     stages: dict[str, StageUsage] = Field(default_factory=dict)
     funnel: FunnelCounts = Field(default_factory=FunnelCounts)
+
+
+def normalize_trace_exports(exports: Mapping[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Normalize explicitly labelled UI exports into parser input.
+
+    ``exports`` maps one of the exact supported stage names to a decoded
+    single-run export.  Only safe stage/model/usage/timestamp/status metadata is
+    copied; raw inputs, outputs, prompts, and provider errors are discarded.
+    """
+    runs = [normalize_trace_export(stage, export) for stage, export in exports.items()]
+    return {"runs": runs}
+
+
+def normalize_trace_export(stage: str, export: Any) -> dict[str, Any]:
+    """Create one sanitized provider run with an explicit stage name."""
+    if stage not in _SUPPORTED_STAGES:
+        raise ValueError(f"Unsupported semantic stage: {stage}")
+    source = export if isinstance(export, dict) else {}
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    outputs = source.get("outputs") if isinstance(source.get("outputs"), dict) else {}
+    safe_metadata = {
+        key: metadata[key]
+        for key in (
+            "ls_model_name",
+            "application_attempt",
+            "max_application_attempts",
+            "requirement_count",
+            "candidate_evidence_count",
+            "attempt_scope",
+            "previous_failure_kind",
+            "langgraph_node",
+        )
+        if key in metadata and _safe_scalar(metadata[key])
+    }
+    usage = _first_dict(
+        outputs.get("usage_metadata"),
+        source.get("usage_metadata"),
+        metadata.get("usage_metadata"),
+    )
+    safe_outputs: dict[str, Any] = {}
+    for key in ("model", "created_at", "completed_at"):
+        if key in outputs and _safe_scalar(outputs[key]):
+            safe_outputs[key] = outputs[key]
+    if usage is not None:
+        safe_outputs["usage_metadata"] = _sanitize_usage(usage)
+    normalized: dict[str, Any] = {
+        "name": stage,
+        "metadata": safe_metadata,
+        "outputs": safe_outputs,
+        "error": True if source.get("error") else None,
+    }
+    for key in ("status", "start_time", "end_time"):
+        if key in source and _safe_scalar(source[key]):
+            normalized[key] = source[key]
+    return normalized
+
+
+def _safe_scalar(value: Any) -> bool:
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _sanitize_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    allowed = (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "cached_input_tokens",
+        "cache_read_input_tokens",
+    )
+    sanitized = {key: usage[key] for key in allowed if isinstance(usage.get(key), (int, float))}
+    for key, nested_key in (("input_token_details", "cache_read"), ("output_token_details", "reasoning")):
+        nested = usage.get(key)
+        if isinstance(nested, dict) and isinstance(nested.get(nested_key), (int, float)):
+            sanitized[key] = {nested_key: nested[nested_key]}
+    return sanitized
 
 
 def summarize_trace_export(export: Any) -> LLMUsageAuditSummary:

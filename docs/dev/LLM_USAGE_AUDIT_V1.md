@@ -25,8 +25,8 @@ inputs, outputs, prompts, evidence, IDs, credentials, or provider bodies.
 The parser accepts a run list or an object containing `runs`, `child_runs`, or
 `children`. Token fields are read from common LangSmith/OpenAI usage names;
 missing fields remain zero. Requirement-matching retries are counted from
-`extra.metadata.application_attempt`, distinguishing the application retry from
-provider/SDK behavior.
+top-level `metadata.application_attempt` (or compatible wrapped metadata),
+distinguishing the application retry from provider/SDK behavior.
 
 The parser also accepts the single-run export shape used by Issue #106, where
 safe fields are top-level `metadata`, `outputs`, `error`, and `langsmith`
@@ -34,6 +34,26 @@ objects. Stage/model names are read from explicit safe metadata/output fields;
 `outputs.usage_metadata.input_token_details.cache_read` and
 `outputs.usage_metadata.output_token_details.reasoning` are supported, as are
 `outputs.created_at`/`completed_at` timestamps.
+
+LangSmith UI downloads can omit the displayed provider run name. In that case,
+provide the exact stage label during the development-only normalization step:
+
+```powershell
+.\.venv\Scripts\career-trans.exe dev normalize-llm-traces `
+  --stage job_relevance=job_relevance.json `
+  --stage job_archetype=job_archetype.json `
+  --stage job_extraction=job_extraction.json `
+  --stage requirement_matching=requirement_matching.json `
+  --stage career_alignment=career_alignment.json `
+  --output normalized-trace.json
+```
+
+Only safe stage/model/usage/timestamp/status fields are retained in the
+normalized file. The five exact stage labels above are the complete supported
+set; no substring or orchestration-name inference is used for the other
+stages. Run `analyse-llm-trace` on `normalized-trace.json` afterwards. A root
+run JSON download without hydrated children or explicit provider exports cannot
+represent the complete end-to-end funnel.
 
 ## Canonical benchmark shapes
 

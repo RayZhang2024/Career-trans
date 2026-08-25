@@ -20,7 +20,7 @@ from app.services.codex_external_discovery_service import (
     CodexExternalDiscoveryError,
     CodexExternalDiscoveryRunner,
 )
-from app.services.llm_usage_audit import summarize_trace_export
+from app.services.llm_usage_audit import normalize_trace_exports, summarize_trace_export
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,6 +43,18 @@ def build_parser() -> argparse.ArgumentParser:
     dev_commands = dev.add_subparsers(dest="dev_command", required=True)
     audit = dev_commands.add_parser("analyse-llm-trace", help="Summarize an exported LangSmith JSON trace")
     audit.add_argument("--input", required=True, type=Path)
+    normalize = dev_commands.add_parser(
+        "normalize-llm-traces",
+        help="Normalize explicitly labelled LangSmith provider exports for offline analysis",
+    )
+    normalize.add_argument(
+        "--stage",
+        action="append",
+        required=True,
+        metavar="STAGE=PATH",
+        help="One exact semantic stage and exported JSON path; repeat for each provider run",
+    )
+    normalize.add_argument("--output", type=Path, help="Optional output JSON path (otherwise stdout)")
 
     profile = commands.add_parser("profile", help="Inspect authenticated candidate profile state")
     profile_commands = profile.add_subparsers(dest="profile_command", required=True)
@@ -140,6 +152,22 @@ def _dev(args: argparse.Namespace) -> int:
     if args.dev_command == "analyse-llm-trace":
         payload = json.loads(args.input.read_text(encoding="utf-8"))
         print(summarize_trace_export(payload).model_dump_json(indent=2))
+        return 0
+    if args.dev_command == "normalize-llm-traces":
+        exports: dict[str, Any] = {}
+        for specification in args.stage:
+            stage, separator, path_text = specification.partition("=")
+            if not separator or not stage or not path_text:
+                raise ValueError("Each --stage must use STAGE=PATH.")
+            if stage in exports:
+                raise ValueError(f"Duplicate semantic stage: {stage}")
+            exports[stage] = json.loads(Path(path_text).read_text(encoding="utf-8"))
+        normalized = normalize_trace_exports(exports)
+        rendered = json.dumps(normalized, indent=2, sort_keys=True)
+        if args.output:
+            args.output.write_text(rendered + "\n", encoding="utf-8")
+        else:
+            print(rendered)
         return 0
     raise ValueError(f"Unsupported dev command: {args.dev_command}")
 
