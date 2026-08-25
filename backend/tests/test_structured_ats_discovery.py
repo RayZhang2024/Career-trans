@@ -29,12 +29,13 @@ def _record(company: str, provider: str, token: str) -> CompanyCareerSource:
 class _FakeStateStore:
     def __init__(self) -> None:
         self.listings = []
-        self.successful_source_keys = set()
 
-    def synchronize(self, listings, successful_source_keys):
+    def persist(self, listings):
         self.listings = list(listings)
-        self.successful_source_keys = set(successful_source_keys)
-        return {f"job-{index}": DiscoveredJobState.NEW for index, _ in enumerate(listings)}
+        return {
+            SqlAlchemyDiscoveredJobStateStore.identity_key(listing): DiscoveredJobState.NEW
+            for listing in listings
+        }
 
 
 def test_scans_multiple_registry_sources_preserves_normalized_provenance_and_isolates_failure(
@@ -94,8 +95,8 @@ def test_scans_multiple_registry_sources_preserves_normalized_provenance_and_iso
     }
     assert [item.succeeded for item in response.source_diagnostics] == [True, True, False]
     assert response.source_diagnostics[-1].failure == "RuntimeError: provider request failed"
-    assert state_store.successful_source_keys == {"greenhouse:alpha", "recruitee:beta"}
     assert len(state_store.listings) == 2
+    assert [item.imported_count for item in response.source_diagnostics[:2]] == [1, 1]
 
 
 def test_repeated_scans_use_shared_state_store_identity_without_duplicate_records(db_session, monkeypatch) -> None:
@@ -130,6 +131,9 @@ def test_repeated_scans_use_shared_state_store_identity_without_duplicate_record
 
     assert first.lifecycle_counts.new == 1
     assert second.lifecycle_counts.unchanged == 1
+    assert first.source_diagnostics[0].imported_count == 1
+    assert second.source_diagnostics[0].imported_count == 0
+    assert second.source_diagnostics[0].unchanged_count == 1
     assert len(db_session.scalars(select(DiscoveredJob)).all()) == 1
     assert second.listings[0].company == "Alpha"
     assert second.listings[0].location is None
@@ -161,13 +165,136 @@ def test_explicit_exclusions_and_deterministic_source_bound_are_applied(db_sessi
         "app.services.structured_ats_discovery_service.create_job_source",
         lambda resolved: _Source(resolved.source_token),
     )
-    response = StructuredAtsDiscoveryService(session=db_session, state_store=_FakeStateStore()).discover(
+    response = StructuredAtsDiscoveryService(
+        session=db_session,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db_session),
+    ).discover(
         StructuredAtsDiscoveryRequest(max_sources=1, excluded_title_terms=["intern"])
     )
 
     assert called == ["alpha"]
     assert response.listings == []
     assert response.source_diagnostics[0].rejected_count == 1
+    assert db_session.scalars(select(DiscoveredJob)).all() == []
+
+
+def test_max_results_bounds_persistence_and_diagnostics(db_session, monkeypatch) -> None:
+    db_session.add(_record("Alpha", "greenhouse", "alpha"))
+    db_session.commit()
+
+    class _Source:
+        def search(self, _query):
+            return [
+                JobListing(
+                    source="greenhouse",
+                    source_token="alpha",
+                    external_id=f"external-{index}",
+                    title=f"Engineering role {index}",
+                    company="Alpha",
+                    location="London",
+                    url=f"https://jobs.example.test/alpha/{index}",
+                    description="Structured job detail.",
+                )
+                for index in range(3)
+            ]
+
+    monkeypatch.setattr(
+        "app.services.structured_ats_discovery_service.create_job_source",
+        lambda _resolved: _Source(),
+    )
+    service = StructuredAtsDiscoveryService(
+        session=db_session,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db_session),
+    )
+    first = service.discover(StructuredAtsDiscoveryRequest(max_sources=1, max_results=1))
+    second = service.discover(StructuredAtsDiscoveryRequest(max_sources=1, max_results=1))
+
+    assert len(db_session.scalars(select(DiscoveredJob)).all()) == 1
+    assert first.lifecycle_counts.new == 1
+    assert first.source_diagnostics[0].imported_count == 1
+    assert first.source_diagnostics[0].bounded_out_count == 2
+    assert first.source_diagnostics[0].deduplicated_count == 0
+    assert second.lifecycle_counts.new == 0
+    assert second.lifecycle_counts.unchanged == 1
+    assert second.source_diagnostics[0].imported_count == 0
+    assert second.source_diagnostics[0].unchanged_count == 1
+    assert second.source_diagnostics[0].bounded_out_count == 2
+
+
+def test_capped_observation_never_marks_unpersisted_board_jobs_inactive(db_session, monkeypatch) -> None:
+    db_session.add(_record("Alpha", "greenhouse", "alpha"))
+    db_session.commit()
+
+    class _Source:
+        def search(self, _query):
+            return [
+                JobListing(
+                    source="greenhouse",
+                    source_token="alpha",
+                    external_id=f"external-{index}",
+                    title=f"Engineering role {index}",
+                    company="Alpha",
+                    location="London",
+                    url=f"https://jobs.example.test/alpha/{index}",
+                    description="Structured job detail.",
+                )
+                for index in range(2)
+            ]
+
+    monkeypatch.setattr(
+        "app.services.structured_ats_discovery_service.create_job_source",
+        lambda _resolved: _Source(),
+    )
+    service = StructuredAtsDiscoveryService(
+        session=db_session,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db_session),
+    )
+    service.discover(StructuredAtsDiscoveryRequest(max_sources=1, max_results=2))
+    response = service.discover(StructuredAtsDiscoveryRequest(max_sources=1, max_results=1))
+
+    records = db_session.scalars(select(DiscoveredJob).order_by(DiscoveredJob.external_id)).all()
+    assert len(records) == 2
+    assert all(record.state is not DiscoveredJobState.INACTIVE for record in records)
+    assert response.lifecycle_counts.inactive == 0
+
+
+def test_filtered_observation_never_marks_previously_imported_job_inactive(db_session, monkeypatch) -> None:
+    db_session.add(_record("Alpha", "greenhouse", "alpha"))
+    db_session.commit()
+
+    class _Source:
+        def search(self, _query):
+            return [
+                JobListing(
+                    source="greenhouse",
+                    source_token="alpha",
+                    external_id="external-1",
+                    title="Engineering Internship",
+                    company="Alpha",
+                    location="London",
+                    url="https://jobs.example.test/alpha/1",
+                    description="Structured job detail.",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "app.services.structured_ats_discovery_service.create_job_source",
+        lambda _resolved: _Source(),
+    )
+    service = StructuredAtsDiscoveryService(
+        session=db_session,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db_session),
+    )
+    service.discover(StructuredAtsDiscoveryRequest(max_sources=1))
+    response = service.discover(
+        StructuredAtsDiscoveryRequest(max_sources=1, excluded_title_terms=["intern"])
+    )
+
+    record = db_session.scalar(select(DiscoveredJob))
+    assert record is not None
+    assert record.state == DiscoveredJobState.NEW.value
+    assert response.listings == []
+    assert response.lifecycle_counts.inactive == 0
 
 
 def test_cli_reports_per_source_ats_scan_diagnostics_without_ranking(monkeypatch, capsys) -> None:
@@ -190,7 +317,10 @@ def test_cli_reports_per_source_ats_scan_diagnostics_without_ranking(monkeypatch
                         "succeeded": True,
                         "discovered_count": 2,
                         "imported_count": 1,
+                        "unchanged_count": 0,
+                        "updated_count": 0,
                         "deduplicated_count": 1,
+                        "bounded_out_count": 0,
                         "rejected_count": 0,
                     },
                     {
@@ -200,7 +330,10 @@ def test_cli_reports_per_source_ats_scan_diagnostics_without_ranking(monkeypatch
                         "succeeded": False,
                         "discovered_count": 0,
                         "imported_count": 0,
+                        "unchanged_count": 0,
+                        "updated_count": 0,
                         "deduplicated_count": 0,
+                        "bounded_out_count": 0,
                         "rejected_count": 0,
                         "failure": "RuntimeError: provider request failed",
                     },

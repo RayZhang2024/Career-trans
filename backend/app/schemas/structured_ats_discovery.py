@@ -29,7 +29,10 @@ class StructuredAtsSourceDiagnostic(BaseModel):
     succeeded: bool
     discovered_count: int = Field(ge=0)
     imported_count: int = Field(ge=0)
+    unchanged_count: int = Field(ge=0)
+    updated_count: int = Field(ge=0)
     deduplicated_count: int = Field(ge=0)
+    bounded_out_count: int = Field(ge=0)
     rejected_count: int = Field(ge=0)
     failure: str | None = None
 

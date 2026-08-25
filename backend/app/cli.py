@@ -240,7 +240,9 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             print(
                 f"{status} | {item.get('company')} | {item.get('provider')}:{item.get('source_token')} | "
                 f"discovered={item.get('discovered_count', 0)} imported={item.get('imported_count', 0)} "
-                f"deduplicated={item.get('deduplicated_count', 0)} rejected={item.get('rejected_count', 0)}"
+                f"unchanged={item.get('unchanged_count', 0)} updated={item.get('updated_count', 0)} "
+                f"deduplicated={item.get('deduplicated_count', 0)} "
+                f"bounded_out={item.get('bounded_out_count', 0)} rejected={item.get('rejected_count', 0)}"
             )
             if item.get("failure"):
                 print(f"Failure: {item['failure']}")

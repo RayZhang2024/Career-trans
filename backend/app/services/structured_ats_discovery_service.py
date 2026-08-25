@@ -13,7 +13,10 @@ from app.schemas.structured_ats_discovery import (
     StructuredAtsSourceDiagnostic,
 )
 from app.services.company_source_discovery_service import canonical_company_key
-from app.services.discovered_job_state_store import DiscoveredJobStateStore
+from app.services.discovered_job_state_store import (
+    DiscoveredJobStateStore,
+    SqlAlchemyDiscoveredJobStateStore,
+)
 from app.services.job_deduplication_service import JobDeduplicationService
 from app.services.job_screening_service import JobScreeningService
 from app.services.job_source_factory import create_job_source
@@ -52,7 +55,6 @@ class StructuredAtsDiscoveryService:
         diagnostics: list[StructuredAtsSourceDiagnostic] = []
         accepted_by_source: dict[str, list[JobListing]] = {}
         raw: list[JobListing] = []
-        successful_source_keys: set[str] = set()
 
         for record in records:
             source_key = self._source_key(record)
@@ -67,7 +69,10 @@ class StructuredAtsDiscoveryService:
                         succeeded=False,
                         discovered_count=0,
                         imported_count=0,
+                        unchanged_count=0,
+                        updated_count=0,
                         deduplicated_count=0,
+                        bounded_out_count=0,
                         rejected_count=0,
                         failure=f"{type(exc).__name__}: provider request failed",
                     )
@@ -75,7 +80,6 @@ class StructuredAtsDiscoveryService:
                 continue
 
             record.last_successful_fetch_at = self._now()
-            successful_source_keys.add(source_key)
             raw.extend(listings)
             accepted = self._screening.screen(listings, query)
             accepted_by_source[source_key] = accepted
@@ -87,25 +91,45 @@ class StructuredAtsDiscoveryService:
                     succeeded=True,
                     discovered_count=len(listings),
                     imported_count=0,
+                    unchanged_count=0,
+                    updated_count=0,
                     deduplicated_count=0,
+                    bounded_out_count=0,
                     rejected_count=len(listings) - len(accepted),
                 )
             )
 
         accepted = [listing for source in accepted_by_source.values() for listing in source]
         deduplicated, duplicate_count = self._deduplicator.deduplicate(accepted)
-        retained_ids = {id(listing) for listing in deduplicated}
+        listings = deduplicated[: request.max_results]
+        deduplicated_ids = {id(listing) for listing in deduplicated}
+        persisted_ids = {id(listing) for listing in listings}
+        states = self._state_store.persist(listings)
+        self._session.commit()
         for diagnostic in diagnostics:
             if not diagnostic.succeeded:
                 continue
             source_key = f"{diagnostic.provider}:{diagnostic.source_token}"
             source_accepted = accepted_by_source[source_key]
-            diagnostic.imported_count = sum(id(item) in retained_ids for item in source_accepted)
-            diagnostic.deduplicated_count = len(source_accepted) - diagnostic.imported_count
-
-        listings = deduplicated[: request.max_results]
-        states = self._state_store.synchronize(raw, successful_source_keys)
-        self._session.commit()
+            source_deduplicated = [item for item in source_accepted if id(item) in deduplicated_ids]
+            persisted = [item for item in source_deduplicated if id(item) in persisted_ids]
+            diagnostic.deduplicated_count = (
+                len(source_accepted) - len(source_deduplicated)
+            )
+            diagnostic.bounded_out_count = len(source_deduplicated) - len(persisted)
+            source_states = [
+                states.get(SqlAlchemyDiscoveredJobStateStore.identity_key(item))
+                for item in persisted
+            ]
+            diagnostic.imported_count = sum(
+                state is DiscoveredJobState.NEW for state in source_states
+            )
+            diagnostic.unchanged_count = sum(
+                state is DiscoveredJobState.UNCHANGED for state in source_states
+            )
+            diagnostic.updated_count = sum(
+                state is DiscoveredJobState.UPDATED for state in source_states
+            )
         return StructuredAtsDiscoveryResponse(
             listings=listings,
             source_diagnostics=diagnostics,

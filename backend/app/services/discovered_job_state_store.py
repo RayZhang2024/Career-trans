@@ -12,6 +12,8 @@ from app.services.job_deduplication_service import JobDeduplicationService
 
 
 class DiscoveredJobStateStore(Protocol):
+    def persist(self, listings: list[JobListing]) -> dict[str, DiscoveredJobState]: ...
+
     def synchronize(
         self,
         listings: list[JobListing],
@@ -31,6 +33,35 @@ class SqlAlchemyDiscoveredJobStateStore:
         successful_source_keys: set[str],
     ) -> dict[str, DiscoveredJobState]:
         now = datetime.now(timezone.utc)
+        observed_keys, transitions = self._persist_listings(listings, now)
+
+        # A source must complete successfully before an unseen record can be inactive.
+        active_records = self._session.scalars(
+            select(DiscoveredJob).where(DiscoveredJob.state != DiscoveredJobState.INACTIVE)
+        ).all()
+        for record in active_records:
+            if self.source_key(record.source, record.source_token) not in successful_source_keys:
+                continue
+            if record.identity_key in observed_keys:
+                continue
+            record.state = DiscoveredJobState.INACTIVE
+            record.last_changed_at = now
+            transitions[record.identity_key] = DiscoveredJobState.INACTIVE
+
+        self._session.commit()
+        return transitions
+
+    def persist(self, listings: list[JobListing]) -> dict[str, DiscoveredJobState]:
+        """Persist bounded accepted listings without deriving source absence/inactivity."""
+        _, transitions = self._persist_listings(listings, datetime.now(timezone.utc))
+        self._session.commit()
+        return transitions
+
+    def _persist_listings(
+        self,
+        listings: list[JobListing],
+        now: datetime,
+    ) -> tuple[set[str], dict[str, DiscoveredJobState]]:
         observed_keys: set[str] = set()
         transitions: dict[str, DiscoveredJobState] = {}
 
@@ -76,21 +107,7 @@ class SqlAlchemyDiscoveredJobStateStore:
                 record.last_changed_at = now
             transitions[identity_key] = DiscoveredJobState(record.state)
 
-        # A source must complete successfully before an unseen record can be inactive.
-        active_records = self._session.scalars(
-            select(DiscoveredJob).where(DiscoveredJob.state != DiscoveredJobState.INACTIVE)
-        ).all()
-        for record in active_records:
-            if self.source_key(record.source, record.source_token) not in successful_source_keys:
-                continue
-            if record.identity_key in observed_keys:
-                continue
-            record.state = DiscoveredJobState.INACTIVE
-            record.last_changed_at = now
-            transitions[record.identity_key] = DiscoveredJobState.INACTIVE
-
-        self._session.commit()
-        return transitions
+        return observed_keys, transitions
 
     @staticmethod
     def source_key(source: str, source_token: str | None) -> str:
