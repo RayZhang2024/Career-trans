@@ -204,6 +204,63 @@ def test_factual_requirement_bypasses_semantic_matcher() -> None:
     assert factual_match.evidence_refs[0].value == "United Kingdom"
 
 
+def test_semantic_subset_indexes_remap_to_original_indexes_independent_of_output_order() -> None:
+    work_auth_requirement = JobRequirement(
+        text="Right to work in the UK",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.WORK_AUTHORIZATION,
+    )
+    job_profile = JobProfile(
+        requirements=[work_auth_requirement, REACT_REQUIREMENT, PYTHON_REQUIREMENT]
+    )
+    candidate_context = CandidateContext(
+        eligibility=CandidateEligibility(work_authorisation=["United Kingdom"]),
+        evidence=[
+            CareerEvidence(
+                evidence_id="EVIDENCE-PY-001",
+                title="Python application development",
+                text="Built Python applications.",
+                skills=["Python"],
+            )
+        ],
+    )
+
+    class FakeSemanticMatcher:
+        def match(
+            self,
+            semantic_job_profile: JobProfile,
+            _: CandidateMatchingProfile,
+        ) -> RequirementMatchSet:
+            assert semantic_job_profile.requirements == [REACT_REQUIREMENT, PYTHON_REQUIREMENT]
+            return RequirementMatchSet(
+                matches=[
+                    RequirementMatch(
+                        requirement_index=1,
+                        requirement=PYTHON_REQUIREMENT,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["EVIDENCE-PY-001"],
+                        reasoning="Python evidence.",
+                    ),
+                    RequirementMatch(
+                        requirement_index=0,
+                        requirement=REACT_REQUIREMENT,
+                        match_type=MatchType.MISSING,
+                        score=0.0,
+                        reasoning="No React evidence.",
+                    ),
+                ]
+            )
+
+    result = RequirementMatchingService(matcher=FakeSemanticMatcher()).match(
+        job_profile,
+        candidate_context,
+    )
+
+    assert [match.requirement_index for match in result.matches] == [0, 1, 2]
+    assert [match.requirement for match in result.matches] == job_profile.requirements
+
+
 def test_semantic_matching_receives_deterministic_top_evidence_only() -> None:
     evidence = [
         CareerEvidence(

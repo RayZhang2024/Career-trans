@@ -47,6 +47,31 @@ class RequirementMatchSet(BaseModel):
     matches: list[RequirementMatch] = Field(default_factory=list)
 
 
+class SemanticRequirementMatch(BaseModel):
+    """Model-owned judgement fields for one canonical job requirement.
+
+    This is deliberately separate from ``RequirementMatch``: the semantic model
+    selects a match for a requirement index, while application code owns and
+    reattaches the canonical ``JobRequirement``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    requirement_index: int = Field(ge=0)
+    match_type: MatchType
+    score: float = Field(ge=0.0, le=1.0)
+    evidence_ids: list[str] = Field(default_factory=list)
+    reasoning: str = Field(min_length=1)
+
+
+class SemanticRequirementMatchSet(BaseModel):
+    """Internal Structured Outputs contract for semantic requirement matching."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    matches: list[SemanticRequirementMatch] = Field(default_factory=list)
+
+
 class JobMatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

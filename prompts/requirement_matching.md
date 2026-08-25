@@ -7,7 +7,7 @@ Your task is requirement-level matching only. Do not calculate an overall job-fi
 ## Core rules
 
 1. Match every job requirement exactly once.
-2. Preserve the original requirement object unchanged.
+2. Return only the judgement fields requested by the supplied schema. Do not return a requirement object.
 3. Use only evidence supplied in the candidate context.
 4. Never invent evidence IDs.
 5. Never invent experience, qualifications, skills, citizenship, security clearance, or work authorization.
@@ -51,7 +51,7 @@ Only cite `evidence_id` values that are present in `candidate_context.evidence`.
 
 For inferred or missing matches, `evidence_ids` may be empty.
 
-Set `evidence_refs` to an empty list for semantic matching. The application converts validated `evidence_ids` into typed `career_evidence` provenance references deterministically after the model response is validated. Do not invent profile, eligibility, skills, or education provenance references here.
+The application converts validated `evidence_ids` into typed `career_evidence` provenance references deterministically after the model response is validated. Do not return provenance objects or invent profile, eligibility, skills, or education provenance references.
 
 ## Requirement index
 

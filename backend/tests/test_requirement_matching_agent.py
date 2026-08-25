@@ -18,7 +18,11 @@ from app.schemas.job import (
     RequirementCategory,
     RequirementImportance,
 )
-from app.schemas.matching import MatchType, RequirementMatch, RequirementMatchSet
+from app.schemas.matching import (
+    MatchType,
+    SemanticRequirementMatch,
+    SemanticRequirementMatchSet,
+)
 
 
 REQUIREMENTS = [
@@ -66,11 +70,10 @@ class _FakeClient:
 
 
 def _valid_result(*, requirements: list[JobRequirement] = REQUIREMENTS) -> str:
-    return RequirementMatchSet(
+    return SemanticRequirementMatchSet(
         matches=[
-            RequirementMatch(
+            SemanticRequirementMatch(
                 requirement_index=index,
-                requirement=requirement,
                 match_type=MatchType.DEMONSTRATED,
                 score=0.9,
                 evidence_ids=["EVIDENCE-1"],
@@ -100,19 +103,49 @@ def test_matcher_uses_native_strict_schema_and_accepts_valid_result() -> None:
     assert response_format["schema"]["additionalProperties"] is False
 
 
+def test_matcher_reattaches_exact_canonical_requirement_not_present_in_model_output() -> None:
+    requirement = JobRequirement(
+        text="Build reliable distributed systems",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.TECHNICAL,
+        source_text="What we're looking for: build reliable distributed systems.",
+    )
+    profile = JobProfile(title="Engineering role", requirements=[requirement])
+    payload = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(
+                requirement_index=0,
+                match_type=MatchType.TRANSFERABLE,
+                score=0.65,
+                evidence_ids=["EVIDENCE-1"],
+                reasoning="The supplied systems-delivery evidence is adjacent.",
+            )
+        ]
+    ).model_dump_json()
+    matcher, _ = _matcher([payload])
+
+    result = matcher.match(profile, CANDIDATE)
+
+    assert result.matches[0].requirement == requirement
+    assert result.matches[0].requirement.source_text == requirement.source_text
+    assert result.matches[0].requirement.importance == RequirementImportance.ESSENTIAL
+    assert result.matches[0].requirement.category == RequirementCategory.TECHNICAL
+
+
 def test_sdk_schema_preserves_nested_nullable_fields_without_defaults() -> None:
     schema = OpenAIRequirementMatcher._openai_strict_schema()
 
     serialized = json.dumps(schema)
-    job_requirement = schema["$defs"]["JobRequirement"]
-    source_text = job_requirement["properties"]["source_text"]
+    semantic_match = schema["$defs"]["SemanticRequirementMatch"]
 
     assert '"default"' not in serialized
-    assert job_requirement["additionalProperties"] is False
-    assert set(job_requirement["required"]) == set(job_requirement["properties"])
-    assert {item["type"] for item in source_text["anyOf"]} == {"string", "null"}
-    assert schema["$defs"]["RequirementMatch"]["properties"]["score"]["minimum"] == 0.0
-    assert schema["$defs"]["RequirementMatch"]["properties"]["score"]["maximum"] == 1.0
+    assert "JobRequirement" not in schema["$defs"]
+    assert semantic_match["additionalProperties"] is False
+    assert set(semantic_match["required"]) == set(semantic_match["properties"])
+    assert "requirement" not in semantic_match["properties"]
+    assert "evidence_refs" not in semantic_match["properties"]
+    assert semantic_match["properties"]["score"]["minimum"] == 0.0
+    assert semantic_match["properties"]["score"]["maximum"] == 1.0
 
 
 def test_malformed_output_retries_once_without_leaking_candidate_context() -> None:
@@ -131,11 +164,10 @@ def test_malformed_output_retries_once_without_leaking_candidate_context() -> No
     ("payload", "expected_kind"),
     [
         (
-            RequirementMatchSet(
+            SemanticRequirementMatchSet(
                 matches=[
-                    RequirementMatch(
+                    SemanticRequirementMatch(
                         requirement_index=0,
-                        requirement=REQUIREMENTS[0],
                         match_type=MatchType.DEMONSTRATED,
                         score=0.9,
                         evidence_ids=["EVIDENCE-1"],
@@ -146,23 +178,42 @@ def test_malformed_output_retries_once_without_leaking_candidate_context() -> No
             "wrong_match_count",
         ),
         (
-            RequirementMatchSet(
+            SemanticRequirementMatchSet(
                 matches=[
-                    RequirementMatch(
+                    SemanticRequirementMatch(
                         requirement_index=1,
-                        requirement=REQUIREMENTS[0],
                         match_type=MatchType.DEMONSTRATED,
                         score=0.9,
                         evidence_ids=["EVIDENCE-1"],
                         reasoning="Repeated index.",
                     ),
-                    RequirementMatch(
+                    SemanticRequirementMatch(
                         requirement_index=1,
-                        requirement=REQUIREMENTS[1],
                         match_type=MatchType.DEMONSTRATED,
                         score=0.9,
                         evidence_ids=["EVIDENCE-1"],
                         reasoning="Repeated index.",
+                    ),
+                ]
+            ).model_dump_json(),
+            "invalid_indexes",
+        ),
+        (
+            SemanticRequirementMatchSet(
+                matches=[
+                    SemanticRequirementMatch(
+                        requirement_index=0,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["EVIDENCE-1"],
+                        reasoning="First requirement.",
+                    ),
+                    SemanticRequirementMatch(
+                        requirement_index=2,
+                        match_type=MatchType.DEMONSTRATED,
+                        score=0.9,
+                        evidence_ids=["EVIDENCE-1"],
+                        reasoning="Out-of-range requirement.",
                     ),
                 ]
             ).model_dump_json(),
@@ -180,60 +231,25 @@ def test_wrong_count_or_indexes_remain_rejected(payload: str, expected_kind: str
     assert len(responses.calls) == 2
 
 
-@pytest.mark.parametrize(
-    ("payload", "expected_kind"),
-    [
-        (
-            RequirementMatchSet(
-                matches=[
-                    RequirementMatch(
-                        requirement_index=0,
-                        requirement=JobRequirement(text="Altered requirement"),
-                        match_type=MatchType.DEMONSTRATED,
-                        score=0.9,
-                        evidence_ids=["EVIDENCE-1"],
-                        reasoning="Altered canonical data.",
-                    ),
-                    RequirementMatch(
-                        requirement_index=1,
-                        requirement=REQUIREMENTS[1],
-                        match_type=MatchType.DEMONSTRATED,
-                        score=0.9,
-                        evidence_ids=["EVIDENCE-1"],
-                        reasoning="Valid second requirement.",
-                    ),
-                ]
-            ).model_dump_json(),
-            "altered_requirement",
-        ),
-        (
-            RequirementMatchSet(
-                matches=[
-                    RequirementMatch(
-                        requirement_index=index,
-                        requirement=requirement,
-                        match_type=MatchType.DEMONSTRATED,
-                        score=0.9,
-                        evidence_ids=["UNKNOWN-EVIDENCE"],
-                        reasoning="Unknown evidence reference.",
-                    )
-                    for index, requirement in enumerate(REQUIREMENTS)
-                ]
-            ).model_dump_json(),
-            "unknown_evidence_ids",
-        ),
-    ],
-)
-def test_canonical_requirement_and_evidence_invariants_remain_rejected(
-    payload: str,
-    expected_kind: str,
-) -> None:
+def test_unknown_evidence_ids_remain_rejected() -> None:
+    payload = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(
+                requirement_index=index,
+                match_type=MatchType.DEMONSTRATED,
+                score=0.9,
+                evidence_ids=["UNKNOWN-EVIDENCE"],
+                reasoning="Unknown evidence reference.",
+            )
+            for index in range(len(REQUIREMENTS))
+        ]
+    ).model_dump_json()
     matcher, responses = _matcher([payload, payload])
 
     with pytest.raises(RequirementMatchingError) as exc_info:
         matcher.match(JOB_PROFILE, CANDIDATE)
 
-    assert exc_info.value.kind == expected_kind
+    assert exc_info.value.kind == "unknown_evidence_ids"
     assert len(responses.calls) == 2
     assert "UNKNOWN-EVIDENCE" not in str(exc_info.value)
 

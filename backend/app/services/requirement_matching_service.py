@@ -54,11 +54,8 @@ class RequirementMatchingService:
                 candidate_matching_profile(candidate_context, semantic_job_profile),
             )
 
-            for local_match, original_index in zip(
-                semantic_result.matches,
-                semantic_indexes,
-                strict=True,
-            ):
+            for local_match in semantic_result.matches:
+                original_index = semantic_indexes[local_match.requirement_index]
                 local_match.requirement_index = original_index
                 local_match.requirement = job_profile.requirements[original_index]
                 local_match.evidence_refs = self._career_evidence_refs(local_match)
