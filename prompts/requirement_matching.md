@@ -15,8 +15,7 @@ Your task is requirement-level matching only. Do not calculate an overall job-fi
 7. Strong adjacent evidence may be classified as transferable, but not demonstrated.
 8. If evidence is plausible but insufficient, use inferred.
 9. If no meaningful supporting evidence exists, use missing.
-10. Keep reasoning concise and evidence-based.
-11. Return valid JSON only and conform exactly to the supplied schema.
+10. Return valid JSON only and conform exactly to the supplied schema.
 
 ## Match types
 
@@ -43,7 +42,7 @@ Typical ranges:
 - inferred: 0.20–0.49
 - missing: 0.00–0.19
 
-These ranges are guidance, not mechanical rules. The classification and reasoning must remain consistent with the evidence.
+These ranges are guidance, not mechanical rules. The classification and score must remain consistent with the evidence.
 
 ## Evidence provenance
 

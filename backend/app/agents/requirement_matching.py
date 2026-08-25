@@ -18,6 +18,9 @@ from app.providers.llm import (
 from app.schemas.candidate import CandidateMatchingProfile
 from app.schemas.job import JobProfile
 from app.schemas.matching import (
+    MatchType,
+    RequirementMatchingJobProfile,
+    RequirementMatchingRequirement,
     RequirementMatch,
     RequirementMatchSet,
     SemanticRequirementMatchSet,
@@ -75,7 +78,16 @@ class OpenAIRequirementMatcher:
         schema = self._openai_strict_schema()
 
         payload = {
-            "job_profile": job_profile.model_dump(mode="json"),
+            "job_profile": RequirementMatchingJobProfile(
+                requirements=[
+                    RequirementMatchingRequirement(
+                        text=requirement.text,
+                        importance=requirement.importance,
+                        category=requirement.category,
+                    )
+                    for requirement in job_profile.requirements
+                ]
+            ).model_dump(mode="json"),
             "candidate_context": candidate_context.model_dump(mode="json"),
         }
 
@@ -224,11 +236,38 @@ class OpenAIRequirementMatcher:
                     match_type=match.match_type,
                     score=match.score,
                     evidence_ids=match.evidence_ids,
-                    reasoning=match.reasoning,
+                    reasoning=OpenAIRequirementMatcher._deterministic_reasoning(
+                        match.match_type,
+                        match.evidence_ids,
+                    ),
                 )
                 for match in result.matches
             ]
         )
+
+    @staticmethod
+    def _deterministic_reasoning(match_type: MatchType, evidence_ids: list[str]) -> str:
+        """Keep API explanations stable without model-authored boilerplate."""
+        has_evidence = bool(evidence_ids)
+        if match_type is MatchType.DEMONSTRATED:
+            return (
+                "Supplied candidate evidence directly supports this requirement."
+                if has_evidence
+                else "The requirement was classified as directly demonstrated."
+            )
+        if match_type is MatchType.TRANSFERABLE:
+            return (
+                "Supplied candidate evidence supports an adjacent transferable capability."
+                if has_evidence
+                else "The requirement was classified as a transferable capability."
+            )
+        if match_type is MatchType.INFERRED:
+            return "Candidate evidence is plausible but insufficient to confirm this requirement."
+        if match_type is MatchType.INCOMPATIBLE:
+            return "Supplied candidate evidence conflicts with this requirement."
+        if match_type is MatchType.UNKNOWN:
+            return "Candidate evidence is insufficient to confirm this requirement."
+        return "No meaningful supporting candidate evidence was supplied."
 
     def _load_prompt(self) -> str:
         try:

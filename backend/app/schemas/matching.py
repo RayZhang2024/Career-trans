@@ -3,7 +3,12 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.candidate import CandidateContext
-from app.schemas.job import JobProfile, JobRequirement
+from app.schemas.job import (
+    JobProfile,
+    JobRequirement,
+    RequirementCategory,
+    RequirementImportance,
+)
 
 
 class MatchType(StrEnum):
@@ -61,7 +66,6 @@ class SemanticRequirementMatch(BaseModel):
     match_type: MatchType
     score: float = Field(ge=0.0, le=1.0)
     evidence_ids: list[str] = Field(default_factory=list)
-    reasoning: str = Field(min_length=1)
 
 
 class SemanticRequirementMatchSet(BaseModel):
@@ -70,6 +74,29 @@ class SemanticRequirementMatchSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     matches: list[SemanticRequirementMatch] = Field(default_factory=list)
+
+
+class RequirementMatchingRequirement(BaseModel):
+    """Canonical requirement facts needed by the semantic matcher.
+
+    ``source_text`` remains on the application-owned ``JobRequirement`` and is
+    reattached after validation. It is not needed for the model to classify a
+    candidate match and frequently duplicates the requirement wording.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1)
+    importance: RequirementImportance
+    category: RequirementCategory
+
+
+class RequirementMatchingJobProfile(BaseModel):
+    """Purpose-built semantic matching input, not a replacement JobProfile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requirements: list[RequirementMatchingRequirement] = Field(default_factory=list)
 
 
 class JobMatchRequest(BaseModel):
