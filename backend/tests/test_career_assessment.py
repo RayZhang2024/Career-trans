@@ -128,6 +128,20 @@ def test_all_dimensions_are_accepted_and_weighted_in_python() -> None:
     assert assessment.confidence == AlignmentConfidence.HIGH
 
 
+def test_career_assessment_accepts_absent_essential_diagnostic_without_semantic_change() -> None:
+    agent = FakeCareerAlignmentAgent(all_scores(0.7))
+    fit_assessment = FitAssessment(fit_score=75.0, essential_score=None)
+
+    assessment = CareerAssessmentService(agent).assess(
+        informative_job(),
+        rich_candidate(),
+        fit_assessment,
+    )
+
+    assert assessment.career_alignment_score == 70.0
+    assert agent.received_fit_assessments == [fit_assessment]
+
+
 def test_missing_required_dimension_is_rejected() -> None:
     scores = all_scores(0.7)
     scores.pop(CareerAlignmentDimension.PREFERENCE_CONSTRAINT)

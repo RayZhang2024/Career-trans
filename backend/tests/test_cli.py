@@ -492,6 +492,25 @@ def test_cli_rank_imported_details_renders_existing_diagnostics_without_extra_ca
     assert [call[0] for call in created[0].calls] == ["inbox", "rank_me"]
 
 
+def test_cli_ranking_details_render_missing_essential_category_without_a_false_zero(capsys) -> None:
+    cli._print_ranking_details(
+        {
+            "fit_assessment": {
+                "fit_score": 76.9,
+                "essential_score": None,
+                "desirable_score": None,
+                "strengths": [],
+                "hard_blockers": [],
+                "gaps": [],
+            }
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "total=76.9; essential=None; desirable=None" in output
+    assert "essential=0.0" not in output
+
+
 def test_cli_rank_imported_surfaces_unassessed_incomplete_role(monkeypatch, capsys) -> None:
     created: list[FakeClient] = []
 

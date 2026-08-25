@@ -54,6 +54,68 @@ def test_fit_assessment_weights_essential_requirements_more() -> None:
     assert assessment.desirable_score == 30.0
 
 
+def test_no_essential_requirements_has_none_diagnostic_without_changing_total_fit() -> None:
+    matches = [
+        make_match(
+            0,
+            "General product judgement",
+            RequirementImportance.UNSPECIFIED,
+            MatchType.DEMONSTRATED,
+            0.7,
+        ),
+        make_match(
+            1,
+            "Kubernetes",
+            RequirementImportance.DESIRABLE,
+            MatchType.INFERRED,
+            0.3,
+        ),
+    ]
+
+    assessment = FitAssessmentService().assess(matches)
+
+    assert assessment.fit_score == 56.7
+    assert assessment.essential_score is None
+    assert assessment.desirable_score == 30.0
+    assert assessment.model_dump(mode="json")["essential_score"] is None
+
+
+def test_zero_essential_match_remains_a_numeric_zero() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                0,
+                "Python",
+                RequirementImportance.ESSENTIAL,
+                MatchType.MISSING,
+                0.0,
+            )
+        ]
+    )
+
+    assert assessment.fit_score == 0.0
+    assert assessment.essential_score == 0.0
+    assert assessment.desirable_score is None
+
+
+def test_all_unspecified_requirements_keep_numeric_total_and_empty_category_diagnostics() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                0,
+                "System design",
+                RequirementImportance.UNSPECIFIED,
+                MatchType.TRANSFERABLE,
+                0.8,
+            )
+        ]
+    )
+
+    assert assessment.fit_score == 80.0
+    assert assessment.essential_score is None
+    assert assessment.desirable_score is None
+
+
 def test_missing_essential_requirement_becomes_hard_blocker() -> None:
     matches = [
         make_match(
