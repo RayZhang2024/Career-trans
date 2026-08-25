@@ -91,6 +91,13 @@ class FakeClient:
             "job_search_criteria": "Prefer permanent engineering roles.",
         }
 
+    def create_profile(self, values: dict) -> dict:
+        self.calls.append(("profile_create", values))
+        return {
+            "career_goal": values.get("career_goal"),
+            "job_search_criteria": values.get("job_search_criteria"),
+        }
+
     def update_profile(self, updates: dict) -> dict:
         self.calls.append(("profile_update", updates))
         return {
@@ -282,12 +289,18 @@ def test_cli_profile_show_and_strategy_updates_are_explicit(monkeypatch, capsys)
     assert cli.main(
         ["--token", "token", "profile", "set-strategy", "--career-goal", "Move toward applied systems."]
     ) == 0
-    assert clients[1].calls == [("profile_update", {"career_goal": "Move toward applied systems."})]
+    assert clients[1].calls == [
+        ("profile_show",),
+        ("profile_update", {"career_goal": "Move toward applied systems."}),
+    ]
 
     assert cli.main(
         ["--token", "token", "profile", "set-strategy", "--job-search-criteria", "Prefer hybrid roles."]
     ) == 0
-    assert clients[2].calls == [("profile_update", {"job_search_criteria": "Prefer hybrid roles."})]
+    assert clients[2].calls == [
+        ("profile_show",),
+        ("profile_update", {"job_search_criteria": "Prefer hybrid roles."}),
+    ]
 
     assert cli.main(
         [
@@ -302,11 +315,53 @@ def test_cli_profile_show_and_strategy_updates_are_explicit(monkeypatch, capsys)
         ]
     ) == 0
     assert clients[3].calls == [
+        ("profile_show",),
         (
             "profile_update",
             {"career_goal": "Build products.", "job_search_criteria": "Avoid short contracts."},
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["--career-goal", "Build dependable products."], {"career_goal": "Build dependable products."}),
+        (["--job-search-criteria", "Prefer permanent engineering work."], {"job_search_criteria": "Prefer permanent engineering work."}),
+        (
+            ["--career-goal", "Develop systems.", "--job-search-criteria", "Prefer hybrid roles."],
+            {"career_goal": "Develop systems.", "job_search_criteria": "Prefer hybrid roles."},
+        ),
+    ],
+)
+def test_cli_profile_set_strategy_bootstraps_a_missing_profile(monkeypatch, arguments, expected) -> None:
+    class MissingProfileClient(FakeClient):
+        def get_profile(self) -> dict:
+            self.calls.append(("profile_show",))
+            raise CareerTransApiError(404, "Profile not found.")
+
+    clients: list[MissingProfileClient] = []
+
+    def factory(base_url: str, token: str | None) -> MissingProfileClient:
+        client = MissingProfileClient(base_url, token)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", factory)
+    assert cli.main(["--token", "token", "profile", "set-strategy", *arguments]) == 0
+    assert clients[0].calls == [("profile_show",), ("profile_create", expected)]
+
+
+def test_cli_profile_404_does_not_use_cv_draft_guidance(monkeypatch, capsys) -> None:
+    class MissingProfileClient(FakeClient):
+        def get_profile(self) -> dict:
+            raise CareerTransApiError(404, "Profile not found.")
+
+    monkeypatch.setattr(cli, "CareerTransApiClient", MissingProfileClient)
+    assert cli.main(["--token", "token", "profile", "show"]) == 2
+    error = capsys.readouterr().err
+    assert "Profile not found." in error
+    assert "draft ID" not in error
 
 
 def test_cli_profile_strategy_requires_an_explicit_field(monkeypatch, capsys) -> None:

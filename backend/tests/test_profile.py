@@ -100,3 +100,18 @@ def test_profiles_are_isolated_between_users(client: TestClient) -> None:
     assert read_a.json()["job_search_criteria"] == "Criteria A"
     assert read_b.json()["job_search_criteria"] == "Criteria B"
     assert read_a.json()["user_id"] != read_b.json()["user_id"]
+
+
+def test_strategy_profile_bootstrap_is_scoped_to_authenticated_user_and_does_not_create_cv_context(client) -> None:
+    token_a = register_and_login(client, "bootstrap-a@example.com")
+    token_b = register_and_login(client, "bootstrap-b@example.com")
+
+    created = client.post(
+        "/api/v1/profile",
+        headers=auth_header(token_a),
+        json={"career_goal": "Build durable products.", "job_search_criteria": "Prefer technical roles."},
+    )
+    assert created.status_code == 201
+    assert created.json()["user_id"] != "bootstrap-b@example.com"
+    assert client.get("/api/v1/profile", headers=auth_header(token_b)).status_code == 404
+    assert client.get("/api/v1/profile/context-summary", headers=auth_header(token_a)).json()["ready"] is False

@@ -101,6 +101,9 @@ class CareerTransApiClient:
     def get_profile(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/profile")
 
+    def create_profile(self, values: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/v1/profile", payload=values)
+
     def update_profile(self, updates: dict[str, Any]) -> dict[str, Any]:
         return self._request("PATCH", "/api/v1/profile", payload=updates)
 
