@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.models.user import User
 from app.models.discovered_job import DiscoveredJob
+from app.models.candidate_profile import CandidateProfile
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
 from app.schemas.cv_ingestion import CandidateCVData
 from app.services.cv_ingestion_service import CVIngestionService
@@ -40,7 +41,7 @@ def _job(**overrides):
     return payload
 
 
-def _confirm_context(db_session, email: str, *, skill: str = "Python") -> None:
+def _confirm_context(db_session, email: str, *, skill: str = "Python") -> str:
     user_id = db_session.scalar(select(User.id).where(User.email == email))
     assert user_id is not None
     data = CandidateCVData.model_validate(
@@ -63,6 +64,7 @@ def _confirm_context(db_session, email: str, *, skill: str = "Python") -> None:
     )
     service.interpret(user_id, draft.id)
     service.confirm(user_id, draft.id)
+    return user_id
 
 
 def test_authenticated_import_persists_runtime_provenance_and_is_non_authoritative(client, db_session) -> None:
@@ -209,7 +211,15 @@ def test_later_external_import_never_marks_omitted_job_inactive(client, db_sessi
 
 def test_authenticated_search_context_uses_confirmed_persisted_context_and_contains_no_credentials(client, db_session) -> None:
     headers = _auth_headers(client)
-    _confirm_context(db_session, "runtime-user@example.com")
+    user_id = _confirm_context(db_session, "runtime-user@example.com")
+    db_session.add(
+        CandidateProfile(
+            user_id=user_id,
+            career_goal="Build reliable technical products.",
+            job_search_criteria="Prefer UK-compatible engineering roles.",
+        )
+    )
+    db_session.commit()
 
     response = client.post(
         "/api/v1/jobs/external-discovery/search-context",
@@ -219,6 +229,8 @@ def test_authenticated_search_context_uses_confirmed_persisted_context_and_conta
     assert response.status_code == 200
     body = response.json()
     assert body["search_profile"]["skills"] == ["Python"]
+    assert body["search_profile"]["career_strategy_text"] == "Build reliable technical products."
+    assert body["search_profile"]["job_search_criteria_text"] == "Prefer UK-compatible engineering roles."
     assert body["query"]["locations"] == ["London"]
     assert "API_KEY" not in str(body)
     assert "password" not in str(body).casefold()

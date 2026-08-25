@@ -44,6 +44,8 @@ class CandidateContextSummary(BaseModel):
     education_count: int = Field(ge=0)
     skill_count: int = Field(ge=0)
     evidence_count: int = Field(ge=0)
+    career_strategy_configured: bool = False
+    job_search_criteria_configured: bool = False
 
 
 class CandidateSearchProfile(BaseModel):

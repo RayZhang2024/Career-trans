@@ -32,6 +32,7 @@ def test_user_can_create_read_and_update_own_profile(client: TestClient) -> None
             "current_role": "Engineer",
             "location": "London",
             "career_goal": "Move into applied AI.",
+            "job_search_criteria": "Prefer permanent technical roles.",
         },
     )
     assert create_response.status_code == 201
@@ -40,6 +41,8 @@ def test_user_can_create_read_and_update_own_profile(client: TestClient) -> None
     read_response = client.get("/api/v1/profile", headers=auth_header(token))
     assert read_response.status_code == 200
     assert read_response.json()["location"] == "London"
+    assert read_response.json()["career_goal"] == "Move into applied AI."
+    assert read_response.json()["job_search_criteria"] == "Prefer permanent technical roles."
 
     update_response = client.patch(
         "/api/v1/profile",
@@ -48,6 +51,26 @@ def test_user_can_create_read_and_update_own_profile(client: TestClient) -> None
     )
     assert update_response.status_code == 200
     assert update_response.json()["location"] == "Oxford"
+    assert update_response.json()["career_goal"] == "Move into applied AI."
+    assert update_response.json()["job_search_criteria"] == "Prefer permanent technical roles."
+
+    strategy_response = client.patch(
+        "/api/v1/profile",
+        headers=auth_header(token),
+        json={"job_search_criteria": "Prefer hybrid engineering roles."},
+    )
+    assert strategy_response.status_code == 200
+    assert strategy_response.json()["career_goal"] == "Move into applied AI."
+    assert strategy_response.json()["job_search_criteria"] == "Prefer hybrid engineering roles."
+
+    goal_response = client.patch(
+        "/api/v1/profile",
+        headers=auth_header(token),
+        json={"career_goal": "Build dependable applied systems."},
+    )
+    assert goal_response.status_code == 200
+    assert goal_response.json()["career_goal"] == "Build dependable applied systems."
+    assert goal_response.json()["job_search_criteria"] == "Prefer hybrid engineering roles."
 
 
 def test_profiles_are_isolated_between_users(client: TestClient) -> None:
@@ -57,12 +80,12 @@ def test_profiles_are_isolated_between_users(client: TestClient) -> None:
     response_a = client.post(
         "/api/v1/profile",
         headers=auth_header(token_a),
-        json={"headline": "Profile A", "location": "London"},
+        json={"headline": "Profile A", "location": "London", "job_search_criteria": "Criteria A"},
     )
     response_b = client.post(
         "/api/v1/profile",
         headers=auth_header(token_b),
-        json={"headline": "Profile B", "location": "Manchester"},
+        json={"headline": "Profile B", "location": "Manchester", "job_search_criteria": "Criteria B"},
     )
     assert response_a.status_code == 201
     assert response_b.status_code == 201
@@ -74,4 +97,6 @@ def test_profiles_are_isolated_between_users(client: TestClient) -> None:
     assert read_a.json()["location"] == "London"
     assert read_b.json()["headline"] == "Profile B"
     assert read_b.json()["location"] == "Manchester"
+    assert read_a.json()["job_search_criteria"] == "Criteria A"
+    assert read_b.json()["job_search_criteria"] == "Criteria B"
     assert read_a.json()["user_id"] != read_b.json()["user_id"]

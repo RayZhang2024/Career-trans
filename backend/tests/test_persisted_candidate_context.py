@@ -4,10 +4,13 @@ from sqlalchemy import select
 
 from app.api.deps import get_job_ranking_service, get_requirement_matching_service
 from app.main import app
+from app.models.candidate_profile import CandidateProfile
 from app.models.user import User
+from app.schemas.candidate import CandidateContext
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.job_ranking import JobRankingResponse
 from app.schemas.matching import RequirementMatchSet
+from app.services.candidate_profile_compaction import candidate_career_profile, candidate_search_profile
 from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
 
 
@@ -46,10 +49,25 @@ def test_confirmed_context_loader_preserves_all_evidence_and_never_falls_back(db
     user_b = db_session.scalar(select(User.id).where(User.email == email_b))
     loader = PersistedCandidateContextLoader(db_session)
 
+    db_session.add(
+        CandidateProfile(
+            user_id=user_a,
+            career_goal="Build applied AI systems.",
+            job_search_criteria="Prefer hybrid technical delivery roles.",
+        )
+    )
+    db_session.commit()
+
     context = loader.load_confirmed(user_a)
     assert context is not None
     assert [evidence.title for evidence in context.evidence] == ["Platform delivery", "Systems project"]
     assert context.skills_text == "Python, Systems"
+    assert context.career_strategy_text == "Build applied AI systems."
+    assert context.job_search_criteria_text == "Prefer hybrid technical delivery roles."
+    assert candidate_search_profile(context).career_strategy_text == context.career_strategy_text
+    assert candidate_search_profile(context).job_search_criteria_text == context.job_search_criteria_text
+    assert candidate_career_profile(context).career_strategy_text == context.career_strategy_text
+    assert candidate_career_profile(context).job_search_criteria_text == context.job_search_criteria_text
     assert context.source_name is None
     assert loader.load_confirmed(user_b) is None
 
@@ -118,5 +136,45 @@ def test_context_summary_is_safe_and_user_scoped(client, db_session) -> None:
         "education_count": 1,
         "skill_count": 2,
         "evidence_count": 2,
+        "career_strategy_configured": False,
+        "job_search_criteria_configured": False,
     }
-    assert client.get("/api/v1/profile/context-summary", headers=headers_b).json()["ready"] is False
+    summary_b = client.get("/api/v1/profile/context-summary", headers=headers_b).json()
+    assert summary_b["ready"] is False
+    assert summary_b["career_strategy_configured"] is False
+    assert summary_b["job_search_criteria_configured"] is False
+
+
+def test_context_summary_reports_direction_without_exposing_it(client, db_session) -> None:
+    headers, email = _auth(client, "direction-summary@example.com")
+    user_id = _confirm_context(db_session, email)
+    db_session.add(
+        CandidateProfile(
+            user_id=user_id,
+            career_goal="A user-authored career direction.",
+            job_search_criteria="A user-authored search preference.",
+        )
+    )
+    db_session.commit()
+
+    response = client.get("/api/v1/profile/context-summary", headers=headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["career_strategy_configured"] is True
+    assert body["job_search_criteria_configured"] is True
+    assert "user-authored" not in str(body)
+
+
+def test_direction_text_remains_available_to_compact_search_and_career_profiles() -> None:
+    context = CandidateContext(
+        career_strategy_text="strategy " * 300,
+        job_search_criteria_text="criteria " * 300,
+    )
+
+    search = candidate_search_profile(context)
+    career = candidate_career_profile(context)
+
+    assert 0 < len(search.career_strategy_text) <= 1_200
+    assert 0 < len(search.job_search_criteria_text) <= 1_200
+    assert career.career_strategy_text == search.career_strategy_text
+    assert career.job_search_criteria_text == search.job_search_criteria_text
