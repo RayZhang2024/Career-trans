@@ -1,11 +1,13 @@
 from datetime import datetime, timezone
 from hashlib import sha256
+import json
 
 import pytest
 from sqlalchemy import select
 
 from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
+from app.providers.jobs.workday import WorkdayJobDetailExtractor
 from app.providers.url_safety import UnsafePageUrlError
 from app.schemas.agentic_discovery import ExtractedVacancy, PageContent
 from app.schemas.job import JobProfile, JobRequirement
@@ -17,16 +19,21 @@ from app.services.job_detail_enrichment_service import JobDetailEnrichmentServic
 USABLE_DETAIL = " ".join(["Recovered candidate-criteria detail."] * 20)
 
 
-def _record(db_session, *, description: str | None = None) -> DiscoveredJob:
+def _record(
+    db_session,
+    *,
+    description: str | None = None,
+    url: str = "https://jobs.example.test/1",
+) -> DiscoveredJob:
     now = datetime.now(timezone.utc)
     record = DiscoveredJob(
-        identity_key="url:https://jobs.example.test/1",
+        identity_key=f"url:{url}",
         source="agent_runtime",
         source_token="codex",
         title="Applied AI Engineer",
         company="Example Systems",
         location="London",
-        url="https://jobs.example.test/1",
+        url=url,
         description=description,
         content_hash=sha256((description or "").encode()).hexdigest(),
         state="new",
@@ -81,6 +88,16 @@ def _service(db_session, *, fetcher, extractor, analysis) -> JobDetailEnrichment
         job_analysis_service=analysis,
         state_store=SqlAlchemyDiscoveredJobStateStore(db_session),
     )
+
+
+class MapFetcher:
+    def __init__(self, pages: dict[str, PageContent]) -> None:
+        self.pages = pages
+        self.urls: list[str] = []
+
+    def fetch(self, url: str) -> PageContent:
+        self.urls.append(url)
+        return self.pages[url]
 
 
 def _page(description: str) -> PageContent:
@@ -178,6 +195,53 @@ def test_short_detail_with_one_extractable_requirement_is_reenriched_for_coverag
     # recovery; only the recovered detail is assessed.
     assert analysis.calls == [USABLE_DETAIL]
     assert db_session.get(DiscoveredJob, record.id).description == USABLE_DETAIL
+
+
+def test_workday_structured_detail_enriches_without_page_llm_extraction(db_session) -> None:
+    url = "https://example.wd12.myworkdayjobs.com/en-US/ExternalCareerSite/job/London/Applied-AI-Engineer_R-123"
+    detail_url = "https://example.wd12.myworkdayjobs.com/wday/cxs/example/ExternalCareerSite/job/London/Applied-AI-Engineer_R-123"
+    record = _record(db_session, description="Short discovery summary", url=url)
+    shell = PageContent(
+        requested_url=url,
+        final_url=url,
+        html='<script>window.workday = { tenant: "example", siteId: "ExternalCareerSite" };</script>',
+    )
+    detail = PageContent(
+        requested_url=detail_url,
+        final_url=detail_url,
+        html=json.dumps(
+            {
+                "hiringOrganization": {"name": "Example Systems"},
+                "jobPostingInfo": {
+                    "title": "Applied AI Engineer",
+                    "location": "London",
+                    "jobDescription": USABLE_DETAIL,
+                    "timeType": "Full time",
+                },
+            }
+        ),
+    )
+    fetcher = MapFetcher({url: shell, detail_url: detail})
+    extractor = FakeVacancyExtractor(AssertionError("Workday structured detail must avoid page LLM extraction"))
+    service = JobDetailEnrichmentService(
+        session=db_session,
+        page_fetcher=fetcher,
+        vacancy_extractor=extractor,
+        job_analysis_service=FakeJobAnalysis(),
+        state_store=SqlAlchemyDiscoveredJobStateStore(db_session),
+        workday_detail_extractor=WorkdayJobDetailExtractor(fetcher),
+    )
+
+    result = service.enrich_recent(limit=10)
+
+    assert result.outcomes[0].status is JobEnrichmentStatus.ENRICHED
+    assert fetcher.urls == [url, detail_url]
+    assert extractor.calls == 0
+    refreshed = db_session.get(DiscoveredJob, record.id)
+    assert refreshed is not None
+    assert refreshed.description == USABLE_DETAIL
+    assert refreshed.company == "Example Systems"
+    assert refreshed.location == "London"
 
 
 def test_still_unusable_or_failed_fetch_never_overwrites_existing_description(db_session) -> None:
