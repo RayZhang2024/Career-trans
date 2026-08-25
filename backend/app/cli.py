@@ -196,7 +196,14 @@ def _profile(client: CareerTransApiClient, args: argparse.Namespace) -> int:
         }
         if not updates:
             raise ValueError("Provide --career-goal and/or --job-search-criteria.")
-        _print_profile(client.update_profile(updates))
+        try:
+            client.get_profile()
+        except CareerTransApiError as exc:
+            if exc.status_code != 404:
+                raise
+            _print_profile(client.create_profile(updates))
+        else:
+            _print_profile(client.update_profile(updates))
     return 0
 
 
@@ -401,7 +408,9 @@ def _print_api_error(exc: Exception) -> None:
         if exc.status_code in {401, 403}:
             message = f"Authentication failed: {exc.detail} Use career-trans auth login or set CAREER_TRANS_TOKEN."
         elif exc.status_code == 404:
-            message = f"Not found: {exc.detail} Check the draft ID."
+            message = f"Not found: {exc.detail}"
+            if "CV ingestion draft" in exc.detail:
+                message += " Check the draft ID."
         elif exc.status_code in {409, 422}:
             message = f"Request rejected: {exc.detail} Check the draft state or review data."
         elif exc.status_code == 503:
