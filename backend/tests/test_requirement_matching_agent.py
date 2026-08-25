@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from langchain_core.callbacks import CallbackManager
 from langchain_core.tracers.langchain import LangChainTracer
-from langsmith import run_helpers
+from langsmith import run_helpers, traceable
 
 from app.agents.requirement_matching import (
     OpenAIRequirementMatcher,
@@ -110,6 +110,29 @@ class _NoopLangChainTracer(LangChainTracer):
 
     def _persist_run_single(self, run) -> None:  # type: ignore[no-untyped-def]
         return None
+
+
+class _CapturingLangSmithClient:
+    def __init__(self) -> None:
+        self.otel_exporter = None
+        self.created_runs: list[dict[str, object]] = []
+
+    def create_run(self, **kwargs: object) -> None:
+        self.created_runs.append(kwargs)
+
+    def update_run(self, **_kwargs: object) -> None:
+        return None
+
+
+class _TracedFakeResponses(_FakeResponses):
+    @traceable(
+        name="requirement_matching",
+        run_type="llm",
+        process_inputs=lambda _inputs: {},
+        process_outputs=lambda _outputs: {},
+    )
+    def create(self, **kwargs: object) -> SimpleNamespace:
+        return super().create(**kwargs)
 
 
 def test_matcher_uses_native_strict_schema_and_accepts_valid_result() -> None:
@@ -409,15 +432,24 @@ def test_brown_style_24_requirement_fixture_passes_validation_and_uses_one_attem
 
 
 def test_attempt_span_is_created_under_langgraph_callback_parent(monkeypatch) -> None:
-    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    monkeypatch.setattr(
+        "langsmith.run_helpers.utils.tracing_is_enabled",
+        lambda *_args, **_kwargs: True,
+    )
+    trace_client = _CapturingLangSmithClient()
     tracer = _NoopLangChainTracer(
         project_name="synthetic",
-        client=SimpleNamespace(otel_exporter=None),
+        client=trace_client,
     )
     parent_id = uuid4()
     tracer.on_chain_start({}, {}, run_id=parent_id, name="match_requirements")
     config = {"callbacks": CallbackManager([tracer], parent_run_id=parent_id)}
-    matcher, responses = _matcher([_valid_result()])
+    responses = _TracedFakeResponses([_valid_result()])
+    matcher = OpenAIRequirementMatcher(
+        api_key="",
+        model="test-model",
+        client=SimpleNamespace(responses=responses),
+    )
     attempt_runs: list[object | None] = []
     original_recorder = matcher._record_attempt_metadata
 
@@ -445,4 +477,16 @@ def test_attempt_span_is_created_under_langgraph_callback_parent(monkeypatch) ->
     assert attempt_run is not None
     assert getattr(attempt_run, "name") == "requirement_matching_attempt"
     assert getattr(attempt_run, "parent_run_id") == parent_id
-    assert provider_parent is attempt_run
+    assert getattr(provider_parent, "parent_run_id") == getattr(attempt_run, "id")
+    attempt_payload = next(
+        payload
+        for payload in trace_client.created_runs
+        if payload["name"] == "requirement_matching_attempt"
+    )
+    provider_payload = next(
+        payload
+        for payload in trace_client.created_runs
+        if payload["name"] == "requirement_matching"
+    )
+    assert attempt_payload["parent_run_id"] == parent_id
+    assert provider_payload["parent_run_id"] == attempt_payload["id"]

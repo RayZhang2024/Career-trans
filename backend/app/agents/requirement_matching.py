@@ -113,6 +113,7 @@ class OpenAIRequirementMatcher:
                 "failure_kind": None,
                 "retrying": False,
             }
+            config = _runnable_config.get()
             try:
                 return self._run_attempt(
                     prompt=prompt,
@@ -122,8 +123,11 @@ class OpenAIRequirementMatcher:
                     candidate_context=candidate_context,
                     attempt_number=attempt_number,
                     metadata=metadata,
-                    config=_runnable_config.get(),
-                    langsmith_extra={"metadata": metadata},
+                    config=config,
+                    langsmith_extra={
+                        "metadata": metadata,
+                        "parent": RunTree.from_runnable_config(config),
+                    },
                 )
             except RequirementMatchingError as exc:
                 if (
