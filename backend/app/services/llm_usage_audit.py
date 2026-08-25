@@ -22,6 +22,13 @@ _STAGES = (
     "requirement_matching",
     "career_alignment",
 )
+_STAGE_ALIASES = {
+    "job_relevance_agent": "job_relevance",
+    "job_archetype_agent": "job_archetype",
+    "job_extraction_agent": "job_extraction",
+    "requirement_matching_agent": "requirement_matching",
+    "career_alignment_agent": "career_alignment",
+}
 
 
 class StageUsage(BaseModel):
@@ -64,7 +71,7 @@ def summarize_trace_export(export: Any) -> LLMUsageAuditSummary:
     runs = list(_iter_runs(export))
     stages: dict[str, StageUsage] = {}
     for run in runs:
-        stage = _stage_name(_run_name(run))
+        stage = _stage_for_run(run)
         if stage is None:
             continue
         usage = stages.setdefault(stage, StageUsage(stage=stage))
@@ -119,9 +126,30 @@ def _stage_name(name: Any) -> str | None:
     if not isinstance(name, str):
         return None
     normalized = name.casefold()
-    for stage in _STAGES:
-        if normalized == stage or stage in normalized:
-            return stage
+    if normalized in _STAGES:
+        return normalized
+    return _STAGE_ALIASES.get(normalized)
+
+
+def _stage_for_run(run: dict[str, Any]) -> str | None:
+    """Infer a provider stage only from exact safe names or explicit mappings."""
+    stage = _stage_name(_run_name(run))
+    if stage is not None:
+        return stage
+
+    # The LangSmith single-run export can omit the displayed provider name.
+    # ``application_attempt`` plus the known graph node and provider metadata
+    # makes this unambiguous for requirement matching, while excluding the
+    # orchestration parent (which has no application attempt).
+    metadata = run.get("metadata")
+    if (
+        isinstance(metadata, dict)
+        and metadata.get("langgraph_node") == "match_requirements"
+        and isinstance(metadata.get("application_attempt"), (int, float))
+        and isinstance(metadata.get("ls_model_name"), str)
+        and isinstance(_nested_value(run, "outputs", "usage_metadata"), dict)
+    ):
+        return "requirement_matching"
     return None
 
 

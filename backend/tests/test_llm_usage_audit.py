@@ -119,8 +119,8 @@ def test_real_issue106_provider_export_shape_is_parsed_without_private_content()
             },
         },
         "error": None,
-        "metadata": {
-            "ls_run_name": "requirement_matching",
+            "metadata": {
+            "langgraph_node": "match_requirements",
             "ls_model_name": "gpt-5.6-terra",
             "application_attempt": 2,
             "previous_failure_kind": "unknown_evidence_ids",
@@ -141,6 +141,31 @@ def test_real_issue106_provider_export_shape_is_parsed_without_private_content()
     assert stage.latency_ms == 12500
     assert stage.retry_count == 1
     assert "candidate evidence" not in summary.model_dump_json()
+
+
+def test_exact_career_alignment_provider_child_is_counted_once_not_its_parent() -> None:
+    export = [
+        {
+            "name": "assess_career_alignment",
+            "usage_metadata": {"input_tokens": 999, "output_tokens": 999, "total_tokens": 1998},
+        },
+        {
+            "name": "career_alignment",
+            "outputs": {
+                "model": "gpt-5.6-terra",
+                "usage_metadata": {"input_tokens": 120, "output_tokens": 30, "total_tokens": 150},
+            },
+            "status": "success",
+        },
+    ]
+
+    summary = summarize_trace_export(export)
+
+    stage = summary.stages["career_alignment"]
+    assert stage.call_count == 1
+    assert stage.input_tokens == 120
+    assert stage.output_tokens == 30
+    assert stage.total_tokens == 150
 
 
 def test_trace_parser_does_not_search_arbitrary_input_output_for_token_fields() -> None:
