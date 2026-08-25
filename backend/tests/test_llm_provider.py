@@ -20,6 +20,7 @@ from app.providers.llm import (
     SemanticResponseClient,
     SemanticStructuredOutputModelError,
     SemanticStructuredOutputSchemaError,
+    openai_structured_output_supported,
 )
 from app.providers.web_search import BraveWebSearchProvider
 
@@ -157,10 +158,16 @@ def test_openai_semantic_llm_uses_native_responses_json_schema(monkeypatch) -> N
     }
 
 
+@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6"])
+def test_known_openai_structured_output_models_are_supported(model: str) -> None:
+    assert openai_structured_output_supported(model) is True
+
+
 def test_openai_rejects_unknown_structured_output_model_before_request() -> None:
+    assert openai_structured_output_supported("unknown-model") is False
     with pytest.raises(SemanticProviderConfigurationError, match="known Structured Outputs"):
         OpenAISemanticLLM(api_key="server-secret").generate(
-            model="gpt-5.6-luna",
+            model="unknown-model",
             system_prompt="system",
             user_prompt="user",
             operation="requirement_matching",

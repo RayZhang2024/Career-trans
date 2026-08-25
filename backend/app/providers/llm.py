@@ -334,7 +334,7 @@ def _require_capabilities(
 
 
 _OPENAI_STRUCTURED_OUTPUT_MODEL = re.compile(
-    r"^(?:gpt-4o(?:-mini)?|gpt-4\.1(?:-mini|-nano)?|gpt-5(?:\.6)?(?:-mini|-nano)?)(?:-\d{4}-\d{2}-\d{2})?$"
+    r"^(?:(?:gpt-4o(?:-mini)?|gpt-4\.1(?:-mini|-nano)?|gpt-5(?:-mini|-nano)?)(?:-\d{4}-\d{2}-\d{2})?|gpt-5\.6(?:-(?:luna|terra|sol))?)$"
 )
 
 

@@ -159,7 +159,7 @@ def test_configuration_check_rejects_unknown_openai_structured_output_model(clie
     settings = Settings(
         default_llm_provider="openai",
         openai_api_key="server-secret",
-        requirement_matching_model="gpt-5.6-luna",
+        requirement_matching_model="unknown-model",
     )
     monkeypatch.setattr(config_routes, "get_settings", lambda: settings)
 
