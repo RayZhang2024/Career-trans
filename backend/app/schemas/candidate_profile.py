@@ -9,6 +9,7 @@ class CandidateProfileBase(BaseModel):
     current_role: str | None = Field(default=None, max_length=200)
     location: str | None = Field(default=None, max_length=200)
     career_goal: str | None = None
+    job_search_criteria: str | None = None
 
 
 class CandidateProfileCreate(CandidateProfileBase):

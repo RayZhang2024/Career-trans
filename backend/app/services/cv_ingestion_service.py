@@ -148,7 +148,7 @@ class PersistedCandidateContextLoader:
             profile_text="\n".join(value for value in [profile_text, employment_text, education_text] if value),
             skills_text=", ".join(item.name for item in data.skills),
             career_strategy_text=profile.career_goal if profile and profile.career_goal else "",
-            job_search_criteria_text="",
+            job_search_criteria_text=profile.job_search_criteria if profile and profile.job_search_criteria else "",
             evidence=[CareerEvidence(evidence_id=record.id, title=record.title, text=record.text, skills=json.loads(record.skills_json)) for record in records],
         )
 
@@ -160,6 +160,11 @@ class PersistedCandidateContextLoader:
         return self.load(user_id) if structured is not None else None
 
     def summary(self, user_id: str) -> CandidateContextSummary:
+        profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
+        career_strategy_configured = bool(profile and profile.career_goal and profile.career_goal.strip())
+        job_search_criteria_configured = bool(
+            profile and profile.job_search_criteria and profile.job_search_criteria.strip()
+        )
         structured = self._session.scalar(
             select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
         )
@@ -170,6 +175,8 @@ class PersistedCandidateContextLoader:
                 education_count=0,
                 skill_count=0,
                 evidence_count=0,
+                career_strategy_configured=career_strategy_configured,
+                job_search_criteria_configured=job_search_criteria_configured,
             )
         data = CandidateCVData.model_validate(json.loads(structured.structured_json))
         evidence_count = len(
@@ -185,4 +192,6 @@ class PersistedCandidateContextLoader:
             education_count=len(data.education),
             skill_count=len(data.skills),
             evidence_count=evidence_count,
+            career_strategy_configured=career_strategy_configured,
+            job_search_criteria_configured=job_search_criteria_configured,
         )

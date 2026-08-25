@@ -74,7 +74,29 @@ class FakeClient:
 
     def get_candidate_context_summary(self) -> dict:
         self.calls.append(("context_summary",))
-        return {"ready": True, "employment_count": 1, "education_count": 1, "skill_count": 2, "evidence_count": 2}
+        return {
+            "ready": True,
+            "employment_count": 1,
+            "education_count": 1,
+            "skill_count": 2,
+            "evidence_count": 2,
+            "career_strategy_configured": False,
+            "job_search_criteria_configured": False,
+        }
+
+    def get_profile(self) -> dict:
+        self.calls.append(("profile_show",))
+        return {
+            "career_goal": "Develop technical product expertise.",
+            "job_search_criteria": "Prefer permanent engineering roles.",
+        }
+
+    def update_profile(self, updates: dict) -> dict:
+        self.calls.append(("profile_update", updates))
+        return {
+            "career_goal": updates.get("career_goal", "Develop technical product expertise."),
+            "job_search_criteria": updates.get("job_search_criteria", "Prefer permanent engineering roles."),
+        }
 
     def get_external_discovery_search_context(self, query: dict) -> dict:
         self.calls.append(("external_context", query))
@@ -247,6 +269,50 @@ def test_cli_profile_context_summary(monkeypatch, capsys) -> None:
     assert "ready=true" in output
     assert "evidence_count=2" in output
     assert clients[0].calls == [("context_summary",)]
+
+
+def test_cli_profile_show_and_strategy_updates_are_explicit(monkeypatch, capsys) -> None:
+    clients = _fake_client(monkeypatch)
+    assert cli.main(["--token", "token", "profile", "show"]) == 0
+    shown = capsys.readouterr().out
+    assert "career_goal=Develop technical product expertise." in shown
+    assert "job_search_criteria=Prefer permanent engineering roles." in shown
+    assert clients[0].calls == [("profile_show",)]
+
+    assert cli.main(
+        ["--token", "token", "profile", "set-strategy", "--career-goal", "Move toward applied systems."]
+    ) == 0
+    assert clients[1].calls == [("profile_update", {"career_goal": "Move toward applied systems."})]
+
+    assert cli.main(
+        ["--token", "token", "profile", "set-strategy", "--job-search-criteria", "Prefer hybrid roles."]
+    ) == 0
+    assert clients[2].calls == [("profile_update", {"job_search_criteria": "Prefer hybrid roles."})]
+
+    assert cli.main(
+        [
+            "--token",
+            "token",
+            "profile",
+            "set-strategy",
+            "--career-goal",
+            "Build products.",
+            "--job-search-criteria",
+            "Avoid short contracts.",
+        ]
+    ) == 0
+    assert clients[3].calls == [
+        (
+            "profile_update",
+            {"career_goal": "Build products.", "job_search_criteria": "Avoid short contracts."},
+        )
+    ]
+
+
+def test_cli_profile_strategy_requires_an_explicit_field(monkeypatch, capsys) -> None:
+    _fake_client(monkeypatch)
+    assert cli.main(["--token", "token", "profile", "set-strategy"]) == 2
+    assert "Provide --career-goal and/or --job-search-criteria." in capsys.readouterr().err
 
 
 def test_cli_codex_external_discovery_imports_and_optionally_ranks(monkeypatch, capsys) -> None:

@@ -98,6 +98,12 @@ class CareerTransApiClient:
     def get_candidate_context_summary(self) -> dict[str, Any]:
         return self._request("GET", "/api/v1/profile/context-summary")
 
+    def get_profile(self) -> dict[str, Any]:
+        return self._request("GET", "/api/v1/profile")
+
+    def update_profile(self, updates: dict[str, Any]) -> dict[str, Any]:
+        return self._request("PATCH", "/api/v1/profile", payload=updates)
+
     def get_external_discovery_search_context(self, query: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/v1/jobs/external-discovery/search-context", payload={"query": query})
 

@@ -21,6 +21,7 @@ class CandidateProfile(Base):
     current_role: Mapped[str | None] = mapped_column(String(200), nullable=True)
     location: Mapped[str | None] = mapped_column(String(200), nullable=True)
     career_goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_search_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
