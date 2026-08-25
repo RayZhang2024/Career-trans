@@ -130,21 +130,44 @@ class JobRankingService:
         jobs: list[tuple[int, JobListing]],
         limit: int,
     ) -> list[tuple[int, JobListing]]:
-        """Apply the semantic cost cap fairly across companies in input order."""
-        groups: dict[str, list[tuple[int, JobListing]]] = {}
+        """Apply the semantic cost cap fairly across companies and source fronts.
+
+        Source/provider (and existing discovery provenance) are deterministic
+        allocation keys only. They never judge a job's semantic relevance.
+        """
+        groups: dict[str, dict[str, list[tuple[int, JobListing]]]] = {}
         for index, job in jobs:
-            key = job.company or job.source
-            groups.setdefault(key, []).append((index, job))
+            company_key = (job.company or job.source).casefold()
+            source_key = JobRankingService._semantic_source_key(job)
+            groups.setdefault(company_key, {}).setdefault(source_key, []).append((index, job))
 
         selected: list[tuple[int, JobListing]] = []
         while groups and len(selected) < limit:
-            for key in list(groups):
-                selected.append(groups[key].pop(0))
-                if not groups[key]:
-                    del groups[key]
+            for company_key in list(groups):
+                source_groups = groups[company_key]
+                source_key = next(iter(source_groups))
+                selected.append(source_groups[source_key].pop(0))
+                if not source_groups[source_key]:
+                    del source_groups[source_key]
+                else:
+                    source_groups[source_key] = source_groups.pop(source_key)
+                if not source_groups:
+                    del groups[company_key]
                 if len(selected) == limit:
                     break
         return selected
+
+    @staticmethod
+    def _semantic_source_key(job: JobListing) -> str:
+        if job.provenance is not None:
+            if job.provenance.discovered_via:
+                return f"provenance:{job.provenance.discovered_via.casefold()}"
+            if job.provenance.source_ref:
+                return f"provenance:{job.provenance.source_ref.casefold()}"
+        return ":".join(
+            value.casefold()
+            for value in (job.source, job.source_token or "")
+        )
 
     @staticmethod
     def _failure_error(prefix: str, exc: Exception) -> str:

@@ -129,6 +129,8 @@ class CodexExternalDiscoveryRunner:
         return (
             "Find up to "
             f"{max_jobs} current public job vacancies matching this bounded Career-trans context. "
+            "Treat query keywords as search seeds, not literal title requirements: include "
+            "factually supported, semantically adjacent job titles when the vacancy content is relevant. "
             "Use public web search and open only relevant public vacancy or careers pages. "
             "Do not log in, bypass access controls, submit applications, or invent missing facts. "
             "Return JSON only—no Markdown, prose, or code fences—with exactly this shape: "

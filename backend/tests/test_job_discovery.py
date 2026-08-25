@@ -100,16 +100,16 @@ def test_deduplication_prefers_first_listing_and_canonical_urls() -> None:
     assert removed == 1
 
 
-def test_screening_rejects_obvious_keyword_and_location_mismatches() -> None:
+def test_screening_treats_keywords_as_discovery_seeds_but_rejects_known_location_mismatches() -> None:
     service = JobScreeningService()
     relevant = listing()
-    wrong_title = listing(title="Account Executive", description="Sell enterprise accounts.", url="https://jobs.example.com/roles/2")
+    adjacent_title = listing(title="Forward Deployed Engineer", description="Deploy AI systems for customers.", url="https://jobs.example.com/roles/2")
     wrong_location = listing(location="Berlin, Germany", url="https://jobs.example.com/roles/3")
     remote = listing(location="Remote", work_arrangement="remote", url="https://jobs.example.com/roles/4")
 
-    result = service.screen([relevant, wrong_title, wrong_location, remote], query())
+    result = service.screen([relevant, adjacent_title, wrong_location, remote], query())
 
-    assert result == [relevant, remote]
+    assert result == [relevant, adjacent_title, remote]
 
 
 def test_screening_supports_conservative_exclusions_and_employment_type() -> None:
@@ -143,6 +143,20 @@ def test_employment_type_does_not_conflate_contract_and_permanent() -> None:
         listing(employment_type="Contract"),
         ["Permanent"],
     )
+
+
+def test_unknown_location_and_employment_type_do_not_equal_explicit_incompatibility() -> None:
+    service = JobScreeningService()
+    unknown = listing(
+        location=None,
+        employment_type=None,
+        url="https://jobs.example.com/roles/unknown",
+    )
+
+    assert service.screen(
+        [unknown],
+        query(locations=["London"], employment_types=["Permanent"]),
+    ) == [unknown]
 
 
 def test_discovery_combines_sources_and_tolerates_a_provider_failure() -> None:

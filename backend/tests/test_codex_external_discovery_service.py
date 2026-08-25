@@ -58,6 +58,7 @@ def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_outpu
     assert not any("Software & AI" in argument or "Muon" in argument for argument in command)
     assert b"Software & AI | Muon (D)" in kwargs["input"]
     assert b"up to 2" in kwargs["input"]
+    assert b"search seeds, not literal title requirements" in kwargs["input"]
     assert kwargs["timeout"] == 240
     assert kwargs["check"] is False
     assert kwargs["text"] is False

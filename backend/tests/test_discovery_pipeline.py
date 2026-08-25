@@ -156,10 +156,12 @@ def test_pipeline_uses_resolved_source_once_persists_raw_jobs_and_ranks_screened
     assert source.calls == 1
     assert store.observed == raw_jobs
     assert store.successful_source_keys == {"greenhouse:acme"}
-    assert ranking.jobs == [raw_jobs[0]]
+    # Positive keywords seed discovery; semantic relevance decides whether an
+    # unusually titled or adjacent role belongs in the final shortlist.
+    assert ranking.jobs == raw_jobs
     assert ranking.caps == (6, 3, 0.5)
     assert result.discovery.raw_count == 2
-    assert result.discovery.screened_out_count == 1
+    assert result.discovery.screened_out_count == 0
     assert result.lifecycle_counts.new == 1
 
 

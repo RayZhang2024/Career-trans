@@ -13,7 +13,7 @@ from app.schemas.career_assessment import (
     CareerAlignmentDimension,
     CareerAssessment,
 )
-from app.schemas.discovery import JobListing
+from app.schemas.discovery import JobListing, JobProvenance
 from app.schemas.job import JobProfile, JobRequirement, RequirementImportance
 from app.schemas.job_ranking import (
     JobArchetype,
@@ -62,6 +62,19 @@ def test_hard_gate_rejects_clear_invalid_jobs_and_preserves_ambiguity() -> None:
 
     assert survivors == [(0, valid), (1, missing_description)]
     assert rejected == 1
+
+
+def test_hard_gate_keeps_unusually_titled_job_for_semantic_relevance() -> None:
+    unusual = job(
+        "Technical Deployment Lead",
+        description="Deploy AI systems with enterprise customers.",
+        url="https://jobs.example.test/deployment-lead",
+    )
+
+    survivors, rejected = JobRankingGateService().gate([unusual])
+
+    assert survivors == [(0, unusual)]
+    assert rejected == 0
 
 
 def test_openai_relevance_and_archetype_agents_validate_structured_output() -> None:
@@ -214,6 +227,52 @@ def test_semantic_cap_round_robins_across_companies() -> None:
     assert assessed == ["A1", "B1"]
     assert result.relevance_screened_count == 2
     assert [item.job.title for item in result.semantic_screening] == ["A1", "B1"]
+
+
+def test_semantic_cap_keeps_company_fairness_and_source_front_breadth() -> None:
+    assessed: list[str] = []
+
+    class FakeRelevance:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            assessed.append(listing.title)
+            return JobRelevanceAssessment(relevant=False, score=0.0, reasoning="Not selected.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            raise AssertionError("Irrelevant jobs should not be classified.")
+
+    first_front = JobProvenance(runtime="codex", discovered_via="applied-ai")
+    adjacent_front = JobProvenance(runtime="codex", discovered_via="deployment")
+    jobs = [
+        job("A1", url="https://jobs.example.test/a1").model_copy(
+            update={"company": "First", "provenance": first_front}
+        ),
+        job("A2", url="https://jobs.example.test/a2").model_copy(
+            update={"company": "First", "provenance": first_front}
+        ),
+        job("A3", url="https://jobs.example.test/a3").model_copy(
+            update={"company": "First", "provenance": adjacent_front}
+        ),
+        job("B1", url="https://jobs.example.test/b1").model_copy(
+            update={"company": "Later", "provenance": first_front}
+        ),
+    ]
+    service = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=FakeGraph({}),  # type: ignore[arg-type]
+    )
+
+    result = service.rank(
+        JobRankingRequest(
+            jobs=jobs,
+            candidate_context=CandidateContext(),
+            max_semantic_candidates=3,
+        )
+    )
+
+    assert assessed == ["A1", "B1", "A3"]
+    assert result.relevance_screened_count == 3
 
 
 def test_career_analysis_failure_preserves_safe_root_exception_diagnostic() -> None:

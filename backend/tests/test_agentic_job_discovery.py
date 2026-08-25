@@ -321,7 +321,7 @@ def test_agentic_deduplicates_caps_and_synchronizes_only_returned_jobs(db_sessio
     assert set(response.job_states) == {SqlAlchemyDiscoveredJobStateStore.identity_key(response.listings[0])}
 
 
-def test_agentic_country_filter_does_not_match_arbitrary_country_code_substrings(db_session) -> None:
+def test_agentic_search_result_without_location_metadata_is_opened_then_known_mismatch_is_rejected(db_session) -> None:
     url = "https://jobs.example.test/jobs/rgb"
     discovery, _, _, pages, _ = service(
         db_session,
@@ -333,11 +333,11 @@ def test_agentic_country_filter_does_not_match_arbitrary_country_code_substrings
 
     response = discovery.discover(request(query={"keywords": ["Engineer"], "locations": ["London"]}, country="gb"))
 
-    assert pages.calls == []
+    assert pages.calls == [url]
     assert response.listings == []
 
 
-def test_structured_discovery_retains_strict_keyword_screening() -> None:
+def test_structured_discovery_allows_an_adjacent_title_to_reach_semantic_screening() -> None:
     listing = ExtractedVacancy(title="Forward Deployed Engineer", company="Example", location="London")
 
     class Provider:
@@ -362,7 +362,7 @@ def test_structured_discovery_retains_strict_keyword_screening() -> None:
         request().query.model_copy(update={"keywords": ["Machine Learning"]})
     )
 
-    assert response.listings == []
+    assert [item.title for item in response.listings] == ["Forward Deployed Engineer"]
 
 
 def test_vacancy_prompt_marks_external_page_content_as_untrusted() -> None:
