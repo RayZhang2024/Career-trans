@@ -135,6 +135,7 @@ def test_safe_protected_configuration_endpoint_and_check(client, monkeypatch) ->
     assert response.json()["openai_api_key_configured"] is True
     assert response.json()["cv_semantic_extraction_model"] == "local-model"
     assert response.json()["agentic_search_provider"] == "disabled"
+    assert response.json()["requirement_matching_structured_output_capability"] == "not_applicable"
     assert secret not in response.text
     assert client.get("/api/v1/config/llm/check", headers=headers).json()["ready"] is True
     assert client.get("/api/v1/config/llm").status_code == 401
@@ -152,6 +153,36 @@ def test_configuration_check_rejects_empty_semantic_model(client, monkeypatch) -
     response = client.get("/api/v1/config/llm/check", headers=_auth(client, "config-empty-model@example.com"))
     assert response.status_code == 503
     assert "JOB_RELEVANCE_MODEL" in response.json()["detail"]
+
+
+def test_configuration_check_rejects_unknown_openai_structured_output_model(client, monkeypatch) -> None:
+    settings = Settings(
+        default_llm_provider="openai",
+        openai_api_key="server-secret",
+        requirement_matching_model="gpt-5.6-luna",
+    )
+    monkeypatch.setattr(config_routes, "get_settings", lambda: settings)
+
+    response = client.get("/api/v1/config/llm/check", headers=_auth(client, "config-structured-output@example.com"))
+
+    assert response.status_code == 503
+    assert "Structured Outputs" in response.json()["detail"]
+    assert "server-secret" not in response.text
+
+
+def test_configuration_reports_supported_openai_requirement_matching_model(client, monkeypatch) -> None:
+    settings = Settings(
+        default_llm_provider="openai",
+        openai_api_key="server-secret",
+        requirement_matching_model="gpt-5.6",
+    )
+    monkeypatch.setattr(config_routes, "get_settings", lambda: settings)
+
+    headers = _auth(client, "config-supported-structured-output@example.com")
+    assert client.get("/api/v1/config/llm", headers=headers).json()[
+        "requirement_matching_structured_output_capability"
+    ] == "supported"
+    assert client.get("/api/v1/config/llm/check", headers=headers).json()["ready"] is True
 
 
 def test_ollama_transport_and_output_failures_are_normalized() -> None:

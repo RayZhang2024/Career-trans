@@ -1,10 +1,11 @@
 """Small provider-neutral boundary for Career-trans semantic LLM operations."""
 
 import json
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from types import SimpleNamespace
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -37,6 +38,14 @@ class SemanticProviderUnavailableError(RuntimeError):
 
 class SemanticProviderRequestError(RuntimeError):
     """The semantic provider rejected a model or request without exposing payloads."""
+
+
+class SemanticStructuredOutputModelError(SemanticProviderRequestError):
+    """The provider rejected Structured Outputs for the selected model."""
+
+
+class SemanticStructuredOutputSchemaError(SemanticProviderRequestError):
+    """The provider rejected the requested Structured Outputs schema."""
 
 
 class SemanticOutputError(RuntimeError):
@@ -117,6 +126,8 @@ class OpenAISemanticLLM:
         output_schema: dict[str, object] | None = None,
     ) -> str:
         _require_capabilities("openai", self.capabilities, required_capabilities)
+        if output_schema is not None:
+            validate_openai_structured_output_model(model)
         client = create_traced_openai_client(
             api_key=self._api_key,
             trace_name=operation,
@@ -145,6 +156,16 @@ class OpenAISemanticLLM:
         except APIStatusError as exc:
             if exc.status_code >= 500:
                 raise SemanticProviderUnavailableError("OpenAI semantic provider is temporarily unavailable. Retry later.") from exc
+            if output_schema is not None and exc.status_code == 400:
+                error_kind = _structured_output_bad_request_kind(exc)
+                if error_kind == "model_unsupported":
+                    raise SemanticStructuredOutputModelError(
+                        "OpenAI rejected Structured Outputs for the configured semantic model."
+                    ) from exc
+                if error_kind == "schema_rejected":
+                    raise SemanticStructuredOutputSchemaError(
+                        "OpenAI rejected the Structured Outputs schema for requirement matching."
+                    ) from exc
             raise SemanticProviderRequestError(
                 f"OpenAI rejected semantic model '{model}'. Check the configured model and provider access."
             ) from exc
@@ -310,3 +331,49 @@ def _require_capabilities(
         raise LLMProviderConfigurationError(
             f"LLM provider '{provider}' does not support required capabilities: {', '.join(unsupported)}."
         )
+
+
+_OPENAI_STRUCTURED_OUTPUT_MODEL = re.compile(
+    r"^(?:gpt-4o(?:-mini)?|gpt-4\.1(?:-mini|-nano)?|gpt-5(?:\.6)?(?:-mini|-nano)?)(?:-\d{4}-\d{2}-\d{2})?$"
+)
+
+
+def openai_structured_output_supported(model: str) -> bool:
+    """Return only statically-known Structured Outputs compatibility.
+
+    OpenAI's Structured Outputs capability is model-specific. Unknown aliases are
+    intentionally not assumed compatible because a request-time 400 is avoidable.
+    """
+    return bool(_OPENAI_STRUCTURED_OUTPUT_MODEL.fullmatch(model.strip()))
+
+
+def validate_openai_structured_output_model(model: str) -> None:
+    if not openai_structured_output_supported(model):
+        raise SemanticProviderConfigurationError(
+            "Configured OpenAI requirement-matching model does not have a known "
+            "Structured Outputs capability. Configure a supported OpenAI model."
+        )
+
+
+def _structured_output_bad_request_kind(error: APIStatusError) -> str | None:
+    """Classify known setup failures without surfacing provider response bodies."""
+    detail = str(error).casefold()
+    if any(
+        phrase in detail
+        for phrase in (
+            "does not support structured outputs",
+            "does not support json_schema",
+            "model does not support response_format",
+        )
+    ):
+        return "model_unsupported"
+    if any(
+        phrase in detail
+        for phrase in (
+            "invalid schema",
+            "schema for response_format",
+            "json schema is invalid",
+        )
+    ):
+        return "schema_rejected"
+    return None

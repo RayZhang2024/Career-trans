@@ -3,12 +3,14 @@ from fastapi import APIRouter, HTTPException, status
 from app.api.deps import CurrentUser, validate_semantic_configuration
 from app.core.config import Settings, get_settings
 from app.providers.llm import SemanticProviderConfigurationError
+from app.providers.llm import openai_structured_output_supported
 from app.schemas.llm_config import LLMConfigurationCheck, LLMConfigurationRead
 
 router = APIRouter(prefix="/config", tags=["configuration"])
 
 
 def _safe_configuration(settings: Settings) -> dict[str, object]:
+    provider = settings.default_llm_provider.casefold().strip()
     return {
         "default_llm_provider": settings.default_llm_provider,
         "effective_llm_base_url": settings.effective_llm_base_url,
@@ -23,6 +25,13 @@ def _safe_configuration(settings: Settings) -> dict[str, object]:
         "agentic_search_provider": settings.agentic_search_provider.casefold().strip(),
         "openai_web_search_model": settings.openai_web_search_model,
         "openai_api_key_configured": bool(settings.openai_api_key),
+        "requirement_matching_structured_output_capability": (
+            "supported"
+            if provider == "openai" and openai_structured_output_supported(settings.requirement_matching_model)
+            else "unsupported"
+            if provider == "openai"
+            else "not_applicable"
+        ),
     }
 
 
