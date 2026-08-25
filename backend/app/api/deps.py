@@ -29,6 +29,7 @@ from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobState
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
+from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
 from app.services.cv_ingestion_service import CVIngestionService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.schemas.candidate import CandidateContext
@@ -246,6 +247,14 @@ def get_job_discovery_service() -> JobDiscoveryService:
 def get_external_discovery_import_service(db: DbSession) -> ExternalDiscoveryImportService:
     """External runtime imports use shared state but never authoritative source evidence."""
     return ExternalDiscoveryImportService(
+        session=db,
+        state_store=SqlAlchemyDiscoveredJobStateStore(db),
+    )
+
+
+def get_structured_ats_discovery_service(db: DbSession) -> StructuredAtsDiscoveryService:
+    """Known-source ATS scans are deterministic and construct no semantic clients."""
+    return StructuredAtsDiscoveryService(
         session=db,
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
     )
