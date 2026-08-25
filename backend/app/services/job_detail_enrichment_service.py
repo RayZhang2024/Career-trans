@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.agentic_discovery import PageVacancyExtractor
 from app.models.discovered_job import DiscoveredJob
+from app.providers.jobs.workday import WorkdayJobDetailExtractor
 from app.providers.page_fetch import PageFetcher
 from app.schemas.agentic_discovery import ExtractedVacancy
 from app.schemas.discovery import JobListing, JobProvenance
@@ -34,12 +35,14 @@ class JobDetailEnrichmentService:
         vacancy_extractor: PageVacancyExtractor,
         job_analysis_service: JobAnalysisService,
         state_store: DiscoveredJobStateStore,
+        workday_detail_extractor: WorkdayJobDetailExtractor | None = None,
     ) -> None:
         self._session = session
         self._page_fetcher = page_fetcher
         self._vacancy_extractor = vacancy_extractor
         self._job_analysis_service = job_analysis_service
         self._state_store = state_store
+        self._workday_detail_extractor = workday_detail_extractor
 
     def enrich_recent(self, *, limit: int) -> JobEnrichmentResponse:
         records = self._session.scalars(
@@ -58,7 +61,9 @@ class JobDetailEnrichmentService:
         except Exception:
             return self._outcome(record, JobEnrichmentStatus.FAILED, "page retrieval failed")
         try:
-            extracted = AgenticJobDiscoveryService._metadata_vacancy(page)
+            extracted = self._workday_detail_extractor.extract(page) if self._workday_detail_extractor else None
+            if extracted is None:
+                extracted = AgenticJobDiscoveryService._metadata_vacancy(page)
             if extracted is None or not self._description(extracted):
                 extracted = self._vacancy_extractor.extract(page)
         except Exception:

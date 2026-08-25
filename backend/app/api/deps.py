@@ -40,6 +40,7 @@ from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
 from app.providers.jobs.recruitee import RecruiteeJobSource
 from app.providers.jobs.smartrecruiters import SmartRecruitersJobSource
+from app.providers.jobs.workday import WorkdayJobDetailExtractor
 from app.providers.page_fetch import PublicHttpPageFetcher
 from app.providers.llm import (
     EnvironmentCredentialResolver,
@@ -254,9 +255,10 @@ def get_opportunity_inbox_service(db: DbSession) -> OpportunityInboxService:
 
 def get_job_detail_enrichment_service(db: DbSession) -> JobDetailEnrichmentService:
     settings = get_settings()
+    page_fetcher = PublicHttpPageFetcher()
     return JobDetailEnrichmentService(
         session=db,
-        page_fetcher=PublicHttpPageFetcher(),
+        page_fetcher=page_fetcher,
         vacancy_extractor=OpenAIPageVacancyExtractor(
             api_key="",
             model=settings.agentic_discovery_model,
@@ -268,6 +270,7 @@ def get_job_detail_enrichment_service(db: DbSession) -> JobDetailEnrichmentServi
         ),
         job_analysis_service=get_job_analysis_service(),
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
+        workday_detail_extractor=WorkdayJobDetailExtractor(page_fetcher),
     )
 
 
