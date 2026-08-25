@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     jobs_commands = jobs.add_subparsers(dest="jobs_command", required=True)
     discover_external = jobs_commands.add_parser(
         "discover-external",
-        help="Use local Codex to find public vacancies, then import them through Career-trans",
+        help="Use local Codex for broad employer-agnostic search (or target companies optionally), then import vacancies",
     )
     discover_external.add_argument("--keyword", dest="keywords", action="append", required=True)
     discover_external.add_argument("--location", dest="locations", action="append", default=[])
@@ -310,15 +310,15 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
         client.get_external_discovery_search_context(query)
     )
     jobs = CodexExternalDiscoveryRunner().discover(context)
-    imported = client.import_discovered_jobs(
-        runtime="codex",
-        jobs=[job.model_dump(mode="json") for job in jobs],
-        query=query,
-    )
+    imported = _import_codex_discoveries(client, jobs, query)
+    scope = "broad employer-agnostic" if not args.companies else "company-targeted"
+    lifecycle = imported.get("lifecycle_counts", {})
     print(
-        f"Imported {len(imported.get('accepted_jobs', []))} jobs "
-        f"(rejected={imported.get('rejected_count', 0)}, "
-        f"deduplicated={imported.get('deduplicated_count', 0)})."
+        f"Imported {len(imported.get('accepted_jobs', []))} jobs ({scope}; "
+        f"raw={len(jobs)}, normalized={len(jobs)}, rejected={imported.get('rejected_count', 0)}, "
+        f"deduplicated={imported.get('deduplicated_count', 0)}, bounded_out={imported.get('bounded_out_count', 0)}, "
+        f"new={lifecycle.get('new', 0)}, updated={lifecycle.get('updated', 0)}, "
+        f"unchanged={lifecycle.get('unchanged', 0)})."
     )
     if args.rank and imported.get("accepted_jobs"):
         ranking = client.rank_jobs_for_current_user(imported["accepted_jobs"])
@@ -328,6 +328,19 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             f"analysed={ranking.get('analysed_count', 0)})."
         )
     return 0
+
+
+def _import_codex_discoveries(
+    client: CareerTransApiClient,
+    jobs: list[Any],
+    query: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep all local Codex execution in the existing runner and import via the shared API."""
+    return client.import_discovered_jobs(
+        runtime="codex",
+        jobs=[job.model_dump(mode="json") for job in jobs],
+        query=query,
+    )
 
 
 def _print_counts(draft: dict[str, Any]) -> None:

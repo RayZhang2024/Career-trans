@@ -43,12 +43,15 @@ class ExternalDiscoveryImportService:
         ]
         deduplicated, duplicate_count = self._deduplicator.deduplicate(accepted_before_dedup)
         accepted = deduplicated[: request.query.max_results]
-        states = self._state_store.synchronize(accepted, set())
+        # External/Codex discovery has bounded coverage. Persist matches, but never
+        # interpret a later omission as authoritative evidence that a job is inactive.
+        states = self._state_store.persist(accepted)
         return ExternalDiscoveryImportResponse(
             runtime=request.runtime,
             accepted_jobs=accepted,
             rejected_count=len(normalized) - len(accepted_before_dedup),
             deduplicated_count=duplicate_count,
+            bounded_out_count=len(deduplicated) - len(accepted),
             job_states=states,
             lifecycle_counts=DiscoveryLifecycleCounts(
                 new=sum(state is DiscoveredJobState.NEW for state in states.values()),
