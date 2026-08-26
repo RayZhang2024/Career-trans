@@ -19,17 +19,41 @@ from app.schemas.job import (
 
 _WHITESPACE = re.compile(r"\s+")
 _PARENTHETICAL_LIST = re.compile(r"\((?P<items>[^()]*,[^()]*)\)")
+_QUALIFICATION_TERMS = (
+    r"(?:(?:strong|practical|hands-on|professional|demonstrated|proven|"
+    r"solid|relevant)\s+)*(?:experience|familiarity|knowledge|understanding|"
+    r"proficiency|expertise|skills?)"
+)
 _LIST_PREFIX = re.compile(
-    r"^(?P<prefix>.*?\b(?:with|in|of|to|implementing|using|via)\s+)"
+    rf"^(?P<prefix>{_QUALIFICATION_TERMS}\s+(?:with|in|of)|"
+    rf"(?:(?:strong|practical|hands-on|professional|demonstrated|proven|solid|"
+    rf"relevant)\s+)*experience\s+"
+    rf"(?:implementing|using|building|integrating|developing|working\s+with))\s+"
     r"(?P<items>[^,;]+,\s*[^,;]+(?:,\s*|\s+and\s+)[^.;]+)$",
     re.IGNORECASE,
 )
 _NON_ATOMIC_CONNECTOR = re.compile(r"\b(?:and/or|or)\b", re.IGNORECASE)
-_IMPORTANCE_RANK = {
-    RequirementImportance.UNSPECIFIED: 0,
-    RequirementImportance.DESIRABLE: 1,
-    RequirementImportance.ESSENTIAL: 2,
-}
+_PROTECTED_LIST_QUALIFIER = re.compile(
+    r"(?:\bideally\b|\bpreferred\b|\bpreferably\b|"
+    r"\bnice(?:\s+|-)?to(?:\s+|-)?have\b|\bbonus\b|\ba\s+plus\b|"
+    r"\badvantageous\b|\bbeneficial\b|\bsuch\s+as\b|e\.g\.|"
+    r"\bfor\s+example\b|\bfor\s+instance\b|\bincluding\b|\bincludes?\b)",
+    re.IGNORECASE,
+)
+_CRITERION_PREFIX = re.compile(
+    rf"(?P<prefix>{_QUALIFICATION_TERMS}\s+(?:with|in|of)|"
+    rf"(?:(?:strong|practical|hands-on|professional|demonstrated|proven|solid|"
+    rf"relevant)\s+)*experience\s+"
+    rf"(?:implementing|using|building|integrating|developing|working\s+with))\b",
+    re.IGNORECASE,
+)
+_PARALLEL_ACTIONS = re.compile(
+    r"^(?P<prefix>(?:(?:strong|practical|hands-on|professional|demonstrated|"
+    r"proven|solid|relevant)\s+)*experience)\s+"
+    r"(?P<first>(?:implementing|using|building|integrating|developing)\b[^.;]+?)\s+"
+    r"and\s+(?P<second>(?:implementing|using|building|integrating|developing)\b[^.;]+)$",
+    re.IGNORECASE,
+)
 _SOURCE_TEXT_LIMIT = 1_000
 
 
@@ -68,7 +92,7 @@ def normalize_job_profile(profile: JobProfile) -> JobProfile:
 
 
 def _normalize_requirements(requirements: list[JobRequirement]) -> list[JobRequirement]:
-    by_text: dict[str, JobRequirement] = {}
+    by_semantics: dict[tuple[str, str, str], JobRequirement] = {}
 
     for requirement in requirements:
         text = _normalize_requirement_text(requirement.text)
@@ -83,16 +107,25 @@ def _normalize_requirements(requirements: list[JobRequirement]) -> list[JobRequi
                 category=requirement.category,
                 source_text=source_text,
             )
-            key = atomic_text.casefold()
-            existing = by_text.get(key)
-            by_text[key] = (
+            # A duplicate wording with different employer-provided category or
+            # importance labels is a semantic conflict.  Python cannot safely
+            # decide which label is stronger or more appropriate, so retain
+            # each source-grounded interpretation rather than silently changing
+            # fit/blocker semantics.
+            key = (
+                atomic_text.casefold(),
+                candidate.importance.value,
+                candidate.category.value,
+            )
+            existing = by_semantics.get(key)
+            by_semantics[key] = (
                 _merge_requirements(existing, candidate)
                 if existing is not None
                 else candidate
             )
 
     return sorted(
-        by_text.values(),
+        by_semantics.values(),
         key=lambda item: (
             item.text.casefold(),
             item.category.value,
@@ -103,6 +136,9 @@ def _normalize_requirements(requirements: list[JobRequirement]) -> list[JobRequi
 
 
 def _atomic_texts(text: str, source_text: str | None) -> list[str]:
+    if _has_protected_list_qualifier(text, source_text):
+        return [text]
+
     direct_parts = _extract_list_parts(text)
     if direct_parts:
         prefix, items = direct_parts
@@ -144,7 +180,11 @@ def _extract_list_items(text: str | None) -> list[str] | None:
 
 
 def _extract_list_parts(text: str | None) -> tuple[str, list[str]] | None:
-    if not text or _NON_ATOMIC_CONNECTOR.search(text):
+    if (
+        not text
+        or _NON_ATOMIC_CONNECTOR.search(text)
+        or _PROTECTED_LIST_QUALIFIER.search(text)
+    ):
         return None
 
     parenthetical_matches = list(_PARENTHETICAL_LIST.finditer(text))
@@ -154,22 +194,31 @@ def _extract_list_parts(text: str | None) -> tuple[str, list[str]] | None:
         if items and prefix:
             return prefix, items
 
-    match = _LIST_PREFIX.match(text)
-    if match is None:
+    qualification_clause = _qualification_clause(text)
+    match = _LIST_PREFIX.match(qualification_clause)
+    if match is not None:
+        items = _split_list(match.group("items"))
+        if items:
+            return _clean_prefix(match.group("prefix")), items
+
+    parallel_actions = _PARALLEL_ACTIONS.match(qualification_clause)
+    if parallel_actions is None:
         return None
-    items = _split_list(match.group("items"))
-    if not items:
-        return None
-    return _clean_prefix(match.group("prefix")), items
+    return (
+        _clean_prefix(parallel_actions.group("prefix")),
+        [parallel_actions.group("first"), parallel_actions.group("second")],
+    )
 
 
 def _criterion_prefix(value: str) -> str | None:
-    match = re.search(
-        r"(?P<prefix>.*?\b(?:with|in|of|to|implementing|using|via))\b",
-        value,
-        re.IGNORECASE,
-    )
+    match = _CRITERION_PREFIX.search(value)
     return _clean_prefix(match.group("prefix")) if match else None
+
+
+def _qualification_clause(value: str) -> str:
+    """Drop a section heading before matching an explicit qualification clause."""
+    match = _CRITERION_PREFIX.search(value)
+    return value[match.start() :] if match else value
 
 
 def _clean_prefix(value: str) -> str:
@@ -215,29 +264,25 @@ def _merge_requirements(
     first: JobRequirement,
     second: JobRequirement,
 ) -> JobRequirement:
-    """Merge duplicate criteria without losing a stronger importance label."""
-    first_rank = _IMPORTANCE_RANK[first.importance]
-    second_rank = _IMPORTANCE_RANK[second.importance]
-    if second_rank > first_rank:
-        winner = second
-    else:
-        winner = first
-    category = winner.category
-    if first_rank == second_rank:
-        category = min(first.category, second.category, key=lambda value: value.value)
-
-    return winner.model_copy(
+    """Merge only requirements with identical source-grounded semantics."""
+    return first.model_copy(
         update={
             "text": min(
                 (first.text, second.text),
                 key=lambda value: (value.casefold(), value),
             ),
-            "category": category,
             "source_text": _merge_source_texts(
                 first.source_text,
                 second.source_text,
             )
         }
+    )
+
+
+def _has_protected_list_qualifier(text: str, source_text: str | None) -> bool:
+    return bool(
+        _PROTECTED_LIST_QUALIFIER.search(text)
+        or (source_text and _PROTECTED_LIST_QUALIFIER.search(source_text))
     )
 
 
