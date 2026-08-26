@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     langsmith_api_key: str | None = None
     langsmith_project: str | None = None
     langsmith_endpoint: str | None = None
+    application_revision: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "CAREER_TRANS_REVISION",
+            "application_revision",
+        ),
+    )
 
     greenhouse_board_tokens: str = ""
     ashby_board_tokens: str = ""
@@ -119,7 +126,11 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def configure_langsmith_environment(settings: Settings) -> None:
+def configure_langsmith_environment(
+    settings: Settings,
+    *,
+    revision: str | None = None,
+) -> None:
     """Expose configured LangSmith settings without overriding process config."""
     configured = {
         "LANGSMITH_TRACING": (
@@ -134,3 +145,8 @@ def configure_langsmith_environment(settings: Settings) -> None:
     for name, value in configured.items():
         if value:
             os.environ.setdefault(name, value)
+    if revision:
+        # LangSmith's documented runtime metadata bridge reads this value when
+        # it creates each provider run. This application-owned value wins over
+        # any stale inherited attribution.
+        os.environ["LANGCHAIN_REVISION_ID"] = revision
