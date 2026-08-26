@@ -71,7 +71,7 @@ def _normalize_requirements(requirements: list[JobRequirement]) -> list[JobRequi
     by_text: dict[str, JobRequirement] = {}
 
     for requirement in requirements:
-        text = _normalize_text(requirement.text)
+        text = _normalize_requirement_text(requirement.text)
         source_text = _normalize_optional_text(requirement.source_text)
         if not text:
             continue
@@ -106,6 +106,19 @@ def _atomic_texts(text: str, source_text: str | None) -> list[str]:
     direct_parts = _extract_list_parts(text)
     if direct_parts:
         prefix, items = direct_parts
+        source_parts = _extract_list_parts(source_text) if source_text else None
+        if source_parts:
+            source_prefix, source_items = source_parts
+            canonical_items = [
+                _matching_source_item(item, source_items)
+                for item in items
+            ]
+            if all(item is not None for item in canonical_items):
+                return [
+                    _join_prefix(source_prefix, item)
+                    for item in canonical_items
+                    if item is not None
+                ]
         return [_join_prefix(prefix, item) for item in items]
 
     # A model may emit one atomic item while retaining the original grouped
@@ -189,6 +202,15 @@ def _contains_item(text: str, item: str) -> bool:
     return item.casefold() in text.casefold()
 
 
+def _matching_source_item(item: str, source_items: list[str]) -> str | None:
+    matches = [
+        source_item
+        for source_item in source_items
+        if _contains_item(item, source_item) or _contains_item(source_item, item)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _merge_requirements(
     first: JobRequirement,
     second: JobRequirement,
@@ -206,6 +228,10 @@ def _merge_requirements(
 
     return winner.model_copy(
         update={
+            "text": min(
+                (first.text, second.text),
+                key=lambda value: (value.casefold(), value),
+            ),
             "category": category,
             "source_text": _merge_source_texts(
                 first.source_text,
@@ -253,3 +279,7 @@ def _normalize_optional_text(value: str | None) -> str | None:
 
 def _normalize_text(value: str) -> str:
     return _WHITESPACE.sub(" ", value).strip()
+
+
+def _normalize_requirement_text(value: str) -> str:
+    return _normalize_text(value).rstrip(" .;:")
