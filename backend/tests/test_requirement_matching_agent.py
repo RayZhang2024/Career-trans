@@ -81,7 +81,6 @@ def _valid_result(*, requirements: list[JobRequirement] = REQUIREMENTS) -> str:
                 match_type=MatchType.DEMONSTRATED,
                 score=0.9,
                 evidence_ids=["EVIDENCE-1"],
-                reasoning="Supported by the supplied evidence.",
             )
             for index, requirement in enumerate(requirements)
         ]
@@ -122,7 +121,6 @@ def test_matcher_reattaches_exact_canonical_requirement_not_present_in_model_out
                 match_type=MatchType.TRANSFERABLE,
                 score=0.65,
                 evidence_ids=["EVIDENCE-1"],
-                reasoning="The supplied systems-delivery evidence is adjacent.",
             )
         ]
     ).model_dump_json()
@@ -134,6 +132,43 @@ def test_matcher_reattaches_exact_canonical_requirement_not_present_in_model_out
     assert result.matches[0].requirement.source_text == requirement.source_text
     assert result.matches[0].requirement.importance == RequirementImportance.ESSENTIAL
     assert result.matches[0].requirement.category == RequirementCategory.TECHNICAL
+    assert result.matches[0].reasoning == (
+        "Supplied candidate evidence supports an adjacent transferable capability."
+    )
+
+
+def test_matcher_sends_only_compact_canonical_requirement_fields() -> None:
+    requirement = JobRequirement(
+        text="Build reliable distributed systems",
+        importance=RequirementImportance.ESSENTIAL,
+        category=RequirementCategory.TECHNICAL,
+        source_text="Private advert section and duplicated source wording.",
+    )
+    profile = JobProfile(
+        title="Private role title",
+        responsibilities=["Private responsibility detail."],
+        requirements=[requirement],
+        technical_skills=["Python"],
+        domain_knowledge=["Private domain context"],
+        security_requirements=["Private clearance detail"],
+    )
+    matcher, responses = _matcher([_valid_result(requirements=[requirement])])
+
+    matcher.match(profile, CANDIDATE)
+
+    request_input = responses.calls[0]["input"]  # type: ignore[index]
+    payload = json.loads(request_input[1]["content"].split("INPUT:\n", 1)[1])
+    assert payload["job_profile"] == {
+        "requirements": [
+            {
+                "text": "Build reliable distributed systems",
+                "importance": "essential",
+                "category": "technical",
+            }
+        ]
+    }
+    assert "Private advert section" not in json.dumps(payload)
+    assert "Private responsibility detail" not in json.dumps(payload)
 
 
 def test_sdk_schema_preserves_nested_nullable_fields_without_defaults() -> None:
@@ -148,6 +183,7 @@ def test_sdk_schema_preserves_nested_nullable_fields_without_defaults() -> None:
     assert set(semantic_match["required"]) == set(semantic_match["properties"])
     assert "requirement" not in semantic_match["properties"]
     assert "evidence_refs" not in semantic_match["properties"]
+    assert "reasoning" not in semantic_match["properties"]
     assert semantic_match["properties"]["score"]["minimum"] == 0.0
     assert semantic_match["properties"]["score"]["maximum"] == 1.0
 
@@ -175,7 +211,6 @@ def test_malformed_output_retries_once_without_leaking_candidate_context() -> No
                         match_type=MatchType.DEMONSTRATED,
                         score=0.9,
                         evidence_ids=["EVIDENCE-1"],
-                        reasoning="Only one result.",
                     )
                 ]
             ).model_dump_json(),
@@ -189,14 +224,12 @@ def test_malformed_output_retries_once_without_leaking_candidate_context() -> No
                         match_type=MatchType.DEMONSTRATED,
                         score=0.9,
                         evidence_ids=["EVIDENCE-1"],
-                        reasoning="Repeated index.",
                     ),
                     SemanticRequirementMatch(
                         requirement_index=1,
                         match_type=MatchType.DEMONSTRATED,
                         score=0.9,
                         evidence_ids=["EVIDENCE-1"],
-                        reasoning="Repeated index.",
                     ),
                 ]
             ).model_dump_json(),
@@ -210,14 +243,12 @@ def test_malformed_output_retries_once_without_leaking_candidate_context() -> No
                         match_type=MatchType.DEMONSTRATED,
                         score=0.9,
                         evidence_ids=["EVIDENCE-1"],
-                        reasoning="First requirement.",
                     ),
                     SemanticRequirementMatch(
                         requirement_index=2,
                         match_type=MatchType.DEMONSTRATED,
                         score=0.9,
                         evidence_ids=["EVIDENCE-1"],
-                        reasoning="Out-of-range requirement.",
                     ),
                 ]
             ).model_dump_json(),
@@ -243,7 +274,6 @@ def test_unknown_evidence_ids_remain_rejected() -> None:
                 match_type=MatchType.DEMONSTRATED,
                 score=0.9,
                 evidence_ids=["UNKNOWN-EVIDENCE"],
-                reasoning="Unknown evidence reference.",
             )
             for index in range(len(REQUIREMENTS))
         ]
