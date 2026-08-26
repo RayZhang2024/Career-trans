@@ -15,6 +15,7 @@ def make_match(
     match_type: MatchType,
     score: float,
     category: RequirementCategory = RequirementCategory.TECHNICAL,
+    source_text: str | None = None,
 ) -> RequirementMatch:
     return RequirementMatch(
         requirement_index=index,
@@ -22,6 +23,7 @@ def make_match(
             text=text,
             importance=importance,
             category=category,
+            source_text=source_text,
         ),
         match_type=match_type,
         score=score,
@@ -294,3 +296,302 @@ def test_low_desirable_requirement_becomes_learnable_gap() -> None:
     assessment = FitAssessmentService().assess(matches)
 
     assert assessment.gaps[0].gap_type == GapType.EVIDENCE_GAP
+
+
+def test_grouped_and_atomic_matches_from_one_source_have_equal_fit_weight() -> None:
+    source_one = "Experience with Skill A, Skill B, and Skill C."
+    source_two = "Experience with Skill D."
+    grouped = [
+        make_match(
+            0,
+            "Experience with Skill A, Skill B, and Skill C",
+            RequirementImportance.ESSENTIAL,
+            MatchType.TRANSFERABLE,
+            0.6,
+            source_text=source_one,
+        ),
+        make_match(
+            1,
+            "Experience with Skill D",
+            RequirementImportance.ESSENTIAL,
+            MatchType.INFERRED,
+            0.2,
+            source_text=source_two,
+        ),
+    ]
+    atomic = [
+        make_match(
+            0,
+            "Skill A",
+            RequirementImportance.ESSENTIAL,
+            MatchType.DEMONSTRATED,
+            0.9,
+            source_text=source_one,
+        ),
+        make_match(
+            1,
+            "Skill B",
+            RequirementImportance.ESSENTIAL,
+            MatchType.TRANSFERABLE,
+            0.6,
+            source_text=source_one,
+        ),
+        make_match(
+            2,
+            "Skill C",
+            RequirementImportance.ESSENTIAL,
+            MatchType.INFERRED,
+            0.3,
+            source_text=source_one,
+        ),
+        make_match(
+            3,
+            "Experience with Skill D",
+            RequirementImportance.ESSENTIAL,
+            MatchType.INFERRED,
+            0.2,
+            source_text=source_two,
+        ),
+    ]
+
+    grouped_assessment = FitAssessmentService().assess(grouped)
+    atomic_assessment = FitAssessmentService().assess(atomic)
+
+    assert grouped_assessment.fit_score == atomic_assessment.fit_score == 40.0
+    assert grouped_assessment.essential_score == atomic_assessment.essential_score == 40.0
+
+
+def test_separate_source_statements_remain_separate_scoring_units() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                0,
+                "Skill A",
+                RequirementImportance.ESSENTIAL,
+                MatchType.DEMONSTRATED,
+                0.9,
+                source_text="Employer source S1.",
+            ),
+            make_match(
+                1,
+                "Skill B",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INFERRED,
+                0.3,
+                source_text="Employer source S2.",
+            ),
+            make_match(
+                2,
+                "Skill C",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INFERRED,
+                0.3,
+                source_text="Employer source S3.",
+            ),
+        ]
+    )
+
+    assert assessment.fit_score == 50.0
+
+
+def test_source_groups_keep_importance_weighting_and_diagnostics() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                0,
+                "Core A",
+                RequirementImportance.ESSENTIAL,
+                MatchType.DEMONSTRATED,
+                0.8,
+                source_text="Core criterion.",
+            ),
+            make_match(
+                1,
+                "Core B",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INFERRED,
+                0.4,
+                source_text="Core criterion.",
+            ),
+            make_match(
+                2,
+                "Optional A",
+                RequirementImportance.DESIRABLE,
+                MatchType.INFERRED,
+                0.3,
+                source_text="Preferred criterion.",
+            ),
+            make_match(
+                3,
+                "Context A",
+                RequirementImportance.UNSPECIFIED,
+                MatchType.DEMONSTRATED,
+                0.9,
+                source_text="Context criterion.",
+            ),
+        ]
+    )
+
+    assert assessment.fit_score == 65.0
+    assert assessment.essential_score == 60.0
+    assert assessment.desirable_score == 30.0
+
+
+def test_source_grouping_preserves_requirement_level_strengths_and_gaps() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                4,
+                "Skill A",
+                RequirementImportance.ESSENTIAL,
+                MatchType.DEMONSTRATED,
+                0.9,
+                source_text="Required skills: Skill A and Skill B.",
+            ),
+            make_match(
+                5,
+                "Skill B",
+                RequirementImportance.ESSENTIAL,
+                MatchType.MISSING,
+                0.1,
+                source_text="Required skills: Skill A and Skill B.",
+            ),
+        ]
+    )
+
+    assert assessment.strengths == [4]
+    assert [gap.requirement_index for gap in assessment.gaps] == [5]
+
+
+def test_confirmed_hard_blocker_is_not_averaged_into_its_source_group() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                0,
+                "Candidates must have the right to work in the UK.",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INCOMPATIBLE,
+                0.0,
+                category=RequirementCategory.WORK_AUTHORIZATION,
+                source_text="Candidates must have the right to work in the UK and relevant skills.",
+            ),
+            make_match(
+                1,
+                "Relevant skills",
+                RequirementImportance.ESSENTIAL,
+                MatchType.DEMONSTRATED,
+                0.9,
+                source_text="Candidates must have the right to work in the UK and relevant skills.",
+            ),
+            make_match(
+                2,
+                "Additional core skill",
+                RequirementImportance.ESSENTIAL,
+                MatchType.DEMONSTRATED,
+                0.9,
+                source_text="Additional core skill is required.",
+            ),
+        ]
+    )
+
+    assert assessment.hard_blockers == [0]
+    assert assessment.fit_score == 60.0
+
+
+def test_same_looking_requirements_with_different_sources_do_not_merge() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                0,
+                "Same-looking skill",
+                RequirementImportance.ESSENTIAL,
+                MatchType.DEMONSTRATED,
+                0.9,
+                source_text="Employer source S1.",
+            ),
+            make_match(
+                1,
+                "Same-looking skill",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INFERRED,
+                0.3,
+                source_text="Employer source S2.",
+            ),
+            make_match(
+                2,
+                "Another skill",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INFERRED,
+                0.3,
+                source_text="Employer source S3.",
+            ),
+        ]
+    )
+
+    assert assessment.fit_score == 50.0
+
+
+def test_missing_or_ambiguous_provenance_falls_back_without_merging() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                0,
+                "Skill A",
+                RequirementImportance.ESSENTIAL,
+                MatchType.DEMONSTRATED,
+                0.9,
+            ),
+            make_match(
+                1,
+                "Skill B",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INFERRED,
+                0.3,
+            ),
+            make_match(
+                2,
+                "Another skill",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INFERRED,
+                0.3,
+                source_text="Source A. / Source B.",
+            ),
+        ]
+    )
+
+    assert assessment.fit_score == 50.0
+
+
+def test_conflicting_importance_in_one_source_falls_back_without_inventing_label() -> None:
+    assessment = FitAssessmentService().assess(
+        [
+            make_match(
+                0,
+                "Criterion A",
+                RequirementImportance.ESSENTIAL,
+                MatchType.DEMONSTRATED,
+                0.9,
+                source_text="Shared employer statement.",
+            ),
+            make_match(
+                1,
+                "Criterion B",
+                RequirementImportance.DESIRABLE,
+                MatchType.INFERRED,
+                0.3,
+                source_text="Shared employer statement.",
+            ),
+            make_match(
+                2,
+                "Criterion C",
+                RequirementImportance.ESSENTIAL,
+                MatchType.INFERRED,
+                0.3,
+                source_text="Separate employer statement.",
+            ),
+        ]
+    )
+
+    assert assessment.fit_score == 55.7
+    assert assessment.essential_score == 60.0
+    assert assessment.desirable_score == 30.0
