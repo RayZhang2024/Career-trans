@@ -1,0 +1,63 @@
+Built on meritocracy, our unique company culture rewards self-starters and those who are committed to doing what is best for our customers.
+AI Engineer
+Location: Hybrid - London
+Package: Negotiable + Benefits
+We are seeking an AI Engineer to design, build, and deploy Generative AI and AI‑driven applications using Google Cloud Platform (GCP) and leading Large Language Models (LLMs) such as ChatGPT (OpenAI) and Claude (Anthropic).
+This role is hands‑on and delivery‑focused: you will move AI from prototype to production, working closely with business stakeholders, data teams, and risk & compliance to deliver safe, scalable, and compliant AI solutions for regulated insurance environments.
+The day to day:
+AI Solution Design & Delivery
+Design, build, and deploy AI‑powered applications including chatbots, copilots, document intelligence, and decision‑support tools for insurance use cases.
+Implement Retrieval‑Augmented Generation (RAG) patterns using structured and unstructured insurance data (policies, submissions, bordereaux, claims documents).
+Build LLM‑based workflows and agents using platforms such as ChatGPT (OpenAI) and Claude (Anthropic).
+Cloud & Platform Engineering (GCP)
+Develop and deploy AI solutions on Google Cloud Platform, leveraging services such as Vertex AI, BigQuery, Cloud Run, and secure API integrations.
+Implement scalable, resilient architectures suitable for production use in a regulated financial services environment.
+Integrate AI services into existing business applications and workflows.
+Data, MLOps & Engineering
+Work with Data Engineers and Analysts to prepare, embed, and manage data for AI use cases, including vector databases and embeddings.
+Implement CI/CD, monitoring, logging, and model performance tracking for AI solutions.
+Ensure solutions are maintainable, reusable, and cost‑effective.
+Responsible AI & Governance
+Design AI solutions that align with Responsible AI, GDPR, and insurance regulatory expectations.
+Implement controls for data privacy, prompt safety, hallucination mitigation, and auditability.
+Partner with Risk, Compliance, and Security teams to ensure safe AI adoption.
+Collaboration & Stakeholder Engagement
+Work closely with Product Owners, Underwriters, Brokers, Operations, and Technology teams to translate business problems into AI solutions.
+Clearly explain AI concepts, limitations, and outcomes to non‑technical stakeholders.
+Contribute to shaping Brown & Brown Europe’s AI standards, patterns, and reusable components.
+About you:
+Core Engineering
+Strong Python development experience (production‑grade code).
+Experience integrating AI services via APIs and building backend services.
+Familiarity with modern software engineering practices (version control, testing, CI/CD).
+Generative AI & LLMs
+Hands‑on experience with ChatGPT / OpenAI APIs and/or Anthropic Claude.
+Practical experience with prompt engineering, system prompts, and evaluation techniques.
+Experience implementing RAG architectures, vector databases, and semantic search.
+Cloud & Platforms
+Strong experience with Google Cloud Platform (GCP), ideally Vertex AI.
+Experience deploying services using Docker / containerised workloads.
+Understanding of cloud security, IAM, and cost management.
+Data & AI Tooling
+Experience working with structured and unstructured data.
+Familiarity with vector stores, embeddings, and document processing pipelines.
+Exposure to orchestration frameworks (e.g. LangChain‑style patterns) is desirable.
+Domain Experience (Highly Desirable)
+Experience delivering AI or data solutions in insurance or financial services.
+Understanding of insurance workflows such as underwriting, claims, broking, or compliance.
+Experience working in regulated environments with strong data protection requirements.
+Soft Skills & Attributes
+Pragmatic problem‑solver focused on business value, not just models.
+Comfortable working in ambiguous, fast‑moving environments.
+Strong communication skills – able to explain AI outcomes and risks clearly.
+Collaborative mindset with a passion for continuous learning in a fast‑evolving AI landscape.
+Education & Experience
+Degree in Computer Science, Engineering, AI, or a related discipline (or equivalent practical experience).
+Demonstrated experience delivering AI solutions into production.
+A strong portfolio of real‑world AI or GenAI implementations is highly valued.
+The rewards:
+A negotiable basic salary and all the normal benefits you’d expect (Holiday, company pension etc.)
+A collaborative, open and honest environment that is designed to deliver the best outcomes to our clients and staff
+A flexible working methodology to enable you to be where you need to be, if you don’t need to be in an office then don’t, if you want to be in an office your welcome to use one.
+An environment built around supporting and developing our staff with funding available for relevant professional qualifications.
+We are an Equal Opportunity Employer. We take pride in the diversity of our team and seek diversity in our applicants.
