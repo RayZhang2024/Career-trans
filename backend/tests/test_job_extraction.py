@@ -151,3 +151,31 @@ def test_extraction_uses_one_model_call_and_supplies_conservative_importance_con
     assert "Better to have" in normalized_prompt
     assert "ordinary responsibility" in system_prompt
     assert "model intuition" in system_prompt
+
+
+def test_extraction_normalizes_clearly_separable_grouped_criteria() -> None:
+    client = _FakeClient(
+        {
+            "requirements": [
+                {
+                    "text": "Familiarity with version control, testing, and CI/CD",
+                    "importance": "essential",
+                    "category": "technical",
+                    "source_text": (
+                        "About you: Familiarity with modern software engineering "
+                        "practices (version control, testing, CI/CD)"
+                    ),
+                }
+            ]
+        }
+    )
+
+    profile = OpenAIJobExtractor(api_key="", model="test", client=client).extract(
+        "A sufficiently long job advert used only for extraction testing."
+    )
+
+    assert [requirement.text for requirement in profile.requirements] == [
+        "Familiarity with CI/CD",
+        "Familiarity with testing",
+        "Familiarity with version control",
+    ]

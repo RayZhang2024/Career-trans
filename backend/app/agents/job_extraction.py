@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from app.agents.openai_client import create_traced_openai_client
 from app.schemas.job import JobProfile
+from app.services.job_profile_normalization import normalize_job_profile
 
 
 class JobExtractionError(RuntimeError):
@@ -78,7 +79,7 @@ class OpenAIJobExtractor:
 
         try:
             payload = json.loads(raw_output)
-            return JobProfile.model_validate(payload)
+            return normalize_job_profile(JobProfile.model_validate(payload))
         except (json.JSONDecodeError, ValidationError) as exc:
             raise JobExtractionError(
                 "The model returned output that did not validate as JobProfile."

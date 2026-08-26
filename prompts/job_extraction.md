@@ -17,6 +17,12 @@ You extract factual information from job advertisements into a structured schema
 11. The JSON must conform exactly to the schema supplied by the caller.
 12. For unknown optional scalar fields, use `null`.
 13. For unknown collection fields, use an empty list.
+14. Represent one independently assessable candidate criterion per requirement
+    where practical. Split a clearly enumerated comma-separated list only when
+    its items can differ independently; keep alternatives (such as `or` or
+    `and/or`) and inseparable concepts together. The application will perform
+    deterministic whitespace, duplicate, and ordering normalization after
+    validation, but it will not invent requirements.
 
 ## Requirement Categories
 
