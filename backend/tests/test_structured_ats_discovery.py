@@ -13,7 +13,10 @@ from app.models.discovered_job import DiscoveredJob
 from app.schemas.discovery import DiscoveredJobState, JobListing
 from app.schemas.structured_ats_discovery import StructuredAtsDiscoveryRequest, StructuredAtsFailureKind
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
-from app.services.structured_ats_failure_diagnostics import classify_structured_ats_failure
+from app.services.structured_ats_failure_diagnostics import (
+    StructuredAtsSourceConfigurationError,
+    classify_structured_ats_failure,
+)
 from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
 import app.cli as cli
 
@@ -395,7 +398,8 @@ def test_structured_ats_failure_kinds_are_bounded_and_do_not_expose_messages() -
         (HTTPError("https://provider.example.test/?token=secret", 503, "private body", None, BytesIO()), StructuredAtsFailureKind.HTTP_FAILURE),
         (json.JSONDecodeError("private parse content", "{", 1), StructuredAtsFailureKind.PARSE_FAILURE),
         (parse_error, StructuredAtsFailureKind.PARSE_FAILURE),
-        (ValueError("unsupported provider configuration"), StructuredAtsFailureKind.CONFIGURATION_FAILURE),
+        (StructuredAtsSourceConfigurationError(), StructuredAtsFailureKind.CONFIGURATION_FAILURE),
+        (ValueError("private adapter value error"), StructuredAtsFailureKind.PROVIDER_FAILURE),
         (KeyError("private provider schema"), StructuredAtsFailureKind.PROVIDER_FAILURE),
         (RuntimeError("Bearer secret-value and provider body"), StructuredAtsFailureKind.UNKNOWN),
     ]
@@ -405,3 +409,26 @@ def test_structured_ats_failure_kinds_are_bounded_and_do_not_expose_messages() -
         assert actual is expected
         assert "secret" not in actual.value
         assert "private" not in actual.value
+
+
+def test_adapter_value_error_is_not_misclassified_as_configuration_failure(db_session, monkeypatch) -> None:
+    db_session.add(_record("Alpha", "greenhouse", "alpha"))
+    db_session.commit()
+
+    class _Source:
+        def search(self, _query):
+            raise ValueError("private provider payload detail")
+
+    monkeypatch.setattr(
+        "app.services.structured_ats_discovery_service.create_job_source",
+        lambda _resolved: _Source(),
+    )
+    response = StructuredAtsDiscoveryService(
+        session=db_session,
+        state_store=_FakeStateStore(),
+    ).discover(StructuredAtsDiscoveryRequest(max_sources=1))
+
+    diagnostic = response.source_diagnostics[0]
+    assert diagnostic.succeeded is False
+    assert diagnostic.failure_kind is StructuredAtsFailureKind.PROVIDER_FAILURE
+    assert "private provider payload detail" not in diagnostic.model_dump_json()
