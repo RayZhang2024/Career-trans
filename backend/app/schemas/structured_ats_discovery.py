@@ -1,7 +1,21 @@
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.discovery import DiscoveredJobLifecycleItem, DiscoveredJobState, JobListing
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
+
+
+class StructuredAtsFailureKind(StrEnum):
+    """Bounded, safe category for a failed structured ATS source."""
+
+    CONNECTION_FAILURE = "connection_failure"
+    TIMEOUT = "timeout"
+    HTTP_FAILURE = "http_failure"
+    PARSE_FAILURE = "parse_failure"
+    CONFIGURATION_FAILURE = "configuration_failure"
+    PROVIDER_FAILURE = "provider_failure"
+    UNKNOWN = "unknown"
 
 
 class StructuredAtsDiscoveryRequest(BaseModel):
@@ -34,7 +48,7 @@ class StructuredAtsSourceDiagnostic(BaseModel):
     deduplicated_count: int = Field(ge=0)
     bounded_out_count: int = Field(ge=0)
     rejected_count: int = Field(ge=0)
-    failure: str | None = None
+    failure_kind: StructuredAtsFailureKind | None = None
 
 
 class StructuredAtsDiscoveryResponse(BaseModel):

@@ -18,6 +18,7 @@ from app.schemas.structured_ats_discovery import (
     StructuredAtsDiscoveryResponse,
     StructuredAtsSourceDiagnostic,
 )
+from app.services.structured_ats_failure_diagnostics import classify_structured_ats_failure
 from app.services.company_source_discovery_service import canonical_company_key
 from app.services.discovered_job_state_store import (
     DiscoveredJobStateStore,
@@ -80,7 +81,7 @@ class StructuredAtsDiscoveryService:
                         deduplicated_count=0,
                         bounded_out_count=0,
                         rejected_count=0,
-                        failure=f"{type(exc).__name__}: provider request failed",
+                        failure_kind=classify_structured_ats_failure(exc),
                     )
                 )
                 continue

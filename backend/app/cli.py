@@ -5,6 +5,7 @@ import getpass
 import json
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -319,8 +320,8 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
                 f"deduplicated={item.get('deduplicated_count', 0)} "
                 f"bounded_out={item.get('bounded_out_count', 0)} rejected={item.get('rejected_count', 0)}"
             )
-            if item.get("failure"):
-                print(f"Failure: {item['failure']}")
+            if item.get("failure_kind"):
+                print(f"Failure kind: {item['failure_kind']}")
         return 0
     if args.jobs_command == "list":
         inbox = client.get_opportunity_inbox(args.limit)
@@ -491,11 +492,20 @@ def _print_hunt_acquisition_summary(
 ) -> None:
     if ats is not None:
         lifecycle = ats.get("lifecycle_counts", {})
+        ats_failure_kinds = Counter(
+            str(item["failure_kind"])
+            for item in ats.get("source_diagnostics", [])
+            if isinstance(item, dict) and not item.get("succeeded", False) and item.get("failure_kind")
+        )
+        failure_summary = " ".join(
+            f"{kind}={count}" for kind, count in sorted(ats_failure_kinds.items())
+        )
         print(
             f"ATS: sources={len(ats.get('source_diagnostics', []))} raw={ats.get('raw_count', 0)} "
             f"new={lifecycle.get('new', 0)} updated={lifecycle.get('updated', 0)} "
             f"unchanged={lifecycle.get('unchanged', 0)} failures="
-            f"{sum(not item.get('succeeded', False) for item in ats.get('source_diagnostics', []) if isinstance(item, dict))}."
+            f"{sum(not item.get('succeeded', False) for item in ats.get('source_diagnostics', []) if isinstance(item, dict))}"
+            f"{f' ({failure_summary})' if failure_summary else ''}."
         )
     if external is not None:
         lifecycle = external.get("lifecycle_counts", {})
