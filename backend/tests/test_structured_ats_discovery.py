@@ -220,6 +220,9 @@ def test_max_results_bounds_persistence_and_diagnostics(db_session, monkeypatch)
     assert second.source_diagnostics[0].unchanged_count == 1
     assert second.source_diagnostics[0].bounded_out_count == 2
 
+    assert first.lifecycle_jobs[0].state is DiscoveredJobState.NEW
+    assert second.lifecycle_jobs[0].state is DiscoveredJobState.UNCHANGED
+
 
 def test_capped_observation_never_marks_unpersisted_board_jobs_inactive(db_session, monkeypatch) -> None:
     db_session.add(_record("Alpha", "greenhouse", "alpha"))

@@ -4,7 +4,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.company_career_source import CompanyCareerSource
-from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance, JobSearchQuery
+from app.schemas.discovery import (
+    DiscoveredJobLifecycleItem,
+    DiscoveredJobState,
+    JobListing,
+    JobProvenance,
+    JobSearchQuery,
+)
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
 from app.schemas.job_sources import CompanySourceStatus, ResolvedJobSource
 from app.schemas.structured_ats_discovery import (
@@ -137,6 +143,7 @@ class StructuredAtsDiscoveryService:
             deduplicated_count=duplicate_count,
             rejected_count=len(raw) - len(accepted),
             job_states=states,
+            lifecycle_jobs=self._lifecycle_jobs(listings, states),
             lifecycle_counts=DiscoveryLifecycleCounts(
                 new=sum(state is DiscoveredJobState.NEW for state in states.values()),
                 updated=sum(state is DiscoveredJobState.UPDATED for state in states.values()),
@@ -144,6 +151,17 @@ class StructuredAtsDiscoveryService:
                 inactive=sum(state is DiscoveredJobState.INACTIVE for state in states.values()),
             ),
         )
+
+    @staticmethod
+    def _lifecycle_jobs(
+        listings: list[JobListing],
+        states: dict[str, DiscoveredJobState],
+    ) -> list[DiscoveredJobLifecycleItem]:
+        return [
+            DiscoveredJobLifecycleItem(job=listing, state=states[SqlAlchemyDiscoveredJobStateStore.identity_key(listing)])
+            for listing in listings
+            if SqlAlchemyDiscoveredJobStateStore.identity_key(listing) in states
+        ]
 
     def _records(self, request: StructuredAtsDiscoveryRequest) -> list[CompanyCareerSource]:
         records = list(

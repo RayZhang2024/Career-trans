@@ -16,10 +16,12 @@ from app.cli_http import (
     CareerTransTimeoutError,
 )
 from app.schemas.external_discovery import ExternalDiscoverySearchContextResponse
+from app.schemas.discovery import JobListing
 from app.services.codex_external_discovery_service import (
     CodexExternalDiscoveryError,
     CodexExternalDiscoveryRunner,
 )
+from app.services.job_deduplication_service import JobDeduplicationService
 from app.services.llm_usage_audit import (
     combine_normalized_trace_exports,
     normalize_trace_exports,
@@ -116,6 +118,21 @@ def build_parser() -> argparse.ArgumentParser:
     discover_ats.add_argument("--max-sources", type=int, default=20)
     discover_ats.add_argument("--provider", dest="providers", action="append", default=[])
     discover_ats.add_argument("--company", dest="companies", action="append", default=[])
+    hunt = jobs_commands.add_parser(
+        "hunt",
+        help="Scan known ATS sources, add local Codex broad discovery, then rank only new or updated jobs",
+    )
+    hunt.add_argument("--keyword", dest="keywords", action="append", required=True)
+    hunt.add_argument("--location", dest="locations", action="append", default=[])
+    hunt.add_argument("--max-ats-results", type=int, default=100)
+    hunt.add_argument("--max-ats-sources", type=int, default=20)
+    hunt.add_argument("--max-external-results", type=int, default=20)
+    hunt.add_argument("--max-rank", type=int, default=20)
+    hunt.add_argument(
+        "--no-external",
+        action="store_true",
+        help="Skip local Codex broad discovery and run the structured ATS scan only",
+    )
 
     cv = commands.add_parser("cv", help="Manage CV-ingestion drafts")
     cv_commands = cv.add_subparsers(dest="cv_command", required=True)
@@ -277,6 +294,8 @@ def _print_profile(profile: dict[str, Any]) -> None:
 
 
 def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
+    if args.jobs_command == "hunt":
+        return _hunt(client, args)
     if args.jobs_command == "discover-ats":
         response = client.discover_known_ats_sources(
             {
@@ -384,6 +403,113 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             f"analysed={ranking.get('analysed_count', 0)})."
         )
     return 0
+
+
+def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
+    """Compose existing acquisition APIs and rank only current-run actionable jobs."""
+    ats: dict[str, Any] | None = None
+    external: dict[str, Any] | None = None
+    failures: list[str] = []
+    try:
+        ats = client.discover_known_ats_sources(
+            {
+                "max_results": args.max_ats_results,
+                "max_sources": args.max_ats_sources,
+                "locations": args.locations,
+            }
+        )
+    except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError) as exc:
+        failures.append(f"ATS acquisition failed: {exc}")
+
+    query: dict[str, Any] = {
+        "keywords": args.keywords,
+        "locations": args.locations,
+        "max_results": args.max_external_results,
+    }
+    if not args.no_external:
+        try:
+            context = ExternalDiscoverySearchContextResponse.model_validate(
+                client.get_external_discovery_search_context(query)
+            )
+            jobs = CodexExternalDiscoveryRunner().discover(context)
+            external = _import_codex_discoveries(client, jobs, query)
+        except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError, CodexExternalDiscoveryError) as exc:
+            failures.append(f"Codex acquisition failed: {exc}")
+
+    actionable = _actionable_hunt_jobs(ats, external)
+    deduplicated, duplicate_count = JobDeduplicationService().deduplicate(actionable)
+    bounded = deduplicated[: args.max_rank]
+    _print_hunt_acquisition_summary(ats, external, len(actionable), duplicate_count, len(bounded), failures)
+    if not bounded:
+        print("No new or updated opportunities; semantic ranking skipped.")
+        return 0 if ats is not None or external is not None else 2
+
+    try:
+        ranking = client.rank_jobs_for_current_user([job.model_dump(mode="json") for job in bounded])
+    except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError, CareerTransTimeoutError) as exc:
+        print(f"Ranking failed: {exc}")
+        return 2
+    print(
+        f"Ranked {ranking.get('discovered_count', 0)} actionable jobs "
+        f"(finalists={ranking.get('finalist_count', 0)}, analysed={ranking.get('analysed_count', 0)})."
+    )
+    for result in ranking.get("results", [])[:3]:
+        job = result.get("job", {})
+        recommendation = result.get("recommendation_assessment", {})
+        print(
+            f"#{result.get('rank')} {str(recommendation.get('recommendation', 'unknown')).upper()} | "
+            f"{job.get('title', 'Untitled')} | {job.get('company') or 'Unknown company'}"
+        )
+    return 0
+
+
+def _actionable_hunt_jobs(
+    ats: dict[str, Any] | None,
+    external: dict[str, Any] | None,
+) -> list[JobListing]:
+    """Select exact current-run NEW/UPDATED listings from existing response read models."""
+    actionable: list[JobListing] = []
+    for response in (ats, external):
+        if not response:
+            continue
+        for item in response.get("lifecycle_jobs", []):
+            if not isinstance(item, dict) or item.get("state") not in {"new", "updated"}:
+                continue
+            job = item.get("job")
+            if isinstance(job, dict):
+                actionable.append(JobListing.model_validate(job))
+    return actionable
+
+
+def _print_hunt_acquisition_summary(
+    ats: dict[str, Any] | None,
+    external: dict[str, Any] | None,
+    actionable_count: int,
+    duplicate_count: int,
+    bounded_count: int,
+    failures: list[str],
+) -> None:
+    if ats is not None:
+        lifecycle = ats.get("lifecycle_counts", {})
+        print(
+            f"ATS: sources={len(ats.get('source_diagnostics', []))} raw={ats.get('raw_count', 0)} "
+            f"new={lifecycle.get('new', 0)} updated={lifecycle.get('updated', 0)} "
+            f"unchanged={lifecycle.get('unchanged', 0)} failures="
+            f"{sum(not item.get('succeeded', False) for item in ats.get('source_diagnostics', []) if isinstance(item, dict))}."
+        )
+    if external is not None:
+        lifecycle = external.get("lifecycle_counts", {})
+        print(
+            f"Codex: accepted={len(external.get('accepted_jobs', []))} "
+            f"new={lifecycle.get('new', 0)} updated={lifecycle.get('updated', 0)} "
+            f"unchanged={lifecycle.get('unchanged', 0)}."
+        )
+    print(
+        f"Actionable before cross-channel dedup={actionable_count}; "
+        f"deduplicated={duplicate_count}; bounded_for_ranking={bounded_count}."
+    )
+    for failure in failures:
+        print(failure)
 
 
 def _import_codex_discoveries(

@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.discovery import DiscoveredJobState, JobListing
+from app.schemas.discovery import DiscoveredJobLifecycleItem, DiscoveredJobState, JobListing
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
 
 
@@ -46,4 +46,5 @@ class StructuredAtsDiscoveryResponse(BaseModel):
     deduplicated_count: int = Field(ge=0)
     rejected_count: int = Field(ge=0)
     job_states: dict[str, DiscoveredJobState] = Field(default_factory=dict)
+    lifecycle_jobs: list[DiscoveredJobLifecycleItem] = Field(default_factory=list)
     lifecycle_counts: DiscoveryLifecycleCounts = Field(default_factory=DiscoveryLifecycleCounts)
