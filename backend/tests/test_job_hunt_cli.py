@@ -198,6 +198,66 @@ def test_hunt_default_renders_the_default_deep_analysis_shortlist(monkeypatch, c
     assert "Ranked role 6" not in output
 
 
+def test_hunt_keeps_screened_and_budgeted_out_actionable_jobs_visible(monkeypatch, capsys) -> None:
+    client = _Client()
+    jobs = [
+        _job(
+            source="greenhouse",
+            url=f"https://jobs.example.test/{index}",
+            title=f"Applied AI Engineer {index}",
+        )
+        for index in range(3)
+    ]
+    client.ats = _ats(
+        (jobs[0], "new"),
+        (jobs[1], "updated"),
+        (jobs[2], "new"),
+    )
+    client.ranking = {
+        "finalist_count": 1,
+        "analysed_count": 1,
+        "results": [
+            {
+                "rank": 1,
+                "job": jobs[0],
+                "recommendation_assessment": {"recommendation": "consider"},
+            }
+        ],
+        "semantic_screening": [
+            {
+                "job": jobs[0],
+                "relevance": {"relevant": True, "score": 0.9, "reasoning": "Strong match."},
+                "archetype": {"archetype": "ai_forward_deployed"},
+            },
+            {
+                "job": jobs[1],
+                "relevance": {"relevant": True, "score": 0.8, "reasoning": "Relevant scope."},
+                "archetype": {"archetype": "ai_solutions_architect"},
+            },
+        ],
+    }
+
+    assert _run(
+        monkeypatch,
+        capsys,
+        client,
+        no_external=True,
+        max_rank=2,
+        max_full_analyses=1,
+    ) == 0
+    output = capsys.readouterr().out
+
+    assert "URL: https://jobs.example.test/0" in output
+    assert "SEMANTICALLY SCREENED | Applied AI Engineer 1 | Example Systems | London" in output
+    assert "URL: https://jobs.example.test/1" in output
+    assert "Relevance: 0.8 | Archetype: ai_solutions_architect | Relevant: true" in output
+    assert "Rationale: Relevant scope." in output
+    assert "outside the top-1 deep-analysis budget" in output
+    assert "NEW | Applied AI Engineer 2 | Example Systems | London" in output
+    assert "URL: https://jobs.example.test/2" in output
+    assert "not semantically screened due to hunt candidate budget" in output
+
+
 def test_hunt_propagates_locations_to_ats_and_external_discovery(monkeypatch, capsys) -> None:
     client = _Client()
     job = _job(source="greenhouse", url="https://jobs.example.test/role")
