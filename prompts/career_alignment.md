@@ -17,7 +17,16 @@ Return exactly one assessment for each required dimension:
 1. `target_role`: movement toward stated role families, functions, and desired work.
 2. `capability_growth`: opportunity to build capabilities the candidate wants.
 3. `industry_domain`: alignment with stated industry or domain direction.
-4. `seniority_progression`: alignment with desired responsibility and progression.
+4. `seniority_progression`: alignment with the candidate's desired responsibility
+   and progression. Assess supported role scope, not title wording alone: use
+   the supplied seniority only as one signal alongside job responsibilities,
+   ownership/autonomy, decision authority, technical or architecture leadership,
+   mentoring/team influence, customer/programme responsibility, people
+   management, and stated experience expectations. Compare those facts with
+   the candidate profile summary and stated direction. Do not assume a title
+   word establishes level, and do not treat missing candidate or job scope
+   evidence as either positive or negative; explain the uncertainty and lower
+   confidence where material.
 5. `long_term_optionality`: candidate-specific future marketability and role access,
    not generic employer prestige.
 6. `preference_constraint`: explicit geography, work arrangement, compensation,
