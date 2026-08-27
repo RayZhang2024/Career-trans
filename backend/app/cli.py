@@ -412,7 +412,11 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
     failures: list[str] = []
     try:
         ats = client.discover_known_ats_sources(
-            {"max_results": args.max_ats_results, "max_sources": args.max_ats_sources}
+            {
+                "max_results": args.max_ats_results,
+                "max_sources": args.max_ats_sources,
+                "locations": args.locations,
+            }
         )
     except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError) as exc:
         failures.append(f"ATS acquisition failed: {exc}")

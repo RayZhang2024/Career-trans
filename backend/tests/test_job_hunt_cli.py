@@ -68,9 +68,18 @@ def _runner(monkeypatch, jobs: list[dict]) -> None:
     monkeypatch.setattr(cli, "CodexExternalDiscoveryRunner", Runner)
 
 
-def _run(monkeypatch, capsys, client: _Client, *, no_external: bool = False) -> int:
+def _run(
+    monkeypatch,
+    capsys,
+    client: _Client,
+    *,
+    no_external: bool = False,
+    locations: list[str] | None = None,
+) -> int:
     monkeypatch.setattr(cli, "CareerTransApiClient", lambda *_args: client)
     arguments = ["--token", "token", "jobs", "hunt", "--keyword", "AI Engineer"]
+    for location in locations or []:
+        arguments.extend(["--location", location])
     if no_external:
         arguments.append("--no-external")
     return cli.main(arguments)
@@ -95,6 +104,19 @@ def test_hunt_reuses_ats_and_external_paths_and_ranks_only_new_updated(monkeypat
     assert any(call[0] == "ats" for call in client.calls)
     assert any(call[0] == "context" for call in client.calls)
     assert any(call[0] == "import" for call in client.calls)
+
+
+def test_hunt_propagates_locations_to_ats_and_external_discovery(monkeypatch, capsys) -> None:
+    client = _Client()
+    job = _job(source="greenhouse", url="https://jobs.example.test/role")
+    client.ats = _ats((job, "new"))
+    _runner(monkeypatch, [])
+
+    assert _run(monkeypatch, capsys, client, locations=["London", "Cambridge"]) == 0
+    ats_request = next(call[1] for call in client.calls if call[0] == "ats")
+    external_query = next(call[1] for call in client.calls if call[0] == "context")
+    assert ats_request["locations"] == ["London", "Cambridge"]
+    assert external_query["locations"] == ["London", "Cambridge"]
 
 
 def test_hunt_skips_semantic_ranking_when_no_actionable_jobs(monkeypatch, capsys) -> None:
