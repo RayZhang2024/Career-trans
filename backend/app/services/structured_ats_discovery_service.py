@@ -205,47 +205,29 @@ class StructuredAtsDiscoveryService:
         keywords: list[str],
         limit: int,
     ) -> list[JobListing]:
-        """Bound accepted candidates fairly while treating search terms as soft priority only."""
-        groups: dict[str, dict[str, list[tuple[int, int, JobListing]]]] = {}
+        """Preserve one source front, then prioritize remaining eligible candidates."""
+        fronts: dict[tuple[str, str], list[tuple[int, int, JobListing]]] = {}
         for index, listing in enumerate(listings):
             company_key = (listing.company or listing.source).casefold()
             source_key = cls._listing_source_key(listing)
             affinity = cls._search_theme_affinity(listing, keywords)
-            groups.setdefault(company_key, {}).setdefault(source_key, []).append(
-                (affinity, index, listing)
-            )
+            fronts.setdefault((company_key, source_key), []).append((affinity, index, listing))
 
         # Search themes prioritize eligible candidates only. They do not remove a
         # listing, and original input order is the deterministic tie-breaker.
-        for source_groups in groups.values():
-            for candidates in source_groups.values():
-                candidates.sort(key=lambda item: (-item[0], item[1]))
+        for candidates in fronts.values():
+            candidates.sort(key=lambda item: (-item[0], item[1]))
 
-        company_order = sorted(
-            groups,
-            key=lambda company_key: (
-                -max(candidate[0] for candidates in groups[company_key].values() for candidate in candidates),
-                min(candidate[1] for candidates in groups[company_key].values() for candidate in candidates),
-            ),
-        )
-        selected: list[JobListing] = []
-        while groups and len(selected) < limit:
-            for company_key in company_order:
-                source_groups = groups.get(company_key)
-                if source_groups is None:
-                    continue
-                source_key = next(iter(source_groups))
-                _, _, listing = source_groups[source_key].pop(0)
-                selected.append(listing)
-                if not source_groups[source_key]:
-                    del source_groups[source_key]
-                else:
-                    source_groups[source_key] = source_groups.pop(source_key)
-                if not source_groups:
-                    del groups[company_key]
-                if len(selected) == limit:
-                    break
-        return selected
+        representatives = [candidates.pop(0) for candidates in fronts.values()]
+        representatives.sort(key=lambda item: (-item[0], item[1]))
+        selected = representatives[:limit]
+        if len(selected) == limit:
+            return [listing for _, _, listing in selected]
+
+        remaining = [candidate for candidates in fronts.values() for candidate in candidates]
+        remaining.sort(key=lambda item: (-item[0], item[1]))
+        selected.extend(remaining[: limit - len(selected)])
+        return [listing for _, _, listing in selected]
 
     @staticmethod
     def _listing_source_key(listing: JobListing) -> str:

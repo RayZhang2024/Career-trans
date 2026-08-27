@@ -337,6 +337,40 @@ def test_structured_ats_request_without_keywords_remains_backwards_compatible() 
     assert StructuredAtsDiscoveryRequest().keywords == []
 
 
+def test_structured_ats_breadth_floor_does_not_become_an_equal_quota(db_session) -> None:
+    def listing(company: str, title: str, index: int) -> JobListing:
+        return JobListing(
+            source="greenhouse",
+            source_token=company.casefold(),
+            external_id=str(index),
+            title=title,
+            company=company,
+            location="London",
+            url=f"https://jobs.example.test/{company.casefold()}/{index}",
+            description="Public structured vacancy detail.",
+        )
+
+    candidates = [
+        listing("Alpha", "Operations Coordinator", 1),
+        listing("Alpha", "Systems Administrator", 2),
+        listing("Alpha", "Programme Manager", 3),
+        listing("Beta", "AI Engineer", 1),
+        listing("Beta", "AI Platform Engineer", 2),
+        listing("Beta", "AI Developer", 3),
+    ]
+    service = StructuredAtsDiscoveryService(session=db_session, state_store=_FakeStateStore())
+
+    selected = service._select_candidates(candidates, keywords=["AI"], limit=4)
+
+    assert [item.title for item in selected] == [
+        "AI Engineer",
+        "Operations Coordinator",
+        "AI Platform Engineer",
+        "AI Developer",
+    ]
+    assert {item.company for item in selected[:2]} == {"Alpha", "Beta"}
+
+
 def test_filtered_observation_never_marks_previously_imported_job_inactive(db_session, monkeypatch) -> None:
     db_session.add(_record("Alpha", "greenhouse", "alpha"))
     db_session.commit()
