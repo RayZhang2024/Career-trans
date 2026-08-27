@@ -18,6 +18,10 @@ from app.schemas.structured_ats_discovery import (
     StructuredAtsDiscoveryResponse,
     StructuredAtsSourceDiagnostic,
 )
+from app.services.structured_ats_failure_diagnostics import (
+    StructuredAtsSourceConfigurationError,
+    classify_structured_ats_failure,
+)
 from app.services.company_source_discovery_service import canonical_company_key
 from app.services.discovered_job_state_store import (
     DiscoveredJobStateStore,
@@ -80,7 +84,7 @@ class StructuredAtsDiscoveryService:
                         deduplicated_count=0,
                         bounded_out_count=0,
                         rejected_count=0,
-                        failure=f"{type(exc).__name__}: provider request failed",
+                        failure_kind=classify_structured_ats_failure(exc),
                     )
                 )
                 continue
@@ -195,14 +199,18 @@ class StructuredAtsDiscoveryService:
 
     @staticmethod
     def _collect_source(record: CompanyCareerSource, query: JobSearchQuery) -> list[JobListing]:
-        source = create_job_source(
-            ResolvedJobSource(
-                company=record.company_name,
-                provider=record.provider or "",
-                source_token=record.source_token or "",
-                careers_url=record.careers_url or "",
+        try:
+            source = create_job_source(
+                ResolvedJobSource(
+                    company=record.company_name,
+                    provider=record.provider or "",
+                    source_token=record.source_token or "",
+                    careers_url=record.careers_url or "",
+                )
             )
-        )
+        except ValueError as exc:
+            # `create_job_source` uses ValueError only for unsupported factory configuration.
+            raise StructuredAtsSourceConfigurationError from exc
         return [
             listing.model_copy(
                 update={

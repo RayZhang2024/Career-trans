@@ -183,3 +183,23 @@ def test_hunt_ats_failure_does_not_prevent_codex_acquisition(monkeypatch, capsys
     assert _run(monkeypatch, capsys, client) == 0
     assert any(call[0] == "rank" for call in client.calls)
     assert "ATS acquisition failed" in capsys.readouterr().out
+
+
+def test_hunt_aggregates_safe_ats_failure_kinds(monkeypatch, capsys) -> None:
+    client = _Client()
+    client.ats = {
+        "source_diagnostics": [
+            {"succeeded": False, "failure_kind": "connection_failure"},
+            {"succeeded": False, "failure_kind": "connection_failure"},
+            {"succeeded": False, "failure_kind": "timeout"},
+            {"succeeded": True},
+        ],
+        "raw_count": 0,
+        "lifecycle_counts": {"new": 0, "updated": 0, "unchanged": 0, "inactive": 0},
+        "lifecycle_jobs": [],
+    }
+
+    assert _run(monkeypatch, capsys, client, no_external=True) == 0
+    output = capsys.readouterr().out
+    assert "failures=3 (connection_failure=2 timeout=1)." in output
+    assert "secret" not in output.casefold()
