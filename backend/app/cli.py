@@ -417,6 +417,7 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
                 "max_results": args.max_ats_results,
                 "max_sources": args.max_ats_sources,
                 "locations": args.locations,
+                "keywords": args.keywords,
             }
         )
     except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError) as exc:

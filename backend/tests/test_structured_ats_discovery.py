@@ -272,6 +272,105 @@ def test_capped_observation_never_marks_unpersisted_board_jobs_inactive(db_sessi
     assert response.lifecycle_counts.inactive == 0
 
 
+def test_structured_ats_keywords_are_optional_and_prioritize_without_filtering(db_session, monkeypatch) -> None:
+    db_session.add_all(
+        [
+            _record("Alpha", "greenhouse", "alpha"),
+            _record("Beta", "lever", "beta"),
+            _record("Gamma", "ashby", "gamma"),
+        ]
+    )
+    db_session.commit()
+
+    def listing(token: str, index: int, title: str) -> JobListing:
+        return JobListing(
+            source="greenhouse",
+            source_token=token,
+            external_id=f"{token}-{index}",
+            title=title,
+            company=None,
+            location="London",
+            url=f"https://jobs.example.test/{token}/{index}",
+            description="Public structured vacancy detail.",
+        )
+
+    class _Source:
+        def __init__(self, token: str) -> None:
+            self._token = token
+
+        def search(self, query):
+            assert query.keywords == ["AI Engineer"]
+            if self._token == "alpha":
+                return [listing("alpha", index, "Operations Coordinator") for index in range(3)]
+            if self._token == "beta":
+                return [listing("beta", 1, "AI Engineer")]
+            return [listing("gamma", 1, "Unusual Systems Role")]
+
+    monkeypatch.setattr(
+        "app.services.structured_ats_discovery_service.create_job_source",
+        lambda resolved: _Source(resolved.source_token),
+    )
+    state_store = _FakeStateStore()
+    service = StructuredAtsDiscoveryService(session=db_session, state_store=state_store)
+    request = StructuredAtsDiscoveryRequest(
+        keywords=["AI Engineer"],
+        max_sources=3,
+        max_results=3,
+    )
+
+    first = service.discover(request)
+    second = service.discover(request)
+
+    assert [item.title for item in first.listings] == [
+        "AI Engineer",
+        "Operations Coordinator",
+        "Unusual Systems Role",
+    ]
+    assert [item.url for item in second.listings] == [item.url for item in first.listings]
+    # The unrelated/zero-literal-match role remains eligible and the large Alpha
+    # board receives one slot rather than consuming the entire cap.
+    assert {item.company for item in first.listings} == {"Alpha", "Beta", "Gamma"}
+    assert len(state_store.listings) == 3
+
+
+def test_structured_ats_request_without_keywords_remains_backwards_compatible() -> None:
+    assert StructuredAtsDiscoveryRequest().keywords == []
+
+
+def test_structured_ats_breadth_floor_does_not_become_an_equal_quota(db_session) -> None:
+    def listing(company: str, title: str, index: int) -> JobListing:
+        return JobListing(
+            source="greenhouse",
+            source_token=company.casefold(),
+            external_id=str(index),
+            title=title,
+            company=company,
+            location="London",
+            url=f"https://jobs.example.test/{company.casefold()}/{index}",
+            description="Public structured vacancy detail.",
+        )
+
+    candidates = [
+        listing("Alpha", "Operations Coordinator", 1),
+        listing("Alpha", "Systems Administrator", 2),
+        listing("Alpha", "Programme Manager", 3),
+        listing("Beta", "AI Engineer", 1),
+        listing("Beta", "AI Platform Engineer", 2),
+        listing("Beta", "AI Developer", 3),
+    ]
+    service = StructuredAtsDiscoveryService(session=db_session, state_store=_FakeStateStore())
+
+    selected = service._select_candidates(candidates, keywords=["AI"], limit=4)
+
+    assert [item.title for item in selected] == [
+        "AI Engineer",
+        "Operations Coordinator",
+        "AI Platform Engineer",
+        "AI Developer",
+    ]
+    assert {item.company for item in selected[:2]} == {"Alpha", "Beta"}
+
+
 def test_filtered_observation_never_marks_previously_imported_job_inactive(db_session, monkeypatch) -> None:
     db_session.add(_record("Alpha", "greenhouse", "alpha"))
     db_session.commit()

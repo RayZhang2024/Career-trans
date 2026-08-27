@@ -1,5 +1,7 @@
 """Bounded collection from persisted, resolved public ATS sources."""
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -52,7 +54,7 @@ class StructuredAtsDiscoveryService:
         query = JobSearchQuery(
             # A seed is required by the existing query contract but is deliberately
             # not used as a positive title filter by JobScreeningService.
-            keywords=["structured ATS"],
+            keywords=request.keywords or ["structured ATS"],
             locations=request.locations,
             remote_ok=request.remote_ok,
             companies=request.companies,
@@ -111,7 +113,11 @@ class StructuredAtsDiscoveryService:
 
         accepted = [listing for source in accepted_by_source.values() for listing in source]
         deduplicated, duplicate_count = self._deduplicator.deduplicate(accepted)
-        listings = deduplicated[: request.max_results]
+        listings = self._select_candidates(
+            deduplicated,
+            keywords=request.keywords,
+            limit=request.max_results,
+        )
         deduplicated_ids = {id(listing) for listing in deduplicated}
         persisted_ids = {id(listing) for listing in listings}
         states = self._state_store.persist(listings)
@@ -190,6 +196,55 @@ class StructuredAtsDiscoveryService:
     @staticmethod
     def _source_key(record: CompanyCareerSource) -> str:
         return f"{record.provider}:{record.source_token}"
+
+    @classmethod
+    def _select_candidates(
+        cls,
+        listings: list[JobListing],
+        *,
+        keywords: list[str],
+        limit: int,
+    ) -> list[JobListing]:
+        """Preserve one source front, then prioritize remaining eligible candidates."""
+        fronts: dict[tuple[str, str], list[tuple[int, int, JobListing]]] = {}
+        for index, listing in enumerate(listings):
+            company_key = (listing.company or listing.source).casefold()
+            source_key = cls._listing_source_key(listing)
+            affinity = cls._search_theme_affinity(listing, keywords)
+            fronts.setdefault((company_key, source_key), []).append((affinity, index, listing))
+
+        # Search themes prioritize eligible candidates only. They do not remove a
+        # listing, and original input order is the deterministic tie-breaker.
+        for candidates in fronts.values():
+            candidates.sort(key=lambda item: (-item[0], item[1]))
+
+        representatives = [candidates.pop(0) for candidates in fronts.values()]
+        representatives.sort(key=lambda item: (-item[0], item[1]))
+        selected = representatives[:limit]
+        if len(selected) == limit:
+            return [listing for _, _, listing in selected]
+
+        remaining = [candidate for candidates in fronts.values() for candidate in candidates]
+        remaining.sort(key=lambda item: (-item[0], item[1]))
+        selected.extend(remaining[: limit - len(selected)])
+        return [listing for _, _, listing in selected]
+
+    @staticmethod
+    def _listing_source_key(listing: JobListing) -> str:
+        return ":".join(value.casefold() for value in (listing.source, listing.source_token or ""))
+
+    @staticmethod
+    def _search_theme_affinity(listing: JobListing, keywords: list[str]) -> int:
+        terms = {
+            term
+            for keyword in keywords
+            for term in re.findall(r"[a-z0-9]+", keyword.casefold())
+        }
+        if not terms:
+            return 0
+        title_terms = set(re.findall(r"[a-z0-9]+", listing.title.casefold()))
+        description_terms = set(re.findall(r"[a-z0-9]+", (listing.description or "").casefold()))
+        return 2 * len(terms & title_terms) + len(terms & description_terms)
 
     @staticmethod
     def _now():
