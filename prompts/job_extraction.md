@@ -24,6 +24,18 @@ You extract factual information from job advertisements into a structured schema
     deterministic whitespace, duplicate, and ordering normalization after
     validation, but it will not invent requirements.
 
+## Seniority
+
+Populate `seniority` only when the advert supports a concise description of
+role level or scope. Treat a title-level word (for example, Senior, Lead, or
+Principal) as supporting evidence, not conclusive evidence by itself. Also
+consider stated responsibility and autonomy, such as ownership or decision
+authority, architecture or technical leadership, mentoring or team influence,
+customer or programme responsibility, people management, and explicit
+experience expectations. Do not invent a standardized level, management scope,
+or progression path when those facts are absent or uncertain; use `null` when
+the advert does not provide enough support.
+
 ## Requirement Categories
 
 Use the closest supported category:

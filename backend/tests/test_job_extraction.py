@@ -153,6 +153,22 @@ def test_extraction_uses_one_model_call_and_supplies_conservative_importance_con
     assert "model intuition" in system_prompt
 
 
+def test_extraction_seniority_contract_uses_scope_as_well_as_title() -> None:
+    _, responses = _extract(
+        text="Systems engineering leadership",
+        importance=RequirementImportance.UNSPECIFIED,
+        source_text="Role overview.",
+    )
+
+    system_prompt = responses.calls[0]["input"][0]["content"]  # type: ignore[index]
+    normalized_prompt = " ".join(system_prompt.split())
+
+    assert "title-level word" in normalized_prompt
+    assert "ownership or decision authority" in normalized_prompt
+    assert "architecture or technical leadership" in normalized_prompt
+    assert "use `null`" in system_prompt
+
+
 def test_extraction_normalizes_clearly_separable_grouped_criteria() -> None:
     client = _FakeClient(
         {
