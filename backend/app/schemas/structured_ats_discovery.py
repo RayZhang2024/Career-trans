@@ -24,6 +24,7 @@ class StructuredAtsDiscoveryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     providers: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
     companies: list[str] = Field(default_factory=list)
     excluded_companies: list[str] = Field(default_factory=list)
     excluded_title_terms: list[str] = Field(default_factory=list)

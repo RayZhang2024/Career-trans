@@ -116,6 +116,7 @@ def test_hunt_propagates_locations_to_ats_and_external_discovery(monkeypatch, ca
     ats_request = next(call[1] for call in client.calls if call[0] == "ats")
     external_query = next(call[1] for call in client.calls if call[0] == "context")
     assert ats_request["locations"] == ["London", "Cambridge"]
+    assert ats_request["keywords"] == ["AI Engineer"]
     assert external_query["locations"] == ["London", "Cambridge"]
 
 
