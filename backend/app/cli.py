@@ -128,7 +128,18 @@ def build_parser() -> argparse.ArgumentParser:
     hunt.add_argument("--max-ats-results", type=int, default=100)
     hunt.add_argument("--max-ats-sources", type=int, default=20)
     hunt.add_argument("--max-external-results", type=int, default=20)
-    hunt.add_argument("--max-rank", type=int, default=20)
+    hunt.add_argument(
+        "--max-rank",
+        type=int,
+        default=10,
+        help="Maximum actionable jobs submitted to bounded semantic screening (default: 10)",
+    )
+    hunt.add_argument(
+        "--max-full-analyses",
+        type=int,
+        default=5,
+        help="Maximum relevance-qualified jobs sent to deep career analysis (default: 5)",
+    )
     hunt.add_argument(
         "--no-external",
         action="store_true",
@@ -447,7 +458,11 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
         return 0 if ats is not None or external is not None else 2
 
     try:
-        ranking = client.rank_jobs_for_current_user([job.model_dump(mode="json") for job in bounded])
+        deep_analysis_budget = min(args.max_full_analyses, len(bounded))
+        ranking = client.rank_jobs_for_current_user(
+            [job.model_dump(mode="json") for job in bounded],
+            max_full_analyses=deep_analysis_budget,
+        )
     except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError, CareerTransTimeoutError) as exc:
         print(f"Ranking failed: {exc}")
         return 2
@@ -455,7 +470,7 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
         f"Ranked {ranking.get('discovered_count', 0)} actionable jobs "
         f"(finalists={ranking.get('finalist_count', 0)}, analysed={ranking.get('analysed_count', 0)})."
     )
-    for result in ranking.get("results", [])[:3]:
+    for result in ranking.get("results", [])[:deep_analysis_budget]:
         job = result.get("job", {})
         recommendation = result.get("recommendation_assessment", {})
         print(

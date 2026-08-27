@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 DEFAULT_HTTP_TIMEOUT_SECONDS = 20
 """Bounded timeout for ordinary, fast Career-trans API operations."""
 
-RANKING_HTTP_TIMEOUT_SECONDS = 180
+RANKING_HTTP_TIMEOUT_SECONDS = 500
 """Bounded timeout for semantic and full-analysis ranking requests."""
 
 ENRICHMENT_HTTP_TIMEOUT_SECONDS = 180
@@ -126,11 +126,19 @@ class CareerTransApiClient:
     def discover_known_ats_sources(self, request: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/v1/jobs/discover-ats", payload=request)
 
-    def rank_jobs_for_current_user(self, jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    def rank_jobs_for_current_user(
+        self,
+        jobs: list[dict[str, Any]],
+        *,
+        max_full_analyses: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"jobs": jobs}
+        if max_full_analyses is not None:
+            payload["max_full_analyses"] = max_full_analyses
         return self._request(
             "POST",
             "/api/v1/jobs/rank-me",
-            payload={"jobs": jobs},
+            payload=payload,
             timeout_seconds=RANKING_HTTP_TIMEOUT_SECONDS,
         )
 

@@ -800,6 +800,26 @@ def test_http_client_uses_long_finite_timeouts_only_for_ranking_and_enrichment()
     assert ENRICHMENT_HTTP_TIMEOUT_SECONDS > DEFAULT_HTTP_TIMEOUT_SECONDS
 
 
+def test_rank_me_preserves_direct_defaults_and_accepts_an_explicit_deep_analysis_budget() -> None:
+    payloads = []
+
+    def opener(request, *, timeout):
+        assert timeout == RANKING_HTTP_TIMEOUT_SECONDS
+        payloads.append(json.loads(request.data.decode("utf-8")))
+        return _Response({"discovered_count": 0})
+
+    client = CareerTransApiClient("http://example.test", "token", opener=opener)
+    jobs = [{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1"}]
+
+    client.rank_jobs_for_current_user(jobs)
+    client.rank_jobs_for_current_user(jobs, max_full_analyses=5)
+
+    assert payloads == [
+        {"jobs": jobs},
+        {"jobs": jobs, "max_full_analyses": 5},
+    ]
+
+
 @pytest.mark.parametrize("timeout_error", [TimeoutError("timed out"), socket.timeout("timed out")])
 def test_http_client_normalizes_timeout_without_retry(timeout_error) -> None:
     calls = []
@@ -809,7 +829,7 @@ def test_http_client_normalizes_timeout_without_retry(timeout_error) -> None:
         raise timeout_error
 
     client = CareerTransApiClient("http://example.test", "token", opener=opener)
-    with pytest.raises(CareerTransTimeoutError, match="timed out after 180 seconds"):
+    with pytest.raises(CareerTransTimeoutError, match="timed out after 500 seconds"):
         client.rank_jobs_for_current_user([{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1"}])
     assert calls == [RANKING_HTTP_TIMEOUT_SECONDS]
 
@@ -822,7 +842,7 @@ def test_http_client_normalizes_url_timeout_without_retry() -> None:
         raise URLError(socket.timeout("timed out"))
 
     client = CareerTransApiClient("http://example.test", "token", opener=opener)
-    with pytest.raises(CareerTransTimeoutError, match="timed out after 180 seconds"):
+    with pytest.raises(CareerTransTimeoutError, match="timed out after 500 seconds"):
         client.rank_jobs_for_current_user([{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1"}])
     assert calls == [RANKING_HTTP_TIMEOUT_SECONDS]
 
