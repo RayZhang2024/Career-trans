@@ -3,7 +3,7 @@
 from sqlalchemy.orm import Session
 
 from app.schemas.candidate import CandidateContext
-from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance
+from app.schemas.discovery import DiscoveredJobLifecycleItem, DiscoveredJobState, JobListing, JobProvenance
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
 from app.schemas.external_discovery import (
     ExternalDiscoveredJob,
@@ -13,7 +13,7 @@ from app.schemas.external_discovery import (
     ExternalDiscoverySearchContextResponse,
 )
 from app.services.candidate_profile_compaction import candidate_search_profile
-from app.services.discovered_job_state_store import DiscoveredJobStateStore
+from app.services.discovered_job_state_store import DiscoveredJobStateStore, SqlAlchemyDiscoveredJobStateStore
 from app.services.job_deduplication_service import JobDeduplicationService
 from app.services.job_screening_service import JobScreeningService
 
@@ -53,6 +53,14 @@ class ExternalDiscoveryImportService:
             deduplicated_count=duplicate_count,
             bounded_out_count=len(deduplicated) - len(accepted),
             job_states=states,
+            lifecycle_jobs=[
+                DiscoveredJobLifecycleItem(
+                    job=listing,
+                    state=states[SqlAlchemyDiscoveredJobStateStore.identity_key(listing)],
+                )
+                for listing in accepted
+                if SqlAlchemyDiscoveredJobStateStore.identity_key(listing) in states
+            ],
             lifecycle_counts=DiscoveryLifecycleCounts(
                 new=sum(state is DiscoveredJobState.NEW for state in states.values()),
                 updated=sum(state is DiscoveredJobState.UPDATED for state in states.values()),

@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.candidate import CandidateSearchProfile
-from app.schemas.discovery import DiscoveredJobState, JobListing, JobSearchQuery
+from app.schemas.discovery import DiscoveredJobLifecycleItem, DiscoveredJobState, JobListing, JobSearchQuery
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
 
 
@@ -74,6 +74,7 @@ class ExternalDiscoveryImportResponse(BaseModel):
     deduplicated_count: int = 0
     bounded_out_count: int = 0
     job_states: dict[str, DiscoveredJobState] = Field(default_factory=dict)
+    lifecycle_jobs: list[DiscoveredJobLifecycleItem] = Field(default_factory=list)
     lifecycle_counts: DiscoveryLifecycleCounts = Field(default_factory=DiscoveryLifecycleCounts)
 
 

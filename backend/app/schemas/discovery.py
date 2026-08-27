@@ -67,3 +67,12 @@ class DiscoveredJobState(StrEnum):
     UPDATED = "updated"
     UNCHANGED = "unchanged"
     INACTIVE = "inactive"
+
+
+class DiscoveredJobLifecycleItem(BaseModel):
+    """A persisted listing paired with its exact state from this acquisition run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job: JobListing
+    state: DiscoveredJobState
