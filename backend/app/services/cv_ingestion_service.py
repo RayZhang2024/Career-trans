@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.candidate_profile import CandidateProfile
-from app.schemas.candidate import CandidateContext, CandidateContextSummary, CareerEvidence
+from app.services.candidate_adviser_service import CandidateAdviserService
+from app.schemas.candidate import CandidateContext, CandidateContextSummary, CandidateEligibility, CareerEvidence
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, CareerEvidenceDraft, EvidenceProvenance, ExtractedCVDocument
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_interpretation_service import CVSemanticInterpreter
@@ -188,11 +189,28 @@ class PersistedCandidateContextLoader:
         profile_text = " ".join(value for value in ([profile.headline, profile.current_role, profile.summary, profile.location] if profile else []) if value)
         employment_text = "\n".join(f"{item.title} at {item.employer}. {item.description}" for item in data.employment)
         education_text = "\n".join(f"{item.qualification} at {item.institution}. {item.description}" for item in data.education)
+        adviser = CandidateAdviserService(self._session)
+        intake = adviser.get_intake(user_id)
+        assessment = adviser.current_assessment(user_id)
+        career_strategy_parts = [
+            profile.career_goal if profile and profile.career_goal else "",
+            intake.career_direction if intake else "",
+            assessment.content.career_strategy_summary.text if assessment else "",
+            *((item.text for item in assessment.content.role_hypotheses) if assessment else ()),
+        ]
+        criteria_parts = [
+            profile.job_search_criteria if profile and profile.job_search_criteria else "",
+            *(intake.work_preferences if intake else []),
+            *(intake.constraints if intake else []),
+            *(intake.tradeoffs if intake else []),
+            assessment.content.job_search_strategy_summary.text if assessment else "",
+        ]
         return CandidateContext(
             profile_text="\n".join(value for value in [profile_text, employment_text, education_text] if value),
             skills_text=", ".join(item.name for item in data.skills),
-            career_strategy_text=profile.career_goal if profile and profile.career_goal else "",
-            job_search_criteria_text=profile.job_search_criteria if profile and profile.job_search_criteria else "",
+            career_strategy_text="\n".join(value for value in career_strategy_parts if value),
+            job_search_criteria_text="\n".join(value for value in criteria_parts if value),
+            eligibility=intake.eligibility if intake else CandidateEligibility(),
             evidence=[CareerEvidence(evidence_id=record.id, title=record.title, text=record.text, skills=json.loads(record.skills_json)) for record in records],
         )
 

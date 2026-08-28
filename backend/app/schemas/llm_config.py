@@ -10,6 +10,7 @@ class LLMConfigurationRead(BaseModel):
     effective_llm_base_url: str | None
     ollama_base_url: str
     cv_semantic_extraction_model: str
+    candidate_adviser_model: str
     job_extraction_model: str
     requirement_matching_model: str
     career_alignment_model: str

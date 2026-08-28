@@ -210,6 +210,11 @@ Profile ready
 
 AI-extracted data should not silently become authoritative.
 
+Confirmed CV facts and candidate-authored adviser intake are persisted
+separately. A reviewable adviser assessment may enrich discovery and
+career-alignment context, but it never becomes `CareerEvidence` or enters the
+evidence-limited requirement-matching profile.
+
 The user should be able to review and edit important profile fields.
 
 ---
