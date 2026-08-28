@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from app.agents.career_alignment import OpenAICareerAlignmentAgent
+from app.agents.candidate_adviser import SemanticCandidateAdviser
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_extraction import OpenAIJobExtractor
 from app.agents.job_relevance import OpenAIJobRelevanceAgent
@@ -32,6 +33,7 @@ from app.services.job_detail_enrichment_service import JobDetailEnrichmentServic
 from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
 from app.services.cv_ingestion_service import CVIngestionService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.candidate_adviser_service import CandidateAdviserService
 from app.schemas.candidate import CandidateContext
 from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.job_ranking_service import JobRankingService
@@ -126,6 +128,7 @@ def validate_semantic_configuration(settings: Settings) -> None:
     provider = settings.default_llm_provider.casefold().strip()
     models = {
         "CV_SEMANTIC_EXTRACTION_MODEL": settings.cv_semantic_extraction_model,
+        "CANDIDATE_ADVISER_MODEL": settings.candidate_adviser_model,
         "JOB_EXTRACTION_MODEL": settings.job_extraction_model,
         "REQUIREMENT_MATCHING_MODEL": settings.requirement_matching_model,
         "CAREER_ALIGNMENT_MODEL": settings.career_alignment_model,
@@ -173,6 +176,21 @@ def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
 def get_persisted_candidate_context_loader(db: DbSession) -> PersistedCandidateContextLoader:
     """Request-scoped loader; user-specific contexts must never be globally cached."""
     return PersistedCandidateContextLoader(db)
+
+
+def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
+    current_settings = get_settings()
+    return CandidateAdviserService(
+        db,
+        agent=SemanticCandidateAdviser(
+            get_semantic_response_client(
+                current_settings,
+                model=current_settings.candidate_adviser_model,
+                operation="candidate_adviser",
+            ),
+            current_settings.candidate_adviser_model,
+        ),
+    )
 
 
 def get_confirmed_candidate_context(

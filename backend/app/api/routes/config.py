@@ -16,6 +16,7 @@ def _safe_configuration(settings: Settings) -> dict[str, object]:
         "effective_llm_base_url": settings.effective_llm_base_url,
         "ollama_base_url": settings.ollama_base_url,
         "cv_semantic_extraction_model": settings.cv_semantic_extraction_model,
+        "candidate_adviser_model": settings.candidate_adviser_model,
         "job_extraction_model": settings.job_extraction_model,
         "requirement_matching_model": settings.requirement_matching_model,
         "career_alignment_model": settings.career_alignment_model,
