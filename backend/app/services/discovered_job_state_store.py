@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
-from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance
+from app.schemas.discovery import DiscoveredJobState, JobDetailAuthority, JobListing, JobProvenance
 from app.services.job_deduplication_service import JobDeduplicationService
 
 
@@ -73,21 +73,32 @@ class SqlAlchemyDiscoveredJobStateStore:
             record = self._session.scalar(
                 select(DiscoveredJob).where(DiscoveredJob.identity_key == identity_key)
             )
-            content_hash = self.content_hash(listing)
+            # External leads historically used canonical URL identity. A later
+            # provider verification may add a stronger external ID for the same
+            # canonical vacancy; promote that record instead of duplicating it.
             if record is None:
+                record = self._session.scalar(
+                    select(DiscoveredJob).where(DiscoveredJob.url == listing.url)
+                )
+            effective_listing = listing
+            if record is None:
+                content_hash = self.content_hash(effective_listing)
                 record = DiscoveredJob(
                     identity_key=identity_key,
-                    source=listing.source,
-                    source_token=listing.source_token,
-                    company=listing.company,
-                    external_id=listing.external_id,
-                    title=listing.title,
-                    location=listing.location,
-                    url=listing.url,
-                    description=listing.description,
-                    posted_at=listing.posted_at,
-                    work_arrangement=listing.work_arrangement,
-                    employment_type=listing.employment_type,
+                    source=effective_listing.source,
+                    source_token=effective_listing.source_token,
+                    company=effective_listing.company,
+                    external_id=effective_listing.external_id,
+                    title=effective_listing.title,
+                    location=effective_listing.location,
+                    url=effective_listing.url,
+                    description=effective_listing.description,
+                    posted_at=effective_listing.posted_at,
+                    work_arrangement=effective_listing.work_arrangement,
+                    employment_type=effective_listing.employment_type,
+                    detail_authority=effective_listing.detail_authority,
+                    verification_status=effective_listing.verification_status,
+                    verification_reason=effective_listing.verification_reason,
                     content_hash=content_hash,
                     state=DiscoveredJobState.NEW,
                     last_seen_at=now,
@@ -99,8 +110,11 @@ class SqlAlchemyDiscoveredJobStateStore:
                 transitions[identity_key] = DiscoveredJobState.NEW
                 continue
 
+            record.identity_key = identity_key
+            effective_listing = self._effective_listing(record, listing)
+            content_hash = self.content_hash(effective_listing)
             changed = record.content_hash != content_hash
-            self._apply_listing(record, listing, content_hash, now)
+            self._apply_listing(record, effective_listing, content_hash, now)
             self._record_provenance(record, listing.provenance, now)
             record.state = DiscoveredJobState.UPDATED if changed else DiscoveredJobState.UNCHANGED
             if changed:
@@ -155,8 +169,44 @@ class SqlAlchemyDiscoveredJobStateStore:
         record.posted_at = listing.posted_at
         record.work_arrangement = listing.work_arrangement
         record.employment_type = listing.employment_type
+        record.detail_authority = listing.detail_authority
+        record.verification_status = listing.verification_status
+        record.verification_reason = listing.verification_reason
         record.content_hash = content_hash
         record.last_seen_at = now
+
+    @staticmethod
+    def _effective_listing(record: DiscoveredJob, incoming: JobListing) -> JobListing:
+        """Never let lower-authority discovery text replace verified source detail."""
+        if SqlAlchemyDiscoveredJobStateStore._authority(incoming.detail_authority) >= SqlAlchemyDiscoveredJobStateStore._authority(
+            record.detail_authority
+        ):
+            return incoming
+        return JobListing(
+            source=record.source,
+            source_token=record.source_token,
+            external_id=record.external_id,
+            title=record.title,
+            company=record.company,
+            location=record.location,
+            url=record.url,
+            description=record.description,
+            posted_at=record.posted_at,
+            work_arrangement=record.work_arrangement,
+            employment_type=record.employment_type,
+            provenance=incoming.provenance,
+            detail_authority=JobDetailAuthority(record.detail_authority),
+            verification_status=record.verification_status,
+            verification_reason=record.verification_reason,
+        )
+
+    @staticmethod
+    def _authority(value: str | JobDetailAuthority) -> int:
+        return {
+            JobDetailAuthority.EXTERNAL_SUMMARY: 0,
+            JobDetailAuthority.PROVIDER_DETAIL: 1,
+            JobDetailAuthority.VERIFIED_EMPLOYER_DETAIL: 2,
+        }.get(JobDetailAuthority(value), 0)
 
     def _record_provenance(
         self,

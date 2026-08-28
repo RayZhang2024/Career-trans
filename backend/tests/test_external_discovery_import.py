@@ -79,10 +79,13 @@ def test_authenticated_import_persists_runtime_provenance_and_is_non_authoritati
     assert body["runtime"] == "codex"
     assert body["authoritative"] is False
     assert body["lifecycle_counts"] == {"new": 1, "updated": 0, "unchanged": 0, "inactive": 0}
-    assert body["accepted_jobs"][0]["source"] == "agent_runtime"
-    assert body["accepted_jobs"][0]["source_token"] == "codex"
-    assert body["accepted_jobs"][0]["url"] == "https://careers.example.test/jobs/forward-deployed-engineer"
-    assert body["accepted_jobs"][0]["provenance"] == {
+    assert body["accepted_jobs"] == []
+    assert body["unverified_leads"][0]["reason"] == "unsupported_provider_url"
+    lead = body["unverified_leads"][0]["job"]
+    assert lead["source"] == "agent_runtime"
+    assert lead["source_token"] == "codex"
+    assert lead["url"] == "https://careers.example.test/jobs/forward-deployed-engineer"
+    assert lead["provenance"] == {
         "runtime": "codex",
         "source_ref": "public-search-result",
         "discovered_via": "web",
@@ -92,6 +95,8 @@ def test_authenticated_import_persists_runtime_provenance_and_is_non_authoritati
     assert record is not None
     assert record.source == "agent_runtime"
     assert record.source_token == "codex"
+    assert record.verification_status == "unverified"
+    assert record.verification_reason == "unsupported_provider_url"
     assert record.first_seen_at is not None
     provenance = db_session.scalar(select(DiscoveredJobProvenance))
     assert provenance is not None
@@ -139,12 +144,13 @@ def test_import_deduplicates_before_persistence_and_uses_hard_constraints_only(c
 
     assert response.status_code == 200
     body = response.json()
-    assert len(body["accepted_jobs"]) == 1
+    assert body["accepted_jobs"] == []
+    assert len(body["unverified_leads"]) == 1
     assert body["deduplicated_count"] == 1
     assert db_session.scalars(select(DiscoveredJob)).all()[0].title == "Forward Deployed Engineer"
 
     # The broad runtime has already established relevance: no exact lexical phrase gate applies.
-    assert body["accepted_jobs"][0]["title"] == "Forward Deployed Engineer"
+    assert body["unverified_leads"][0]["job"]["title"] == "Forward Deployed Engineer"
 
 
 def test_rejected_jobs_are_not_persisted_and_explicit_policy_constraints_remain(client, db_session) -> None:
@@ -225,12 +231,10 @@ def test_external_import_exposes_exact_current_run_listing_state(client) -> None
     second = client.post("/api/v1/jobs/import-discovered", json=_payload(_job()), headers=headers)
 
     assert first.status_code == second.status_code == 200
-    assert first.json()["lifecycle_jobs"] == [
-        {"job": first.json()["accepted_jobs"][0], "state": "new"}
-    ]
-    assert second.json()["lifecycle_jobs"] == [
-        {"job": second.json()["accepted_jobs"][0], "state": "unchanged"}
-    ]
+    assert first.json()["lifecycle_jobs"] == []
+    assert second.json()["lifecycle_jobs"] == []
+    assert first.json()["unverified_leads"][0]["state"] == "new"
+    assert second.json()["unverified_leads"][0]["state"] == "unchanged"
 
 
 def test_authenticated_search_context_uses_confirmed_persisted_context_and_contains_no_credentials(client, db_session) -> None:

@@ -28,6 +28,7 @@ from app.services.agentic_job_discovery_service import AgenticJobDiscoveryServic
 from app.services.discover_and_rank_service import DiscoverAndRankService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
+from app.services.external_job_verification_service import ExternalJobVerificationService
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
@@ -264,9 +265,14 @@ def get_job_discovery_service() -> JobDiscoveryService:
 
 def get_external_discovery_import_service(db: DbSession) -> ExternalDiscoveryImportService:
     """External runtime imports use shared state but never authoritative source evidence."""
+    page_fetcher = PublicHttpPageFetcher()
     return ExternalDiscoveryImportService(
         session=db,
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
+        verifier=ExternalJobVerificationService(
+            page_fetcher=page_fetcher,
+            workday_detail_extractor=WorkdayJobDetailExtractor(page_fetcher),
+        ),
     )
 
 

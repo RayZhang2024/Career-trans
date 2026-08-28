@@ -8,7 +8,12 @@ from app.models.discovered_job import DiscoveredJob
 from app.providers.jobs.workday import WorkdayJobDetailExtractor
 from app.providers.page_fetch import PageFetcher
 from app.schemas.agentic_discovery import ExtractedVacancy
-from app.schemas.discovery import JobListing, JobProvenance
+from app.schemas.discovery import (
+    JobDetailAuthority,
+    JobListing,
+    JobProvenance,
+    JobVerificationStatus,
+)
 from app.schemas.job_enrichment import (
     JobEnrichmentOutcome,
     JobEnrichmentResponse,
@@ -99,6 +104,9 @@ class JobDetailEnrichmentService:
                 source_ref=record.url[:300],
                 discovered_via="direct_page",
             ),
+            detail_authority=JobDetailAuthority.VERIFIED_EMPLOYER_DETAIL,
+            verification_status=JobVerificationStatus.VERIFIED,
+            verification_reason=None,
         )
         self._state_store.synchronize([listing], set())
         return self._outcome(record, JobEnrichmentStatus.ENRICHED)

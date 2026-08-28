@@ -340,10 +340,18 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             job = item.get("job", {})
             print(f"{job.get('title', 'Untitled')} | {job.get('company') or 'Unknown company'} | {job.get('location') or 'Unknown location'}")
             print(job.get("url", ""))
+            if not item.get("actionable", True):
+                print(f"Not actionable: {item.get('verification_reason', 'provider verification is pending')}")
         return 0
     if args.jobs_command == "rank-imported":
         inbox = client.get_opportunity_inbox(args.limit)
-        jobs = [item["job"] for item in inbox.get("jobs", []) if isinstance(item, dict) and isinstance(item.get("job"), dict)]
+        jobs = [
+            item["job"]
+            for item in inbox.get("jobs", [])
+            if isinstance(item, dict)
+            and item.get("actionable", True) is True
+            and isinstance(item.get("job"), dict)
+        ]
         if not jobs:
             print("No persisted external discoveries to rank.")
             return 0
@@ -558,6 +566,7 @@ def _print_hunt_acquisition_summary(
         lifecycle = external.get("lifecycle_counts", {})
         print(
             f"Codex: accepted={len(external.get('accepted_jobs', []))} "
+            f"unverified={len(external.get('unverified_leads', []))} "
             f"new={lifecycle.get('new', 0)} updated={lifecycle.get('updated', 0)} "
             f"unchanged={lifecycle.get('unchanged', 0)}."
         )
