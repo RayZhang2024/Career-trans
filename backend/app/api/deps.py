@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app.agents.candidate_adviser import SemanticCandidateAdviser
 from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_extraction import OpenAIJobExtractor
@@ -16,6 +17,7 @@ from app.core.database import get_db
 from app.core.security import decode_access_token
 from app.models.user import User
 from app.services.auth_service import get_user_by_id
+from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.career_assessment_service import CareerAssessmentService
 from app.services.fit_assessment_service import FitAssessmentService
 from app.services.job_analysis_service import JobAnalysisService
@@ -126,6 +128,7 @@ def validate_semantic_configuration(settings: Settings) -> None:
     provider = settings.default_llm_provider.casefold().strip()
     models = {
         "CV_SEMANTIC_EXTRACTION_MODEL": settings.cv_semantic_extraction_model,
+        "CANDIDATE_ADVISER_MODEL": settings.candidate_adviser_model,
         "JOB_EXTRACTION_MODEL": settings.job_extraction_model,
         "REQUIREMENT_MATCHING_MODEL": settings.requirement_matching_model,
         "CAREER_ALIGNMENT_MODEL": settings.career_alignment_model,
@@ -168,6 +171,21 @@ def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
         db,
         interpreter_factory=build_interpreter,
     )
+
+
+def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
+    def build_adviser() -> SemanticCandidateAdviser:
+        current_settings = get_settings()
+        return SemanticCandidateAdviser(
+            get_semantic_response_client(
+                current_settings,
+                model=current_settings.candidate_adviser_model,
+                operation="candidate_adviser",
+            ),
+            current_settings.candidate_adviser_model,
+        )
+
+    return CandidateAdviserService(db, adviser_factory=build_adviser)
 
 
 def get_persisted_candidate_context_loader(db: DbSession) -> PersistedCandidateContextLoader:
