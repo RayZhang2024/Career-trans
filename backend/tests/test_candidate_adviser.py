@@ -3,6 +3,7 @@ import json
 import pytest
 from sqlalchemy import select
 
+from app.models.candidate_profile import CandidateProfile
 from app.models.user import User
 from app.providers.llm import SemanticOutputError
 from app.schemas.candidate_adviser import (
@@ -214,6 +215,34 @@ def test_assessment_becomes_stale_after_confirmed_source_changes(client, db_sess
 
     stale = service.read_assessment(user_id)
     assert stale.state == CandidateAdviserState.STALE
+    context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
+    assert context is not None
+    assert context.adviser.professional_identity == ""
+
+
+def test_assessment_becomes_stale_after_manual_profile_change(client, db_session) -> None:
+    _, email = _auth(client, "adviser-profile-stale@example.com")
+    user_id = _confirm_cv(db_session, email)
+    db_session.add(
+        CandidateProfile(
+            user_id=user_id,
+            summary="Initial professional summary.",
+            career_goal="Initial career direction.",
+        )
+    )
+    db_session.commit()
+    service = CandidateAdviserService(db_session, adviser=_FakeAdviser())
+    service.save_intake(user_id, _intake())
+    service.confirm_intake(user_id)
+    service.assess(user_id)
+    service.confirm_assessment(user_id)
+
+    profile = db_session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
+    assert profile is not None
+    profile.career_goal = "A materially changed career direction."
+    db_session.commit()
+
+    assert service.read_assessment(user_id).state == CandidateAdviserState.STALE
     context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
     assert context is not None
     assert context.adviser.professional_identity == ""
