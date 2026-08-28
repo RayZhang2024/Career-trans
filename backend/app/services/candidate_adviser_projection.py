@@ -107,10 +107,9 @@ def _compact_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _compact_value(child) for key, child in value.items()}
     if isinstance(value, list):
-        return [
-            _compact_text(item, _INTAKE_LIST_ITEM_LIMIT) if isinstance(item, str) else _compact_value(item)
-            for item in value[:_INTAKE_LIST_LIMIT]
-        ]
+        if all(isinstance(item, str) for item in value):
+            return _compact_list(value, limit=_INTAKE_LIST_LIMIT)
+        return [_compact_value(item) for item in value[:_INTAKE_LIST_LIMIT]]
     if isinstance(value, str):
         return _compact_text(value, _INTAKE_TEXT_LIMIT)
     return value
