@@ -4,19 +4,24 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.schemas.candidate import CandidateAdviserContext
+from app.schemas.candidate import CandidateAdviserContext, CandidateContext
 from app.schemas.candidate_adviser import CandidateAdviserAssessment, CandidateIntakeProfileData
 
 
 def candidate_adviser_input_fingerprint(
     *,
-    structured_profile_json: str,
-    evidence_fingerprints: list[str],
+    candidate_context: CandidateContext,
     intake: CandidateIntakeProfileData,
 ) -> str:
+    """Fingerprint the exact user-owned source context supplied to the adviser.
+
+    The caller must supply a context with adviser interpretation excluded. Hashing
+    the semantic input itself keeps stale detection aligned with profile, CV,
+    evidence, strategy, criteria, eligibility, and future source fields without
+    maintaining a second hand-written dependency list.
+    """
     payload = {
-        "structured_profile": json.loads(structured_profile_json),
-        "evidence_fingerprints": sorted(evidence_fingerprints),
+        "candidate_context": candidate_context.model_dump(mode="json"),
         "intake": intake.model_dump(mode="json"),
     }
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
