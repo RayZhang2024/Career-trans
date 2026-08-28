@@ -1,8 +1,10 @@
 import json
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
 from app.models.discovered_job import DiscoveredJob
+from app.agents.job_extraction import OpenAIJobExtractor
 from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.lever import LeverJobSource
@@ -262,3 +264,29 @@ def test_verified_provider_description_reaches_deep_analysis_unchanged() -> None
 
     assert response.analysed_count == 1
     assert response.results[0].job.description == DETAIL
+
+
+def test_rich_verified_provider_fixture_can_produce_nonempty_requirements_without_live_model() -> None:
+    class _Client:
+        def __init__(self) -> None:
+            self.responses = SimpleNamespace(
+                create=lambda **_kwargs: SimpleNamespace(
+                    output_text=json.dumps(
+                        {
+                            "title": "Forward Deployed Engineer",
+                            "requirements": [
+                                {
+                                    "text": "Python software engineering",
+                                    "importance": "essential",
+                                    "category": "technical",
+                                    "source_text": "Required qualifications include Python software engineering.",
+                                }
+                            ],
+                        }
+                    )
+                )
+            )
+
+    profile = OpenAIJobExtractor(api_key="", model="test", client=_Client()).extract(DETAIL)
+
+    assert [requirement.text for requirement in profile.requirements] == ["Python software engineering"]
