@@ -9,6 +9,7 @@ class CareerEvidence(BaseModel):
     text: str = Field(min_length=1)
     skills: list[str] = Field(default_factory=list)
 
+
 class CandidateEligibility(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -16,11 +17,25 @@ class CandidateEligibility(BaseModel):
     security_clearances: list[str] = Field(default_factory=list)
     locations: list[str] = Field(default_factory=list)
 
+
+class CandidateAdviserContext(BaseModel):
+    """Bounded confirmed adviser interpretation for strategic stages only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    professional_identity: str = ""
+    career_strategy_summary: str = ""
+    job_search_strategy_summary: str = ""
+    role_hypotheses: list[str] = Field(default_factory=list)
+    development_priorities: list[str] = Field(default_factory=list)
+
+
 class CandidateContext(BaseModel):
     """User-agnostic candidate context consumed by matching workflows.
 
-    Production versions of this schema will be populated from authenticated user data.
-    Repository demo profiles may be loaded into the same schema for development/tests.
+    Production versions of this schema are populated from authenticated user data.
+    Adviser context is deliberately separated so requirement matching can exclude
+    semantic adviser inference while discovery/career stages can use it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -31,6 +46,7 @@ class CandidateContext(BaseModel):
     career_strategy_text: str = ""
     job_search_criteria_text: str = ""
     eligibility: CandidateEligibility = Field(default_factory=CandidateEligibility)
+    adviser: CandidateAdviserContext = Field(default_factory=CandidateAdviserContext)
     evidence: list[CareerEvidence] = Field(default_factory=list)
 
 
@@ -49,7 +65,7 @@ class CandidateContextSummary(BaseModel):
 
 
 class CandidateSearchProfile(BaseModel):
-    """Small, purpose-built candidate context for job relevance screening."""
+    """Small, purpose-built candidate context for job relevance/discovery screening."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -57,6 +73,7 @@ class CandidateSearchProfile(BaseModel):
     skills: list[str] = Field(default_factory=list)
     career_strategy_text: str = ""
     job_search_criteria_text: str = ""
+    adviser: CandidateAdviserContext = Field(default_factory=CandidateAdviserContext)
 
 
 class CandidateCareerProfile(BaseModel):
@@ -68,10 +85,14 @@ class CandidateCareerProfile(BaseModel):
     career_strategy_text: str = ""
     job_search_criteria_text: str = ""
     eligibility: CandidateEligibility = Field(default_factory=CandidateEligibility)
+    adviser: CandidateAdviserContext = Field(default_factory=CandidateAdviserContext)
 
 
 class CandidateMatchingProfile(BaseModel):
-    """Evidence-limited candidate context for semantic requirement matching."""
+    """Evidence-limited candidate context for semantic requirement matching.
+
+    Adviser interpretation is intentionally absent from this schema.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
