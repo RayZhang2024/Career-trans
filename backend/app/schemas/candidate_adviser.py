@@ -50,6 +50,7 @@ class CandidateConstraints(BaseModel):
 
     work_authorisation: list[str] = Field(default_factory=list)
     security_clearances: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
     relocation_preferences: list[str] = Field(default_factory=list)
     travel_preferences: list[str] = Field(default_factory=list)
     compensation_preferences: list[str] = Field(default_factory=list)
@@ -121,7 +122,6 @@ class CandidateAdviserAssessment(BaseModel):
 
 
 class CandidateAdviserState(StrEnum):
-    DRAFT = "draft"
     REVIEW_READY = "review_ready"
     CONFIRMED = "confirmed"
     STALE = "stale"
@@ -131,6 +131,7 @@ class CandidateIntakeRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     data: CandidateIntakeProfileData
+    revision: int = Field(ge=0)
     confirmed: bool = False
 
 
