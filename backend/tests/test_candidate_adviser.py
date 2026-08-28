@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -33,12 +34,12 @@ def _auth(client, email: str) -> tuple[dict[str, str], str]:
     return {"Authorization": f"Bearer {token}"}, email
 
 
-def _confirmed_cv(db_session, user_id: str) -> None:
+def _confirmed_cv(db_session, user_id: str, *, evidence: list[dict[str, object]] | None = None) -> None:
     data = CandidateCVData.model_validate(
         {
             "employment": [{"employer": "Example", "title": "Engineer", "description": "Built systems."}],
             "skills": [{"name": "Python"}],
-            "evidence": [
+            "evidence": evidence or [
                 {
                     "evidence_type": "employment",
                     "title": "Platform delivery",
@@ -118,9 +119,12 @@ def test_adviser_assessment_is_grounded_stale_and_user_scoped(db_session) -> Non
     changed = _intake().model_copy(update={"constraints": ["UK roles", "No relocation"]})
     service.save_intake(user_a, changed)
     assert service.get_assessment(user_a).status == "stale"
-    assert db_session.scalar(select(CandidateAdviserAssessmentRecord.status).where(CandidateAdviserAssessmentRecord.user_id == user_a)) == "stale"
+    assert db_session.scalar(select(CandidateAdviserAssessmentRecord.status).where(CandidateAdviserAssessmentRecord.user_id == user_a)) == "confirmed"
     with pytest.raises(ValueError, match="stale"):
         service.confirm_assessment(user_a)
+
+    service.save_intake(user_a, _intake())
+    assert service.get_assessment(user_a).status == "confirmed"
 
     assert service.assess(user_a).status == "review_ready"
     assert service.confirm_assessment(user_a).status == "confirmed"
@@ -131,6 +135,32 @@ def test_adviser_assessment_is_grounded_stale_and_user_scoped(db_session) -> Non
     db_session.commit()
     assert service.get_assessment(user_a).status == "stale"
     assert db_session.scalar(select(CandidateAdviserAssessmentRecord.status).where(CandidateAdviserAssessmentRecord.user_id == user_a)) == "confirmed"
+
+
+def test_adviser_semantic_evidence_uses_current_cv_order_when_timestamps_tie(db_session) -> None:
+    user_id = _user(db_session, "adviser-evidence-order@example.com")
+    source_order = [
+        {"evidence_type": "project", "title": "Third in database", "text": "Third source statement."},
+        {"evidence_type": "employment", "title": "First in database", "text": "First source statement."},
+        {"evidence_type": "achievement", "title": "Second in database", "text": "Second source statement."},
+    ]
+    _confirmed_cv(db_session, user_id, evidence=source_order)
+    records = list(db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)))
+    assert len(records) == 3
+    for record in records:
+        record.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    db_session.commit()
+
+    fake = _FakeAdviser()
+    service = CandidateAdviserService(db_session, agent=fake)
+    service.save_intake(user_id, _intake())
+    service.assess(user_id)
+
+    assert [item.title for item in fake.semantic_input.career_evidence] == [
+        "Third in database",
+        "First in database",
+        "Second in database",
+    ]
 
 
 def test_assessment_fingerprint_tracks_compacted_structured_cv_input(db_session) -> None:

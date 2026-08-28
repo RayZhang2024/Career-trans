@@ -1,4 +1,3 @@
-import hashlib
 import json
 from collections.abc import Callable
 
@@ -9,10 +8,11 @@ from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, Candida
 from app.models.candidate_profile import CandidateProfile
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.schemas.candidate import CandidateContext, CandidateContextSummary, CandidateEligibility, CareerEvidence
-from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, CareerEvidenceDraft, EvidenceProvenance, ExtractedCVDocument
+from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, EvidenceProvenance, ExtractedCVDocument
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_interpretation_service import CVSemanticInterpreter
 from app.services.cv_merge_service import CVMergeService
+from app.services.career_evidence_fingerprint import career_evidence_fingerprint
 
 
 class CVIngestionService:
@@ -101,7 +101,7 @@ class CVIngestionService:
             profile.structured_json = json.dumps(data.model_dump(mode="json"))
         count = 0
         for item in data.evidence:
-            fingerprint = self._fingerprint(item)
+            fingerprint = career_evidence_fingerprint(item)
             record = self._session.scalar(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id, CandidateEvidenceRecord.fingerprint == fingerprint))
             if record is None:
                 self._session.add(CandidateEvidenceRecord(user_id=user_id, fingerprint=fingerprint, evidence_type=item.evidence_type, title=item.title, text=item.text, skills_json=json.dumps(item.skills), provenance_json=json.dumps([value.model_dump(mode="json") for value in item.provenance])))
@@ -169,11 +169,6 @@ class CVIngestionService:
                         "CV evidence provenance must reference supplied source segments."
                     )
         return data
-
-    @staticmethod
-    def _fingerprint(item: CareerEvidenceDraft) -> str:
-        return hashlib.sha256("\x1f".join([item.evidence_type.casefold(), item.title.casefold(), item.text.casefold()]).encode()).hexdigest()
-
 
 class PersistedCandidateContextLoader:
     """Build existing CandidateContext only from confirmed records owned by one user."""

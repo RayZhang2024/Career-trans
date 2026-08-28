@@ -19,6 +19,7 @@ from app.schemas.candidate_adviser import (
 )
 from app.schemas.cv_ingestion import CandidateCVData
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
+from app.services.career_evidence_fingerprint import career_evidence_fingerprint
 
 
 class CandidateAdviserService:
@@ -35,15 +36,11 @@ class CandidateAdviserService:
     def save_intake(self, user_id: str, intake: CandidateAdviserIntake) -> CandidateAdviserIntakeRead:
         record = self._session.scalar(select(CandidateAdviserIntakeRecord).where(CandidateAdviserIntakeRecord.user_id == user_id))
         encoded = json.dumps(intake.model_dump(mode="json"), sort_keys=True)
-        changed = record is None or record.intake_json != encoded
         if record is None:
             record = CandidateAdviserIntakeRecord(user_id=user_id, intake_json=encoded)
             self._session.add(record)
         else:
             record.intake_json = encoded
-        assessment = self._session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user_id))
-        if assessment is not None and changed:
-            assessment.status = CandidateAdviserAssessmentStatus.STALE
         self._session.commit()
         self._session.refresh(record)
         return CandidateAdviserIntakeRead(**intake.model_dump(mode="json"), updated_at=record.updated_at)
@@ -112,7 +109,25 @@ class CandidateAdviserService:
     def _semantic_input(self, user_id: str, *, intake: CandidateAdviserIntake | None = None) -> CandidateAdviserSemanticInput:
         structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
         data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
-        records = list(self._session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id).order_by(CandidateEvidenceRecord.created_at, CandidateEvidenceRecord.id)))
+        records = list(
+            self._session.scalars(
+                select(CandidateEvidenceRecord).where(
+                    CandidateEvidenceRecord.user_id == user_id
+                )
+            )
+        )
+        records_by_fingerprint = {record.fingerprint: record for record in records}
+        ordered_records: list[CandidateEvidenceRecord] = []
+        for item in data.evidence:
+            record = records_by_fingerprint.pop(career_evidence_fingerprint(item), None)
+            if record is not None:
+                ordered_records.append(record)
+        ordered_records.extend(
+            sorted(
+                records_by_fingerprint.values(),
+                key=lambda record: (record.created_at, record.id),
+            )
+        )
         evidence = [
             {
                 "evidence_id": record.id,
@@ -120,7 +135,7 @@ class CandidateAdviserService:
                 "text": record.text,
                 "skills": json.loads(record.skills_json),
             }
-            for record in records
+            for record in ordered_records
         ]
         return compact_candidate_adviser_input(
             intake=intake or self._intake(user_id),
