@@ -3,6 +3,7 @@
 import re
 
 from app.schemas.candidate import (
+    CandidateAdviserContext,
     CandidateCareerProfile,
     CandidateContext,
     CandidateMatchingProfile,
@@ -14,6 +15,9 @@ from app.schemas.job import JobProfile
 
 _PROFILE_SUMMARY_LIMIT = 1_200
 _DIRECTION_TEXT_LIMIT = 1_200
+_ADVISER_TEXT_LIMIT = 900
+_ADVISER_ITEM_LIMIT = 8
+_ADVISER_ITEM_TEXT_LIMIT = 160
 _SKILL_LIMIT = 40
 _TOP_EVIDENCE_LIMIT = 8
 _PER_REQUIREMENT_EVIDENCE_LIMIT = 3
@@ -32,6 +36,7 @@ def candidate_search_profile(candidate: CandidateContext) -> CandidateSearchProf
             candidate.job_search_criteria_text,
             limit=_DIRECTION_TEXT_LIMIT,
         ),
+        adviser=_compact_adviser(candidate.adviser),
     )
 
 
@@ -47,6 +52,7 @@ def candidate_career_profile(candidate: CandidateContext) -> CandidateCareerProf
             limit=_DIRECTION_TEXT_LIMIT,
         ),
         eligibility=candidate.eligibility,
+        adviser=_compact_adviser(candidate.adviser),
     )
 
 
@@ -85,22 +91,22 @@ def top_evidence(
         ranked = [
             item
             for _, item in sorted(
-            enumerate(evidence),
-            key=lambda indexed: (
-                -len(
-                    requirement_terms
-                    & _terms(
-                        " ".join(
-                            [
-                                indexed[1].title,
-                                indexed[1].text,
-                                *indexed[1].skills,
-                            ]
+                enumerate(evidence),
+                key=lambda indexed: (
+                    -len(
+                        requirement_terms
+                        & _terms(
+                            " ".join(
+                                [
+                                    indexed[1].title,
+                                    indexed[1].text,
+                                    *indexed[1].skills,
+                                ]
+                            )
                         )
-                    )
+                    ),
+                    indexed[0],
                 ),
-                indexed[0],
-            ),
             )
             if requirement_terms
             & _terms(" ".join([item.title, item.text, *item.skills]))
@@ -121,6 +127,30 @@ def top_evidence(
             if len(selected) == limit:
                 return selected
     return selected
+
+
+def _compact_adviser(adviser: CandidateAdviserContext) -> CandidateAdviserContext:
+    return CandidateAdviserContext(
+        professional_identity=_compact_text(adviser.professional_identity, limit=_ADVISER_TEXT_LIMIT),
+        career_strategy_summary=_compact_text(adviser.career_strategy_summary, limit=_ADVISER_TEXT_LIMIT),
+        job_search_strategy_summary=_compact_text(adviser.job_search_strategy_summary, limit=_ADVISER_TEXT_LIMIT),
+        role_hypotheses=_compact_items(adviser.role_hypotheses),
+        development_priorities=_compact_items(adviser.development_priorities),
+    )
+
+
+def _compact_items(values: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = _compact_text(value, limit=_ADVISER_ITEM_TEXT_LIMIT)
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            seen.add(key)
+            output.append(cleaned)
+        if len(output) == _ADVISER_ITEM_LIMIT:
+            break
+    return output
 
 
 def _candidate_skills(candidate: CandidateContext) -> list[str]:
