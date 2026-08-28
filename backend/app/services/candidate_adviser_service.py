@@ -11,6 +11,7 @@ from app.models.candidate_adviser import (
     CandidateIntakeProfile,
 )
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
+from app.providers.llm import SemanticOutputError
 from app.schemas.candidate_adviser import (
     CandidateAdviserAssessment,
     CandidateAdviserAssessmentRead,
@@ -80,7 +81,9 @@ class CandidateAdviserService:
         record = self._intake_record(user_id)
         if record is None:
             raise LookupError("Candidate adviser intake not found.")
-        CandidateIntakeProfileData.model_validate(json.loads(record.structured_json))
+        intake = CandidateIntakeProfileData.model_validate(json.loads(record.structured_json))
+        if not intake_source_refs(intake):
+            raise ValueError("Candidate adviser intake must contain at least one meaningful answer.")
         record.confirmed = True
         record.confirmed_at = datetime.now(timezone.utc)
         self._session.commit()
@@ -104,11 +107,14 @@ class CandidateAdviserService:
             allowed_evidence_ids=allowed_evidence_ids,
             allowed_intake_refs=allowed_intake_refs,
         )
-        self._validate_refs(
-            assessment,
-            allowed_evidence_ids=set(allowed_evidence_ids),
-            allowed_intake_refs=set(allowed_intake_refs),
-        )
+        try:
+            self._validate_refs(
+                assessment,
+                allowed_evidence_ids=set(allowed_evidence_ids),
+                allowed_intake_refs=set(allowed_intake_refs),
+            )
+        except ValueError as exc:
+            raise SemanticOutputError(str(exc)) from exc
         fingerprint = candidate_adviser_input_fingerprint(
             structured_profile_json=structured.structured_json,
             evidence_fingerprints=[item.fingerprint for item in evidence_records],
@@ -252,6 +258,13 @@ class CandidateAdviserService:
         allowed_evidence_ids: set[str],
         allowed_intake_refs: set[str],
     ) -> None:
+        for finding in [*assessment.strengths, *assessment.transferable_capabilities]:
+            if not finding.supporting_refs:
+                raise ValueError("Candidate adviser returned an unsupported positive finding.")
+        for hypothesis in assessment.role_hypotheses:
+            if not hypothesis.supporting_refs:
+                raise ValueError("Candidate adviser returned an unsupported role hypothesis.")
+
         refs = [
             ref
             for finding in [
