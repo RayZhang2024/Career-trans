@@ -416,6 +416,59 @@ def test_zero_requirement_extraction_is_unassessed_without_fit_assessment() -> N
     assert "no extractable requirements" in result.failures[0].error
 
 
+def test_zero_requirement_extractions_consume_the_deep_analysis_attempt_budget() -> None:
+    listings = [
+        job(
+            f"Relevant {index}",
+            description=f"Description {index}",
+            url=f"https://jobs.example.test/relevant-{index}",
+        )
+        for index in range(3)
+    ]
+    graph_calls: list[str] = []
+
+    class FakeRelevance:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(
+                relevant=True,
+                score=1.0 - (0.1 * int(listing.title.rsplit(" ", 1)[1])),
+                reasoning="Relevant.",
+            )
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(
+                archetype=JobArchetype.OTHER,
+                reasoning="Synthetic.",
+            )
+
+    class EmptyExtractionGraph:
+        def invoke(self, *, job_text: str, **_: object) -> dict[str, object]:
+            graph_calls.append(job_text)
+            return {"job_profile": JobProfile(title=job_text, requirements=[])}
+
+    result = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=EmptyExtractionGraph(),  # type: ignore[arg-type]
+    ).rank(
+        JobRankingRequest(
+            jobs=listings,
+            candidate_context=CandidateContext(),
+            max_semantic_candidates=3,
+            max_full_analyses=2,
+        )
+    )
+
+    assert graph_calls == ["Description 0", "Description 1"]
+    assert result.finalist_count == 2
+    assert result.analysed_count == 0
+    assert [failure.stage for failure in result.failures] == [
+        "insufficient_job_detail",
+        "insufficient_job_detail",
+    ]
+
+
 def test_incomplete_high_relevance_job_does_not_consume_deep_analysis_quota() -> None:
     incomplete = job("Incomplete", description=None, url="https://jobs.example.test/incomplete")
     complete = job("Complete", description="Complete role", url="https://jobs.example.test/complete")

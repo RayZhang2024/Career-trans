@@ -128,7 +128,18 @@ def build_parser() -> argparse.ArgumentParser:
     hunt.add_argument("--max-ats-results", type=int, default=100)
     hunt.add_argument("--max-ats-sources", type=int, default=20)
     hunt.add_argument("--max-external-results", type=int, default=20)
-    hunt.add_argument("--max-rank", type=int, default=20)
+    hunt.add_argument(
+        "--max-rank",
+        type=int,
+        default=10,
+        help="Maximum actionable jobs submitted to bounded semantic screening (default: 10)",
+    )
+    hunt.add_argument(
+        "--max-full-analyses",
+        type=int,
+        default=5,
+        help="Maximum relevance-qualified jobs sent to deep career analysis (default: 5)",
+    )
     hunt.add_argument(
         "--no-external",
         action="store_true",
@@ -439,15 +450,21 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             failures.append(f"Codex acquisition failed: {exc}")
 
     actionable = _actionable_hunt_jobs(ats, external)
+    actionable_states = _actionable_hunt_job_states(ats, external)
     deduplicated, duplicate_count = JobDeduplicationService().deduplicate(actionable)
     bounded = deduplicated[: args.max_rank]
+    outside_semantic_budget = deduplicated[len(bounded) :]
     _print_hunt_acquisition_summary(ats, external, len(actionable), duplicate_count, len(bounded), failures)
     if not bounded:
         print("No new or updated opportunities; semantic ranking skipped.")
         return 0 if ats is not None or external is not None else 2
 
     try:
-        ranking = client.rank_jobs_for_current_user([job.model_dump(mode="json") for job in bounded])
+        deep_analysis_budget = min(args.max_full_analyses, len(bounded))
+        ranking = client.rank_jobs_for_current_user(
+            [job.model_dump(mode="json") for job in bounded],
+            max_full_analyses=deep_analysis_budget,
+        )
     except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError, CareerTransTimeoutError) as exc:
         print(f"Ranking failed: {exc}")
         return 2
@@ -455,13 +472,22 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
         f"Ranked {ranking.get('discovered_count', 0)} actionable jobs "
         f"(finalists={ranking.get('finalist_count', 0)}, analysed={ranking.get('analysed_count', 0)})."
     )
-    for result in ranking.get("results", [])[:3]:
+    for result in ranking.get("results", [])[:deep_analysis_budget]:
         job = result.get("job", {})
         recommendation = result.get("recommendation_assessment", {})
         print(
             f"#{result.get('rank')} {str(recommendation.get('recommendation', 'unknown')).upper()} | "
             f"{job.get('title', 'Untitled')} | {job.get('company') or 'Unknown company'}"
         )
+        _print_job_url(job)
+    _print_unranked_job_diagnostics(
+        ranking,
+        deep_analysis_budget=deep_analysis_budget,
+    )
+    _print_hunt_outside_semantic_budget(
+        outside_semantic_budget,
+        actionable_states,
+    )
     return 0
 
 
@@ -481,6 +507,26 @@ def _actionable_hunt_jobs(
             if isinstance(job, dict):
                 actionable.append(JobListing.model_validate(job))
     return actionable
+
+
+def _actionable_hunt_job_states(
+    ats: dict[str, Any] | None,
+    external: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Retain current-run lifecycle state only for neutral hunt rendering."""
+    states: dict[str, str] = {}
+    for response in (ats, external):
+        if not response:
+            continue
+        for item in response.get("lifecycle_jobs", []):
+            if not isinstance(item, dict):
+                continue
+            state = item.get("state")
+            job = item.get("job")
+            if state not in {"new", "updated"} or not isinstance(job, dict):
+                continue
+            states[_job_key(job)] = str(state).upper()
+    return states
 
 
 def _print_hunt_acquisition_summary(
@@ -619,7 +665,11 @@ def _print_ranking_funnel(ranking: dict[str, Any]) -> None:
     )
 
 
-def _print_unranked_job_diagnostics(ranking: dict[str, Any]) -> None:
+def _print_unranked_job_diagnostics(
+    ranking: dict[str, Any],
+    *,
+    deep_analysis_budget: int | None = None,
+) -> None:
     """Explain existing non-result diagnostics without exposing raw inputs/errors."""
     ranked_job_keys = {
         _job_key(result.get("job", {}))
@@ -647,7 +697,9 @@ def _print_unranked_job_diagnostics(ranking: dict[str, Any]) -> None:
             print(f"UNASSESSED | {_job_label(job)}")
         else:
             print(f"FAILED | {failure.get('stage', 'ranking')} | {_job_label(job)}")
+        _print_job_url(job)
         _print_semantic_context(relevance, archetype)
+        _print_relevance_rationale(relevance)
         print(f"Reason: {failure.get('error', 'Ranking stage failed.')}")
 
     for item in ranking.get("semantic_screening", []):
@@ -661,24 +713,35 @@ def _print_unranked_job_diagnostics(ranking: dict[str, Any]) -> None:
         archetype = item.get("archetype", {})
         if item.get("failure_stage"):
             print(f"FAILED | {item['failure_stage']} | {_job_label(job)}")
+            _print_job_url(job)
             _print_semantic_context(relevance, archetype)
+            _print_relevance_rationale(relevance)
             print(f"Reason: {item.get('error', 'Semantic screening failed.')}")
         elif isinstance(relevance, dict) and relevance:
+            status = "SCREENED OUT"
             if relevance.get("relevant") is False:
                 outcome = "semantic relevance decision was relevant=false"
             elif relevance.get("relevant") is True and not archetype:
                 outcome = "relevance score was below the configured threshold"
             elif relevance.get("relevant") is True:
-                outcome = "the job was not retained for bounded deep analysis"
+                status = "SEMANTICALLY SCREENED"
+                if deep_analysis_budget is not None:
+                    outcome = (
+                        "the relevant job was outside the top-"
+                        f"{deep_analysis_budget} deep-analysis budget"
+                    )
+                else:
+                    outcome = "the job was not retained for bounded deep analysis"
             else:
                 outcome = "semantic screening did not retain the job"
-            print(f"SCREENED OUT | {_job_label(job)}")
+            print(f"{status} | {_job_label(job)}")
+            _print_job_url(job)
             _print_semantic_context(relevance, archetype)
             print(f"Reason: {outcome}.")
-            if relevance.get("reasoning"):
-                print(f"Rationale: {relevance['reasoning']}")
+            _print_relevance_rationale(relevance)
         else:
             print(f"NOT ANALYSED | {_job_label(job)}")
+            _print_job_url(job)
             print("Reason: the job was not retained for bounded deep analysis.")
 
 
@@ -692,6 +755,27 @@ def _print_semantic_context(relevance: object, archetype: object) -> None:
     if "relevant" in relevance_data:
         line += f" | Relevant: {str(relevance_data['relevant']).lower()}"
     print(line)
+
+
+def _print_relevance_rationale(relevance: object) -> None:
+    if isinstance(relevance, dict) and relevance.get("reasoning"):
+        print(f"Rationale: {relevance['reasoning']}")
+
+
+def _print_hunt_outside_semantic_budget(
+    jobs: list[JobListing],
+    lifecycle_states: dict[str, str],
+) -> None:
+    for job in jobs:
+        job_data = job.model_dump(mode="json")
+        state = lifecycle_states.get(_job_key(job_data), "NEW/UPDATED")
+        print(f"{state} | {_job_label(job_data)}")
+        _print_job_url(job_data)
+        print("Reason: not semantically screened due to hunt candidate budget.")
+
+
+def _print_job_url(job: dict[str, Any]) -> None:
+    print(f"URL: {job.get('url', '')}")
 
 
 def _job_key(job: dict[str, Any]) -> str:

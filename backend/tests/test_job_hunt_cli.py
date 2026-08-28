@@ -40,6 +40,12 @@ class _Client:
             "lifecycle_jobs": [],
         }
         self.rank_error: Exception | None = None
+        self.ranking: dict = {
+            "discovered_count": 0,
+            "finalist_count": 0,
+            "analysed_count": 0,
+            "results": [],
+        }
 
     def discover_known_ats_sources(self, request):
         self.calls.append(("ats", request))
@@ -53,11 +59,15 @@ class _Client:
         self.calls.append(("import", kwargs))
         return self.external
 
-    def rank_jobs_for_current_user(self, jobs):
-        self.calls.append(("rank", jobs))
+    def rank_jobs_for_current_user(self, jobs, *, max_full_analyses=None):
+        self.calls.append(("rank", jobs, max_full_analyses))
         if self.rank_error:
             raise self.rank_error
-        return {"discovered_count": len(jobs), "finalist_count": 1, "analysed_count": 1, "results": []}
+        return self.ranking | {
+            "discovered_count": len(jobs),
+            "finalist_count": self.ranking.get("finalist_count", 1),
+            "analysed_count": self.ranking.get("analysed_count", 1),
+        }
 
 
 def _runner(monkeypatch, jobs: list[dict]) -> None:
@@ -75,11 +85,17 @@ def _run(
     *,
     no_external: bool = False,
     locations: list[str] | None = None,
+    max_rank: int | None = None,
+    max_full_analyses: int | None = None,
 ) -> int:
     monkeypatch.setattr(cli, "CareerTransApiClient", lambda *_args: client)
     arguments = ["--token", "token", "jobs", "hunt", "--keyword", "AI Engineer"]
     for location in locations or []:
         arguments.extend(["--location", location])
+    if max_rank is not None:
+        arguments.extend(["--max-rank", str(max_rank)])
+    if max_full_analyses is not None:
+        arguments.extend(["--max-full-analyses", str(max_full_analyses)])
     if no_external:
         arguments.append("--no-external")
     return cli.main(arguments)
@@ -104,6 +120,142 @@ def test_hunt_reuses_ats_and_external_paths_and_ranks_only_new_updated(monkeypat
     assert any(call[0] == "ats" for call in client.calls)
     assert any(call[0] == "context" for call in client.calls)
     assert any(call[0] == "import" for call in client.calls)
+
+
+def test_hunt_default_keeps_semantic_budget_at_ten_and_deep_analysis_at_five(monkeypatch, capsys) -> None:
+    client = _Client()
+    jobs = [
+        _job(
+            source="greenhouse",
+            url=f"https://jobs.example.test/{index}",
+            title=f"Applied AI Engineer {index}",
+        )
+        for index in range(12)
+    ]
+    client.ats = _ats(*[(job, "new") for job in jobs])
+
+    assert _run(monkeypatch, capsys, client, no_external=True) == 0
+
+    rank_call = next(call for call in client.calls if call[0] == "rank")
+    assert len(rank_call[1]) == 10
+    assert rank_call[2] == 5
+
+
+def test_hunt_propagates_explicit_deep_analysis_budget_without_exceeding_submission(monkeypatch, capsys) -> None:
+    client = _Client()
+    jobs = [
+        _job(
+            source="greenhouse",
+            url=f"https://jobs.example.test/{index}",
+            title=f"Applied AI Engineer {index}",
+        )
+        for index in range(3)
+    ]
+    client.ats = _ats(*[(job, "new") for job in jobs])
+
+    assert _run(
+        monkeypatch,
+        capsys,
+        client,
+        no_external=True,
+        max_rank=3,
+        max_full_analyses=7,
+    ) == 0
+
+    rank_call = next(call for call in client.calls if call[0] == "rank")
+    assert len(rank_call[1]) == 3
+    assert rank_call[2] == 3
+
+
+def test_hunt_default_renders_the_default_deep_analysis_shortlist(monkeypatch, capsys) -> None:
+    client = _Client()
+    jobs = [
+        _job(
+            source="greenhouse",
+            url=f"https://jobs.example.test/{index}",
+            title=f"Applied AI Engineer {index}",
+        )
+        for index in range(6)
+    ]
+    client.ats = _ats(*[(job, "new") for job in jobs])
+    client.ranking = {
+        "finalist_count": 6,
+        "analysed_count": 6,
+        "results": [
+            {
+                "rank": index,
+                "job": {"title": f"Ranked role {index}", "company": "Example"},
+                "recommendation_assessment": {"recommendation": "consider"},
+            }
+            for index in range(1, 7)
+        ],
+    }
+
+    assert _run(monkeypatch, capsys, client, no_external=True) == 0
+    output = capsys.readouterr().out
+
+    assert "Ranked role 5" in output
+    assert "Ranked role 6" not in output
+
+
+def test_hunt_keeps_screened_and_budgeted_out_actionable_jobs_visible(monkeypatch, capsys) -> None:
+    client = _Client()
+    jobs = [
+        _job(
+            source="greenhouse",
+            url=f"https://jobs.example.test/{index}",
+            title=f"Applied AI Engineer {index}",
+        )
+        for index in range(3)
+    ]
+    client.ats = _ats(
+        (jobs[0], "new"),
+        (jobs[1], "updated"),
+        (jobs[2], "new"),
+    )
+    client.ranking = {
+        "finalist_count": 1,
+        "analysed_count": 1,
+        "results": [
+            {
+                "rank": 1,
+                "job": jobs[0],
+                "recommendation_assessment": {"recommendation": "consider"},
+            }
+        ],
+        "semantic_screening": [
+            {
+                "job": jobs[0],
+                "relevance": {"relevant": True, "score": 0.9, "reasoning": "Strong match."},
+                "archetype": {"archetype": "ai_forward_deployed"},
+            },
+            {
+                "job": jobs[1],
+                "relevance": {"relevant": True, "score": 0.8, "reasoning": "Relevant scope."},
+                "archetype": {"archetype": "ai_solutions_architect"},
+            },
+        ],
+    }
+
+    assert _run(
+        monkeypatch,
+        capsys,
+        client,
+        no_external=True,
+        max_rank=2,
+        max_full_analyses=1,
+    ) == 0
+    output = capsys.readouterr().out
+
+    assert "URL: https://jobs.example.test/0" in output
+    assert "SEMANTICALLY SCREENED | Applied AI Engineer 1 | Example Systems | London" in output
+    assert "URL: https://jobs.example.test/1" in output
+    assert "Relevance: 0.8 | Archetype: ai_solutions_architect | Relevant: true" in output
+    assert "Rationale: Relevant scope." in output
+    assert "outside the top-1 deep-analysis budget" in output
+    assert "NEW | Applied AI Engineer 2 | Example Systems | London" in output
+    assert "URL: https://jobs.example.test/2" in output
+    assert "not semantically screened due to hunt candidate budget" in output
 
 
 def test_hunt_propagates_locations_to_ats_and_external_discovery(monkeypatch, capsys) -> None:
