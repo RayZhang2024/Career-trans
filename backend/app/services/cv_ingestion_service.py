@@ -5,10 +5,13 @@ from collections.abc import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateIntakeProfile
 from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.candidate_profile import CandidateProfile
-from app.schemas.candidate import CandidateContext, CandidateContextSummary, CareerEvidence
+from app.schemas.candidate import CandidateAdviserContext, CandidateContext, CandidateContextSummary, CandidateEligibility, CareerEvidence
+from app.schemas.candidate_adviser import CandidateAdviserAssessment, CandidateAdviserState, CandidateIntakeProfileData
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, CareerEvidenceDraft, EvidenceProvenance, ExtractedCVDocument
+from app.services.candidate_adviser_projection import adviser_context_from_assessment, candidate_adviser_input_fingerprint
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_interpretation_service import CVSemanticInterpreter
 from app.services.cv_merge_service import CVMergeService
@@ -175,24 +178,66 @@ class CVIngestionService:
 
 
 class PersistedCandidateContextLoader:
-    """Build existing CandidateContext only from confirmed records owned by one user."""
+    """Build CandidateContext only from persisted records owned by one user."""
 
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def load(self, user_id: str) -> CandidateContext:
+    def load(self, user_id: str, *, include_adviser: bool = True) -> CandidateContext:
         profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
         structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
         data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
-        records = list(self._session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id).order_by(CandidateEvidenceRecord.created_at)))
+        records = list(self._session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id).order_by(CandidateEvidenceRecord.created_at, CandidateEvidenceRecord.id)))
+        intake_record = self._session.scalar(select(CandidateIntakeProfile).where(CandidateIntakeProfile.user_id == user_id))
+        intake = (
+            CandidateIntakeProfileData.model_validate(json.loads(intake_record.structured_json))
+            if intake_record is not None and intake_record.confirmed
+            else None
+        )
+
         profile_text = " ".join(value for value in ([profile.headline, profile.current_role, profile.summary, profile.location] if profile else []) if value)
         employment_text = "\n".join(f"{item.title} at {item.employer}. {item.description}" for item in data.employment)
         education_text = "\n".join(f"{item.qualification} at {item.institution}. {item.description}" for item in data.education)
+
+        career_strategy_parts = [profile.career_goal if profile and profile.career_goal else ""]
+        criteria_parts = [profile.job_search_criteria if profile and profile.job_search_criteria else ""]
+        eligibility = CandidateEligibility()
+        if intake is not None:
+            career_strategy_parts.append(self._intake_strategy_text(intake))
+            criteria_parts.append(self._intake_criteria_text(intake))
+            eligibility = CandidateEligibility(
+                work_authorisation=intake.constraints.work_authorisation,
+                security_clearances=intake.constraints.security_clearances,
+                locations=intake.constraints.locations,
+            )
+
+        adviser = CandidateAdviserContext()
+        if include_adviser and structured is not None and intake is not None:
+            assessment_record = self._session.scalar(
+                select(CandidateAdviserAssessmentRecord).where(
+                    CandidateAdviserAssessmentRecord.user_id == user_id
+                )
+            )
+            if assessment_record is not None and assessment_record.state == CandidateAdviserState.CONFIRMED.value:
+                current_fingerprint = candidate_adviser_input_fingerprint(
+                    structured_profile_json=structured.structured_json,
+                    evidence_fingerprints=[item.fingerprint for item in records],
+                    intake=intake,
+                )
+                if current_fingerprint == assessment_record.input_fingerprint:
+                    adviser = adviser_context_from_assessment(
+                        CandidateAdviserAssessment.model_validate(
+                            json.loads(assessment_record.structured_json)
+                        )
+                    )
+
         return CandidateContext(
             profile_text="\n".join(value for value in [profile_text, employment_text, education_text] if value),
             skills_text=", ".join(item.name for item in data.skills),
-            career_strategy_text=profile.career_goal if profile and profile.career_goal else "",
-            job_search_criteria_text=profile.job_search_criteria if profile and profile.job_search_criteria else "",
+            career_strategy_text="\n".join(value for value in career_strategy_parts if value),
+            job_search_criteria_text="\n".join(value for value in criteria_parts if value),
+            eligibility=eligibility,
+            adviser=adviser,
             evidence=[CareerEvidence(evidence_id=record.id, title=record.title, text=record.text, skills=json.loads(record.skills_json)) for record in records],
         )
 
@@ -205,9 +250,19 @@ class PersistedCandidateContextLoader:
 
     def summary(self, user_id: str) -> CandidateContextSummary:
         profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
-        career_strategy_configured = bool(profile and profile.career_goal and profile.career_goal.strip())
+        intake_record = self._session.scalar(select(CandidateIntakeProfile).where(CandidateIntakeProfile.user_id == user_id))
+        intake = (
+            CandidateIntakeProfileData.model_validate(json.loads(intake_record.structured_json))
+            if intake_record is not None and intake_record.confirmed
+            else None
+        )
+        career_strategy_configured = bool(
+            (profile and profile.career_goal and profile.career_goal.strip())
+            or (intake and self._intake_strategy_text(intake))
+        )
         job_search_criteria_configured = bool(
-            profile and profile.job_search_criteria and profile.job_search_criteria.strip()
+            (profile and profile.job_search_criteria and profile.job_search_criteria.strip())
+            or (intake and self._intake_criteria_text(intake))
         )
         structured = self._session.scalar(
             select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
@@ -239,3 +294,39 @@ class PersistedCandidateContextLoader:
             career_strategy_configured=career_strategy_configured,
             job_search_criteria_configured=job_search_criteria_configured,
         )
+
+    @staticmethod
+    def _intake_strategy_text(intake: CandidateIntakeProfileData) -> str:
+        direction = intake.career_direction
+        parts = [
+            direction.short_term_goal or "",
+            direction.long_term_goal or "",
+            ", ".join(direction.target_role_families),
+            ", ".join(direction.acceptable_adjacent_roles),
+            ", ".join(direction.desired_capabilities),
+            ", ".join(direction.transition_preferences),
+        ]
+        return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _intake_criteria_text(intake: CandidateIntakeProfileData) -> str:
+        preferences = intake.work_preferences
+        constraints = intake.constraints
+        motivations = intake.motivations
+        parts = [
+            ", ".join(preferences.preferred_work),
+            ", ".join(preferences.disliked_work),
+            ", ".join(preferences.preferred_industries),
+            ", ".join(preferences.preferred_work_arrangements),
+            ", ".join(preferences.preferred_locations),
+            preferences.customer_interaction_preference or "",
+            preferences.technical_hands_on_preference or "",
+            preferences.management_preference or "",
+            ", ".join(constraints.relocation_preferences),
+            ", ".join(constraints.travel_preferences),
+            ", ".join(constraints.compensation_preferences),
+            ", ".join(constraints.hard_constraints),
+            ", ".join(motivations.priorities),
+            ", ".join(motivations.important_tradeoffs),
+        ]
+        return "\n".join(part for part in parts if part)
