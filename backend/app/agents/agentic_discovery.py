@@ -29,9 +29,13 @@ class OpenAISearchStrategyGenerator:
         self._model = model
 
     def generate(self, search_profile: CandidateSearchProfile, career_profile: CandidateCareerProfile, limit: int) -> list[SearchStrategy]:
+        search_payload = search_profile.model_dump(mode="json")
+        career_payload = career_profile.model_dump(mode="json")
+        self._drop_empty_adviser(search_payload)
+        self._drop_empty_adviser(career_payload)
         payload = {
-            "search_profile": search_profile.model_dump(mode="json"),
-            "career_profile": career_profile.model_dump(mode="json"),
+            "search_profile": search_payload,
+            "career_profile": career_payload,
             "max_strategies": limit,
         }
         response = self._client.responses.create(
@@ -45,6 +49,12 @@ class OpenAISearchStrategyGenerator:
             return [SearchStrategy.model_validate(item) for item in json.loads(_clean(response.output_text))][:limit]
         except (json.JSONDecodeError, ValidationError, TypeError) as exc:
             raise RuntimeError("The model returned invalid search strategies.") from exc
+
+    @staticmethod
+    def _drop_empty_adviser(payload: dict[str, object]) -> None:
+        adviser = payload.get("adviser")
+        if isinstance(adviser, dict) and not any(adviser.values()):
+            payload.pop("adviser", None)
 
 
 class OpenAIPageVacancyExtractor:
