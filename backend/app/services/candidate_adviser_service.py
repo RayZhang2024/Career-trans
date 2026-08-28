@@ -10,7 +10,7 @@ from app.models.candidate_adviser import (
     CandidateAdviserAssessmentRecord,
     CandidateIntakeProfile,
 )
-from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
+from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.providers.llm import SemanticOutputError
 from app.schemas.candidate_adviser import (
     CandidateAdviserAssessment,
@@ -22,6 +22,8 @@ from app.schemas.candidate_adviser import (
 )
 from app.services.candidate_adviser_projection import (
     candidate_adviser_input_fingerprint,
+    candidate_adviser_source_context,
+    compact_candidate_intake,
     intake_source_refs,
 )
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
@@ -99,16 +101,17 @@ class CandidateAdviserService:
         self._structured_profile(user_id)
         intake_record = self._confirmed_intake_record(user_id)
         intake = CandidateIntakeProfileData.model_validate(json.loads(intake_record.structured_json))
-        evidence_records = self._evidence_records(user_id)
         context = PersistedCandidateContextLoader(self._session).load(
             user_id,
             include_adviser=False,
         )
-        allowed_evidence_ids = [item.id for item in evidence_records]
-        allowed_intake_refs = sorted(intake_source_refs(intake))
+        source_context = candidate_adviser_source_context(context)
+        semantic_intake = compact_candidate_intake(intake)
+        allowed_evidence_ids = [item.evidence_id for item in source_context.evidence]
+        allowed_intake_refs = sorted(intake_source_refs(semantic_intake))
         assessment = self._semantic_adviser().assess(
-            context,
-            intake,
+            source_context,
+            semantic_intake,
             allowed_evidence_ids=allowed_evidence_ids,
             allowed_intake_refs=allowed_intake_refs,
         )
@@ -171,10 +174,16 @@ class CandidateAdviserService:
         if current.state != CandidateAdviserState.REVIEW_READY:
             raise ValueError("Only a current review-ready adviser assessment can be edited.")
         intake = self._confirmed_intake(user_id)
+        context = PersistedCandidateContextLoader(self._session).load(
+            user_id,
+            include_adviser=False,
+        )
+        source_context = candidate_adviser_source_context(context)
+        semantic_intake = compact_candidate_intake(intake)
         self._validate_refs(
             corrected,
-            allowed_evidence_ids={item.id for item in self._evidence_records(user_id)},
-            allowed_intake_refs=intake_source_refs(intake),
+            allowed_evidence_ids={item.evidence_id for item in source_context.evidence},
+            allowed_intake_refs=intake_source_refs(semantic_intake),
         )
         record.structured_json = json.dumps(corrected.model_dump(mode="json"), ensure_ascii=False)
         self._session.commit()
@@ -246,15 +255,6 @@ class CandidateAdviserService:
         return self._session.scalar(
             select(CandidateAdviserAssessmentRecord).where(
                 CandidateAdviserAssessmentRecord.user_id == user_id
-            )
-        )
-
-    def _evidence_records(self, user_id: str) -> list[CandidateEvidenceRecord]:
-        return list(
-            self._session.scalars(
-                select(CandidateEvidenceRecord)
-                .where(CandidateEvidenceRecord.user_id == user_id)
-                .order_by(CandidateEvidenceRecord.created_at, CandidateEvidenceRecord.id)
             )
         )
 
