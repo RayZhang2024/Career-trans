@@ -55,7 +55,9 @@ CandidateAdviserAssessmentRecord
 - state: review_ready | confirmed
 ```
 
-A deterministic SHA-256 input fingerprint covers the current confirmed structured CV, career-evidence fingerprints and confirmed intake. If any of those inputs change, the existing assessment is exposed as `stale` and is excluded from candidate context until reassessed and reconfirmed.
+The intake API is idempotent for unchanged content: saving the same typed intake again preserves its revision and confirmation state. A material edit increments the revision and returns the intake to an unconfirmed state.
+
+A deterministic SHA-256 fingerprint covers the exact candidate source context supplied to the semantic adviser, together with the confirmed structured intake. This includes current profile text, confirmed CV-derived employment/education/skills/evidence, candidate-authored strategy/search criteria, and structured eligibility. If any material adviser input changes, the existing assessment is exposed as `stale` and is excluded from candidate context until reassessed and reconfirmed.
 
 ## API
 
