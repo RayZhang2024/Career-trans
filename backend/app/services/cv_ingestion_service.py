@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateIntakeProfile
 from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.candidate_profile import CandidateProfile
-from app.schemas.candidate import CandidateAdviserContext, CandidateContext, CandidateContextSummary, CandidateEligibility, CareerEvidence
+from app.schemas.candidate import CandidateContext, CandidateContextSummary, CandidateEligibility, CareerEvidence
 from app.schemas.candidate_adviser import CandidateAdviserAssessment, CandidateAdviserState, CandidateIntakeProfileData
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, CareerEvidenceDraft, EvidenceProvenance, ExtractedCVDocument
 from app.services.candidate_adviser_projection import adviser_context_from_assessment, candidate_adviser_input_fingerprint
@@ -211,7 +211,15 @@ class PersistedCandidateContextLoader:
                 locations=intake.constraints.locations,
             )
 
-        adviser = CandidateAdviserContext()
+        base_context = CandidateContext(
+            profile_text="\n".join(value for value in [profile_text, employment_text, education_text] if value),
+            skills_text=", ".join(item.name for item in data.skills),
+            career_strategy_text="\n".join(value for value in career_strategy_parts if value),
+            job_search_criteria_text="\n".join(value for value in criteria_parts if value),
+            eligibility=eligibility,
+            evidence=[CareerEvidence(evidence_id=record.id, title=record.title, text=record.text, skills=json.loads(record.skills_json)) for record in records],
+        )
+
         if include_adviser and structured is not None and intake is not None:
             assessment_record = self._session.scalar(
                 select(CandidateAdviserAssessmentRecord).where(
@@ -220,26 +228,20 @@ class PersistedCandidateContextLoader:
             )
             if assessment_record is not None and assessment_record.state == CandidateAdviserState.CONFIRMED.value:
                 current_fingerprint = candidate_adviser_input_fingerprint(
-                    structured_profile_json=structured.structured_json,
-                    evidence_fingerprints=[item.fingerprint for item in records],
+                    candidate_context=base_context,
                     intake=intake,
                 )
                 if current_fingerprint == assessment_record.input_fingerprint:
-                    adviser = adviser_context_from_assessment(
-                        CandidateAdviserAssessment.model_validate(
-                            json.loads(assessment_record.structured_json)
-                        )
+                    return base_context.model_copy(
+                        update={
+                            "adviser": adviser_context_from_assessment(
+                                CandidateAdviserAssessment.model_validate(
+                                    json.loads(assessment_record.structured_json)
+                                )
+                            )
+                        }
                     )
-
-        return CandidateContext(
-            profile_text="\n".join(value for value in [profile_text, employment_text, education_text] if value),
-            skills_text=", ".join(item.name for item in data.skills),
-            career_strategy_text="\n".join(value for value in career_strategy_parts if value),
-            job_search_criteria_text="\n".join(value for value in criteria_parts if value),
-            eligibility=eligibility,
-            adviser=adviser,
-            evidence=[CareerEvidence(evidence_id=record.id, title=record.title, text=record.text, skills=json.loads(record.skills_json)) for record in records],
-        )
+        return base_context
 
     def load_confirmed(self, user_id: str) -> CandidateContext | None:
         """Return only confirmed CV-derived context; never fall back to demo data."""
