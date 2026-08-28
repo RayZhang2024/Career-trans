@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models.user import User
+from app.providers.llm import SemanticOutputError
 from app.schemas.candidate_adviser import (
     CandidateAdviserAssessment,
     CandidateAdviserState,
@@ -225,8 +226,19 @@ def test_adviser_rejects_unknown_source_references(client, db_session) -> None:
     service.save_intake(user_id, _intake())
     service.confirm_intake(user_id)
 
-    with pytest.raises(ValueError, match="unknown career evidence"):
+    with pytest.raises(SemanticOutputError, match="unknown career evidence"):
         service.assess(user_id)
+
+
+def test_empty_intake_cannot_be_confirmed(client, db_session) -> None:
+    _, email = _auth(client, "adviser-empty@example.com")
+    user_id = db_session.scalar(select(User.id).where(User.email == email))
+    assert user_id is not None
+    service = CandidateAdviserService(db_session, adviser=_FakeAdviser())
+    service.save_intake(user_id, CandidateIntakeProfileData())
+
+    with pytest.raises(ValueError, match="meaningful answer"):
+        service.confirm_intake(user_id)
 
 
 def test_candidate_adviser_api_is_user_scoped(client, db_session) -> None:
