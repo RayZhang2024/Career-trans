@@ -5,14 +5,17 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from app.providers.llm import SemanticOutputError
-from app.schemas.candidate import CandidateContext
-from app.schemas.candidate_adviser import CandidateAdviserAssessment, CandidateIntakeProfileData
+from app.schemas.candidate_adviser import (
+    CandidateAdviserAssessment,
+    CandidateAdviserSourceContext,
+    CandidateIntakeProfileData,
+)
 
 
 class CandidateAdviserAgent(Protocol):
     def assess(
         self,
-        candidate_context: CandidateContext,
+        candidate_context: CandidateAdviserSourceContext,
         intake: CandidateIntakeProfileData,
         *,
         allowed_evidence_ids: list[str],
@@ -21,7 +24,7 @@ class CandidateAdviserAgent(Protocol):
 
 
 class SemanticCandidateAdviser:
-    """Provider-neutral semantic adviser over confirmed candidate source data."""
+    """Provider-neutral semantic adviser over bounded confirmed candidate source data."""
 
     def __init__(self, client: object, model: str) -> None:
         self._client = client
@@ -29,7 +32,7 @@ class SemanticCandidateAdviser:
 
     def assess(
         self,
-        candidate_context: CandidateContext,
+        candidate_context: CandidateAdviserSourceContext,
         intake: CandidateIntakeProfileData,
         *,
         allowed_evidence_ids: list[str],
