@@ -36,6 +36,14 @@ Confirmed adviser context is projected only into `CandidateSearchProfile` and `C
 
 Candidate intake can also populate deterministic `CandidateEligibility` fields such as work authorisation, security clearances and valid work locations.
 
+## Bounded semantic input
+
+The adviser does not receive an unbounded persisted candidate record. Application code builds a typed `CandidateAdviserSourceContext` with bounded profile/strategy text, skills, eligibility and at most 40 career-evidence records. When more evidence exists, V1 retains a stable early-career and recent-career slice. Individual evidence text and skill lists are bounded as well.
+
+Candidate-authored intake remains stored in full, while a deterministic bounded copy is supplied to the semantic adviser. This keeps persistence faithful to the user's source data while preventing accumulated CV/evidence history or unusually long intake fields from growing the model prompt indefinitely.
+
+Only evidence IDs actually present in the bounded adviser payload are allow-listed for semantic source citations.
+
 ## Persistence
 
 V1 adds one user-owned intake record and one user-owned adviser assessment record:
@@ -57,7 +65,7 @@ CandidateAdviserAssessmentRecord
 
 The intake API is idempotent for unchanged content: saving the same typed intake again preserves its revision and confirmation state. A material edit increments the revision and returns the intake to an unconfirmed state.
 
-A deterministic SHA-256 fingerprint covers the exact candidate source context supplied to the semantic adviser, together with the confirmed structured intake. This includes current profile text, confirmed CV-derived employment/education/skills/evidence, candidate-authored strategy/search criteria, and structured eligibility. If any material adviser input changes, the existing assessment is exposed as `stale` and is excluded from candidate context until reassessed and reconfirmed.
+A deterministic SHA-256 fingerprint covers the exact **bounded semantic source payload** supplied to the adviser, together with the bounded confirmed intake. If a material candidate change alters what the adviser would actually see, the existing assessment is exposed as `stale` and is excluded from candidate context until reassessed and reconfirmed. Changes outside a deliberately truncated semantic budget do not invalidate an assessment because they did not change that assessment's input.
 
 ## API
 
@@ -76,7 +84,7 @@ All routes are authenticated and derive ownership from `current_user.id`.
 
 ## Semantic contract
 
-The adviser receives confirmed candidate context and intake plus explicit allow-lists of career-evidence IDs and non-empty intake field paths. Returned source references are validated deterministically. Unknown references or unsupported positive findings fail closed rather than becoming candidate knowledge.
+The adviser receives bounded confirmed candidate source context and bounded intake plus explicit allow-lists of career-evidence IDs and non-empty intake field paths. Returned source references are validated deterministically. Unknown references or unsupported positive findings fail closed rather than becoming candidate knowledge.
 
 ## V1 non-goals
 
