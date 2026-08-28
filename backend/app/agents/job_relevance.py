@@ -32,9 +32,11 @@ class OpenAIJobRelevanceAgent:
 
     def assess(self, job: JobListing, candidate: CandidateContext) -> JobRelevanceAssessment:
         profile = candidate_search_profile(candidate)
+        candidate_payload = profile.model_dump(mode="json")
+        self._drop_empty_adviser(candidate_payload)
         payload = {
             "job": {"title": job.title, "description": job.description},
-            "candidate": profile.model_dump(mode="json"),
+            "candidate": candidate_payload,
         }
         return self._request("job_relevance.md", payload, JobRelevanceAssessment)
 
@@ -52,3 +54,9 @@ class OpenAIJobRelevanceAgent:
             return schema.model_validate(json.loads(raw))
         except (json.JSONDecodeError, ValidationError) as exc:
             raise JobRelevanceError("The model returned invalid relevance output.") from exc
+
+    @staticmethod
+    def _drop_empty_adviser(payload: dict[str, object]) -> None:
+        adviser = payload.get("adviser")
+        if isinstance(adviser, dict) and not any(adviser.values()):
+            payload.pop("adviser", None)
