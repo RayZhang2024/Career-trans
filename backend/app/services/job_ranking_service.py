@@ -84,6 +84,10 @@ class JobRankingService:
                 continue
             if finalist_count >= request.max_full_analyses:
                 continue
+            # The deep-analysis cap bounds graph invocation attempts, including
+            # malformed or zero-requirement extraction outcomes. A description
+            # known to be blank is handled above without a graph call.
+            finalist_count += 1
             try:
                 state = self._career_analysis_graph.invoke(
                     job_text=job.description,
@@ -94,7 +98,6 @@ class JobRankingService:
                 if job_profile is not None and not job_profile.requirements:
                     failures.append(self._insufficient_detail_failure(job, "no extractable requirements"))
                     continue
-                finalist_count += 1
                 opportunity = RankedJobOpportunity(
                     job=job,
                     relevance=relevance,
@@ -108,7 +111,6 @@ class JobRankingService:
                     requirement_matches=state.get("requirement_matches", []),
                 )
             except Exception as exc:
-                finalist_count += 1
                 logger.exception("Career analysis failed for a public job listing.")
                 failures.append(
                     JobRankingFailure(
