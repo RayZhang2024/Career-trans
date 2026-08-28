@@ -91,7 +91,7 @@ class CandidateAdviserService:
         return self.read_intake(user_id)
 
     def assess(self, user_id: str) -> CandidateAdviserAssessmentRead:
-        structured = self._structured_profile(user_id)
+        self._structured_profile(user_id)
         intake_record = self._confirmed_intake_record(user_id)
         intake = CandidateIntakeProfileData.model_validate(json.loads(intake_record.structured_json))
         evidence_records = self._evidence_records(user_id)
@@ -116,8 +116,7 @@ class CandidateAdviserService:
         except ValueError as exc:
             raise SemanticOutputError(str(exc)) from exc
         fingerprint = candidate_adviser_input_fingerprint(
-            structured_profile_json=structured.structured_json,
-            evidence_fingerprints=[item.fingerprint for item in evidence_records],
+            candidate_context=context,
             intake=intake,
         )
         record = self._assessment_record(user_id)
@@ -206,9 +205,12 @@ class CandidateAdviserService:
         if structured is None or intake_record is None or not intake_record.confirmed:
             return None
         intake = CandidateIntakeProfileData.model_validate(json.loads(intake_record.structured_json))
+        context = PersistedCandidateContextLoader(self._session).load(
+            user_id,
+            include_adviser=False,
+        )
         return candidate_adviser_input_fingerprint(
-            structured_profile_json=structured.structured_json,
-            evidence_fingerprints=[item.fingerprint for item in self._evidence_records(user_id)],
+            candidate_context=context,
             intake=intake,
         )
 
