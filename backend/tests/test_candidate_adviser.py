@@ -7,12 +7,13 @@ from app.agents.candidate_adviser import SemanticCandidateAdviser
 from app.api.deps import get_candidate_adviser_service
 from app.main import app
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord
-from app.models.candidate_cv_ingestion import CandidateEvidenceRecord
+from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
 from app.providers.llm import SemanticOutputError
-from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserIntake
+from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserIntake, CandidateAdviserSemanticInput
 from app.schemas.job import JobProfile, JobRequirement
 from app.services.candidate_adviser_service import CandidateAdviserService
+from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
 from app.services.candidate_profile_compaction import candidate_career_profile, candidate_matching_profile, candidate_search_profile
 from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
 from app.schemas.cv_ingestion import CandidateCVData
@@ -86,9 +87,10 @@ class _FakeAdviser:
         self.bad_evidence_id = bad_evidence_id
         self.calls = 0
 
-    def assess(self, *, intake, evidence):
+    def assess(self, *, semantic_input):
         self.calls += 1
-        evidence_id = "not-supplied" if self.bad_evidence_id else str(evidence[0]["evidence_id"])
+        self.semantic_input = semantic_input
+        evidence_id = "not-supplied" if self.bad_evidence_id else semantic_input.career_evidence[0].evidence_id
         return _content(evidence_id=evidence_id)
 
 
@@ -102,24 +104,51 @@ def test_adviser_assessment_is_grounded_stale_and_user_scoped(db_session) -> Non
 
     service.save_intake(user_a, _intake())
     assessment = service.assess(user_a)
-    assert assessment.status == "current"
+    assert assessment.status == "review_ready"
     assert fake.calls == 1
+    assert fake.semantic_input.structured_cv.employment[0].title == "Engineer"
+    assert fake.semantic_input.structured_cv.skills[0].name == "Python"
     assert service.get_assessment(user_b) is None
 
+    assert service.confirm_assessment(user_a).status == "confirmed"
+
     service.save_intake(user_a, _intake())
-    assert service.get_assessment(user_a).status == "current"
+    assert service.get_assessment(user_a).status == "confirmed"
 
     changed = _intake().model_copy(update={"constraints": ["UK roles", "No relocation"]})
     service.save_intake(user_a, changed)
     assert service.get_assessment(user_a).status == "stale"
     assert db_session.scalar(select(CandidateAdviserAssessmentRecord.status).where(CandidateAdviserAssessmentRecord.user_id == user_a)) == "stale"
+    with pytest.raises(ValueError, match="stale"):
+        service.confirm_assessment(user_a)
 
-    service.assess(user_a)
+    assert service.assess(user_a).status == "review_ready"
+    assert service.confirm_assessment(user_a).status == "confirmed"
+    assert service.confirm_assessment(user_a).status == "confirmed"
     evidence = db_session.scalar(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_a))
     assert evidence is not None
-    evidence.fingerprint = "changed-source-evidence"
+    evidence.text = "Changed confirmed evidence that reaches the adviser input."
     db_session.commit()
     assert service.get_assessment(user_a).status == "stale"
+    assert db_session.scalar(select(CandidateAdviserAssessmentRecord.status).where(CandidateAdviserAssessmentRecord.user_id == user_a)) == "confirmed"
+
+
+def test_assessment_fingerprint_tracks_compacted_structured_cv_input(db_session) -> None:
+    user_id = _user(db_session, "adviser-structured-stale@example.com")
+    _confirmed_cv(db_session, user_id)
+    service = CandidateAdviserService(db_session, agent=_FakeAdviser())
+    service.save_intake(user_id, _intake())
+    service.assess(user_id)
+    service.confirm_assessment(user_id)
+
+    structured = db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+    assert structured is not None
+    data = json.loads(structured.structured_json)
+    data["projects"] = [{"name": "New confirmed project", "description": "Relevant source-backed work."}]
+    structured.structured_json = json.dumps(data, sort_keys=True)
+    db_session.commit()
+
+    assert service.get_assessment(user_id).status == "stale"
 
 
 def test_adviser_rejects_unsupplied_evidence_reference_without_persisting(db_session) -> None:
@@ -145,8 +174,14 @@ def test_adviser_projection_enriches_search_and_career_but_not_matching(db_sessi
     assert context is not None
     assert context.eligibility.locations == ["United Kingdom"]
     assert "Move toward applied AI delivery." in context.career_strategy_text
-    assert "Source-grounded adviser summary." in context.career_strategy_text
+    assert "Source-grounded adviser summary." not in context.career_strategy_text
     assert "Hybrid work" in context.job_search_criteria_text
+    assert "Source-grounded adviser summary." not in context.job_search_criteria_text
+    assert service.confirm_assessment(user_id).status == "confirmed"
+
+    context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
+    assert context is not None
+    assert "Source-grounded adviser summary." in context.career_strategy_text
     assert "Source-grounded adviser summary." in context.job_search_criteria_text
     assert "Source-grounded adviser summary." in candidate_search_profile(context).career_strategy_text
     assert candidate_career_profile(context).eligibility.locations == ["United Kingdom"]
@@ -184,7 +219,8 @@ def test_adviser_api_is_authenticated_and_user_scoped(client, db_session) -> Non
         assert client.get("/api/v1/candidate-adviser/intake", headers=headers_b).status_code == 404
         generated = client.post("/api/v1/candidate-adviser/assessment", headers=headers_a)
         assert generated.status_code == 200
-        assert generated.json()["status"] == "current"
+        assert generated.json()["status"] == "review_ready"
+        assert client.post("/api/v1/candidate-adviser/assessment/confirm", headers=headers_a).json()["status"] == "confirmed"
         assert client.get("/api/v1/candidate-adviser/assessment", headers=headers_b).status_code == 404
     finally:
         app.dependency_overrides.pop(get_candidate_adviser_service, None)
@@ -199,4 +235,55 @@ def test_semantic_adviser_rejects_malformed_structured_output() -> None:
     agent = SemanticCandidateAdviser(client, "test-model")
 
     with pytest.raises(SemanticOutputError, match="invalid structured output"):
-        agent.assess(intake=_intake(), evidence=[])
+        agent.assess(semantic_input=CandidateAdviserSemanticInput(intake=_intake(), structured_cv=CandidateCVData()))
+
+
+def test_adviser_semantic_projection_is_deterministically_bounded() -> None:
+    intake = CandidateAdviserIntake(
+        career_direction="direction " * 1_000,
+        work_preferences=["preference " * 100 for _ in range(30)],
+        constraints=["constraint " * 100 for _ in range(30)],
+        self_assessment=["assessment " * 100 for _ in range(30)],
+        motivations=["motivation " * 100 for _ in range(30)],
+        tradeoffs=["tradeoff " * 100 for _ in range(30)],
+        eligibility={"locations": ["location " * 100 for _ in range(30)]},
+    )
+    structured = CandidateCVData.model_validate(
+        {
+            "employment": [{"employer": "Employer", "title": "Engineer", "description": "description " * 200} for _ in range(30)],
+            "skills": [{"name": "skill " * 100} for _ in range(100)],
+            "projects": [{"name": "Project", "description": "description " * 200, "skills": ["skill " * 100] * 30} for _ in range(30)],
+        }
+    )
+    projection = compact_candidate_adviser_input(
+        intake=intake,
+        structured_cv=structured,
+        career_evidence=[
+            {"evidence_id": str(index), "title": "title " * 100, "text": "evidence " * 400, "skills": ["skill " * 100] * 30}
+            for index in range(40)
+        ],
+    )
+
+    assert len(projection.intake.career_direction) <= 600
+    assert len(projection.intake.work_preferences) == 12
+    assert all(len(item) <= 240 for item in projection.intake.work_preferences)
+    assert len(projection.intake.eligibility.locations) == 12
+    assert len(projection.structured_cv.employment) == 12
+    assert len(projection.structured_cv.skills) == 60
+    assert len(projection.structured_cv.projects) == 8
+    assert len(projection.career_evidence) == 24
+    assert all(len(item.text) <= 1_200 and len(item.skills) <= 16 for item in projection.career_evidence)
+
+    calls = []
+
+    class _Responses:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return type("Response", (), {"output_text": json.dumps(_content(intake_path="career_direction").model_dump())})()
+
+    agent = SemanticCandidateAdviser(type("Client", (), {"responses": _Responses()})(), "test-model")
+    agent.assess(semantic_input=projection)
+    payload = json.loads(calls[0]["input"][1]["content"].split("INPUT:\n", 1)[1])
+    assert len(payload["intake"]["career_direction"]) <= 600
+    assert len(payload["career_evidence"]) == 24
+    assert len(payload["structured_cv"]["skills"]) == 60

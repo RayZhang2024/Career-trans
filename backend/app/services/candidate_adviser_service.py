@@ -15,7 +15,10 @@ from app.schemas.candidate_adviser import (
     CandidateAdviserAssessmentStatus,
     CandidateAdviserIntake,
     CandidateAdviserIntakeRead,
+    CandidateAdviserSemanticInput,
 )
+from app.schemas.cv_ingestion import CandidateCVData
+from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
 
 
 class CandidateAdviserService:
@@ -49,21 +52,38 @@ class CandidateAdviserService:
         if self._agent is None:
             raise ValueError("No semantic candidate adviser is configured.")
         intake = self._intake(user_id)
-        evidence = self._evidence(user_id)
         if not self._session.scalar(select(CandidateStructuredProfile.id).where(CandidateStructuredProfile.user_id == user_id)):
             raise ValueError("Candidate adviser requires a confirmed CV before assessment.")
-        content = self._agent.assess(intake=intake, evidence=evidence)
-        self._validate_sources(content, intake, {str(item["evidence_id"]) for item in evidence})
-        fingerprint = self.input_fingerprint(user_id, intake=intake)
+        semantic_input = self._semantic_input(user_id, intake=intake)
+        content = self._agent.assess(semantic_input=semantic_input)
+        self._validate_sources(content, intake, {item.evidence_id for item in semantic_input.career_evidence})
+        fingerprint = self.input_fingerprint(user_id, semantic_input=semantic_input)
         record = self._session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user_id))
         encoded = json.dumps(content.model_dump(mode="json"), sort_keys=True)
         if record is None:
-            record = CandidateAdviserAssessmentRecord(user_id=user_id, input_fingerprint=fingerprint, status=CandidateAdviserAssessmentStatus.CURRENT, assessment_json=encoded)
+            record = CandidateAdviserAssessmentRecord(user_id=user_id, input_fingerprint=fingerprint, status=CandidateAdviserAssessmentStatus.REVIEW_READY, assessment_json=encoded)
             self._session.add(record)
         else:
             record.input_fingerprint = fingerprint
-            record.status = CandidateAdviserAssessmentStatus.CURRENT
+            record.status = CandidateAdviserAssessmentStatus.REVIEW_READY
             record.assessment_json = encoded
+        self._session.commit()
+        self._session.refresh(record)
+        return self._read_assessment(record, fingerprint)
+
+    def confirm_assessment(self, user_id: str) -> CandidateAdviserAssessmentRead:
+        record = self._session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user_id))
+        if record is None:
+            raise ValueError("Candidate adviser assessment has not been generated.")
+        fingerprint = self.input_fingerprint(user_id)
+        assessment = self._read_assessment(record, fingerprint)
+        if assessment.status is CandidateAdviserAssessmentStatus.STALE:
+            raise ValueError("Candidate adviser assessment is stale; generate a new review draft before confirming.")
+        if assessment.status is CandidateAdviserAssessmentStatus.CONFIRMED:
+            return assessment
+        if assessment.status is not CandidateAdviserAssessmentStatus.REVIEW_READY:
+            raise ValueError("Candidate adviser assessment is not ready for confirmation.")
+        record.status = CandidateAdviserAssessmentStatus.CONFIRMED
         self._session.commit()
         self._session.refresh(record)
         return self._read_assessment(record, fingerprint)
@@ -73,29 +93,14 @@ class CandidateAdviserService:
         if record is None:
             return None
         fingerprint = self.input_fingerprint(user_id)
-        derived_status = CandidateAdviserAssessmentStatus.CURRENT if record.input_fingerprint == fingerprint else CandidateAdviserAssessmentStatus.STALE
-        if record.status != derived_status:
-            record.status = derived_status
-            self._session.commit()
-            self._session.refresh(record)
         return self._read_assessment(record, fingerprint)
 
     def current_assessment(self, user_id: str) -> CandidateAdviserAssessmentRead | None:
         assessment = self.get_assessment(user_id)
-        return assessment if assessment and assessment.status is CandidateAdviserAssessmentStatus.CURRENT else None
+        return assessment if assessment and assessment.status is CandidateAdviserAssessmentStatus.CONFIRMED else None
 
-    def input_fingerprint(self, user_id: str, *, intake: CandidateAdviserIntake | None = None) -> str:
-        resolved_intake = intake or self._intake(user_id)
-        structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
-        records = list(self._session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id).order_by(CandidateEvidenceRecord.id)))
-        payload = {
-            "intake": resolved_intake.model_dump(mode="json"),
-            "structured_profile": json.loads(structured.structured_json) if structured else None,
-            "evidence": [
-                {"id": record.id, "fingerprint": record.fingerprint}
-                for record in records
-            ],
-        }
+    def input_fingerprint(self, user_id: str, *, semantic_input: CandidateAdviserSemanticInput | None = None) -> str:
+        payload = (semantic_input or self._semantic_input(user_id)).model_dump(mode="json")
         return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def _intake(self, user_id: str) -> CandidateAdviserIntake:
@@ -104,17 +109,24 @@ class CandidateAdviserService:
             raise ValueError("Candidate adviser intake has not been provided.")
         return CandidateAdviserIntake.model_validate(found.model_dump(exclude={"updated_at"}))
 
-    def _evidence(self, user_id: str) -> list[dict[str, object]]:
+    def _semantic_input(self, user_id: str, *, intake: CandidateAdviserIntake | None = None) -> CandidateAdviserSemanticInput:
+        structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+        data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
         records = list(self._session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id).order_by(CandidateEvidenceRecord.created_at, CandidateEvidenceRecord.id)))
-        return [
+        evidence = [
             {
                 "evidence_id": record.id,
                 "title": record.title,
-                "text": record.text[:1200],
+                "text": record.text,
                 "skills": json.loads(record.skills_json),
             }
-            for record in records[:24]
+            for record in records
         ]
+        return compact_candidate_adviser_input(
+            intake=intake or self._intake(user_id),
+            structured_cv=data,
+            career_evidence=evidence,
+        )
 
     @staticmethod
     def _validate_sources(content: CandidateAdviserAssessmentContent, intake: CandidateAdviserIntake, evidence_ids: set[str]) -> None:
@@ -151,7 +163,7 @@ class CandidateAdviserService:
 
     @staticmethod
     def _read_assessment(record: CandidateAdviserAssessmentRecord, fingerprint: str) -> CandidateAdviserAssessmentRead:
-        status = CandidateAdviserAssessmentStatus.CURRENT if record.input_fingerprint == fingerprint else CandidateAdviserAssessmentStatus.STALE
+        status = CandidateAdviserAssessmentStatus(record.status) if record.input_fingerprint == fingerprint else CandidateAdviserAssessmentStatus.STALE
         return CandidateAdviserAssessmentRead(
             input_fingerprint=record.input_fingerprint,
             status=status,

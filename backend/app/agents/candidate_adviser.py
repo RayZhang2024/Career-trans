@@ -5,11 +5,11 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from app.providers.llm import SemanticOutputError
-from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserIntake
+from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserSemanticInput
 
 
 class CandidateAdviserAgent(Protocol):
-    def assess(self, *, intake: CandidateAdviserIntake, evidence: list[dict[str, object]]) -> CandidateAdviserAssessmentContent: ...
+    def assess(self, *, semantic_input: CandidateAdviserSemanticInput) -> CandidateAdviserAssessmentContent: ...
 
 
 class SemanticCandidateAdviser:
@@ -19,9 +19,9 @@ class SemanticCandidateAdviser:
         self._client = client
         self._model = model
 
-    def assess(self, *, intake: CandidateAdviserIntake, evidence: list[dict[str, object]]) -> CandidateAdviserAssessmentContent:
+    def assess(self, *, semantic_input: CandidateAdviserSemanticInput) -> CandidateAdviserAssessmentContent:
         prompt = (Path(__file__).resolve().parents[3] / "prompts" / "candidate_adviser.md").read_text(encoding="utf-8")
-        payload = {"intake": intake.model_dump(mode="json"), "career_evidence": evidence}
+        payload = semantic_input.model_dump(mode="json")
         response = self._client.responses.create(
             model=self._model,
             input=[

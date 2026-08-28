@@ -4,6 +4,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.candidate import CandidateEligibility
+from app.schemas.cv_ingestion import CandidateCVData
 
 
 class CandidateAdviserIntake(BaseModel):
@@ -22,6 +23,28 @@ class CandidateAdviserIntake(BaseModel):
 
 class CandidateAdviserIntakeRead(CandidateAdviserIntake):
     updated_at: datetime
+
+
+class CandidateAdviserEvidenceInput(BaseModel):
+    """Bounded semantic projection of one confirmed CareerEvidence record."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_id: str = Field(min_length=1)
+    title: str = ""
+    text: str = ""
+    skills: list[str] = Field(default_factory=list)
+
+
+class CandidateAdviserSemanticInput(BaseModel):
+    """The complete bounded input used for adviser synthesis and fingerprints."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    intake: CandidateAdviserIntake
+    structured_cv: CandidateCVData
+    career_evidence: list[CandidateAdviserEvidenceInput] = Field(default_factory=list)
+
 
 class AdviserSourceReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -53,7 +76,8 @@ class CandidateAdviserAssessmentContent(BaseModel):
 
 
 class CandidateAdviserAssessmentStatus(StrEnum):
-    CURRENT = "current"
+    REVIEW_READY = "review_ready"
+    CONFIRMED = "confirmed"
     STALE = "stale"
 
 
