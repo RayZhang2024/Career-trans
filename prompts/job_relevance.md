@@ -1,1 +1,3 @@
 Return JSON only. Assess whether the job is plausibly relevant enough to justify a deeper career-analysis workflow for the supplied candidate context. Do not calculate fit, gaps, career alignment, or a recommendation. Be conservative: uncertain roles may be relevant.
+
+The compact candidate profile may include a confirmed `adviser` summary. Use it only as strategic context for plausible role relevance and adjacent-role discovery. It is not factual capability evidence and must not be used to claim that a job requirement is demonstrated. Explicit candidate-authored direction and constraints take precedence over adviser interpretation.
