@@ -46,20 +46,20 @@ The system should eventually answer two separate questions for each role:
 Register / login
       |
       v
-Create profile
+Build candidate understanding
       |
-      +--> upload CV
-      +--> enter preferences
-      +--> review extracted experience
+      +--> upload and confirm CV evidence
+      +--> complete structured career-adviser intake
+      +--> review adviser assessment / role hypotheses
       |
       v
-Submit job URL or description
+Discover or submit jobs
       |
       v
 Extract job requirements
       |
       v
-Match against user's evidence
+Match against user's factual evidence
       |
       v
 Fit assessment
@@ -77,7 +77,7 @@ CV tailoring / cover letter
 Application tracking
 ```
 
-Later versions will add recurring job discovery and shortlist generation.
+Later versions will add richer conversational adviser workflows and application-outcome learning.
 
 ---
 
@@ -93,7 +93,7 @@ React / TypeScript frontend
           |
           +--> authentication / authorization
           |
-          +--> candidate-profile services
+          +--> candidate-understanding services
           |
           +--> job-analysis services
           |
@@ -110,7 +110,7 @@ React / TypeScript frontend
 
 The application should support local development first and production deployment later.
 
-See `docs/ARCHITECTURE.md` for the detailed design.
+See `docs/ARCHITECTURE.md` for the detailed design and `docs/CANDIDATE_ADVISER.md` for the candidate-understanding evidence boundary.
 
 ---
 
@@ -118,7 +118,7 @@ See `docs/ARCHITECTURE.md` for the detailed design.
 
 Career Agent is designed for external users.
 
-Each registered user owns their own candidate profile, career evidence, skills, projects, uploaded CVs, preferences, saved jobs, assessments, application materials, and application history.
+Each registered user owns their own candidate profile, career evidence, candidate intake, adviser assessment, skills, projects, uploaded CVs, preferences, saved jobs, assessments, application materials, and application history.
 
 Production data must be isolated by authenticated user identity.
 
@@ -150,7 +150,8 @@ career-trans/
 |   `-- src/
 |
 |-- docs/
-|   `-- ARCHITECTURE.md
+|   |-- ARCHITECTURE.md
+|   `-- CANDIDATE_ADVISER.md
 |
 |-- prompts/
 |
@@ -176,11 +177,19 @@ Demo profiles exist only for development, testing, evaluation, and examples. The
 
 ## Candidate Context
 
-A typed, user-agnostic representation of candidate information consumed by matching workflows. During development it can be loaded from demo Markdown resources; in production it will be assembled from authenticated user data.
+A typed, user-agnostic representation assembled from authenticated user data in production. It keeps factual career evidence separate from candidate-authored strategy/preferences and confirmed adviser interpretation so each downstream stage receives only the authority level it needs.
 
 ## Career Evidence
 
-Atomic evidence supporting claims about candidate capability. Evidence items have stable IDs so requirement matches can cite the exact supporting records.
+Atomic evidence supporting claims about candidate capability. Evidence items have stable IDs so requirement matches can cite the exact supporting records. Adviser interpretations never silently become career evidence.
+
+## Candidate Adviser Intake
+
+Structured candidate-authored information covering career direction, work preferences, constraints and eligibility, self-assessment, motivations, and trade-offs. Intake is source data but is not treated as independently verified CV evidence.
+
+## Candidate Adviser Assessment
+
+A reviewable semantic interpretation of confirmed CV/profile data plus confirmed intake. It can identify professional positioning, transferable strengths, development gaps, role hypotheses, unresolved questions, and career/search strategy. Confirmed adviser summaries inform discovery and career alignment but are deliberately excluded from requirement-matching evidence.
 
 ## Job Profile
 
@@ -208,7 +217,7 @@ hard blockers.
 Measures whether the role moves the user in their preferred strategic direction.
 Career Alignment V1 scores six explainable dimensions independently of current-role
 fit, aggregates them with centrally configured Python weights, and reports explicit
-confidence based on the supplied strategy, preferences, and job information.
+confidence based on the supplied strategy, preferences, adviser context, and job information.
 
 ## Recommendation Assessment
 
@@ -226,10 +235,17 @@ Current backend functionality includes:
 - email/password registration and login;
 - JWT-protected current-user endpoint;
 - user-scoped candidate profile CRUD;
+- CV upload, deterministic file-text extraction, semantic structured interpretation, review and confirmation;
+- persisted structured candidate profiles and provenance-aware career evidence;
+- structured candidate-adviser intake with review/confirmation lifecycle;
+- semantic candidate-adviser assessment with validated source references and deterministic stale-input detection;
+- confirmed intake projection into career strategy, job-search criteria, and structured eligibility;
+- confirmed current adviser projection into job discovery and career alignment while keeping it out of requirement-matching evidence;
 - structured job-description extraction through `POST /api/v1/jobs/analyse`;
 - typed `JobProfile` and `JobRequirement` schemas;
 - generic Markdown demo-candidate loading into `CandidateContext`;
-- evidence-first requirement matching through `POST /api/v1/jobs/match`;
+- authenticated persisted candidate-context loading for matching/ranking/discovery;
+- evidence-first requirement matching through `POST /api/v1/jobs/match` and authenticated `match-me`;
 - typed `RequirementMatch` output;
 - validation that matchers cannot alter requirements or invent evidence IDs;
 - deterministic fit scoring and gap classification;
@@ -237,9 +253,7 @@ Current backend functionality includes:
 - deterministic career-alignment aggregation with explicit input-confidence handling;
 - development demo workflow returning fit, career, and recommendation assessments;
 - deterministic APPLY / CONSIDER / SKIP recommendation with hard-blocker precedence;
-- backend tests using fake AI components so automated tests do not call OpenAI.
-
-The matching endpoint currently accepts candidate context directly in the request. Production user-data loading and persistence will be connected later.
+- backend tests using fake AI components so automated tests do not require live model calls.
 
 ---
 
@@ -251,36 +265,45 @@ Backend registration/login/profile support exists. React authentication/profile 
 
 ## Profile Intelligence
 
-Planned:
+Implemented backend foundations:
 
-- CV upload;
-- CV parsing;
-- structured candidate profile;
-- evidence extraction;
-- user review/editing.
+- CV upload and parsing;
+- structured candidate profile and evidence extraction;
+- user review/editing and confirmation;
+- structured career-adviser intake;
+- reviewable semantic adviser assessment;
+- stale-assessment invalidation when confirmed candidate sources change;
+- purpose-specific projections for matching, discovery, and career alignment.
+
+Still planned:
+
+- frontend onboarding/adviser intake UI;
+- richer iterative/conversational follow-up workflow;
+- additional non-CV evidence capture where appropriate.
 
 ## Job Analysis
 
-Implemented for raw job-description text. Job URL fetching is still planned.
+Implemented for raw job-description text. Job URL fetching/enrichment exists in selected discovery flows and can continue to expand.
 
 ## Matching and Scoring
 
 Requirement/evidence matching is implemented at V1 level.
 
-The backend demo workflow also implements deterministic aggregate fit scoring,
-explainable strengths, gap classification, and hard-blocker detection.
+The backend workflow also implements deterministic aggregate fit scoring,
+explainable strengths, gap classification, and hard-blocker detection. Candidate-adviser
+inference is intentionally excluded from the requirement-matching evidence set.
 
 ## Career Strategy
 
-Career Alignment V1 is implemented in the backend demo workflow. It consumes the
-candidate's dynamically loaded strategy and preferences and returns dimension-level
+Career Alignment V1 is implemented. It consumes the candidate's dynamically loaded
+strategy and preferences plus bounded confirmed adviser context and returns dimension-level
 reasoning, strategic strengths/trade-offs, a deterministic 0–100 score, and explicit
 confidence.
 
-Recommendation V1 is also implemented in the demo workflow. It uses centrally
-configured thresholds, supports a documented strategic-stretch APPLY case, downgrades
-score-based APPLY decisions when career confidence is low, and otherwise preserves
-mixed or uncertain cases for human review with CONSIDER.
+Recommendation V1 is also implemented. It uses centrally configured thresholds,
+supports a documented strategic-stretch APPLY case, downgrades score-based APPLY
+decisions when career confidence is low, and otherwise preserves mixed or uncertain
+cases for human review with CONSIDER.
 
 ## Application Preparation
 
@@ -304,10 +327,11 @@ Planned:
 
 Implemented foundations:
 
-- bounded agentic public-web discovery from a supplied candidate context and search criteria;
+- bounded agentic public-web discovery from authenticated candidate context and search criteria;
 - structured search strategies, provider-neutral web-search and page-fetch boundaries;
 - deterministic URL filtering, page caps, vacancy normalization, deduplication, and non-authoritative lifecycle persistence;
-- existing downstream screening and ranking APIs for normalized listings.
+- existing downstream screening and ranking APIs for normalized listings;
+- candidate search projections that can include confirmed adviser role hypotheses and development priorities.
 
 Agentic discovery never submits applications and does not treat web-search omission as proof that a posting is inactive.
 
@@ -333,13 +357,14 @@ Development currently uses SQLite. Production target is PostgreSQL.
 
 ## AI
 
-AI/provider logic is kept behind interfaces. Current semantic uses are job extraction,
-requirement matching, and career alignment. Final recommendation selection is
-deterministic Python and does not call another model.
+AI/provider logic is kept behind interfaces. Current semantic uses include CV interpretation,
+candidate adviser assessment, job extraction, requirement matching, discovery strategy,
+and career alignment. Final recommendation selection is deterministic Python and does not
+call another model.
 
 ## Workflow
 
-LangGraph will be introduced when the workflow has enough stateful stages to justify orchestration complexity.
+LangGraph is used where stateful orchestration adds value and should not replace simpler deterministic service workflows. Candidate Adviser V1 deliberately uses an explicit review/confirmation service lifecycle rather than an autonomous conversational graph.
 
 ---
 
@@ -353,7 +378,8 @@ Important principles:
 - passwords are never stored in plaintext;
 - secrets are never committed;
 - authorization is enforced server-side;
-- uploaded documents will be private;
+- uploaded documents and candidate intake are private;
+- adviser inference is kept separate from authoritative career evidence;
 - demo data is never mixed with production user data.
 
 ---
