@@ -69,6 +69,11 @@ class CandidateAdviserService:
             )
             self._session.add(record)
         else:
+            existing = CandidateIntakeProfileData.model_validate(
+                json.loads(record.structured_json)
+            )
+            if existing == data:
+                return self.read_intake(user_id)
             record.structured_json = encoded
             record.revision += 1
             record.confirmed = False
