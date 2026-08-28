@@ -43,6 +43,10 @@ class Settings(BaseSettings):
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("CV_SEMANTIC_EXTRACTION_MODEL", "OPENAI_CV_SEMANTIC_EXTRACTION_MODEL", "cv_semantic_extraction_model", "openai_cv_semantic_extraction_model"),
     )
+    candidate_adviser_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("CANDIDATE_ADVISER_MODEL", "candidate_adviser_model"),
+    )
     requirement_matching_model: str = Field(
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("REQUIREMENT_MATCHING_MODEL", "OPENAI_REQUIREMENT_MATCHING_MODEL", "requirement_matching_model", "openai_requirement_matching_model"),
