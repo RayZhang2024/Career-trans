@@ -63,6 +63,9 @@ class OpenAICareerAlignmentAgent:
             job_profile,
             fit_assessment,
         ).model_dump(mode="json")
+        candidate_payload = payload.get("candidate_context")
+        if isinstance(candidate_payload, dict):
+            self._drop_empty_adviser(candidate_payload)
 
         response = self._client.responses.create(
             model=self._model,
@@ -99,6 +102,12 @@ class OpenAICareerAlignmentAgent:
             raise CareerAlignmentError(
                 f"Unable to load career alignment prompt: {self._prompt_path}"
             ) from exc
+
+    @staticmethod
+    def _drop_empty_adviser(payload: dict[str, object]) -> None:
+        adviser = payload.get("adviser")
+        if isinstance(adviser, dict) and not any(adviser.values()):
+            payload.pop("adviser", None)
 
     @staticmethod
     def _strip_json_fence(text: str) -> str:
