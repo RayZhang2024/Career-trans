@@ -2,6 +2,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.candidate import CandidateEligibility, CareerEvidence
+
 
 class AdviserConfidence(StrEnum):
     HIGH = "high"
@@ -83,6 +85,19 @@ class CandidateIntakeProfileData(BaseModel):
     constraints: CandidateConstraints = Field(default_factory=CandidateConstraints)
     self_assessment: CandidateSelfAssessment = Field(default_factory=CandidateSelfAssessment)
     motivations: CandidateMotivations = Field(default_factory=CandidateMotivations)
+
+
+class CandidateAdviserSourceContext(BaseModel):
+    """Bounded factual/source context supplied to the semantic career adviser."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_summary: str = ""
+    skills: list[str] = Field(default_factory=list)
+    career_strategy_text: str = ""
+    job_search_criteria_text: str = ""
+    eligibility: CandidateEligibility = Field(default_factory=CandidateEligibility)
+    evidence: list[CareerEvidence] = Field(default_factory=list)
 
 
 class RoleHypothesis(BaseModel):
