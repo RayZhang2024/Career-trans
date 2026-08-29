@@ -30,9 +30,28 @@ from app.schemas.matching import (
 class RequirementMatchingError(RuntimeError):
     """Raised when candidate/job matching cannot produce valid structured output."""
 
+    _SAFE_KINDS = frozenset(
+        {
+            "invalid_output",
+            "wrong_match_count",
+            "invalid_indexes",
+            "unknown_evidence_ids",
+            "provider_failure",
+            "structured_output_model_unsupported",
+            "structured_output_schema_rejected",
+            "structured_output_sdk_unsupported",
+            "prompt_load_failure",
+        }
+    )
+
     def __init__(self, message: str, *, kind: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+    @property
+    def safe_kind(self) -> str:
+        """Expose only the closed set of diagnostic categories at API boundaries."""
+        return self.kind if self.kind in self._SAFE_KINDS else "unknown"
 
 
 class RequirementMatcher(Protocol):
