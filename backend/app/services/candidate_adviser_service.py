@@ -19,6 +19,7 @@ from app.schemas.candidate_adviser import (
 )
 from app.schemas.cv_ingestion import CandidateCVData
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
+from app.services.candidate_adviser_references import candidate_adviser_reference_catalog, candidate_adviser_reference_is_allowed
 from app.services.career_evidence_fingerprint import career_evidence_fingerprint
 
 
@@ -53,7 +54,7 @@ class CandidateAdviserService:
             raise ValueError("Candidate adviser requires a confirmed CV before assessment.")
         semantic_input = self._semantic_input(user_id, intake=intake)
         content = self._agent.assess(semantic_input=semantic_input)
-        self._validate_sources(content, intake, {item.evidence_id for item in semantic_input.career_evidence})
+        self._validate_sources(content, semantic_input)
         fingerprint = self.input_fingerprint(user_id, semantic_input=semantic_input)
         record = self._session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user_id))
         encoded = json.dumps(content.model_dump(mode="json"), sort_keys=True)
@@ -144,26 +145,22 @@ class CandidateAdviserService:
         )
 
     @staticmethod
-    def _validate_sources(content: CandidateAdviserAssessmentContent, intake: CandidateAdviserIntake, evidence_ids: set[str]) -> None:
-        allowed_paths = CandidateAdviserService._intake_paths(intake)
+    def _validate_sources(content: CandidateAdviserAssessmentContent, semantic_input: CandidateAdviserSemanticInput) -> None:
+        catalog = candidate_adviser_reference_catalog(semantic_input)
         for insight in CandidateAdviserService._insights(content):
             for reference in insight.source_references:
-                if reference.source_type == "career_evidence" and reference.reference not in evidence_ids:
+                if reference.source_type == "career_evidence" and not candidate_adviser_reference_is_allowed(
+                    source_type=reference.source_type,
+                    reference=reference.reference,
+                    catalog=catalog,
+                ):
                     raise ValueError("Candidate adviser output referenced evidence that was not supplied.")
-                if reference.source_type == "intake" and reference.reference not in allowed_paths:
+                if reference.source_type == "intake" and not candidate_adviser_reference_is_allowed(
+                    source_type=reference.source_type,
+                    reference=reference.reference,
+                    catalog=catalog,
+                ):
                     raise ValueError("Candidate adviser output referenced an intake field that was not supplied.")
-
-    @staticmethod
-    def _intake_paths(intake: CandidateAdviserIntake) -> set[str]:
-        paths = {
-            name
-            for name in ("career_direction", "work_preferences", "constraints", "self_assessment", "motivations", "tradeoffs")
-            if getattr(intake, name)
-        }
-        for name in ("work_authorisation", "security_clearances", "locations"):
-            if getattr(intake.eligibility, name):
-                paths.add(f"eligibility.{name}")
-        return paths
 
     @staticmethod
     def _insights(content: CandidateAdviserAssessmentContent) -> Iterable[AdviserInsight]:

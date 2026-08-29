@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.providers.llm import SemanticOutputError
 from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserSemanticInput
+from app.services.candidate_adviser_references import candidate_adviser_reference_catalog
 
 
 class CandidateAdviserAgent(Protocol):
@@ -22,6 +23,7 @@ class SemanticCandidateAdviser:
     def assess(self, *, semantic_input: CandidateAdviserSemanticInput) -> CandidateAdviserAssessmentContent:
         prompt = (Path(__file__).resolve().parents[3] / "prompts" / "candidate_adviser.md").read_text(encoding="utf-8")
         payload = semantic_input.model_dump(mode="json")
+        reference_catalog = candidate_adviser_reference_catalog(semantic_input)
         response = self._client.responses.create(
             model=self._model,
             input=[
@@ -30,6 +32,7 @@ class SemanticCandidateAdviser:
                     "role": "user",
                     "content": (
                         f"JSON schema:\n{json.dumps(CandidateAdviserAssessmentContent.model_json_schema())}\n\n"
+                        f"ALLOWED_SOURCE_REFERENCES:\n{json.dumps(reference_catalog)}\n\n"
                         f"INPUT:\n{json.dumps(payload, ensure_ascii=False)}"
                     ),
                 },

@@ -164,7 +164,7 @@ class OpenAISemanticLLM:
                     ) from exc
                 if error_kind == "schema_rejected":
                     raise SemanticStructuredOutputSchemaError(
-                        "OpenAI rejected the Structured Outputs schema for requirement matching."
+                        _structured_output_schema_rejection_message(operation)
                     ) from exc
             raise SemanticProviderRequestError(
                 f"OpenAI rejected semantic model '{model}'. Check the configured model and provider access."
@@ -350,9 +350,21 @@ def openai_structured_output_supported(model: str) -> bool:
 def validate_openai_structured_output_model(model: str) -> None:
     if not openai_structured_output_supported(model):
         raise SemanticProviderConfigurationError(
-            "Configured OpenAI requirement-matching model does not have a known "
+            "Configured OpenAI semantic model does not have a known "
             "Structured Outputs capability. Configure a supported OpenAI model."
         )
+
+
+def _structured_output_schema_rejection_message(operation: str) -> str:
+    """Return an operation-correct diagnostic without reflecting arbitrary input."""
+    labels = {
+        "candidate_adviser": "candidate adviser",
+        "requirement_matching": "requirement matching",
+    }
+    label = labels.get(operation)
+    if label is None:
+        return "OpenAI rejected the Structured Outputs schema for this semantic operation."
+    return f"OpenAI rejected the Structured Outputs schema for {label}."
 
 
 def _structured_output_bad_request_kind(error: APIStatusError) -> str | None:

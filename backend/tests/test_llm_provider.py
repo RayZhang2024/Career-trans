@@ -163,16 +163,27 @@ def test_known_openai_structured_output_models_are_supported(model: str) -> None
     assert openai_structured_output_supported(model) is True
 
 
-def test_openai_rejects_unknown_structured_output_model_before_request() -> None:
+@pytest.mark.parametrize("operation", ["candidate_adviser", "requirement_matching"])
+def test_openai_rejects_unknown_structured_output_model_before_request_without_operation_or_private_data_leakage(operation: str) -> None:
     assert openai_structured_output_supported("unknown-model") is False
-    with pytest.raises(SemanticProviderConfigurationError, match="known Structured Outputs"):
+    with pytest.raises(SemanticProviderConfigurationError, match="known Structured Outputs") as exc_info:
         OpenAISemanticLLM(api_key="server-secret").generate(
             model="unknown-model",
-            system_prompt="system",
-            user_prompt="user",
-            operation="requirement_matching",
+            system_prompt="private-system-prompt",
+            user_prompt="candidate-private-data",
+            operation=operation,
             output_schema={"type": "object"},
         )
+
+    assert type(exc_info.value) is SemanticProviderConfigurationError
+    assert str(exc_info.value) == (
+        "Configured OpenAI semantic model does not have a known "
+        "Structured Outputs capability. Configure a supported OpenAI model."
+    )
+    assert "requirement matching" not in str(exc_info.value).casefold()
+    assert "candidate-private-data" not in str(exc_info.value)
+    assert "private-system-prompt" not in str(exc_info.value)
+    assert "server-secret" not in str(exc_info.value)
 
 
 def test_openai_structured_output_bad_requests_are_safely_classified(monkeypatch) -> None:
@@ -228,6 +239,45 @@ def test_openai_structured_output_bad_requests_are_safely_classified(monkeypatch
             output_schema=schema,
         )
     assert type(generic_error.value) is SemanticProviderRequestError
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected_message"),
+    [
+        ("candidate_adviser", "OpenAI rejected the Structured Outputs schema for candidate adviser."),
+        ("requirement_matching", "OpenAI rejected the Structured Outputs schema for requirement matching."),
+    ],
+)
+def test_structured_schema_rejection_diagnostics_are_operation_correct_and_private(monkeypatch, operation: str, expected_message: str) -> None:
+    request = httpx.Request("POST", "https://api.example.test/responses")
+
+    class RejectedClient:
+        class responses:
+            @staticmethod
+            def create(**_kwargs):
+                raise APIStatusError(
+                    "Invalid schema with provider-private-detail",
+                    response=httpx.Response(400, request=request),
+                    body=None,
+                )
+
+    monkeypatch.setattr(
+        "app.providers.llm.create_traced_openai_client",
+        lambda **_kwargs: RejectedClient(),
+    )
+    with pytest.raises(SemanticStructuredOutputSchemaError) as exc_info:
+        OpenAISemanticLLM(api_key="server-secret").generate(
+            model="gpt-5.6",
+            system_prompt="private prompt",
+            user_prompt="candidate-private-data",
+            operation=operation,
+            output_schema={"type": "object"},
+        )
+
+    assert str(exc_info.value) == expected_message
+    assert "provider-private-detail" not in str(exc_info.value)
+    assert "candidate-private-data" not in str(exc_info.value)
+    assert "server-secret" not in str(exc_info.value)
 
 
 def test_migrated_dependency_construction_accepts_ollama_without_openai(monkeypatch) -> None:

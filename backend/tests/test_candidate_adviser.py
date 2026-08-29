@@ -15,6 +15,7 @@ from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, Can
 from app.schemas.job import JobProfile, JobRequirement
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
+from app.services.candidate_adviser_references import candidate_adviser_reference_catalog
 from app.services.candidate_profile_compaction import candidate_career_profile, candidate_matching_profile, candidate_search_profile
 from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
 from app.schemas.cv_ingestion import CandidateCVData
@@ -83,16 +84,48 @@ def _content(*, evidence_id: str = "", intake_path: str = "career_direction") ->
     )
 
 
+def test_adviser_assessment_schema_requires_every_object_property_and_allows_empty_collections() -> None:
+    schema = CandidateAdviserAssessmentContent.model_json_schema()
+    required = set(schema["required"])
+    properties = schema["properties"]
+
+    # OpenAI strict Structured Outputs requires every object property to be
+    # required, while arrays can still be represented by an explicit empty list.
+    assert required == set(properties)
+    for field in (
+        "transferable_strengths",
+        "development_gaps",
+        "role_hypotheses",
+        "open_questions",
+    ):
+        assert properties[field].get("maxItems") == 12
+        assert "default" not in properties[field]
+
+    empty = _content().model_copy(
+        update={
+            "transferable_strengths": [],
+            "development_gaps": [],
+            "role_hypotheses": [],
+            "open_questions": [],
+        }
+    )
+    assert empty.transferable_strengths == []
+    assert empty.development_gaps == []
+    assert empty.role_hypotheses == []
+    assert empty.open_questions == []
+
+
 class _FakeAdviser:
-    def __init__(self, *, bad_evidence_id: bool = False) -> None:
+    def __init__(self, *, bad_evidence_id: bool = False, intake_path: str = "career_direction") -> None:
         self.bad_evidence_id = bad_evidence_id
+        self.intake_path = intake_path
         self.calls = 0
 
     def assess(self, *, semantic_input):
         self.calls += 1
         self.semantic_input = semantic_input
         evidence_id = "not-supplied" if self.bad_evidence_id else semantic_input.career_evidence[0].evidence_id
-        return _content(evidence_id=evidence_id)
+        return _content(evidence_id=evidence_id, intake_path=self.intake_path)
 
 
 def test_adviser_assessment_is_grounded_stale_and_user_scoped(db_session) -> None:
@@ -190,6 +223,20 @@ def test_adviser_rejects_unsupplied_evidence_reference_without_persisting(db_ses
     with pytest.raises(ValueError, match="was not supplied"):
         service.assess(user_id)
 
+    assert service.get_assessment(user_id) is None
+
+
+def test_adviser_rejects_invented_intake_path_without_exposing_private_content(db_session) -> None:
+    user_id = _user(db_session, "adviser-invalid-intake-reference@example.com")
+    _confirmed_cv(db_session, user_id)
+    service = CandidateAdviserService(db_session, agent=_FakeAdviser(intake_path="intake.career_direction"))
+    service.save_intake(user_id, _intake())
+
+    with pytest.raises(ValueError, match="intake field that was not supplied") as exc_info:
+        service.assess(user_id)
+
+    assert "intake.career_direction" not in str(exc_info.value)
+    assert "Move toward applied AI delivery" not in str(exc_info.value)
     assert service.get_assessment(user_id) is None
 
 
@@ -313,7 +360,38 @@ def test_adviser_semantic_projection_is_deterministically_bounded() -> None:
 
     agent = SemanticCandidateAdviser(type("Client", (), {"responses": _Responses()})(), "test-model")
     agent.assess(semantic_input=projection)
-    payload = json.loads(calls[0]["input"][1]["content"].split("INPUT:\n", 1)[1])
+    request_content = calls[0]["input"][1]["content"]
+    catalog = json.loads(request_content.split("ALLOWED_SOURCE_REFERENCES:\n", 1)[1].split("\n\nINPUT:\n", 1)[0])
+    payload = json.loads(request_content.split("INPUT:\n", 1)[1])
+    schema = calls[0]["text"]["format"]["schema"]
     assert len(payload["intake"]["career_direction"]) <= 600
     assert len(payload["career_evidence"]) == 24
     assert len(payload["structured_cv"]["skills"]) == 60
+    assert set(schema["required"]) == set(schema["properties"])
+    assert catalog == candidate_adviser_reference_catalog(projection)
+    assert catalog["intake"] == [
+        "career_direction",
+        "work_preferences",
+        "constraints",
+        "self_assessment",
+        "motivations",
+        "tradeoffs",
+        "eligibility.locations",
+    ]
+    assert catalog["career_evidence"] == [str(index) for index in range(24)]
+
+
+def test_adviser_reference_catalog_includes_only_populated_exact_intake_tokens() -> None:
+    semantic_input = CandidateAdviserSemanticInput(
+        intake=CandidateAdviserIntake(
+            career_direction="Applied AI delivery.",
+            eligibility={"work_authorisation": ["UK right to work"], "locations": ["London"]},
+        ),
+        structured_cv=CandidateCVData(),
+        career_evidence=[],
+    )
+
+    assert candidate_adviser_reference_catalog(semantic_input) == {
+        "intake": ["career_direction", "eligibility.work_authorisation", "eligibility.locations"],
+        "career_evidence": [],
+    }
