@@ -26,6 +26,9 @@ class DiscoveredJob(Base):
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     work_arrangement: Mapped[str | None] = mapped_column(String(100), nullable=True)
     employment_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    detail_authority: Mapped[str] = mapped_column(String(32), nullable=False, default="provider_detail")
+    verification_status: Mapped[str] = mapped_column(String(16), nullable=False, default="verified", index=True)
+    verification_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     first_seen_at: Mapped[datetime] = mapped_column(

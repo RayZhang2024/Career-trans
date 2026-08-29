@@ -14,6 +14,21 @@ class JobProvenance(BaseModel):
     discovered_via: str | None = Field(default=None, max_length=120)
 
 
+class JobDetailAuthority(StrEnum):
+    """Trust level of the detail persisted for a public vacancy."""
+
+    EXTERNAL_SUMMARY = "external_summary"
+    PROVIDER_DETAIL = "provider_detail"
+    VERIFIED_EMPLOYER_DETAIL = "verified_employer_detail"
+
+
+class JobVerificationStatus(StrEnum):
+    """Whether an external discovery has a current, usable source record."""
+
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+
+
 class JobListing(BaseModel):
     """A provider-neutral job listing suitable for inexpensive discovery."""
 
@@ -31,6 +46,9 @@ class JobListing(BaseModel):
     work_arrangement: str | None = None
     employment_type: str | None = None
     provenance: JobProvenance | None = None
+    detail_authority: JobDetailAuthority = JobDetailAuthority.PROVIDER_DETAIL
+    verification_status: JobVerificationStatus = JobVerificationStatus.VERIFIED
+    verification_reason: str | None = None
     discovered_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

@@ -1,6 +1,6 @@
 from urllib.parse import urlsplit
 
-from app.schemas.discovery import JobListing
+from app.schemas.discovery import JobListing, JobVerificationStatus
 from app.services.job_deduplication_service import JobDeduplicationService
 
 
@@ -16,6 +16,8 @@ class JobRankingGateService:
     @staticmethod
     def _is_analysable(job: JobListing) -> bool:
         parts = urlsplit(job.url)
+        if job.verification_status is not JobVerificationStatus.VERIFIED:
+            return False
         # Description completeness is assessed after relevance/archetype screening.
         # Missing public-job detail is not a reason to hide a potentially relevant role.
         return bool(parts.scheme in {"http", "https"} and parts.netloc)

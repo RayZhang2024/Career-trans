@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance
+from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance, JobVerificationStatus
 
 
 class PersistedJobProvenance(BaseModel):
@@ -28,6 +28,9 @@ class OpportunityInboxItem(BaseModel):
     state: DiscoveredJobState
     first_seen_at: datetime
     last_seen_at: datetime
+    actionable: bool
+    verification_status: JobVerificationStatus
+    verification_reason: str | None = None
     provenance: list[PersistedJobProvenance] = Field(default_factory=list)
 
 

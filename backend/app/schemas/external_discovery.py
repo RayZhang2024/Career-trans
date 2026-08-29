@@ -6,7 +6,12 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.candidate import CandidateSearchProfile
-from app.schemas.discovery import DiscoveredJobLifecycleItem, DiscoveredJobState, JobListing, JobSearchQuery
+from app.schemas.discovery import (
+    DiscoveredJobLifecycleItem,
+    DiscoveredJobState,
+    JobListing,
+    JobSearchQuery,
+)
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
 
 
@@ -70,12 +75,23 @@ class ExternalDiscoveryImportResponse(BaseModel):
     runtime: str
     authoritative: bool = False
     accepted_jobs: list[JobListing] = Field(default_factory=list)
+    unverified_leads: list["ExternalDiscoveryLeadDiagnostic"] = Field(default_factory=list)
     rejected_count: int = 0
     deduplicated_count: int = 0
     bounded_out_count: int = 0
     job_states: dict[str, DiscoveredJobState] = Field(default_factory=dict)
     lifecycle_jobs: list[DiscoveredJobLifecycleItem] = Field(default_factory=list)
     lifecycle_counts: DiscoveryLifecycleCounts = Field(default_factory=DiscoveryLifecycleCounts)
+
+
+class ExternalDiscoveryLeadDiagnostic(BaseModel):
+    """Safe bounded state for a persisted but non-actionable external lead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job: JobListing
+    reason: str
+    state: DiscoveredJobState
 
 
 class ExternalDiscoverySearchContextRequest(BaseModel):

@@ -2,12 +2,12 @@
 
 from collections import defaultdict
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
-from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance
+from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance, JobVerificationStatus
 from app.schemas.opportunity_inbox import (
     OpportunityInboxItem,
     OpportunityInboxResponse,
@@ -24,7 +24,16 @@ class OpportunityInboxService:
     def list_recent(self, *, limit: int) -> OpportunityInboxResponse:
         records = self._session.scalars(
             select(DiscoveredJob)
-            .where(DiscoveredJob.source == "agent_runtime")
+            .where(
+                or_(
+                    DiscoveredJob.source == "agent_runtime",
+                    DiscoveredJob.id.in_(
+                        select(DiscoveredJobProvenance.job_id).where(
+                            DiscoveredJobProvenance.runtime == "codex"
+                        )
+                    ),
+                )
+            )
             .order_by(DiscoveredJob.last_seen_at.desc(), DiscoveredJob.id.asc())
             .limit(limit)
         ).all()
@@ -63,11 +72,17 @@ class OpportunityInboxService:
                         posted_at=record.posted_at,
                         work_arrangement=record.work_arrangement,
                         employment_type=record.employment_type,
+                        detail_authority=record.detail_authority,
+                        verification_status=record.verification_status,
+                        verification_reason=record.verification_reason,
                         provenance=self._ranking_provenance(provenance_by_job[record.id]),
                     ),
                     state=DiscoveredJobState(record.state),
                     first_seen_at=record.first_seen_at,
                     last_seen_at=record.last_seen_at,
+                    actionable=record.verification_status == JobVerificationStatus.VERIFIED,
+                    verification_status=JobVerificationStatus(record.verification_status),
+                    verification_reason=record.verification_reason,
                     provenance=provenance_by_job[record.id],
                 )
                 for record in records

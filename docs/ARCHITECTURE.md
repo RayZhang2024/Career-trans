@@ -408,6 +408,28 @@ preserve uncertain cases as CONSIDER, and reserve SKIP for blockers or explicitl
 score combinations. The service copies the two source scores without blending or
 mutating them. Thresholds are central and injectable for later calibration.
 
+## External Discovery Verification
+
+External runtime output is a bounded, non-authoritative discovery lead rather
+than a rankable advert. Career-trans retains its safe provenance, then uses
+deterministic provider-aware verification for recognized Greenhouse, Lever,
+Ashby, and recoverable Workday URLs. A verified provider identity and usable
+employer detail produce the canonical actionable `JobListing`; unresolved,
+stale, and provider-detail failures remain unverified diagnostics and do not
+enter semantic or deep ranking.
+
+Persisted detail is monotonic by authority:
+
+```text
+verified employer detail
+    > provider detail
+    > external discovery summary
+```
+
+A weaker subsequent discovery summary therefore cannot overwrite a richer
+verified description. External omissions remain non-authoritative lifecycle
+evidence and never make prior jobs inactive.
+
 ---
 
 # 10. Application Tracking Model
