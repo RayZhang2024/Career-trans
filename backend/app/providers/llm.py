@@ -350,7 +350,7 @@ def openai_structured_output_supported(model: str) -> bool:
 def validate_openai_structured_output_model(model: str) -> None:
     if not openai_structured_output_supported(model):
         raise SemanticProviderConfigurationError(
-            "Configured OpenAI requirement-matching model does not have a known "
+            "Configured OpenAI semantic model does not have a known "
             "Structured Outputs capability. Configure a supported OpenAI model."
         )
 
