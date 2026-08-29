@@ -6,6 +6,7 @@ from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_relevance import OpenAIJobRelevanceAgent
 from app.agents.job_extraction import JobExtractionError
+from app.agents.requirement_matching import RequirementMatchingError
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext, CareerEvidence
 from app.schemas.career_assessment import (
@@ -307,6 +308,58 @@ def test_career_analysis_failure_preserves_safe_root_exception_diagnostic() -> N
     assert result.failures[0].error == (
         "Career analysis failed: JobExtractionError (caused by JSONDecodeError)."
     )
+
+
+def test_ranking_exposes_safe_requirement_matching_kind_and_isolates_other_finalists() -> None:
+    failed = job("Matching failure", description="matching-failure", url="https://jobs.example.test/matching-failure")
+    successful = job("Successful", description="successful", url="https://jobs.example.test/successful")
+
+    class FakeRelevance:
+        def assess(self, _: JobListing, __: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9, reasoning="Relevant.")
+
+    class FakeArchetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class Graph:
+        def invoke(self, *, job_text: str, **_: object) -> dict[str, object]:
+            if job_text == "matching-failure":
+                try:
+                    raise RequirementMatchingError("private evidence detail", kind="wrong_match_count")
+                except RequirementMatchingError as exc:
+                    raise RuntimeError("graph execution failed") from exc
+            fit = FitAssessment(fit_score=70.0)
+            career = CareerAssessment(
+                career_alignment_score=70.0,
+                confidence=AlignmentConfidence.HIGH,
+                dimensions=[],
+                reasoning="Aligned.",
+            )
+            return {
+                "job_profile": JobProfile(title="Successful", requirements=[JobRequirement(text="Python")]),
+                "fit_assessment": fit,
+                "career_assessment": career,
+                "recommendation_assessment": recommendation(Recommendation.CONSIDER, 70.0, 70.0),
+            }
+
+    result = JobRankingService(
+        relevance_agent=FakeRelevance(),
+        archetype_agent=FakeArchetype(),
+        career_analysis_graph=Graph(),  # type: ignore[arg-type]
+    ).rank(
+        JobRankingRequest(
+            jobs=[failed, successful],
+            candidate_context=CandidateContext(),
+            max_semantic_candidates=2,
+            max_full_analyses=2,
+        )
+    )
+
+    assert result.analysed_count == 1
+    assert result.results[0].job.title == "Successful"
+    assert result.failures[0].error == "Career analysis failed: requirement_matching: wrong_match_count."
+    assert "private evidence detail" not in result.failures[0].error
 
 
 def test_ranking_preserves_existing_graph_diagnostics_without_changing_scores() -> None:

@@ -1,5 +1,6 @@
 import logging
 
+from app.agents.requirement_matching import RequirementMatchingError
 from app.agents.job_archetype import JobArchetypeAgent
 from app.agents.job_relevance import JobRelevanceAgent
 from app.schemas.discovery import JobListing
@@ -174,12 +175,27 @@ class JobRankingService:
     @staticmethod
     def _failure_error(prefix: str, exc: Exception) -> str:
         """Preserve a safe exception class chain without returning private inputs."""
+        matching_kind = JobRankingService._requirement_matching_failure_kind(exc)
+        if matching_kind is not None:
+            return f"{prefix}: requirement_matching: {matching_kind}."
         root = exc
         while root.__cause__ is not None:
             root = root.__cause__
         if root is exc:
             return f"{prefix}: {type(exc).__name__}."
         return f"{prefix}: {type(exc).__name__} (caused by {type(root).__name__})."
+
+    @staticmethod
+    def _requirement_matching_failure_kind(exc: Exception) -> str | None:
+        """Find a safe matching category without surfacing exception messages."""
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, RequirementMatchingError):
+                return current.safe_kind
+            current = current.__cause__ or current.__context__
+        return None
 
     @staticmethod
     def _insufficient_detail_failure(job: JobListing, reason: str) -> JobRankingFailure:

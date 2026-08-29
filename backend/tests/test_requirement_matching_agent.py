@@ -266,6 +266,28 @@ def test_wrong_count_or_indexes_remain_rejected(payload: str, expected_kind: str
     assert len(responses.calls) == 2
 
 
+def test_helsing_style_seventeen_requirement_wrong_count_is_bounded_and_fails_closed() -> None:
+    """Offline shape matching the failed live run's safe trace metadata only."""
+    requirements = [
+        JobRequirement(
+            text=f"Synthetic deployment requirement {index}",
+            category=RequirementCategory.TECHNICAL,
+        )
+        for index in range(17)
+    ]
+    profile = JobProfile(title="Synthetic deployment role", requirements=requirements)
+    incomplete = _valid_result(requirements=requirements[:-1])
+    matcher, responses = _matcher([incomplete, incomplete])
+
+    with pytest.raises(RequirementMatchingError) as exc_info:
+        matcher.match(profile, CANDIDATE)
+
+    assert exc_info.value.kind == "wrong_match_count"
+    assert len(responses.calls) == 2
+    assert responses.trace_metadata[0]["requirement_count"] == 17
+    assert responses.trace_metadata[1]["previous_failure_kind"] == "wrong_match_count"
+
+
 def test_unknown_evidence_ids_remain_rejected() -> None:
     payload = SemanticRequirementMatchSet(
         matches=[

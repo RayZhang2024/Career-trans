@@ -677,6 +677,15 @@ Analyse career alignment
 Apply deterministic recommendation rules
 ```
 
+Requirement matching is fail-closed. The semantic matcher receives canonical
+requirement indexes and bounded authenticated `CareerEvidence` only; Python
+rejects missing, duplicate, out-of-range, or unknown-evidence references and
+reattaches the canonical requirements deterministically. Structural output
+failures may use the bounded application retry, while provider/configuration
+failures do not retry. If matching still fails, ranking exposes only the safe
+`requirement_matching: <kind>` category—never prompts, evidence text, raw
+provider output, or credentials—and continues analysing other finalists.
+
 ---
 
 # 15. Agent State
