@@ -66,11 +66,14 @@ class CandidateAdviserAssessmentContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     professional_positioning: AdviserInsight
-    transferable_strengths: list[AdviserInsight] = Field(default_factory=list, max_length=12)
-    development_gaps: list[AdviserInsight] = Field(default_factory=list, max_length=12)
-    role_hypotheses: list[AdviserInsight] = Field(default_factory=list, max_length=12)
+    # Strict Structured Outputs require every object property to be listed in
+    # JSON Schema ``required``. These remain allowed to be empty, but the model
+    # must explicitly return them rather than omitting them.
+    transferable_strengths: list[AdviserInsight] = Field(max_length=12)
+    development_gaps: list[AdviserInsight] = Field(max_length=12)
+    role_hypotheses: list[AdviserInsight] = Field(max_length=12)
     transition_assessment: AdviserInsight
-    open_questions: list[AdviserInsight] = Field(default_factory=list, max_length=12)
+    open_questions: list[AdviserInsight] = Field(max_length=12)
     career_strategy_summary: AdviserInsight
     job_search_strategy_summary: AdviserInsight
 

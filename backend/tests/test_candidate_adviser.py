@@ -83,6 +83,37 @@ def _content(*, evidence_id: str = "", intake_path: str = "career_direction") ->
     )
 
 
+def test_adviser_assessment_schema_requires_every_object_property_and_allows_empty_collections() -> None:
+    schema = CandidateAdviserAssessmentContent.model_json_schema()
+    required = set(schema["required"])
+    properties = schema["properties"]
+
+    # OpenAI strict Structured Outputs requires every object property to be
+    # required, while arrays can still be represented by an explicit empty list.
+    assert required == set(properties)
+    for field in (
+        "transferable_strengths",
+        "development_gaps",
+        "role_hypotheses",
+        "open_questions",
+    ):
+        assert properties[field].get("maxItems") == 12
+        assert "default" not in properties[field]
+
+    empty = _content().model_copy(
+        update={
+            "transferable_strengths": [],
+            "development_gaps": [],
+            "role_hypotheses": [],
+            "open_questions": [],
+        }
+    )
+    assert empty.transferable_strengths == []
+    assert empty.development_gaps == []
+    assert empty.role_hypotheses == []
+    assert empty.open_questions == []
+
+
 class _FakeAdviser:
     def __init__(self, *, bad_evidence_id: bool = False) -> None:
         self.bad_evidence_id = bad_evidence_id
@@ -314,6 +345,8 @@ def test_adviser_semantic_projection_is_deterministically_bounded() -> None:
     agent = SemanticCandidateAdviser(type("Client", (), {"responses": _Responses()})(), "test-model")
     agent.assess(semantic_input=projection)
     payload = json.loads(calls[0]["input"][1]["content"].split("INPUT:\n", 1)[1])
+    schema = calls[0]["text"]["format"]["schema"]
     assert len(payload["intake"]["career_direction"]) <= 600
     assert len(payload["career_evidence"]) == 24
     assert len(payload["structured_cv"]["skills"]) == 60
+    assert set(schema["required"]) == set(schema["properties"])

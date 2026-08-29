@@ -230,6 +230,45 @@ def test_openai_structured_output_bad_requests_are_safely_classified(monkeypatch
     assert type(generic_error.value) is SemanticProviderRequestError
 
 
+@pytest.mark.parametrize(
+    ("operation", "expected_message"),
+    [
+        ("candidate_adviser", "OpenAI rejected the Structured Outputs schema for candidate adviser."),
+        ("requirement_matching", "OpenAI rejected the Structured Outputs schema for requirement matching."),
+    ],
+)
+def test_structured_schema_rejection_diagnostics_are_operation_correct_and_private(monkeypatch, operation: str, expected_message: str) -> None:
+    request = httpx.Request("POST", "https://api.example.test/responses")
+
+    class RejectedClient:
+        class responses:
+            @staticmethod
+            def create(**_kwargs):
+                raise APIStatusError(
+                    "Invalid schema with provider-private-detail",
+                    response=httpx.Response(400, request=request),
+                    body=None,
+                )
+
+    monkeypatch.setattr(
+        "app.providers.llm.create_traced_openai_client",
+        lambda **_kwargs: RejectedClient(),
+    )
+    with pytest.raises(SemanticStructuredOutputSchemaError) as exc_info:
+        OpenAISemanticLLM(api_key="server-secret").generate(
+            model="gpt-5.6",
+            system_prompt="private prompt",
+            user_prompt="candidate-private-data",
+            operation=operation,
+            output_schema={"type": "object"},
+        )
+
+    assert str(exc_info.value) == expected_message
+    assert "provider-private-detail" not in str(exc_info.value)
+    assert "candidate-private-data" not in str(exc_info.value)
+    assert "server-secret" not in str(exc_info.value)
+
+
 def test_migrated_dependency_construction_accepts_ollama_without_openai(monkeypatch) -> None:
     settings = Settings(default_llm_provider="ollama", ollama_base_url="http://localhost:11434", openai_api_key=None)
     monkeypatch.setattr(deps, "get_settings", lambda: settings)
