@@ -7,7 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
-from app.schemas.discovery import DiscoveredJobState, JobDetailAuthority, JobListing, JobProvenance
+from app.schemas.discovery import (
+    DiscoveredJobState,
+    JobDetailAuthority,
+    JobListing,
+    JobProvenance,
+    JobVerificationStatus,
+)
 from app.services.job_deduplication_service import JobDeduplicationService
 
 
@@ -110,7 +116,12 @@ class SqlAlchemyDiscoveredJobStateStore:
                 transitions[identity_key] = DiscoveredJobState.NEW
                 continue
 
-            record.identity_key = identity_key
+            # A URL-only external lead can later be verified with a stronger
+            # provider/external-ID identity.  The reverse must not happen: a
+            # fresh but lower-authority verification failure should update
+            # freshness while retaining the established provider identity.
+            if self._authority(listing.detail_authority) >= self._authority(record.detail_authority):
+                record.identity_key = identity_key
             effective_listing = self._effective_listing(record, listing)
             content_hash = self.content_hash(effective_listing)
             changed = record.content_hash != content_hash
@@ -147,6 +158,9 @@ class SqlAlchemyDiscoveredJobStateStore:
                 listing.posted_at.isoformat() if listing.posted_at else None,
                 listing.work_arrangement,
                 listing.employment_type,
+                JobDetailAuthority(listing.detail_authority).value,
+                JobVerificationStatus(listing.verification_status).value,
+                listing.verification_reason,
             )
         )
         return sha256(content.encode("utf-8")).hexdigest()
@@ -196,8 +210,11 @@ class SqlAlchemyDiscoveredJobStateStore:
             employment_type=record.employment_type,
             provenance=incoming.provenance,
             detail_authority=JobDetailAuthority(record.detail_authority),
-            verification_status=record.verification_status,
-            verification_reason=record.verification_reason,
+            # Detail provenance is monotonic, but verification describes the
+            # latest deterministic source check.  Retain rich content while
+            # making a failed current check non-actionable.
+            verification_status=incoming.verification_status,
+            verification_reason=incoming.verification_reason,
         )
 
     @staticmethod

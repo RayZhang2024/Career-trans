@@ -21,6 +21,7 @@ from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobState
 from app.services.external_discovery_import_service import ExternalDiscoveryImportService
 from app.services.external_job_verification_service import ExternalJobVerificationService
 from app.services.job_ranking_service import JobRankingService
+from app.services.opportunity_inbox_service import OpportunityInboxService
 
 
 DETAIL = " ".join(
@@ -186,6 +187,139 @@ def test_verified_detail_persists_as_actionable_and_short_later_summary_cannot_o
     assert record.source == "greenhouse"
     assert record.external_id == "123"
     assert record.verification_status == "verified"
+
+
+def test_latest_provider_absence_makes_rich_ashby_record_unverified_without_losing_identity_or_detail(db_session) -> None:
+    url = "https://jobs.ashbyhq.com/example/uuid-1?source=search"
+    request = ExternalDiscoveryImportRequest(
+        runtime="codex",
+        jobs=[
+            ExternalDiscoveredJob(
+                title="Forward Deployed Engineer",
+                company="Example Systems",
+                location="London",
+                url=url,
+                description="Short summary",
+                provenance={"source_ref": "search-result", "discovered_via": "web"},
+            )
+        ],
+        query={"keywords": ["Engineer"]},
+    )
+    state_store = SqlAlchemyDiscoveredJobStateStore(db_session)
+    verified = ExternalDiscoveryImportService(
+        session=db_session,
+        state_store=state_store,
+        verifier=_verifier({AshbyJobSource.jobs_url("example"): {"jobs": [_ashby_job()]}}),
+    )
+    unverified = ExternalDiscoveryImportService(
+        session=db_session,
+        state_store=state_store,
+        verifier=_verifier({AshbyJobSource.jobs_url("example"): {"jobs": []}}),
+    )
+
+    verified.import_jobs(request)
+    missing = unverified.import_jobs(request)
+    record = db_session.scalar(select(DiscoveredJob))
+    inbox = OpportunityInboxService(db_session).list_recent(limit=10)
+
+    assert missing.unverified_leads[0].reason == "provider_vacancy_not_current"
+    assert record is not None
+    assert record.description == DETAIL
+    assert (record.source, record.source_token, record.external_id) == ("ashby", "example", "uuid-1")
+    assert record.identity_key == "external:ashby:example:uuid-1"
+    assert record.verification_status == "unverified"
+    assert record.verification_reason == "provider_vacancy_not_current"
+    assert inbox.jobs[0].actionable is False
+    assert inbox.jobs[0].verification_reason == "provider_vacancy_not_current"
+
+
+def test_verified_unverified_verified_restores_same_provider_record_without_duplication(db_session) -> None:
+    url = "https://jobs.ashbyhq.com/example/uuid-1"
+    request = ExternalDiscoveryImportRequest(
+        runtime="codex",
+        jobs=[ExternalDiscoveredJob(title="Forward Deployed Engineer", company="Example Systems", location="London", url=url, description="Short summary")],
+        query={"keywords": ["Engineer"]},
+    )
+    state_store = SqlAlchemyDiscoveredJobStateStore(db_session)
+    current_payload = {AshbyJobSource.jobs_url("example"): {"jobs": [_ashby_job()]}}
+    missing_payload = {AshbyJobSource.jobs_url("example"): {"jobs": []}}
+
+    ExternalDiscoveryImportService(session=db_session, state_store=state_store, verifier=_verifier(current_payload)).import_jobs(request)
+    ExternalDiscoveryImportService(session=db_session, state_store=state_store, verifier=_verifier(missing_payload)).import_jobs(request)
+    restored = ExternalDiscoveryImportService(session=db_session, state_store=state_store, verifier=_verifier(current_payload)).import_jobs(request)
+    records = db_session.scalars(select(DiscoveredJob)).all()
+
+    assert len(records) == 1
+    assert records[0].identity_key == "external:ashby:example:uuid-1"
+    assert records[0].verification_status == "verified"
+    assert records[0].verification_reason is None
+    assert len(restored.accepted_jobs) == 1
+
+
+def test_workday_verification_failure_retains_detail_but_cannot_reach_ranking_from_inbox(db_session) -> None:
+    url = "https://example.wd12.myworkdayjobs.com/en-US/ExternalCareerSite/job/London/Forward-Deployed-Engineer_R-123"
+    detail_url = "https://example.wd12.myworkdayjobs.com/wday/cxs/example/ExternalCareerSite/job/London/Forward-Deployed-Engineer_R-123"
+    pages = _Pages(
+        {
+            url: PageContent(
+                requested_url=url,
+                final_url=url,
+                html='<script>window.workday = { tenant: "example", siteId: "ExternalCareerSite" };</script>',
+            ),
+            detail_url: PageContent(
+                requested_url=detail_url,
+                final_url=detail_url,
+                html=json.dumps(
+                    {
+                        "jobPostingInfo": {"title": "Forward Deployed Engineer", "location": "London", "jobDescription": f"<p>{DETAIL}</p>"},
+                        "hiringOrganization": {"name": "Example Systems"},
+                    }
+                ),
+            ),
+        }
+    )
+    lead = _lead(url)
+    state_store = SqlAlchemyDiscoveredJobStateStore(db_session)
+    verified = ExternalJobVerificationService(
+        page_fetcher=pages,
+        workday_detail_extractor=WorkdayJobDetailExtractor(pages),
+    ).verify(lead)
+    unverified = ExternalJobVerificationService().verify(lead)
+    state_store.persist([verified.listing])
+    state_store.persist([unverified.listing])
+    record = db_session.scalar(select(DiscoveredJob))
+    inbox = OpportunityInboxService(db_session).list_recent(limit=10)
+
+    class _Counter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def assess(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("unverified jobs must not reach semantic agents")
+
+        def classify(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("unverified jobs must not reach semantic agents")
+
+        def invoke(self, *_args, **_kwargs):
+            self.calls += 1
+            raise AssertionError("unverified jobs must not reach deep analysis")
+
+    relevance, archetype, graph = _Counter(), _Counter(), _Counter()
+    response = JobRankingService(
+        relevance_agent=relevance,
+        archetype_agent=archetype,
+        career_analysis_graph=graph,
+    ).rank(JobRankingRequest(jobs=[inbox.jobs[0].job], candidate_context={"profile_text": "candidate"}))
+
+    assert record is not None
+    assert record.description == DETAIL
+    assert record.verification_status == "unverified"
+    assert record.verification_reason == "provider_detail_unavailable"
+    assert inbox.jobs[0].actionable is False
+    assert response.gated_out_count == 1
+    assert (relevance.calls, archetype.calls, graph.calls) == (0, 0, 0)
 
 
 def test_verification_promotes_existing_url_lead_to_provider_identity_without_duplication(db_session) -> None:
