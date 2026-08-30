@@ -340,6 +340,37 @@ def test_wrong_count_retry_receives_safe_correction_and_accepts_valid_second_res
     assert "not json" not in retry_content
 
 
+def test_duplicate_indexes_retry_with_safe_correction_and_accept_valid_second_result() -> None:
+    duplicate_indexes = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(
+                requirement_index=0,
+                match_type=MatchType.DEMONSTRATED,
+                score=0.9,
+                evidence_ids=["EVIDENCE-1"],
+            ),
+            SemanticRequirementMatch(
+                requirement_index=0,
+                match_type=MatchType.DEMONSTRATED,
+                score=0.9,
+                evidence_ids=["EVIDENCE-1"],
+            ),
+        ]
+    ).model_dump_json()
+    matcher, responses = _matcher([duplicate_indexes, _valid_result()])
+
+    result = matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert [match.requirement for match in result.matches] == REQUIREMENTS
+    assert len(responses.calls) == 2
+    assert responses.trace_metadata[1]["previous_failure_kind"] == "invalid_indexes"
+    retry_content = responses.calls[1]["input"][1]["content"]  # type: ignore[index]
+    corrective_guidance = retry_content.split("CORRECTIVE RETRY:\n", 1)[1]
+    assert "Use every allowed requirement index exactly once" in corrective_guidance
+    assert duplicate_indexes not in corrective_guidance
+    assert "Delivered Python systems" not in corrective_guidance
+
+
 def test_unknown_evidence_retry_receives_safe_correction_and_accepts_valid_second_result() -> None:
     invalid = SemanticRequirementMatchSet(
         matches=[
