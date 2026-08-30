@@ -74,6 +74,18 @@ def test_presemantic_selection_keeps_adjacent_titles_eligible_without_a_hard_key
     assert adjacent in result.eligible
 
 
+def test_search_theme_affinity_matches_complete_title_tokens_and_phrases() -> None:
+    ai_engineer = _job(title="AI Engineer", company="AI", url="https://jobs.example.test/ai")
+    paid_media = _job(title="Paid Media Manager", company="Paid", url="https://jobs.example.test/paid")
+    fde = _job(title="Forward Deployed Engineer", company="FDE", url="https://jobs.example.test/fde")
+    applied_ai = _job(title="Applied AI Engineer", company="Applied", url="https://jobs.example.test/applied")
+
+    assert JobPresemanticSelectionService.search_theme_affinity(ai_engineer, ["AI"]) >= 100
+    assert JobPresemanticSelectionService.search_theme_affinity(paid_media, ["AI"]) == 0
+    assert JobPresemanticSelectionService.search_theme_affinity(fde, ["Forward Deployed Engineer"]) >= 100
+    assert JobPresemanticSelectionService.search_theme_affinity(applied_ai, ["Applied AI Engineer"]) >= 100
+
+
 def test_uk_location_rejects_us_only_remote_before_semantic_selection() -> None:
     us_remote = _job(
         title="Forward Deployed Engineer",

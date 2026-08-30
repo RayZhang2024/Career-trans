@@ -111,16 +111,15 @@ class JobPresemanticSelectionService:
     def search_theme_affinity(listing: JobListing, keywords: list[str]) -> int:
         """Bounded lexical priority only; this is not a relevance filter."""
 
-        title = " ".join(_tokens(listing.title))
+        title_terms = _tokens(listing.title)
         description_terms = set(_tokens(listing.description or ""))
         best = 0
         for keyword in keywords:
             terms = _tokens(keyword)
             if not terms:
                 continue
-            phrase = " ".join(terms)
-            overlap = len(set(terms) & set(_tokens(listing.title)))
-            direct = 100 if phrase in title else 0
+            overlap = len(set(terms) & set(title_terms))
+            direct = 100 if _contains_phrase(title_terms, terms) else 0
             best = max(best, direct + 10 * overlap + len(set(terms) & description_terms))
         return best
 
