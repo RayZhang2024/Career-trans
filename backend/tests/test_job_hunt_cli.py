@@ -4,15 +4,24 @@ from app import cli
 from app.cli_http import CareerTransApiError
 
 
-def _job(*, source: str, url: str, title: str = "Applied AI Engineer") -> dict:
+def _job(
+    *,
+    source: str,
+    url: str,
+    title: str = "Applied AI Engineer",
+    company: str = "Example Systems",
+    location: str | None = "London",
+    work_arrangement: str | None = None,
+) -> dict:
     return {
         "source": source,
         "source_token": "source",
         "title": title,
-        "company": "Example Systems",
-        "location": "London",
+        "company": company,
+        "location": location,
         "url": url,
         "description": "Public vacancy detail.",
+        "work_arrangement": work_arrangement,
     }
 
 
@@ -270,6 +279,50 @@ def test_hunt_propagates_locations_to_ats_and_external_discovery(monkeypatch, ca
     assert ats_request["locations"] == ["London", "Cambridge"]
     assert ats_request["keywords"] == ["AI Engineer"]
     assert external_query["locations"] == ["London", "Cambridge"]
+
+
+def test_hunt_presemantic_selection_filters_us_remote_and_uses_full_eligible_set(monkeypatch, capsys) -> None:
+    client = _Client()
+    early = [
+        _job(
+            source="greenhouse",
+            url=f"https://jobs.example.test/early/{index}",
+            title="Specialist Compliance Role",
+            company=f"Early {index}",
+        )
+        for index in range(4)
+    ]
+    fde = _job(
+        source="lever",
+        url="https://jobs.example.test/fde",
+        title="Forward Deployed Engineer",
+        company="Diligent",
+    )
+    applied = _job(
+        source="ashby",
+        url="https://jobs.example.test/applied",
+        title="Applied AI Engineer",
+        company="Scale",
+    )
+    us_remote = _job(
+        source="agent_runtime",
+        url="https://jobs.example.test/us-remote",
+        title="Applied AI Engineer",
+        company="US Remote",
+        location="Remote-Friendly, United States; San Francisco, CA",
+        work_arrangement="Remote",
+    )
+    client.ats = _ats(*[(job, "new") for job in [*early, fde, applied, us_remote]])
+
+    assert _run(monkeypatch, capsys, client, no_external=True, locations=["United Kingdom", "London"], max_rank=2) == 0
+
+    ranked = next(call[1] for call in client.calls if call[0] == "rank")
+    assert {job["url"] for job in ranked} == {fde["url"], applied["url"]}
+    assert us_remote["url"] not in {job["url"] for job in ranked}
+    output = capsys.readouterr().out
+    assert "geography_filtered=1" in output
+    assert "eligible_for_semantic=6" in output
+    assert "selected_for_semantic=2" in output
 
 
 def test_hunt_skips_semantic_ranking_when_no_actionable_jobs(monkeypatch, capsys) -> None:
