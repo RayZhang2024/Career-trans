@@ -1,4 +1,6 @@
 import json
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -67,6 +69,63 @@ def _default_prompt_path() -> Path:
     return Path(__file__).resolve().parents[3] / "prompts" / "requirement_matching.md"
 
 
+@dataclass(frozen=True)
+class _RequirementMatchingContract:
+    """Per-request constraints for the model-owned semantic fields only.
+
+    Canonical requirements and the candidate evidence objects remain application
+    owned. This compact contract makes the permitted requirement indexes,
+    evidence references, and cardinality explicit to both Structured Outputs
+    and the model instruction.
+    """
+
+    expected_match_count: int
+    allowed_requirement_indexes: tuple[int, ...]
+    allowed_evidence_ids: tuple[str, ...]
+
+    @classmethod
+    def from_inputs(
+        cls,
+        job_profile: JobProfile,
+        candidate_context: CandidateMatchingProfile,
+    ) -> "_RequirementMatchingContract":
+        return cls(
+            expected_match_count=len(job_profile.requirements),
+            allowed_requirement_indexes=tuple(range(len(job_profile.requirements))),
+            # Preserve the compact profile's canonical evidence order while
+            # making duplicate IDs harmless in the provider schema.
+            allowed_evidence_ids=tuple(dict.fromkeys(
+                evidence.evidence_id for evidence in candidate_context.evidence
+            )),
+        )
+
+    def model_input(self) -> dict[str, object]:
+        return {
+            "expected_match_count": self.expected_match_count,
+            "allowed_requirement_indexes": list(self.allowed_requirement_indexes),
+            "allowed_evidence_ids": list(self.allowed_evidence_ids),
+        }
+
+    @staticmethod
+    def corrective_guidance(failure_kind: str | None) -> str | None:
+        """Return only a safe, category-level correction for attempt two."""
+        guidance = {
+            "invalid_output": "Return valid JSON that conforms exactly to the supplied schema.",
+            "wrong_match_count": (
+                "Return exactly one match for every allowed requirement index."
+            ),
+            "invalid_indexes": (
+                "Use every allowed requirement index exactly once; do not repeat, omit, "
+                "or invent indexes."
+            ),
+            "unknown_evidence_ids": (
+                "Use only exact IDs from allowed_evidence_ids, or an empty evidence_ids list "
+                "when no supplied evidence supports the requirement."
+            ),
+        }
+        return guidance.get(failure_kind)
+
+
 class OpenAIRequirementMatcher:
     _MAX_STRUCTURAL_ATTEMPTS = 2
 
@@ -94,9 +153,11 @@ class OpenAIRequirementMatcher:
         candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         prompt = self._load_prompt()
-        schema = self._openai_strict_schema()
+        contract = _RequirementMatchingContract.from_inputs(job_profile, candidate_context)
+        schema = self._openai_strict_schema_for_contract(contract)
 
         payload = {
+            "matching_contract": contract.model_input(),
             "job_profile": RequirementMatchingJobProfile(
                 requirements=[
                     RequirementMatchingRequirement(
@@ -131,6 +192,7 @@ class OpenAIRequirementMatcher:
                         prompt=prompt,
                         schema=schema,
                         payload=payload,
+                        corrective_guidance=contract.corrective_guidance(previous_failure_kind),
                     )
                 self._validate_result(result, job_profile, candidate_context)
                 return self._attach_canonical_requirements(result, job_profile)
@@ -150,7 +212,13 @@ class OpenAIRequirementMatcher:
         prompt: str,
         schema: dict[str, Any],
         payload: dict[str, object],
+        corrective_guidance: str | None,
     ) -> SemanticRequirementMatchSet:
+        correction = (
+            f"\n\nCORRECTIVE RETRY:\n{corrective_guidance}"
+            if corrective_guidance is not None
+            else ""
+        )
         try:
             response = self._client.responses.create(
                 model=self._model,
@@ -161,7 +229,7 @@ class OpenAIRequirementMatcher:
                         "content": (
                             "Match every job requirement against the candidate context.\n\n"
                             f"JSON schema:\n{json.dumps(schema, ensure_ascii=False)}\n\n"
-                            f"INPUT:\n{json.dumps(payload, ensure_ascii=False)}"
+                            f"INPUT:\n{json.dumps(payload, ensure_ascii=False)}{correction}"
                         ),
                     },
                 ],
@@ -341,6 +409,42 @@ class OpenAIRequirementMatcher:
 
         remove_defaults(normalized)
         return normalized
+
+    @classmethod
+    def _openai_strict_schema_for_contract(
+        cls,
+        contract: _RequirementMatchingContract,
+    ) -> dict[str, Any]:
+        """Constrain the native SDK schema to this request's canonical contract.
+
+        The provider receives the same strict SDK-derived base schema as before,
+        with supported array bounds and enums narrowing only model-owned fields.
+        Application validation remains the final fail-closed authority.
+        """
+        schema = deepcopy(cls._openai_strict_schema())
+        matches = schema["properties"]["matches"]
+        semantic_match = schema["$defs"]["SemanticRequirementMatch"]
+        properties = semantic_match["properties"]
+
+        matches["minItems"] = contract.expected_match_count
+        matches["maxItems"] = contract.expected_match_count
+        properties["requirement_index"] = {
+            "type": "integer",
+            "enum": list(contract.allowed_requirement_indexes),
+        }
+
+        evidence_ids = properties["evidence_ids"]
+        if contract.allowed_evidence_ids:
+            evidence_ids["items"] = {
+                "type": "string",
+                "enum": list(contract.allowed_evidence_ids),
+            }
+        else:
+            # An empty enum is not a useful provider contract. A zero upper
+            # bound permits the valid empty list while rejecting invented IDs.
+            evidence_ids["maxItems"] = 0
+
+        return schema
 
     @staticmethod
     def _strip_json_fence(text: str) -> str:

@@ -6,10 +6,13 @@ Your task is requirement-level matching only. Do not calculate an overall job-fi
 
 ## Core rules
 
-1. Match every job requirement exactly once.
+1. Follow `matching_contract` in the supplied input exactly: return
+   `expected_match_count` matches and use every `allowed_requirement_indexes`
+   value exactly once.
 2. Return only the judgement fields requested by the supplied schema. Do not return a requirement object.
 3. Use only evidence supplied in the candidate context.
-4. Never invent evidence IDs.
+4. Cite only exact values from `matching_contract.allowed_evidence_ids`. If that
+   list is empty, `evidence_ids` must always be empty.
 5. Never invent experience, qualifications, skills, citizenship, security clearance, or work authorization.
 6. A missing keyword is not automatically a missing capability.
 7. Strong adjacent evidence may be classified as transferable, but not demonstrated.
@@ -46,7 +49,7 @@ These ranges are guidance, not mechanical rules. The classification and score mu
 
 ## Evidence provenance
 
-Only cite `evidence_id` values that are present in `candidate_context.evidence`.
+Only cite `evidence_id` values listed in `matching_contract.allowed_evidence_ids`.
 
 For inferred or missing matches, `evidence_ids` may be empty.
 
@@ -54,4 +57,6 @@ The application converts validated `evidence_ids` into typed `career_evidence` p
 
 ## Requirement index
 
-Use the zero-based position of the requirement in `job_profile.requirements` as `requirement_index`.
+Use only values from `matching_contract.allowed_requirement_indexes` as
+`requirement_index`. These are the zero-based positions of the supplied
+semantic requirements.

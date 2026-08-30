@@ -9,6 +9,7 @@ from app.agents.requirement_matching import (
     RequirementMatchingError,
 )
 from app.providers.llm import (
+    SemanticProviderConfigurationError,
     SemanticProviderRequestError,
     SemanticStructuredOutputSchemaError,
 )
@@ -92,6 +93,12 @@ def _matcher(outputs: list[str | Exception]) -> tuple[OpenAIRequirementMatcher, 
     return OpenAIRequirementMatcher(api_key="", model="test-model", client=client), client.responses
 
 
+def _request_payload(call: dict[str, object]) -> dict[str, object]:
+    content = call["input"][1]["content"]  # type: ignore[index]
+    payload_text = content.split("INPUT:\n", 1)[1].split("\n\nCORRECTIVE RETRY:", 1)[0]
+    return json.loads(payload_text)
+
+
 def test_matcher_uses_native_strict_schema_and_accepts_valid_result() -> None:
     matcher, responses = _matcher([_valid_result()])
 
@@ -104,6 +111,11 @@ def test_matcher_uses_native_strict_schema_and_accepts_valid_result() -> None:
     assert response_format["name"] == "requirement_match_set"
     assert response_format["strict"] is True
     assert response_format["schema"]["additionalProperties"] is False
+    assert response_format["schema"]["properties"]["matches"]["minItems"] == 2
+    assert response_format["schema"]["properties"]["matches"]["maxItems"] == 2
+    semantic_match = response_format["schema"]["$defs"]["SemanticRequirementMatch"]
+    assert semantic_match["properties"]["requirement_index"]["enum"] == [0, 1]
+    assert semantic_match["properties"]["evidence_ids"]["items"]["enum"] == ["EVIDENCE-1"]
 
 
 def test_matcher_reattaches_exact_canonical_requirement_not_present_in_model_output() -> None:
@@ -156,8 +168,7 @@ def test_matcher_sends_only_compact_canonical_requirement_fields() -> None:
 
     matcher.match(profile, CANDIDATE)
 
-    request_input = responses.calls[0]["input"]  # type: ignore[index]
-    payload = json.loads(request_input[1]["content"].split("INPUT:\n", 1)[1])
+    payload = _request_payload(responses.calls[0])
     assert payload["job_profile"] == {
         "requirements": [
             {
@@ -166,6 +177,11 @@ def test_matcher_sends_only_compact_canonical_requirement_fields() -> None:
                 "category": "technical",
             }
         ]
+    }
+    assert payload["matching_contract"] == {
+        "expected_match_count": 1,
+        "allowed_requirement_indexes": [0],
+        "allowed_evidence_ids": ["EVIDENCE-1"],
     }
     assert "Private advert section" not in json.dumps(payload)
     assert "Private responsibility detail" not in json.dumps(payload)
@@ -310,6 +326,67 @@ def test_unknown_evidence_ids_remain_rejected() -> None:
     assert "UNKNOWN-EVIDENCE" not in str(exc_info.value)
 
 
+def test_wrong_count_retry_receives_safe_correction_and_accepts_valid_second_result() -> None:
+    incomplete = _valid_result(requirements=REQUIREMENTS[:1])
+    matcher, responses = _matcher([incomplete, _valid_result()])
+
+    result = matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert len(result.matches) == len(REQUIREMENTS)
+    assert len(responses.calls) == 2
+    retry_content = responses.calls[1]["input"][1]["content"]  # type: ignore[index]
+    assert "CORRECTIVE RETRY:" in retry_content
+    assert "Return exactly one match for every allowed requirement index." in retry_content
+    assert "not json" not in retry_content
+
+
+def test_unknown_evidence_retry_receives_safe_correction_and_accepts_valid_second_result() -> None:
+    invalid = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(
+                requirement_index=index,
+                match_type=MatchType.DEMONSTRATED,
+                score=0.9,
+                evidence_ids=["UNKNOWN-EVIDENCE"],
+            )
+            for index in range(len(REQUIREMENTS))
+        ]
+    ).model_dump_json()
+    matcher, responses = _matcher([invalid, _valid_result()])
+
+    result = matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert len(result.matches) == len(REQUIREMENTS)
+    assert len(responses.calls) == 2
+    retry_content = responses.calls[1]["input"][1]["content"]  # type: ignore[index]
+    assert "Use only exact IDs from allowed_evidence_ids" in retry_content
+    assert "UNKNOWN-EVIDENCE" not in retry_content
+
+
+def test_zero_evidence_context_allows_empty_evidence_ids_only() -> None:
+    candidate = CANDIDATE.model_copy(update={"evidence": []})
+    payload = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(
+                requirement_index=index,
+                match_type=MatchType.MISSING,
+                score=0.0,
+                evidence_ids=[],
+            )
+            for index in range(len(REQUIREMENTS))
+        ]
+    ).model_dump_json()
+    matcher, responses = _matcher([payload])
+
+    result = matcher.match(JOB_PROFILE, candidate)
+
+    assert len(result.matches) == len(REQUIREMENTS)
+    semantic_match = responses.calls[0]["text"]["format"]["schema"]["$defs"]["SemanticRequirementMatch"]  # type: ignore[index]
+    evidence_schema = semantic_match["properties"]["evidence_ids"]
+    assert evidence_schema["maxItems"] == 0
+    assert "enum" not in evidence_schema["items"]
+
+
 def test_provider_failure_is_not_retried_or_exposed() -> None:
     matcher, responses = _matcher([SemanticProviderRequestError("provider-secret")])
 
@@ -332,6 +409,26 @@ def test_structured_schema_rejection_is_not_retried_or_exposed() -> None:
     assert exc_info.value.kind == "structured_output_schema_rejected"
     assert len(responses.calls) == 1
     assert "provider-response-private-data" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "provider_error",
+    [
+        SemanticProviderRequestError("provider-secret"),
+        SemanticProviderConfigurationError("configuration-secret"),
+    ],
+)
+def test_provider_or_configuration_failures_are_not_structural_retries(
+    provider_error: Exception,
+) -> None:
+    matcher, responses = _matcher([provider_error])
+
+    with pytest.raises(RequirementMatchingError) as exc_info:
+        matcher.match(JOB_PROFILE, CANDIDATE)
+
+    assert exc_info.value.kind == "provider_failure"
+    assert len(responses.calls) == 1
+    assert "secret" not in str(exc_info.value)
 
 
 def test_many_requirement_fixture_completes_with_canonical_results() -> None:
