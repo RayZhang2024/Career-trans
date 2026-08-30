@@ -17,12 +17,13 @@ from app.cli_http import (
     CareerTransTimeoutError,
 )
 from app.schemas.external_discovery import ExternalDiscoverySearchContextResponse
-from app.schemas.discovery import JobListing
+from app.schemas.discovery import JobListing, JobSearchQuery
 from app.services.codex_external_discovery_service import (
     CodexExternalDiscoveryError,
     CodexExternalDiscoveryRunner,
 )
 from app.services.job_deduplication_service import JobDeduplicationService
+from app.services.job_presemantic_selection_service import JobPresemanticSelectionService
 from app.services.llm_usage_audit import (
     combine_normalized_trace_exports,
     normalize_trace_exports,
@@ -460,9 +461,25 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
     actionable = _actionable_hunt_jobs(ats, external)
     actionable_states = _actionable_hunt_job_states(ats, external)
     deduplicated, duplicate_count = JobDeduplicationService().deduplicate(actionable)
-    bounded = deduplicated[: args.max_rank]
-    outside_semantic_budget = deduplicated[len(bounded) :]
-    _print_hunt_acquisition_summary(ats, external, len(actionable), duplicate_count, len(bounded), failures)
+    selection = JobPresemanticSelectionService().select_for_hunt(
+        deduplicated,
+        query=JobSearchQuery(keywords=args.keywords, locations=args.locations),
+        limit=args.max_rank,
+    )
+    bounded = selection.selected
+    outside_semantic_budget = selection.outside_budget
+    _print_hunt_acquisition_summary(
+        ats,
+        external,
+        len(actionable),
+        duplicate_count,
+        len(selection.geography_filtered),
+        len(selection.unknown_geography),
+        len(selection.work_arrangement_filtered),
+        len(selection.eligible),
+        len(bounded),
+        failures,
+    )
     if not bounded:
         print("No new or updated opportunities; semantic ranking skipped.")
         return 0 if ats is not None or external is not None else 2
@@ -542,6 +559,10 @@ def _print_hunt_acquisition_summary(
     external: dict[str, Any] | None,
     actionable_count: int,
     duplicate_count: int,
+    geography_filtered_count: int,
+    unknown_geography_count: int,
+    work_arrangement_filtered_count: int,
+    eligible_count: int,
     bounded_count: int,
     failures: list[str],
 ) -> None:
@@ -572,7 +593,10 @@ def _print_hunt_acquisition_summary(
         )
     print(
         f"Actionable before cross-channel dedup={actionable_count}; "
-        f"deduplicated={duplicate_count}; bounded_for_ranking={bounded_count}."
+        f"deduplicated={duplicate_count}; geography_filtered={geography_filtered_count} "
+        f"(unknown_geography={unknown_geography_count}); "
+        f"work_arrangement_filtered={work_arrangement_filtered_count}; eligible_for_semantic={eligible_count}; "
+        f"selected_for_semantic={bounded_count}; outside_semantic_budget={eligible_count - bounded_count}."
     )
     for failure in failures:
         print(failure)
