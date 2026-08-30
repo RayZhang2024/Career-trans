@@ -17,6 +17,7 @@ class PresemanticSelectionResult:
     selected: list[JobListing]
     geography_filtered: list[JobListing]
     unknown_geography: list[JobListing]
+    work_arrangement_filtered: list[JobListing]
 
     @property
     def outside_budget(self) -> list[JobListing]:
@@ -43,14 +44,18 @@ class JobPresemanticSelectionService:
         eligible: list[JobListing] = []
         geography_filtered: list[JobListing] = []
         unknown_geography: list[JobListing] = []
+        work_arrangement_filtered: list[JobListing] = []
         for listing in listings:
             geography = self._geography_status(listing, query.locations)
             if geography == "unknown":
                 geography_filtered.append(listing)
                 unknown_geography.append(listing)
                 continue
-            if geography == "incompatible" or not self._matches_remote_policy(listing, query.remote_ok):
+            if geography == "incompatible":
                 geography_filtered.append(listing)
+                continue
+            if not self._matches_remote_policy(listing, query.remote_ok):
+                work_arrangement_filtered.append(listing)
                 continue
             eligible.append(listing)
         return PresemanticSelectionResult(
@@ -58,6 +63,7 @@ class JobPresemanticSelectionService:
             selected=self.prioritize(eligible, keywords=query.keywords, limit=limit),
             geography_filtered=geography_filtered,
             unknown_geography=unknown_geography,
+            work_arrangement_filtered=work_arrangement_filtered,
         )
 
     @classmethod
@@ -122,18 +128,19 @@ class JobPresemanticSelectionService:
     def _geography_status(listing: JobListing, requested_locations: list[str]) -> str:
         if not requested_locations:
             return "eligible"
-        location = _normalise_location(listing.location or "")
-        if not location:
+        location_tokens = _tokens(listing.location or "")
+        if not location_tokens:
             return "unknown"
-        if any(marker in location for marker in _WORLDWIDE_LOCATION_MARKERS):
+        if any(_contains_phrase(location_tokens, _tokens(marker)) for marker in _WORLDWIDE_LOCATION_MARKERS):
             return "eligible"
         for requested in requested_locations:
             request = _normalise_location(requested)
             if not request:
                 continue
-            if request in location or location in request:
-                return "eligible"
-            if any(alias in location for alias in _location_aliases(request)):
+            if any(
+                _contains_phrase(location_tokens, _tokens(alias))
+                for alias in _location_aliases(request)
+            ):
                 return "eligible"
         return "incompatible"
 
@@ -169,6 +176,14 @@ def _tokens(value: str) -> list[str]:
 
 def _normalise_location(value: str) -> str:
     return " ".join(_tokens(value))
+
+
+def _contains_phrase(tokens: list[str], phrase: list[str]) -> bool:
+    """Match complete normalized location words, never arbitrary substrings."""
+
+    if not phrase or len(phrase) > len(tokens):
+        return False
+    return any(tokens[index : index + len(phrase)] == phrase for index in range(len(tokens) - len(phrase) + 1))
 
 
 def _location_aliases(location: str) -> tuple[str, ...]:

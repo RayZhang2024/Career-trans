@@ -1,5 +1,7 @@
 """Bounded collection from persisted, resolved public ATS sources."""
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,7 +30,6 @@ from app.services.discovered_job_state_store import (
     SqlAlchemyDiscoveredJobStateStore,
 )
 from app.services.job_deduplication_service import JobDeduplicationService
-from app.services.job_presemantic_selection_service import JobPresemanticSelectionService
 from app.services.job_screening_service import JobScreeningService
 from app.services.job_source_factory import create_job_source
 
@@ -196,20 +197,54 @@ class StructuredAtsDiscoveryService:
     def _source_key(record: CompanyCareerSource) -> str:
         return f"{record.provider}:{record.source_token}"
 
-    @staticmethod
+    @classmethod
     def _select_candidates(
+        cls,
         listings: list[JobListing],
         *,
         keywords: list[str],
         limit: int,
     ) -> list[JobListing]:
-        """Reuse the shared deterministic breadth-plus-affinity allocator."""
-        return JobPresemanticSelectionService.prioritize(
-            listings,
-            keywords=keywords,
-            limit=limit,
-            preserve_input_ties=True,
-        )
+        """Preserve one source front, then prioritize remaining eligible candidates."""
+        fronts: dict[tuple[str, str], list[tuple[int, int, JobListing]]] = {}
+        for index, listing in enumerate(listings):
+            company_key = (listing.company or listing.source).casefold()
+            source_key = cls._listing_source_key(listing)
+            affinity = cls._search_theme_affinity(listing, keywords)
+            fronts.setdefault((company_key, source_key), []).append((affinity, index, listing))
+
+        # Search themes prioritize eligible candidates only. They do not remove a
+        # listing, and original input order is the deterministic tie-breaker.
+        for candidates in fronts.values():
+            candidates.sort(key=lambda item: (-item[0], item[1]))
+
+        representatives = [candidates.pop(0) for candidates in fronts.values()]
+        representatives.sort(key=lambda item: (-item[0], item[1]))
+        selected = representatives[:limit]
+        if len(selected) == limit:
+            return [listing for _, _, listing in selected]
+
+        remaining = [candidate for candidates in fronts.values() for candidate in candidates]
+        remaining.sort(key=lambda item: (-item[0], item[1]))
+        selected.extend(remaining[: limit - len(selected)])
+        return [listing for _, _, listing in selected]
+
+    @staticmethod
+    def _listing_source_key(listing: JobListing) -> str:
+        return ":".join(value.casefold() for value in (listing.source, listing.source_token or ""))
+
+    @staticmethod
+    def _search_theme_affinity(listing: JobListing, keywords: list[str]) -> int:
+        terms = {
+            term
+            for keyword in keywords
+            for term in re.findall(r"[a-z0-9]+", keyword.casefold())
+        }
+        if not terms:
+            return 0
+        title_terms = set(re.findall(r"[a-z0-9]+", listing.title.casefold()))
+        description_terms = set(re.findall(r"[a-z0-9]+", (listing.description or "").casefold()))
+        return 2 * len(terms & title_terms) + len(terms & description_terms)
 
     @staticmethod
     def _now():

@@ -475,6 +475,7 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
         duplicate_count,
         len(selection.geography_filtered),
         len(selection.unknown_geography),
+        len(selection.work_arrangement_filtered),
         len(selection.eligible),
         len(bounded),
         failures,
@@ -560,6 +561,7 @@ def _print_hunt_acquisition_summary(
     duplicate_count: int,
     geography_filtered_count: int,
     unknown_geography_count: int,
+    work_arrangement_filtered_count: int,
     eligible_count: int,
     bounded_count: int,
     failures: list[str],
@@ -592,7 +594,8 @@ def _print_hunt_acquisition_summary(
     print(
         f"Actionable before cross-channel dedup={actionable_count}; "
         f"deduplicated={duplicate_count}; geography_filtered={geography_filtered_count} "
-        f"(unknown_geography={unknown_geography_count}); eligible_for_semantic={eligible_count}; "
+        f"(unknown_geography={unknown_geography_count}); "
+        f"work_arrangement_filtered={work_arrangement_filtered_count}; eligible_for_semantic={eligible_count}; "
         f"selected_for_semantic={bounded_count}; outside_semantic_budget={eligible_count - bounded_count}."
     )
     for failure in failures:

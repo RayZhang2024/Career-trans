@@ -99,6 +99,21 @@ def test_uk_location_rejects_us_only_remote_before_semantic_selection() -> None:
     assert default_result.geography_filtered == [us_remote]
 
 
+def test_geography_matching_uses_complete_location_tokens_and_phrases() -> None:
+    selector = JobPresemanticSelectionService()
+    ukraine = _job(title="Applied AI Engineer", company="Ukraine", url="https://jobs.example.test/ukraine", location="Kyiv, Ukraine")
+    australia = _job(title="Applied AI Engineer", company="Australia", url="https://jobs.example.test/australia", location="Sydney, Australia")
+    remote_uk = _job(title="Applied AI Engineer", company="Remote UK", url="https://jobs.example.test/remote-uk", location="Remote - UK")
+    london_uk = _job(title="Applied AI Engineer", company="London UK", url="https://jobs.example.test/london-uk", location="London, United Kingdom")
+
+    assert selector.select_for_hunt([ukraine], query=_query(locations=["UK"]), limit=1).selected == []
+    assert selector.select_for_hunt([australia], query=_query(locations=["US"]), limit=1).selected == []
+    assert selector.select_for_hunt([remote_uk], query=_query(locations=["United Kingdom"]), limit=1).selected == [remote_uk]
+    assert selector.select_for_hunt([london_uk], query=_query(locations=["United Kingdom"]), limit=1).selected == [london_uk]
+    assert selector.select_for_hunt([london_uk], query=_query(locations=["London"]), limit=1).selected == [london_uk]
+    assert selector.select_for_hunt([remote_uk], query=_query(locations=["London"]), limit=1).selected == []
+
+
 def test_remote_policy_never_bypasses_geography_and_unknown_location_is_diagnostic() -> None:
     us_remote = _job(
         title="Applied AI Engineer",
@@ -136,4 +151,5 @@ def test_remote_ok_false_remains_a_work_arrangement_constraint() -> None:
     result = JobPresemanticSelectionService().select_for_hunt([uk_remote], query=_query(remote_ok=False), limit=10)
 
     assert result.selected == []
-    assert result.geography_filtered == [uk_remote]
+    assert result.geography_filtered == []
+    assert result.work_arrangement_filtered == [uk_remote]
