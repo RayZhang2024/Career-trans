@@ -110,10 +110,19 @@ def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_o
         {"jobs": [{**_valid_output()["jobs"][0], "unexpected": "field"}]},
         {"jobs": [{"company": "Example", "url": "https://jobs.example.test/1"}]},
         {"jobs": [{"title": "Engineer", "company": "Example"}]},
+        {"jobs": [{**_valid_output()["jobs"][0], "title": "x" * 501}]},
         {"jobs": []},
         {"jobs": [_valid_output()["jobs"][0]] * 26},
     ],
-    ids=["invalid_url", "extra_field", "missing_required_title", "missing_required_url", "zero_jobs", "over_limit"],
+    ids=[
+        "invalid_url",
+        "extra_field",
+        "missing_required_title",
+        "missing_required_url",
+        "overlong_title",
+        "zero_jobs",
+        "over_limit",
+    ],
 )
 def test_codex_runner_fails_closed_for_contract_invalid_output(output: dict[str, object]) -> None:
     def runner(command, **_kwargs):
@@ -134,6 +143,8 @@ def test_codex_runner_emits_sdk_derived_strict_schema_for_the_canonical_contract
     assert schema["properties"]["jobs"]["minItems"] == 1
     assert schema["properties"]["jobs"]["maxItems"] == 25
     assert '"default"' not in serialized
+    assert '"minLength"' not in serialized
+    assert '"maxLength"' not in serialized
 
     job = schema["$defs"]["ExternalDiscoveredJob"]
     provenance = schema["$defs"]["ExternalDiscoveryProvenance"]
@@ -145,6 +156,7 @@ def test_codex_runner_emits_sdk_derived_strict_schema_for_the_canonical_contract
     source_ref_types = provenance["properties"]["source_ref"]["anyOf"]
     assert {item["type"] for item in company_types} == {"string", "null"}
     assert {item["type"] for item in source_ref_types} == {"string", "null"}
+    assert job["properties"]["posted_at"]["anyOf"][0]["format"] == "date-time"
     assert schema != CodexExternalDiscoveryOutput.model_json_schema()
 
 

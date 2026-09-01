@@ -11,12 +11,14 @@ class StrictStructuredOutputSchemaError(RuntimeError):
 
 
 def strict_schema_from_pydantic_model(model: type[BaseModel]) -> dict[str, Any]:
-    """Build the SDK's strict schema and remove unsupported default keywords.
+    """Build the SDK's strict schema and remove unsupported provider keywords.
 
     The OpenAI SDK parser makes every object property required while retaining
     nullable types for application-optional fields. Pydantic defaults are not
-    accepted by the strict provider subset, so remove them recursively without
-    changing the canonical application model.
+    accepted by the strict provider subset. Its current string-constraint subset
+    also excludes ``minLength`` and ``maxLength``. Remove those provider-only
+    restrictions recursively without changing the canonical application model,
+    which remains authoritative when it validates the returned data.
     """
     try:
         from openai.lib._parsing import type_to_response_format_param
@@ -34,15 +36,16 @@ def strict_schema_from_pydantic_model(model: type[BaseModel]) -> dict[str, Any]:
         )
 
     normalized = json.loads(json.dumps(schema))
-    _remove_defaults(normalized)
+    _normalize_strict_provider_schema(normalized)
     return normalized
 
 
-def _remove_defaults(value: object) -> None:
+def _normalize_strict_provider_schema(value: object) -> None:
     if isinstance(value, dict):
-        value.pop("default", None)
+        for keyword in ("default", "minLength", "maxLength"):
+            value.pop(keyword, None)
         for child in value.values():
-            _remove_defaults(child)
+            _normalize_strict_provider_schema(child)
     elif isinstance(value, list):
         for child in value:
-            _remove_defaults(child)
+            _normalize_strict_provider_schema(child)
