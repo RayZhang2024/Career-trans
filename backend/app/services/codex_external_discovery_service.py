@@ -52,12 +52,29 @@ class CodexExternalDiscoveryRunner:
             )
         prompt = self._prompt(context)
         with tempfile.TemporaryDirectory(prefix="career-trans-codex-") as directory:
+            schema_path = Path(directory) / "external-discovery-output-schema.json"
             output_path = Path(directory) / "discovered-jobs.json"
+            # The Codex CLI consumes a standard JSON Schema file.  Generate it from the
+            # same canonical Pydantic contract that remains authoritative after the
+            # subprocess completes; do not maintain a second, hand-written contract.
+            schema_path.write_text(
+                json.dumps(self._output_schema(), separators=(",", ":")),
+                encoding="utf-8",
+            )
             # --search is a global Codex flag and must precede `exec`; current-vacancy
             # discovery requires live rather than cached web search.
             # Codex documents `-` as stdin prompt input. Keeping the full task off the
             # command line avoids cmd.exe reparsing prompt metacharacters via its .cmd shim.
-            command = [executable, "--search", "exec", "--output-last-message", str(output_path), "-"]
+            command = [
+                executable,
+                "--search",
+                "exec",
+                "--output-schema",
+                str(schema_path),
+                "--output-last-message",
+                str(output_path),
+                "-",
+            ]
             try:
                 result = self._runner(
                     command,
@@ -100,6 +117,11 @@ class CodexExternalDiscoveryRunner:
             raise CodexExternalDiscoveryError(
                 "Codex returned invalid discovery JSON; no jobs were imported."
             ) from exc
+
+    @staticmethod
+    def _output_schema() -> dict[str, object]:
+        """Return the canonical JSON Schema accepted by Codex's --output-schema flag."""
+        return CodexExternalDiscoveryOutput.model_json_schema()
 
     @staticmethod
     def _safe_diagnostic(value: bytes | str | None) -> str:

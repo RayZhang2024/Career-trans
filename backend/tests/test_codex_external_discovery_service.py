@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.schemas.external_discovery import ExternalDiscoverySearchContextResponse
+from app.schemas.external_discovery import CodexExternalDiscoveryOutput, ExternalDiscoverySearchContextResponse
 from app.services.codex_external_discovery_service import (
     CodexExternalDiscoveryError,
     CodexExternalDiscoveryRunner,
@@ -24,25 +24,32 @@ def _context() -> ExternalDiscoverySearchContextResponse:
     )
 
 
+def _argument_path(command: list[str], flag: str) -> Path:
+    return Path(command[command.index(flag) + 1])
+
+
+def _valid_output() -> dict[str, object]:
+    return {
+        "jobs": [
+            {
+                "title": "Engineer",
+                "company": "Example",
+                "url": "https://jobs.example.test/1",
+                "provenance": {"source_ref": "public", "discovered_via": "web"},
+            }
+        ]
+    }
+
+
 def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_output_file() -> None:
     commands = []
 
     def runner(command, **kwargs):
         commands.append((command, kwargs))
-        Path(command[4]).write_text(
-            json.dumps(
-                {
-                    "jobs": [
-                        {
-                            "title": "Engineer",
-                            "company": "Example",
-                            "url": "https://jobs.example.test/1",
-                            "provenance": {"source_ref": "public", "discovered_via": "web"},
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
+        schema_path = _argument_path(command, "--output-schema")
+        assert json.loads(schema_path.read_text(encoding="utf-8")) == CodexExternalDiscoveryOutput.model_json_schema()
+        _argument_path(command, "--output-last-message").write_text(
+            json.dumps(_valid_output()), encoding="utf-8"
         )
         return subprocess.CompletedProcess(command, 0, b"\xb2", b"\xb2")
 
@@ -53,7 +60,14 @@ def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_outpu
 
     assert jobs[0].title == "Engineer"
     command, kwargs = commands[0]
-    assert command[0:4] == ["codex", "--search", "exec", "--output-last-message"]
+    assert command[0:4] == ["codex", "--search", "exec", "--output-schema"]
+    assert "--output-last-message" in command
+    schema_path = _argument_path(command, "--output-schema")
+    output_path = _argument_path(command, "--output-last-message")
+    assert schema_path.name == "external-discovery-output-schema.json"
+    assert output_path.name == "discovered-jobs.json"
+    assert not schema_path.exists()
+    assert not output_path.exists()
     assert command[-1] == "-"
     assert not any("Software & AI" in argument or "Muon" in argument for argument in command)
     assert b"Software & AI | Muon (D)" in kwargs["input"]
@@ -82,11 +96,31 @@ def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_o
         CodexExternalDiscoveryRunner(runner=timeout, executable_lookup=lambda _: "codex").discover(_context())
 
     def invalid(command, **_kwargs):
-        Path(command[4]).write_text("not json", encoding="utf-8")
+        _argument_path(command, "--output-last-message").write_text("not json", encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
     with pytest.raises(CodexExternalDiscoveryError, match="invalid discovery JSON"):
         CodexExternalDiscoveryRunner(runner=invalid, executable_lookup=lambda _: "codex").discover(_context())
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        {"jobs": [{**_valid_output()["jobs"][0], "url": "not-a-url"}]},
+        {"jobs": [{**_valid_output()["jobs"][0], "unexpected": "field"}]},
+        {"jobs": [{"company": "Example", "url": "https://jobs.example.test/1"}]},
+        {"jobs": []},
+        {"jobs": [_valid_output()["jobs"][0]] * 26},
+    ],
+    ids=["invalid_url", "extra_field", "missing_required_title", "zero_jobs", "over_limit"],
+)
+def test_codex_runner_fails_closed_for_contract_invalid_output(output: dict[str, object]) -> None:
+    def runner(command, **_kwargs):
+        _argument_path(command, "--output-last-message").write_text(json.dumps(output), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    with pytest.raises(CodexExternalDiscoveryError, match="invalid discovery JSON"):
+        CodexExternalDiscoveryRunner(runner=runner, executable_lookup=lambda _: "codex").discover(_context())
 
 
 def test_codex_runner_surfaces_bounded_sanitized_non_utf8_failure_diagnostics() -> None:
