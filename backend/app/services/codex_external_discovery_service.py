@@ -13,6 +13,10 @@ from app.schemas.external_discovery import (
     ExternalDiscoveredJob,
     ExternalDiscoverySearchContextResponse,
 )
+from app.providers.openai_structured_output import (
+    StrictStructuredOutputSchemaError,
+    strict_schema_from_pydantic_model,
+)
 
 
 _DIAGNOSTIC_TAIL_BYTES = 2_048
@@ -57,10 +61,16 @@ class CodexExternalDiscoveryRunner:
             # The Codex CLI consumes a standard JSON Schema file.  Generate it from the
             # same canonical Pydantic contract that remains authoritative after the
             # subprocess completes; do not maintain a second, hand-written contract.
-            schema_path.write_text(
-                json.dumps(self._output_schema(), separators=(",", ":")),
-                encoding="utf-8",
-            )
+            try:
+                schema_path.write_text(
+                    json.dumps(self._output_schema(), separators=(",", ":")),
+                    encoding="utf-8",
+                )
+            except StrictStructuredOutputSchemaError as exc:
+                raise CodexExternalDiscoveryError(
+                    "Codex discovery cannot generate a strict structured-output contract. "
+                    "Check the installed OpenAI SDK."
+                ) from exc
             # --search is a global Codex flag and must precede `exec`; current-vacancy
             # discovery requires live rather than cached web search.
             # Codex documents `-` as stdin prompt input. Keeping the full task off the
@@ -120,8 +130,8 @@ class CodexExternalDiscoveryRunner:
 
     @staticmethod
     def _output_schema() -> dict[str, object]:
-        """Return the canonical JSON Schema accepted by Codex's --output-schema flag."""
-        return CodexExternalDiscoveryOutput.model_json_schema()
+        """Return the SDK-derived strict schema for the canonical output model."""
+        return strict_schema_from_pydantic_model(CodexExternalDiscoveryOutput)
 
     @staticmethod
     def _safe_diagnostic(value: bytes | str | None) -> str:

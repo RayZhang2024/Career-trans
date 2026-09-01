@@ -17,6 +17,10 @@ from app.providers.llm import (
     SemanticStructuredOutputModelError,
     SemanticStructuredOutputSchemaError,
 )
+from app.providers.openai_structured_output import (
+    StrictStructuredOutputSchemaError,
+    strict_schema_from_pydantic_model,
+)
 from app.schemas.candidate import CandidateMatchingProfile
 from app.schemas.job import JobProfile
 from app.schemas.matching import (
@@ -378,37 +382,12 @@ class OpenAIRequirementMatcher:
     def _openai_strict_schema() -> dict[str, Any]:
         """Use the SDK Pydantic builder, then remove unsupported default keywords."""
         try:
-            # This is the same SDK helper used by ``responses.parse`` to derive
-            # a strict provider schema from a Pydantic model.
-            from openai.lib._parsing import type_to_response_format_param
-        except ImportError as exc:  # pragma: no cover - guarded by the installed SDK
+            return strict_schema_from_pydantic_model(SemanticRequirementMatchSet)
+        except StrictStructuredOutputSchemaError as exc:
             raise RequirementMatchingError(
                 "The installed OpenAI SDK cannot build a native Structured Outputs schema.",
                 kind="structured_output_sdk_unsupported",
             ) from exc
-
-        response_format = type_to_response_format_param(SemanticRequirementMatchSet)
-        json_schema = response_format.get("json_schema")
-        schema = json_schema.get("schema") if isinstance(json_schema, dict) else None
-        if not isinstance(schema, dict):
-            raise RequirementMatchingError(
-                "The OpenAI SDK could not build a native Structured Outputs schema.",
-                kind="structured_output_sdk_unsupported",
-            )
-
-        normalized = json.loads(json.dumps(schema))
-
-        def remove_defaults(value: object) -> None:
-            if isinstance(value, dict):
-                value.pop("default", None)
-                for child in value.values():
-                    remove_defaults(child)
-            elif isinstance(value, list):
-                for child in value:
-                    remove_defaults(child)
-
-        remove_defaults(normalized)
-        return normalized
 
     @classmethod
     def _openai_strict_schema_for_contract(

@@ -47,7 +47,7 @@ def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_outpu
     def runner(command, **kwargs):
         commands.append((command, kwargs))
         schema_path = _argument_path(command, "--output-schema")
-        assert json.loads(schema_path.read_text(encoding="utf-8")) == CodexExternalDiscoveryOutput.model_json_schema()
+        assert json.loads(schema_path.read_text(encoding="utf-8")) == CodexExternalDiscoveryRunner._output_schema()
         _argument_path(command, "--output-last-message").write_text(
             json.dumps(_valid_output()), encoding="utf-8"
         )
@@ -109,10 +109,11 @@ def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_o
         {"jobs": [{**_valid_output()["jobs"][0], "url": "not-a-url"}]},
         {"jobs": [{**_valid_output()["jobs"][0], "unexpected": "field"}]},
         {"jobs": [{"company": "Example", "url": "https://jobs.example.test/1"}]},
+        {"jobs": [{"title": "Engineer", "company": "Example"}]},
         {"jobs": []},
         {"jobs": [_valid_output()["jobs"][0]] * 26},
     ],
-    ids=["invalid_url", "extra_field", "missing_required_title", "zero_jobs", "over_limit"],
+    ids=["invalid_url", "extra_field", "missing_required_title", "missing_required_url", "zero_jobs", "over_limit"],
 )
 def test_codex_runner_fails_closed_for_contract_invalid_output(output: dict[str, object]) -> None:
     def runner(command, **_kwargs):
@@ -121,6 +122,30 @@ def test_codex_runner_fails_closed_for_contract_invalid_output(output: dict[str,
 
     with pytest.raises(CodexExternalDiscoveryError, match="invalid discovery JSON"):
         CodexExternalDiscoveryRunner(runner=runner, executable_lookup=lambda _: "codex").discover(_context())
+
+
+def test_codex_runner_emits_sdk_derived_strict_schema_for_the_canonical_contract() -> None:
+    schema = CodexExternalDiscoveryRunner._output_schema()
+    serialized = json.dumps(schema)
+
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == list(schema["properties"])
+    assert schema["properties"]["jobs"]["minItems"] == 1
+    assert schema["properties"]["jobs"]["maxItems"] == 25
+    assert '"default"' not in serialized
+
+    job = schema["$defs"]["ExternalDiscoveredJob"]
+    provenance = schema["$defs"]["ExternalDiscoveryProvenance"]
+    for object_schema in (job, provenance):
+        assert object_schema["additionalProperties"] is False
+        assert object_schema["required"] == list(object_schema["properties"])
+
+    company_types = job["properties"]["company"]["anyOf"]
+    source_ref_types = provenance["properties"]["source_ref"]["anyOf"]
+    assert {item["type"] for item in company_types} == {"string", "null"}
+    assert {item["type"] for item in source_ref_types} == {"string", "null"}
+    assert schema != CodexExternalDiscoveryOutput.model_json_schema()
 
 
 def test_codex_runner_surfaces_bounded_sanitized_non_utf8_failure_diagnostics() -> None:
