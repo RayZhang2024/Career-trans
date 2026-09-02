@@ -2,16 +2,47 @@ import json
 from pathlib import Path
 from typing import Protocol
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 from pydantic import ValidationError
 
 from app.agents.openai_client import create_traced_openai_client
+from app.providers.llm import (
+    SemanticOutputError,
+    SemanticProviderConfigurationError,
+    SemanticProviderRequestError,
+    SemanticProviderUnavailableError,
+    SemanticStructuredOutputModelError,
+    SemanticStructuredOutputSchemaError,
+)
+from app.providers.openai_structured_output import (
+    StrictStructuredOutputSchemaError,
+    strict_schema_from_pydantic_model,
+)
 from app.schemas.job import JobProfile
 from app.services.job_profile_normalization import normalize_job_profile
 
 
 class JobExtractionError(RuntimeError):
     """Raised when a job description cannot be converted into a valid JobProfile."""
+
+    _SAFE_KINDS = frozenset(
+        {
+            "invalid_output",
+            "provider_failure",
+            "structured_output_model_unsupported",
+            "structured_output_schema_rejected",
+            "structured_output_sdk_unsupported",
+            "prompt_load_failure",
+        }
+    )
+
+    def __init__(self, message: str, *, kind: str = "invalid_output") -> None:
+        super().__init__(message)
+        self.kind = kind
+
+    @property
+    def safe_kind(self) -> str:
+        return self.kind if self.kind in self._SAFE_KINDS else "unknown"
 
 
 class JobExtractor(Protocol):
@@ -51,25 +82,62 @@ class OpenAIJobExtractor:
 
     def extract(self, job_text: str) -> JobProfile:
         prompt = self._load_prompt()
-        schema = JobProfile.model_json_schema()
+        try:
+            schema = strict_schema_from_pydantic_model(JobProfile)
+        except StrictStructuredOutputSchemaError as exc:
+            raise JobExtractionError(
+                "The installed OpenAI SDK cannot build a job-extraction Structured Outputs schema.",
+                kind="structured_output_sdk_unsupported",
+            ) from exc
 
-        response = self._client.responses.create(
-            model=self._model,
-            input=[
-                {
-                    "role": "system",
-                    "content": prompt,
+        try:
+            response = self._client.responses.create(
+                model=self._model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Extract the following job advert into the supplied schema.\n\n"
+                            f"JOB ADVERT:\n{job_text}"
+                        ),
+                    },
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "job_profile",
+                        "strict": True,
+                        "schema": schema,
+                    }
                 },
-                {
-                    "role": "user",
-                    "content": (
-                        "Extract the following job advert into the supplied schema.\n\n"
-                        f"JSON schema:\n{json.dumps(schema, ensure_ascii=False)}\n\n"
-                        f"JOB ADVERT:\n{job_text}"
-                    ),
-                },
-            ],
-        )
+            )
+        except SemanticStructuredOutputModelError as exc:
+            raise JobExtractionError(
+                "The configured semantic model does not support job-extraction Structured Outputs.",
+                kind="structured_output_model_unsupported",
+            ) from exc
+        except SemanticStructuredOutputSchemaError as exc:
+            raise JobExtractionError(
+                "The job-extraction Structured Outputs schema was rejected by the provider.",
+                kind="structured_output_schema_rejected",
+            ) from exc
+        except (
+            APIConnectionError,
+            APIStatusError,
+            APITimeoutError,
+            SemanticOutputError,
+            SemanticProviderConfigurationError,
+            SemanticProviderRequestError,
+            SemanticProviderUnavailableError,
+        ) as exc:
+            raise JobExtractionError(
+                "The job-extraction provider could not complete the request.",
+                kind="provider_failure",
+            ) from exc
 
         raw_output = response.output_text.strip()
 
@@ -82,7 +150,8 @@ class OpenAIJobExtractor:
             return normalize_job_profile(JobProfile.model_validate(payload))
         except (json.JSONDecodeError, ValidationError) as exc:
             raise JobExtractionError(
-                "The model returned output that did not validate as JobProfile."
+                "The model returned output that did not validate as JobProfile.",
+                kind="invalid_output",
             ) from exc
 
     def _load_prompt(self) -> str:
@@ -90,7 +159,8 @@ class OpenAIJobExtractor:
             return self._prompt_path.read_text(encoding="utf-8")
         except OSError as exc:
             raise JobExtractionError(
-                f"Unable to load job extraction prompt: {self._prompt_path}"
+                "Unable to load the job-extraction prompt.",
+                kind="prompt_load_failure",
             ) from exc
 
     @staticmethod
