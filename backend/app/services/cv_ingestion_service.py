@@ -12,7 +12,7 @@ from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, Can
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_interpretation_service import CVSemanticInterpreter
 from app.services.cv_merge_service import CVMergeService
-from app.services.career_evidence_fingerprint import career_evidence_fingerprint
+from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 
 
 class CVIngestionService:
@@ -99,13 +99,13 @@ class CVIngestionService:
             self._session.add(profile)
         else:
             profile.structured_json = json.dumps(data.model_dump(mode="json"))
-        count = 0
-        for item in data.evidence:
-            fingerprint = career_evidence_fingerprint(item)
-            record = self._session.scalar(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id, CandidateEvidenceRecord.fingerprint == fingerprint))
-            if record is None:
-                self._session.add(CandidateEvidenceRecord(user_id=user_id, fingerprint=fingerprint, evidence_type=item.evidence_type, title=item.title, text=item.text, skills_json=json.dumps(item.skills), provenance_json=json.dumps([value.model_dump(mode="json") for value in item.provenance])))
-                count += 1
+        existing_ids = set(
+            self._session.scalars(
+                select(CandidateEvidenceRecord.id).where(CandidateEvidenceRecord.user_id == user_id)
+            )
+        )
+        active = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
+        count = len([item for item in active if item.evidence_id not in existing_ids])
         draft.state = CVIngestionState.CONFIRMED
         self._session.commit()
         return count
@@ -180,7 +180,8 @@ class PersistedCandidateContextLoader:
         profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
         structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
         data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
-        records = list(self._session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id).order_by(CandidateEvidenceRecord.created_at)))
+        evidence = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
+        self._session.commit()
         profile_text = " ".join(value for value in ([profile.headline, profile.current_role, profile.summary, profile.location] if profile else []) if value)
         employment_text = "\n".join(f"{item.title} at {item.employer}. {item.description}" for item in data.employment)
         education_text = "\n".join(f"{item.qualification} at {item.institution}. {item.description}" for item in data.education)
@@ -206,7 +207,7 @@ class PersistedCandidateContextLoader:
             career_strategy_text="\n".join(value for value in career_strategy_parts if value),
             job_search_criteria_text="\n".join(value for value in criteria_parts if value),
             eligibility=intake.eligibility if intake else CandidateEligibility(),
-            evidence=[CareerEvidence(evidence_id=record.id, title=record.title, text=record.text, skills=json.loads(record.skills_json)) for record in records],
+            evidence=evidence,
         )
 
     def load_confirmed(self, user_id: str) -> CandidateContext | None:
@@ -236,13 +237,8 @@ class PersistedCandidateContextLoader:
                 job_search_criteria_configured=job_search_criteria_configured,
             )
         data = CandidateCVData.model_validate(json.loads(structured.structured_json))
-        evidence_count = len(
-            list(
-                self._session.scalars(
-                    select(CandidateEvidenceRecord.id).where(CandidateEvidenceRecord.user_id == user_id)
-                )
-            )
-        )
+        evidence_count = len(ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data))
+        self._session.commit()
         return CandidateContextSummary(
             ready=True,
             employment_count=len(data.employment),

@@ -60,7 +60,9 @@ def test_confirmed_context_loader_preserves_all_evidence_and_never_falls_back(db
 
     context = loader.load_confirmed(user_a)
     assert context is not None
-    assert [evidence.title for evidence in context.evidence] == ["Platform delivery", "Systems project"]
+    assert [evidence.title for evidence in context.evidence] == [
+        "Platform delivery", "Systems project", "Engineer at Example", "MSc at University"
+    ]
     assert context.skills_text == "Python, Systems"
     assert context.career_strategy_text == "Build applied AI systems."
     assert context.job_search_criteria_text == "Prefer hybrid technical delivery roles."
@@ -89,10 +91,14 @@ def test_match_me_uses_only_current_users_confirmed_context(client, db_session) 
     try:
         response = client.post("/api/v1/jobs/match-me", headers=headers_a, json={"job_profile": {"title": "Engineer", "requirements": []}})
         assert response.status_code == 200
-        assert [item.title for item in captured[0].evidence] == ["Platform delivery", "Systems project"]
+        assert [item.title for item in captured[0].evidence] == [
+            "Platform delivery", "Systems project", "Engineer at Example", "MSc at University"
+        ]
         response = client.post("/api/v1/jobs/match-me", headers=headers_b, json={"job_profile": {"title": "Engineer", "requirements": []}})
         assert response.status_code == 200
-        assert [item.title for item in captured[1].evidence] == ["Other user's evidence", "Systems project"]
+        assert [item.title for item in captured[1].evidence] == [
+            "Other user's evidence", "Systems project", "Engineer at Example", "MSc at University"
+        ]
         missing_context = client.post("/api/v1/jobs/match-me", headers=headers_c, json={"job_profile": {"requirements": []}})
         assert missing_context.status_code == 409
         assert "Upload, review and confirm" in missing_context.json()["detail"]
@@ -119,7 +125,9 @@ def test_rank_me_reuses_existing_ranking_service_with_persisted_context(client, 
             json={"jobs": [{"source": "test", "title": "Engineer", "url": "https://jobs.example.test/1", "description": "A role."}]},
         )
         assert response.status_code == 200
-        assert [item.title for item in captured[0].candidate_context.evidence] == ["Platform delivery", "Systems project"]
+        assert [item.title for item in captured[0].candidate_context.evidence] == [
+            "Platform delivery", "Systems project", "Engineer at Example", "MSc at University"
+        ]
     finally:
         app.dependency_overrides.pop(get_job_ranking_service, None)
 
@@ -135,7 +143,7 @@ def test_context_summary_is_safe_and_user_scoped(client, db_session) -> None:
         "employment_count": 1,
         "education_count": 1,
         "skill_count": 2,
-        "evidence_count": 2,
+        "evidence_count": 4,
         "career_strategy_configured": False,
         "job_search_criteria_configured": False,
     }

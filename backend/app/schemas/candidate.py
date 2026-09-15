@@ -1,10 +1,43 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class CareerEvidenceProvenance(BaseModel):
+    """Canonical application provenance for CV and future confirmed factual sources."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_kind: str = "cv"
+    document_sha256: str | None = None
+    segment_ids: list[str] = Field(default_factory=list)
+    source_ref: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source_shape(self) -> "CareerEvidenceProvenance":
+        if self.source_kind == "cv" and not self.document_sha256:
+            raise ValueError("CV career-evidence provenance requires a document SHA.")
+        if self.source_kind == "confirmed_profile" and not self.source_ref:
+            raise ValueError("Confirmed-profile career-evidence provenance requires a source reference.")
+        return self
 
 
 class CareerEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     evidence_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    skills: list[str] = Field(default_factory=list)
+    evidence_type: str = "other"
+    provenance: list[CareerEvidenceProvenance] = Field(default_factory=list)
+
+
+class CandidateMatchingEvidence(BaseModel):
+    """Provider-safe view of factual evidence for semantic matching."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_id: str = Field(min_length=1)
+    evidence_type: str = "other"
     title: str = Field(min_length=1)
     text: str = Field(min_length=1)
     skills: list[str] = Field(default_factory=list)
@@ -77,4 +110,23 @@ class CandidateMatchingProfile(BaseModel):
 
     profile_summary: str = ""
     skills: list[str] = Field(default_factory=list)
-    evidence: list[CareerEvidence] = Field(default_factory=list)
+    evidence: list[CandidateMatchingEvidence] = Field(default_factory=list)
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def project_legacy_runtime_evidence(cls, value: object) -> object:
+        """Keep explicit-context callers compatible while never serializing provenance."""
+        if not isinstance(value, list):
+            return value
+        return [
+            {
+                "evidence_id": item.evidence_id,
+                "evidence_type": item.evidence_type,
+                "title": item.title,
+                "text": item.text,
+                "skills": item.skills,
+            }
+            if isinstance(item, CareerEvidence)
+            else item
+            for item in value
+        ]

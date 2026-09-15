@@ -60,7 +60,16 @@ class FakeRequirementMatcher:
         candidate_context: CandidateMatchingProfile,
     ) -> RequirementMatchSet:
         assert job_profile == JOB_PROFILE
-        assert candidate_context.evidence == CANDIDATE_CONTEXT.evidence
+        assert [item.model_dump() for item in candidate_context.evidence] == [
+            {
+                "evidence_id": item.evidence_id,
+                "evidence_type": item.evidence_type,
+                "title": item.title,
+                "text": item.text,
+                "skills": item.skills,
+            }
+            for item in CANDIDATE_CONTEXT.evidence
+        ]
         return RequirementMatchSet(
             matches=[
                 RequirementMatch(
@@ -155,7 +164,9 @@ def test_factual_requirement_bypasses_semantic_matcher() -> None:
         ) -> RequirementMatchSet:
             assert len(semantic_job_profile.requirements) == 1
             assert semantic_job_profile.requirements[0] == PYTHON_REQUIREMENT
-            assert supplied_candidate_context.evidence == candidate_context.evidence
+            assert [item.evidence_id for item in supplied_candidate_context.evidence] == [
+                item.evidence_id for item in candidate_context.evidence
+            ]
 
             return RequirementMatchSet(
                 matches=[

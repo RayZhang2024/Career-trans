@@ -162,9 +162,14 @@ def test_adviser_assessment_is_grounded_stale_and_user_scoped(db_session) -> Non
     assert service.assess(user_a).status == "review_ready"
     assert service.confirm_assessment(user_a).status == "confirmed"
     assert service.confirm_assessment(user_a).status == "confirmed"
-    evidence = db_session.scalar(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_a))
-    assert evidence is not None
-    evidence.text = "Changed confirmed evidence that reaches the adviser input."
+    # Active evidence is rebuilt from the confirmed profile rather than trusting
+    # mutable historical rows. A factual structured-profile change is what makes
+    # the adviser assessment stale.
+    structured = db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_a))
+    assert structured is not None
+    changed_data = json.loads(structured.structured_json)
+    changed_data["evidence"][0]["text"] = "Changed confirmed evidence that reaches the adviser input."
+    structured.structured_json = json.dumps(changed_data)
     db_session.commit()
     assert service.get_assessment(user_a).status == "stale"
     assert db_session.scalar(select(CandidateAdviserAssessmentRecord.status).where(CandidateAdviserAssessmentRecord.user_id == user_a)) == "confirmed"
@@ -179,7 +184,7 @@ def test_adviser_semantic_evidence_uses_current_cv_order_when_timestamps_tie(db_
     ]
     _confirmed_cv(db_session, user_id, evidence=source_order)
     records = list(db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)))
-    assert len(records) == 3
+    assert len(records) == 4
     for record in records:
         record.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     db_session.commit()
@@ -189,7 +194,7 @@ def test_adviser_semantic_evidence_uses_current_cv_order_when_timestamps_tie(db_
     service.save_intake(user_id, _intake())
     service.assess(user_id)
 
-    assert [item.title for item in fake.semantic_input.career_evidence] == [
+    assert [item.title for item in fake.semantic_input.career_evidence[:3]] == [
         "Third in database",
         "First in database",
         "Second in database",
@@ -277,7 +282,7 @@ def test_confirmed_cv_without_adviser_intake_remains_usable(db_session) -> None:
     context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
 
     assert context is not None
-    assert [item.title for item in context.evidence] == ["Platform delivery"]
+    assert [item.title for item in context.evidence] == ["Platform delivery", "Engineer at Example"]
     assert context.career_strategy_text == ""
     assert context.job_search_criteria_text == ""
 

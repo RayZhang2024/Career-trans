@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CVDocumentProvenance(BaseModel):
@@ -44,6 +44,29 @@ class Education(BaseModel):
     description: str = ""
 
 
+class CredentialType(StrEnum):
+    CERTIFICATION = "certification"
+    PROFESSIONAL_QUALIFICATION = "professional_qualification"
+    PROFESSIONAL_REGISTRATION = "professional_registration"
+    FORMAL_TRAINING = "formal_training"
+    PROFESSIONAL_MEMBERSHIP = "professional_membership"
+    OTHER = "other"
+
+
+class Credential(BaseModel):
+    """A source-supported professional credential, separate from education."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    credential_type: CredentialType
+    issuer: str | None = None
+    issued_date: str | None = None
+    expiry_date: str | None = None
+    status: str | None = None
+    description: str = ""
+
+
 class Skill(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -64,9 +87,18 @@ class Achievement(BaseModel):
 
 class EvidenceProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    document_sha256: str
+    document_sha256: str | None = None
     segment_ids: list[str] = Field(default_factory=list)
     source_kind: str = "cv"
+    source_ref: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source_shape(self) -> "EvidenceProvenance":
+        if self.source_kind == "cv" and not self.document_sha256:
+            raise ValueError("CV evidence provenance requires a document SHA.")
+        if self.source_kind == "confirmed_profile" and not self.source_ref:
+            raise ValueError("Confirmed-profile provenance requires a source reference.")
+        return self
 
 
 class CareerEvidenceDraft(BaseModel):
@@ -84,6 +116,7 @@ class CandidateCVData(BaseModel):
     model_config = ConfigDict(extra="forbid")
     employment: list[Employment] = Field(default_factory=list)
     education: list[Education] = Field(default_factory=list)
+    credentials: list[Credential] = Field(default_factory=list)
     skills: list[Skill] = Field(default_factory=list)
     projects: list[Project] = Field(default_factory=list)
     achievements: list[Achievement] = Field(default_factory=list)

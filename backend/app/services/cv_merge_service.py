@@ -6,7 +6,7 @@ class CVMergeService:
 
     def merge(self, values: list[CandidateCVData]) -> CandidateCVData:
         merged = CandidateCVData()
-        for field, key in (("employment", lambda item: (item.employer.casefold(), item.title.casefold(), item.start_date)), ("education", lambda item: (item.institution.casefold(), item.qualification.casefold())), ("skills", lambda item: item.name.casefold()), ("projects", lambda item: item.name.casefold()), ("achievements", lambda item: item.text.casefold())):
+        for field, key in (("employment", lambda item: (item.employer.casefold(), item.title.casefold(), item.start_date)), ("education", lambda item: (item.institution.casefold(), item.qualification.casefold())), ("credentials", lambda item: (item.name.casefold(), item.credential_type.value, (item.issuer or "").casefold())), ("skills", lambda item: item.name.casefold()), ("projects", lambda item: item.name.casefold()), ("achievements", lambda item: item.text.casefold())):
             seen = {key(item) for item in getattr(merged, field)}
             for data in values:
                 for item in getattr(data, field):
@@ -23,5 +23,8 @@ class CVMergeService:
                 else:
                     known = {(p.document_sha256, tuple(p.segment_ids), p.source_kind) for p in existing.provenance}
                     existing.provenance.extend(p for p in item.provenance if (p.document_sha256, tuple(p.segment_ids), p.source_kind) not in known)
+                    existing.skills.extend(
+                        skill for skill in item.skills if skill.casefold() not in {value.casefold() for value in existing.skills}
+                    )
         merged.evidence = list(evidence.values())
         return merged

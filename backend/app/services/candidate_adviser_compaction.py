@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 from app.schemas.candidate import CandidateEligibility
 from app.schemas.candidate_adviser import CandidateAdviserEvidenceInput, CandidateAdviserIntake, CandidateAdviserSemanticInput
-from app.schemas.cv_ingestion import Achievement, CandidateCVData, Education, Employment, Project, Skill
+from app.schemas.cv_ingestion import Achievement, CandidateCVData, Credential, Education, Employment, Project, Skill
 
 
 _INTAKE_TEXT_LIMIT = 600
@@ -14,6 +14,7 @@ _ELIGIBILITY_LIST_LIMIT = 12
 _ELIGIBILITY_ITEM_LIMIT = 120
 _EMPLOYMENT_LIMIT = 12
 _EDUCATION_LIMIT = 8
+_CREDENTIAL_LIMIT = 12
 _SKILL_LIMIT = 60
 _PROJECT_LIMIT = 8
 _ACHIEVEMENT_LIMIT = 12
@@ -43,6 +44,7 @@ def compact_candidate_adviser_input(
         career_evidence=[
             CandidateAdviserEvidenceInput(
                 evidence_id=str(item["evidence_id"]),
+                evidence_type=_text(str(item.get("evidence_type", "other")), _SKILL_ITEM_LIMIT),
                 title=_text(str(item.get("title", "")), _EVIDENCE_TITLE_LIMIT),
                 text=_text(str(item.get("text", "")), _EVIDENCE_TEXT_LIMIT),
                 skills=_items(item.get("skills", []), limit=_EVIDENCE_SKILL_LIMIT, item_limit=_SKILL_ITEM_LIMIT),
@@ -89,6 +91,18 @@ def _compact_structured_cv(data: CandidateCVData) -> CandidateCVData:
                 description=_text(item.description, _DESCRIPTION_LIMIT),
             )
             for item in data.education[:_EDUCATION_LIMIT]
+        ],
+        credentials=[
+            Credential(
+                name=_text(item.name, _SKILL_ITEM_LIMIT),
+                credential_type=item.credential_type,
+                issuer=_text(item.issuer or "", _SKILL_ITEM_LIMIT) or None,
+                issued_date=item.issued_date,
+                expiry_date=item.expiry_date,
+                status=_text(item.status or "", _SKILL_ITEM_LIMIT) or None,
+                description=_text(item.description, _DESCRIPTION_LIMIT),
+            )
+            for item in data.credentials[:_CREDENTIAL_LIMIT]
         ],
         skills=[
             Skill(name=_text(item.name, _SKILL_ITEM_LIMIT), category=_text(item.category or "", _SKILL_ITEM_LIMIT) or None)

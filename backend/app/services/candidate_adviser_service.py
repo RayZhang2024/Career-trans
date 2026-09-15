@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.candidate_adviser import CandidateAdviserAgent
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserIntakeRecord
-from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
+from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.schemas.candidate_adviser import (
     AdviserInsight,
     CandidateAdviserAssessmentContent,
@@ -20,7 +20,7 @@ from app.schemas.candidate_adviser import (
 from app.schemas.cv_ingestion import CandidateCVData
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
 from app.services.candidate_adviser_references import candidate_adviser_reference_catalog, candidate_adviser_reference_is_allowed
-from app.services.career_evidence_fingerprint import career_evidence_fingerprint
+from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 
 
 class CandidateAdviserService:
@@ -110,33 +110,16 @@ class CandidateAdviserService:
     def _semantic_input(self, user_id: str, *, intake: CandidateAdviserIntake | None = None) -> CandidateAdviserSemanticInput:
         structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
         data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
-        records = list(
-            self._session.scalars(
-                select(CandidateEvidenceRecord).where(
-                    CandidateEvidenceRecord.user_id == user_id
-                )
-            )
-        )
-        records_by_fingerprint = {record.fingerprint: record for record in records}
-        ordered_records: list[CandidateEvidenceRecord] = []
-        for item in data.evidence:
-            record = records_by_fingerprint.pop(career_evidence_fingerprint(item), None)
-            if record is not None:
-                ordered_records.append(record)
-        ordered_records.extend(
-            sorted(
-                records_by_fingerprint.values(),
-                key=lambda record: (record.created_at, record.id),
-            )
-        )
+        active_evidence = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
         evidence = [
             {
-                "evidence_id": record.id,
-                "title": record.title,
-                "text": record.text,
-                "skills": json.loads(record.skills_json),
+                "evidence_id": item.evidence_id,
+                "evidence_type": item.evidence_type,
+                "title": item.title,
+                "text": item.text,
+                "skills": item.skills,
             }
-            for record in ordered_records
+            for item in active_evidence
         ]
         return compact_candidate_adviser_input(
             intake=intake or self._intake(user_id),
