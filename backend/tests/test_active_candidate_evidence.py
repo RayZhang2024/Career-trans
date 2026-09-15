@@ -203,24 +203,32 @@ def test_reconciliation_savepoint_rolls_back_partial_mutation(db_session, monkey
     )
     original_flush = db_session.flush
     calls = 0
+    successful_flushes: list[int] = []
 
     def fail_second_flush(*args, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise RuntimeError("injected reconciliation failure")
-        return original_flush(*args, **kwargs)
+        result = original_flush(*args, **kwargs)
+        successful_flushes.append(calls)
+        return result
 
     monkeypatch.setattr(db_session, "flush", fail_second_flush)
     with pytest.raises(RuntimeError, match="injected reconciliation failure"):
         ActiveCandidateEvidenceResolver(db_session).resolve(user_id, data)
-    db_session.rollback()
+    assert successful_flushes == [1]
+    monkeypatch.setattr(db_session, "flush", original_flush)
     db_session.expire_all()
 
     persisted = db_session.scalar(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.id == original.id))
     assert persisted is not None
     assert (persisted.fingerprint, persisted.title, persisted.text, persisted.skills_json, persisted.provenance_json) == snapshot
     assert len(db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)).all()) == 1
+    # The savepoint, rather than an outer rollback, restored state; this outer
+    # session can continue and commit normally.
+    assert db_session.is_active
+    db_session.commit()
 
 
 def test_active_evidence_change_stales_confirmed_adviser_assessment(db_session) -> None:

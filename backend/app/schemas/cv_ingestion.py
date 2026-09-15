@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -91,7 +92,7 @@ class EvidenceProvenance(BaseModel):
     model_config = ConfigDict(extra="forbid")
     document_sha256: str
     segment_ids: list[str] = Field(default_factory=list)
-    source_kind: str = "cv"
+    source_kind: Literal["cv"] = "cv"
 
 
 class CareerEvidenceDraft(BaseModel):

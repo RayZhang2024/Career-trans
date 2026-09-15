@@ -244,6 +244,7 @@ def test_semantic_cv_interpreter_uses_provider_strict_schema_and_keeps_pydantic_
     assert "certification" in encoded_schema
     assert "professional_registration" in encoded_schema
     assert "source_ref" not in encoded_schema
+    assert '"cv"' in encoded_schema
     assert "JSON schema:" not in client.kwargs["input"][1]["content"]
 
     with pytest.raises(Exception):
@@ -253,6 +254,19 @@ def test_semantic_cv_interpreter_uses_provider_strict_schema_and_keeps_pydantic_
     with pytest.raises(Exception):
         CandidateCVData.model_validate(
             {"credentials": [{"name": "Cert", "credential_type": "certification", "extra": "no"}]}
+        )
+    with pytest.raises(Exception):
+        CandidateCVData.model_validate(
+            {
+                "evidence": [
+                    {
+                        "evidence_type": "project",
+                        "title": "Claim",
+                        "text": "Claim text.",
+                        "provenance": [{"document_sha256": "a", "source_kind": "confirmed_profile"}],
+                    }
+                ]
+            }
         )
 
 
