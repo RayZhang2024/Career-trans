@@ -3,6 +3,7 @@ import json
 import pytest
 from sqlalchemy import select
 
+import app.services.active_candidate_evidence as active_candidate_evidence
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
 from app.schemas.candidate import CandidateContext
@@ -201,24 +202,22 @@ def test_reconciliation_savepoint_rolls_back_partial_mutation(db_session, monkey
             ]
         }
     )
-    original_flush = db_session.flush
-    calls = 0
-    successful_flushes: list[int] = []
+    original_runtime = active_candidate_evidence._runtime
+    runtime_calls = 0
 
-    def fail_second_flush(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
+    def fail_after_first_post_flush_runtime(record):
+        nonlocal runtime_calls
+        runtime_calls += 1
+        if runtime_calls == 2:
             raise RuntimeError("injected reconciliation failure")
-        result = original_flush(*args, **kwargs)
-        successful_flushes.append(calls)
-        return result
+        return original_runtime(record)
 
-    monkeypatch.setattr(db_session, "flush", fail_second_flush)
+    monkeypatch.setattr(active_candidate_evidence, "_runtime", fail_after_first_post_flush_runtime)
     with pytest.raises(RuntimeError, match="injected reconciliation failure"):
         ActiveCandidateEvidenceResolver(db_session).resolve(user_id, data)
-    assert successful_flushes == [1]
-    monkeypatch.setattr(db_session, "flush", original_flush)
+    # _runtime is invoked only immediately after the resolver's explicit flush,
+    # so call one proves a reconciliation record was flushed in the savepoint.
+    assert runtime_calls == 2
     db_session.expire_all()
 
     persisted = db_session.scalar(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.id == original.id))
