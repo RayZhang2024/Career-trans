@@ -5,6 +5,8 @@ import pytest
 
 from app.agents.job_extraction import JobExtractionError, OpenAIJobExtractor
 from app.providers.llm import (
+    OpenAISemanticLLM,
+    SemanticResponseClient,
     SemanticProviderRequestError,
     SemanticStructuredOutputModelError,
     SemanticStructuredOutputSchemaError,
@@ -245,6 +247,23 @@ def test_extraction_maps_provider_structured_output_failures_safely(
 
     assert exc_info.value.safe_kind == expected_kind
     assert "private" not in str(exc_info.value)
+
+
+def test_extraction_maps_real_semantic_adapter_unsupported_model_safely() -> None:
+    """Model validation occurs inside the provider-neutral SemanticResponseClient path."""
+    client = SemanticResponseClient(
+        OpenAISemanticLLM(api_key="not-used"),
+        operation="job_extraction",
+    )
+    extractor = OpenAIJobExtractor(api_key="", model="unsupported-model", client=client)
+
+    with pytest.raises(JobExtractionError) as exc_info:
+        extractor.extract("A sufficiently long job advert used only for extraction testing.")
+
+    error = exc_info.value
+    assert error.safe_kind == "structured_output_model_unsupported"
+    assert "requirement matching" not in str(error).lower()
+    assert "sufficiently long" not in str(error).lower()
 
 
 def test_extraction_reports_prompt_load_failure_without_path_leakage(tmp_path) -> None:

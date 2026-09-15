@@ -125,12 +125,16 @@ class OpenAIJobExtractor:
                 "The job-extraction Structured Outputs schema was rejected by the provider.",
                 kind="structured_output_schema_rejected",
             ) from exc
+        except SemanticProviderConfigurationError as exc:
+            raise JobExtractionError(
+                "The configured semantic model does not support job-extraction Structured Outputs.",
+                kind="structured_output_model_unsupported",
+            ) from exc
         except (
             APIConnectionError,
             APIStatusError,
             APITimeoutError,
             SemanticOutputError,
-            SemanticProviderConfigurationError,
             SemanticProviderRequestError,
             SemanticProviderUnavailableError,
         ) as exc:
