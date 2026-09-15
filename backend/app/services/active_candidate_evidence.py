@@ -11,14 +11,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord
-from app.schemas.candidate import CareerEvidence
+from app.schemas.candidate import CareerEvidence, CareerEvidenceProvenance
 from app.schemas.cv_ingestion import (
     CandidateCVData,
     CareerEvidenceDraft,
     Credential,
     Education,
     Employment,
-    EvidenceProvenance,
 )
 from app.services.career_evidence_fingerprint import (
     career_evidence_fingerprint,
@@ -27,27 +26,57 @@ from app.services.career_evidence_fingerprint import (
 )
 
 
+class CanonicalCareerEvidenceDraft:
+    """Application-owned draft; unlike CV extraction it can use all canonical provenance."""
+
+    def __init__(
+        self,
+        *,
+        evidence_type: str,
+        title: str,
+        text: str,
+        skills: list[str] | None = None,
+        provenance: list[CareerEvidenceProvenance] | None = None,
+    ) -> None:
+        self.evidence_type = evidence_type
+        self.title = title
+        self.text = text
+        self.skills = skills or []
+        self.provenance = provenance or []
+
+
 class CanonicalCandidateEvidenceBuilder:
     """Build factual, current-profile evidence without semantic paraphrasing."""
 
-    def build(self, data: CandidateCVData) -> list[CareerEvidenceDraft]:
-        drafts = [item.model_copy(deep=True) for item in data.evidence]
+    def build(self, data: CandidateCVData) -> list[CanonicalCareerEvidenceDraft]:
+        drafts = [self._from_semantic(item) for item in data.evidence]
         drafts.extend(self._employment(item) for item in data.employment)
         drafts.extend(self._education(item) for item in data.education)
         drafts.extend(self._credential(item) for item in data.credentials)
         return self._deduplicate_current(drafts)
 
     @staticmethod
-    def _employment(item: Employment) -> CareerEvidenceDraft:
+    def _from_semantic(item: CareerEvidenceDraft) -> CanonicalCareerEvidenceDraft:
+        """Convert CV extraction provenance only after schema/application validation."""
+        return CanonicalCareerEvidenceDraft(
+            evidence_type=item.evidence_type,
+            title=item.title,
+            text=item.text,
+            skills=item.skills,
+            provenance=[CareerEvidenceProvenance(**value.model_dump(mode="json")) for value in item.provenance],
+        )
+
+    @staticmethod
+    def _employment(item: Employment) -> CanonicalCareerEvidenceDraft:
         dates = " – ".join(value for value in (item.start_date, item.end_date) if value)
         title = f"{item.title} at {item.employer}"
         text = title + (f" ({dates})" if dates else "")
-        return CareerEvidenceDraft(
+        return CanonicalCareerEvidenceDraft(
             evidence_type="employment",
             title=title,
             text=text,
             provenance=[
-                EvidenceProvenance(
+                CareerEvidenceProvenance(
                     source_kind="confirmed_profile",
                     source_ref=confirmed_profile_source_ref(
                         "employment",
@@ -58,15 +87,15 @@ class CanonicalCandidateEvidenceBuilder:
         )
 
     @staticmethod
-    def _education(item: Education) -> CareerEvidenceDraft:
+    def _education(item: Education) -> CanonicalCareerEvidenceDraft:
         detail = ", ".join(value for value in (item.qualification, item.field_of_study) if value)
         title = f"{detail} at {item.institution}"
-        return CareerEvidenceDraft(
+        return CanonicalCareerEvidenceDraft(
             evidence_type="education",
             title=title,
             text=title,
             provenance=[
-                EvidenceProvenance(
+                CareerEvidenceProvenance(
                     source_kind="confirmed_profile",
                     source_ref=confirmed_profile_source_ref(
                         "education",
@@ -77,19 +106,23 @@ class CanonicalCandidateEvidenceBuilder:
         )
 
     @staticmethod
-    def _credential(item: Credential) -> CareerEvidenceDraft:
+    def _credential(item: Credential) -> CanonicalCareerEvidenceDraft:
         title = item.name
         details = [item.name, item.credential_type.value]
         if item.issuer:
             details.append(item.issuer)
         if item.status:
             details.append(item.status)
-        return CareerEvidenceDraft(
+        if item.issued_date:
+            details.append(f"issued {item.issued_date}")
+        if item.expiry_date:
+            details.append(f"expires {item.expiry_date}")
+        return CanonicalCareerEvidenceDraft(
             evidence_type="credential",
             title=title,
             text=" — ".join(details),
             provenance=[
-                EvidenceProvenance(
+                CareerEvidenceProvenance(
                     source_kind="confirmed_profile",
                     source_ref=confirmed_profile_source_ref(
                         "credential",
@@ -107,15 +140,23 @@ class CanonicalCandidateEvidenceBuilder:
         )
 
     @staticmethod
-    def _deduplicate_current(items: Iterable[CareerEvidenceDraft]) -> list[CareerEvidenceDraft]:
+    def _deduplicate_current(
+        items: Iterable[CanonicalCareerEvidenceDraft],
+    ) -> list[CanonicalCareerEvidenceDraft]:
         """Union only duplicate representations within this one confirmed profile."""
-        result: list[CareerEvidenceDraft] = []
-        by_fingerprint: dict[str, CareerEvidenceDraft] = {}
+        result: list[CanonicalCareerEvidenceDraft] = []
+        by_fingerprint: dict[str, CanonicalCareerEvidenceDraft] = {}
         for item in items:
             key = career_evidence_fingerprint(item)
             existing = by_fingerprint.get(key)
             if existing is None:
-                existing = item.model_copy(deep=True)
+                existing = CanonicalCareerEvidenceDraft(
+                    evidence_type=item.evidence_type,
+                    title=item.title,
+                    text=item.text,
+                    skills=list(item.skills),
+                    provenance=list(item.provenance),
+                )
                 by_fingerprint[key] = existing
                 result.append(existing)
                 continue
@@ -172,7 +213,7 @@ class ActiveCandidateEvidenceResolver:
                 record.text = item.text
                 record.skills_json = json.dumps(_unique(item.skills))
                 record.provenance_json = json.dumps(
-                    [value.model_dump(mode="json") for value in item.provenance], sort_keys=True
+                [value.model_dump(mode="json") for value in item.provenance], sort_keys=True
                 )
                 self._session.flush()
                 active.append(_runtime(record))
@@ -203,5 +244,5 @@ def _unique(values: Iterable[str]) -> list[str]:
     return result
 
 
-def _provenance_key(value: EvidenceProvenance) -> tuple[str, str | None, tuple[str, ...], str | None]:
+def _provenance_key(value: CareerEvidenceProvenance) -> tuple[str, str | None, tuple[str, ...], str | None]:
     return (value.source_kind, value.document_sha256, tuple(value.segment_ids), value.source_ref)

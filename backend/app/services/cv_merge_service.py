@@ -21,15 +21,11 @@ class CVMergeService:
                 if existing is None:
                     evidence[key] = item.model_copy(deep=True)
                 else:
-                    known = {
-                        (p.document_sha256, tuple(p.segment_ids), p.source_kind, p.source_ref)
-                        for p in existing.provenance
-                    }
+                    known = {(p.document_sha256, tuple(p.segment_ids), p.source_kind) for p in existing.provenance}
                     existing.provenance.extend(
                         p
                         for p in item.provenance
-                        if (p.document_sha256, tuple(p.segment_ids), p.source_kind, p.source_ref)
-                        not in known
+                        if (p.document_sha256, tuple(p.segment_ids), p.source_kind) not in known
                     )
                     existing.skills.extend(
                         skill for skill in item.skills if skill.casefold() not in {value.casefold() for value in existing.skills}

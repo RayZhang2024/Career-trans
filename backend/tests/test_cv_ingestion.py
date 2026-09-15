@@ -240,7 +240,20 @@ def test_semantic_cv_interpreter_uses_provider_strict_schema_and_keeps_pydantic_
     assert response_format["strict"] is True
     schema = response_format["schema"]
     assert set(schema["required"]) == set(schema["properties"])
+    encoded_schema = json.dumps(schema)
+    assert "certification" in encoded_schema
+    assert "professional_registration" in encoded_schema
+    assert "source_ref" not in encoded_schema
     assert "JSON schema:" not in client.kwargs["input"][1]["content"]
+
+    with pytest.raises(Exception):
+        CandidateCVData.model_validate(
+            {"credentials": [{"name": "Cert", "credential_type": "unsupported"}]}
+        )
+    with pytest.raises(Exception):
+        CandidateCVData.model_validate(
+            {"credentials": [{"name": "Cert", "credential_type": "certification", "extra": "no"}]}
+        )
 
 
 def test_interpret_state_machine_rejects_repeat_and_preserves_confirmed_data(db_session) -> None:

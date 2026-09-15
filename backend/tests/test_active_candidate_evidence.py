@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from sqlalchemy import select
 
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
@@ -132,6 +133,8 @@ def test_credential_evidence_merge_compaction_and_provider_projections(db_sessio
                     "name": "Cloud Credential",
                     "credential_type": "certification",
                     "issuer": "Issuer",
+                    "issued_date": "2024-01",
+                    "expiry_date": "2027-01",
                     "status": "active",
                 }
             ],
@@ -141,7 +144,9 @@ def test_credential_evidence_merge_compaction_and_provider_projections(db_sessio
     _confirm(db_session, user_id, data)
     context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
     assert context is not None
-    assert any(item.evidence_type == "credential" for item in context.evidence)
+    credential = next(item for item in context.evidence if item.evidence_type == "credential")
+    assert "issued 2024-01" in credential.text
+    assert "expires 2027-01" in credential.text
 
     compacted = compact_candidate_adviser_input(
         intake=CandidateAdviserIntake(career_direction="Direction"), structured_cv=data,
@@ -159,6 +164,63 @@ def test_credential_evidence_merge_compaction_and_provider_projections(db_sessio
     assert "provenance" not in matching.evidence[0].model_dump(mode="json")
     merged = CVMergeService().merge([data, data])
     assert len(merged.credentials) == 1
+
+
+def test_bare_skill_does_not_materialise_substantive_career_evidence(db_session) -> None:
+    user_id = _user(db_session, "bare-skill@example.com")
+    data = CandidateCVData.model_validate({"skills": [{"name": "Kubernetes"}]})
+
+    active = ActiveCandidateEvidenceResolver(db_session).resolve(user_id, data)
+
+    assert active == []
+    assert db_session.scalars(
+        select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)
+    ).all() == []
+
+
+def test_reconciliation_savepoint_rolls_back_partial_mutation(db_session, monkeypatch) -> None:
+    user_id = _user(db_session, "atomic@example.com")
+    original = CandidateEvidenceRecord(
+        user_id=user_id,
+        fingerprint="a" * 64,
+        evidence_type="project",
+        title="Existing",
+        text="Existing record.",
+        skills_json=json.dumps(["Python"]),
+        provenance_json="[]",
+    )
+    db_session.add(original)
+    db_session.commit()
+    snapshot = (original.fingerprint, original.title, original.text, original.skills_json, original.provenance_json)
+
+    data = CandidateCVData.model_validate(
+        {
+            "evidence": [
+                {"evidence_type": "project", "title": "First", "text": "First current claim."},
+                {"evidence_type": "project", "title": "Second", "text": "Second current claim."},
+            ]
+        }
+    )
+    original_flush = db_session.flush
+    calls = 0
+
+    def fail_second_flush(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected reconciliation failure")
+        return original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(db_session, "flush", fail_second_flush)
+    with pytest.raises(RuntimeError, match="injected reconciliation failure"):
+        ActiveCandidateEvidenceResolver(db_session).resolve(user_id, data)
+    db_session.rollback()
+    db_session.expire_all()
+
+    persisted = db_session.scalar(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.id == original.id))
+    assert persisted is not None
+    assert (persisted.fingerprint, persisted.title, persisted.text, persisted.skills_json, persisted.provenance_json) == snapshot
+    assert len(db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)).all()) == 1
 
 
 def test_active_evidence_change_stales_confirmed_adviser_assessment(db_session) -> None:

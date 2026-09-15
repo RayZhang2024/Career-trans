@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CVDocumentProvenance(BaseModel):
@@ -86,19 +86,12 @@ class Achievement(BaseModel):
 
 
 class EvidenceProvenance(BaseModel):
+    """Extraction-only provenance known by the semantic CV interpreter."""
+
     model_config = ConfigDict(extra="forbid")
-    document_sha256: str | None = None
+    document_sha256: str
     segment_ids: list[str] = Field(default_factory=list)
     source_kind: str = "cv"
-    source_ref: str | None = None
-
-    @model_validator(mode="after")
-    def validate_source_shape(self) -> "EvidenceProvenance":
-        if self.source_kind == "cv" and not self.document_sha256:
-            raise ValueError("CV evidence provenance requires a document SHA.")
-        if self.source_kind == "confirmed_profile" and not self.source_ref:
-            raise ValueError("Confirmed-profile provenance requires a source reference.")
-        return self
 
 
 class CareerEvidenceDraft(BaseModel):
