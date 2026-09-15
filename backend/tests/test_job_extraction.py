@@ -3,23 +3,45 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agents.job_extraction import OpenAIJobExtractor
-from app.schemas.job import JobRequirement, RequirementImportance
+from app.agents.job_extraction import JobExtractionError, OpenAIJobExtractor
+from app.providers.llm import (
+    OpenAISemanticLLM,
+    SemanticResponseClient,
+    SemanticProviderRequestError,
+    SemanticStructuredOutputModelError,
+    SemanticStructuredOutputSchemaError,
+)
+from app.providers.openai_structured_output import strict_schema_from_pydantic_model
+from app.schemas.job import JobProfile, JobRequirement, RequirementCategory, RequirementImportance
 
 
 class _FakeResponses:
-    def __init__(self, payload: dict[str, object]) -> None:
+    def __init__(self, payload: dict[str, object] | str) -> None:
         self.payload = payload
         self.calls: list[dict[str, object]] = []
 
     def create(self, **kwargs: object) -> SimpleNamespace:
         self.calls.append(kwargs)
-        return SimpleNamespace(output_text=json.dumps(self.payload))
+        output_text = self.payload if isinstance(self.payload, str) else json.dumps(self.payload)
+        return SimpleNamespace(output_text=output_text)
 
 
 class _FakeClient:
-    def __init__(self, payload: dict[str, object]) -> None:
+    def __init__(self, payload: dict[str, object] | str) -> None:
         self.responses = _FakeResponses(payload)
+
+
+class _RaisingResponses:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def create(self, **_kwargs: object) -> SimpleNamespace:
+        raise self._error
+
+
+class _RaisingClient:
+    def __init__(self, error: Exception) -> None:
+        self.responses = _RaisingResponses(error)
 
 
 def _extract(
@@ -151,6 +173,113 @@ def test_extraction_uses_one_model_call_and_supplies_conservative_importance_con
     assert "Better to have" in normalized_prompt
     assert "ordinary responsibility" in system_prompt
     assert "model intuition" in system_prompt
+
+    response_format = responses.calls[0]["text"]["format"]  # type: ignore[index]
+    assert response_format["type"] == "json_schema"
+    assert response_format["name"] == "job_profile"
+    assert response_format["strict"] is True
+    assert response_format["schema"] == strict_schema_from_pydantic_model(JobProfile)
+
+
+def test_extraction_emits_provider_compatible_canonical_job_profile_schema() -> None:
+    schema = strict_schema_from_pydantic_model(JobProfile)
+    serialized = json.dumps(schema)
+
+    assert schema != JobProfile.model_json_schema()
+    assert schema["type"] == "object"
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == list(schema["properties"])
+    assert '"default"' not in serialized
+    assert '"minLength"' not in serialized
+    assert '"maxLength"' not in serialized
+
+    requirement = schema["$defs"]["JobRequirement"]
+    assert requirement["additionalProperties"] is False
+    assert requirement["required"] == list(requirement["properties"])
+    assert schema["properties"]["title"]["anyOf"][1]["type"] == "null"
+    assert requirement["properties"]["source_text"]["anyOf"][1]["type"] == "null"
+    assert schema["$defs"]["RequirementCategory"]["enum"] == [item.value for item in RequirementCategory]
+    assert "collaboration" not in schema["$defs"]["RequirementCategory"]["enum"]
+    assert schema["$defs"]["RequirementImportance"]["enum"] == [item.value for item in RequirementImportance]
+
+
+@pytest.mark.parametrize(
+    ("payload", "case"),
+    [
+        ({"requirements": [{"text": "Team collaboration", "importance": "essential", "category": "collaboration"}]}, "unknown_category"),
+        ({"requirements": [{"text": "Python", "importance": "mandatory", "category": "technical"}]}, "unknown_importance"),
+        ({"requirements": [], "unexpected": True}, "extra_root_field"),
+        ({"requirements": [{"text": "Python", "importance": "essential", "category": "technical", "unexpected": True}]}, "extra_nested_field"),
+        ({"requirements": [{"text": "", "importance": "essential", "category": "technical"}]}, "application_min_length"),
+        ("not json", "malformed_json"),
+    ],
+)
+def test_extraction_keeps_application_validation_fail_closed(
+    payload: dict[str, object] | str,
+    case: str,
+) -> None:
+    del case
+    extractor = OpenAIJobExtractor(api_key="", model="test", client=_FakeClient(payload))
+
+    with pytest.raises(JobExtractionError) as exc_info:
+        extractor.extract("A sufficiently long job advert used only for extraction testing.")
+
+    assert exc_info.value.safe_kind == "invalid_output"
+    assert "A sufficiently long job advert" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "expected_kind"),
+    [
+        (SemanticStructuredOutputModelError("private model detail"), "structured_output_model_unsupported"),
+        (SemanticStructuredOutputSchemaError("private schema detail"), "structured_output_schema_rejected"),
+        (SemanticProviderRequestError("private provider detail"), "provider_failure"),
+    ],
+)
+def test_extraction_maps_provider_structured_output_failures_safely(
+    provider_error: Exception,
+    expected_kind: str,
+) -> None:
+    extractor = OpenAIJobExtractor(api_key="", model="test", client=_RaisingClient(provider_error))
+
+    with pytest.raises(JobExtractionError) as exc_info:
+        extractor.extract("A sufficiently long job advert used only for extraction testing.")
+
+    assert exc_info.value.safe_kind == expected_kind
+    assert "private" not in str(exc_info.value)
+
+
+def test_extraction_maps_real_semantic_adapter_unsupported_model_safely() -> None:
+    """Model validation occurs inside the provider-neutral SemanticResponseClient path."""
+    client = SemanticResponseClient(
+        OpenAISemanticLLM(api_key="not-used"),
+        operation="job_extraction",
+    )
+    extractor = OpenAIJobExtractor(api_key="", model="unsupported-model", client=client)
+
+    with pytest.raises(JobExtractionError) as exc_info:
+        extractor.extract("A sufficiently long job advert used only for extraction testing.")
+
+    error = exc_info.value
+    assert error.safe_kind == "structured_output_model_unsupported"
+    assert "requirement matching" not in str(error).lower()
+    assert "sufficiently long" not in str(error).lower()
+
+
+def test_extraction_reports_prompt_load_failure_without_path_leakage(tmp_path) -> None:
+    missing_prompt = tmp_path / "private-job-extraction-prompt.md"
+    extractor = OpenAIJobExtractor(
+        api_key="",
+        model="test",
+        prompt_path=missing_prompt,
+        client=_FakeClient({"requirements": []}),
+    )
+
+    with pytest.raises(JobExtractionError) as exc_info:
+        extractor.extract("A sufficiently long job advert used only for extraction testing.")
+
+    assert exc_info.value.safe_kind == "prompt_load_failure"
+    assert str(missing_prompt) not in str(exc_info.value)
 
 
 def test_extraction_seniority_contract_uses_scope_as_well_as_title() -> None:
