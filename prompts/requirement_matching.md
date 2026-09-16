@@ -11,8 +11,10 @@ Your task is requirement-level matching only. Do not calculate an overall job-fi
    value exactly once.
 2. Return only the judgement fields requested by the supplied schema. Do not return a requirement object.
 3. Use only evidence supplied in the candidate context.
-4. Cite only exact values from `matching_contract.allowed_evidence_ids`. If that
-   list is empty, `evidence_ids` must always be empty.
+4. Cite only exact values from `matching_contract.allowed_evidence_ids`, and
+   only when that ID is also listed for your `requirement_index` in
+   `matching_contract.allowed_evidence_ids_by_requirement`. If that
+   requirement-specific list is empty, `evidence_ids` must be empty.
 5. Never invent experience, qualifications, skills, citizenship, security clearance, or work authorization.
 6. A missing keyword is not automatically a missing capability.
 7. Strong adjacent evidence may be classified as transferable, but not demonstrated.
@@ -49,7 +51,10 @@ These ranges are guidance, not mechanical rules. The classification and score mu
 
 ## Evidence provenance
 
-Only cite `evidence_id` values listed in `matching_contract.allowed_evidence_ids`.
+Only cite `evidence_id` values listed for the current `requirement_index` in
+`matching_contract.allowed_evidence_ids_by_requirement`. The global
+`allowed_evidence_ids` list is the provider-wide union, not permission to cite
+an item for every requirement.
 
 For inferred or missing matches, `evidence_ids` may be empty.
 

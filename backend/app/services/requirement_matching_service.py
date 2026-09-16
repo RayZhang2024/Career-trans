@@ -8,7 +8,10 @@ from app.schemas.matching import (
     RequirementMatchSet,
 )
 from app.services.factual_requirement_service import FactualRequirementService
-from app.services.candidate_profile_compaction import candidate_matching_profile
+from app.services.candidate_profile_compaction import (
+    candidate_matching_profile,
+    requirement_evidence_plan,
+)
 
 
 class RequirementMatchingService:
@@ -48,10 +51,15 @@ class RequirementMatchingService:
             semantic_job_profile = job_profile.model_copy(
                 update={"requirements": semantic_requirements}
             )
+            evidence_plan = requirement_evidence_plan(
+                candidate_context.evidence,
+                semantic_job_profile,
+            )
 
             semantic_result = self._matcher.match(
                 semantic_job_profile,
-                candidate_matching_profile(candidate_context, semantic_job_profile),
+                candidate_matching_profile(candidate_context, evidence_plan=evidence_plan),
+                evidence_plan=evidence_plan,
             )
 
             for local_match in semantic_result.matches:
