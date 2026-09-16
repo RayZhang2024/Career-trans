@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -120,6 +121,10 @@ class ClarificationProposedEvidence(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # The clarification interpreter is allowed to propose only career facts.
+    # Eligibility remains candidate-authored intake/eligibility context, never
+    # matching evidence, including for an otherwise mixed answer.
+    fact_domain: Literal["career"]
     evidence_type: str = Field(min_length=1, max_length=80)
     title: str = Field(min_length=1, max_length=240)
     text: str = Field(min_length=1, max_length=1_200)

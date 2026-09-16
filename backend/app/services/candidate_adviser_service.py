@@ -151,13 +151,16 @@ class CandidateAdviserService:
             return self._read_clarification(record)
         if record.status != CandidateAdviserClarificationStatus.REVIEW_READY or not record.interpretation_json:
             raise ValueError("Clarification is not ready for confirmation.")
-        record.status = CandidateAdviserClarificationStatus.CONFIRMED
         from datetime import datetime, timezone
-        record.confirmed_at = datetime.now(timezone.utc)
-        # The resolver remains the only active-evidence authority. Its nested
-        # reconciliation is included in this confirmation transaction.
-        self._session.flush()
-        self._resolve_active_evidence(user_id)
+        # Confirmation and active-evidence reconciliation are one atomic
+        # transition. A failed reconciliation must not leave a confirmed
+        # clarification that was never made active.
+        with self._session.begin_nested():
+            record.status = CandidateAdviserClarificationStatus.CONFIRMED
+            record.confirmed_at = datetime.now(timezone.utc)
+            self._session.flush()
+            # The resolver remains the only active-evidence authority.
+            self._resolve_active_evidence(user_id)
         self._session.commit()
         self._session.refresh(record)
         return self._read_clarification(record)
@@ -251,12 +254,17 @@ class CandidateAdviserService:
             CandidateAdviserClarificationRecord.user_id == user_id,
             CandidateAdviserClarificationRecord.status == CandidateAdviserClarificationStatus.CONFIRMED,
         )).all())
+        # A current assessment can itself contain semantically identical
+        # questions with different source references. Ask once; the first
+        # ordered question remains the deterministic representative.
+        seen_question_keys = set(existing_confirmed_keys)
         for priority, question in enumerate(assessment.content.open_questions):
             clarification_id, question_key, references = self._clarification_identity(
                 assessment.input_fingerprint, question,
             )
-            if question_key in existing_confirmed_keys:
+            if question_key in seen_question_keys:
                 continue
+            seen_question_keys.add(question_key)
             record = CandidateAdviserClarificationRecord(
                 user_id=user_id,
                 clarification_id=clarification_id,
@@ -327,8 +335,12 @@ class CandidateAdviserService:
         ).order_by(CandidateAdviserClarificationRecord.confirmed_at, CandidateAdviserClarificationRecord.clarification_id)))
 
     def _confirmed_clarification_projection(self, user_id: str) -> list[dict[str, object]]:
+        # The bounded provider context must contain the latest confirmations,
+        # while the full confirmed state remains part of the fingerprint.
+        records = self._confirmed_clarifications(user_id)
+        records = records[-12:]
         projection: list[dict[str, object]] = []
-        for record in self._confirmed_clarifications(user_id):
+        for record in records:
             if not record.interpretation_json:
                 continue
             interpretation = ClarificationInterpretation.model_validate(json.loads(record.interpretation_json))

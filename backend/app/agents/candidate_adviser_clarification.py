@@ -7,7 +7,10 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from app.providers.llm import SemanticOutputError
+from app.providers.openai_structured_output import strict_schema_from_pydantic_model
 from app.schemas.candidate_adviser import ClarificationInterpretation
+
+_ANSWER_LENGTH_LIMIT = 4_000
 
 
 class CandidateAdviserClarificationInterpreter(Protocol):
@@ -23,14 +26,21 @@ class SemanticCandidateAdviserClarificationInterpreter:
 
     def interpret(self, *, question_text: str, answer_text: str) -> ClarificationInterpretation:
         prompt = (Path(__file__).resolve().parents[3] / "prompts" / "candidate_adviser_clarification.md").read_text(encoding="utf-8")
-        payload = {"question": question_text, "candidate_answer": answer_text}
+        payload = {
+            "question": question_text,
+            "candidate_answer": " ".join(answer_text.split())[:_ANSWER_LENGTH_LIMIT],
+        }
+        # The canonical Pydantic model remains the application boundary. The
+        # provider receives the SDK-derived strict projection so required
+        # fields/defaults follow the supported Structured Outputs subset.
+        schema = strict_schema_from_pydantic_model(ClarificationInterpretation)
         response = self._client.responses.create(
             model=self._model,
             input=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": f"JSON schema:\n{json.dumps(ClarificationInterpretation.model_json_schema())}\n\nINPUT:\n{json.dumps(payload, ensure_ascii=False)}"},
+                {"role": "user", "content": f"JSON schema:\n{json.dumps(schema)}\n\nINPUT:\n{json.dumps(payload, ensure_ascii=False)}"},
             ],
-            text={"format": {"type": "json_schema", "name": "candidate_adviser_clarification", "strict": True, "schema": ClarificationInterpretation.model_json_schema()}},
+            text={"format": {"type": "json_schema", "name": "candidate_adviser_clarification", "strict": True, "schema": schema}},
         )
         try:
             return ClarificationInterpretation.model_validate(
