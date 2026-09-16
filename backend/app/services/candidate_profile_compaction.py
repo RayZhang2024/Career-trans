@@ -11,13 +11,19 @@ from app.schemas.candidate import (
     CareerEvidence,
 )
 from app.schemas.job import JobProfile
+from app.schemas.matching import (
+    REQUIREMENT_EVIDENCE_PER_REQUIREMENT_LIMIT,
+    REQUIREMENT_EVIDENCE_PROVIDER_LIMIT,
+    RequirementEvidencePlan,
+    RequirementEvidenceScope,
+)
 
 
 _PROFILE_SUMMARY_LIMIT = 1_200
 _DIRECTION_TEXT_LIMIT = 1_200
 _SKILL_LIMIT = 40
-_TOP_EVIDENCE_LIMIT = 8
-_PER_REQUIREMENT_EVIDENCE_LIMIT = 3
+_TOP_EVIDENCE_LIMIT = REQUIREMENT_EVIDENCE_PROVIDER_LIMIT
+_PER_REQUIREMENT_EVIDENCE_LIMIT = REQUIREMENT_EVIDENCE_PER_REQUIREMENT_LIMIT
 _TOKEN_PATTERN = re.compile(r"[a-z0-9+#.]{2,}", re.IGNORECASE)
 
 
@@ -53,10 +59,22 @@ def candidate_career_profile(candidate: CandidateContext) -> CandidateCareerProf
 
 def candidate_matching_profile(
     candidate: CandidateContext,
-    job_profile: JobProfile,
+    job_profile: JobProfile | None = None,
     *,
+    evidence_plan: RequirementEvidencePlan | None = None,
     limit: int = _TOP_EVIDENCE_LIMIT,
 ) -> CandidateMatchingProfile:
+    """Build the provider-safe view from one retrieval owner.
+
+    Callers with a request-owned ``evidence_plan`` must pass it here.  The
+    legacy ``job_profile`` path remains for direct callers, but workflow code
+    constructs the plan first and never performs a second retrieval pass.
+    """
+    if evidence_plan is None:
+        if job_profile is None:
+            raise ValueError("A job profile or requirement evidence plan is required.")
+        evidence_plan = requirement_evidence_plan(candidate.evidence, job_profile, limit=limit)
+
     return CandidateMatchingProfile(
         profile_summary=_compact_text(candidate.profile_text),
         skills=_candidate_skills(candidate),
@@ -68,7 +86,7 @@ def candidate_matching_profile(
                 text=item.text,
                 skills=item.skills,
             )
-            for item in top_evidence(candidate.evidence, job_profile, limit=limit)
+            for item in evidence_plan.provider_evidence
         ],
     )
 
@@ -79,58 +97,89 @@ def top_evidence(
     *,
     limit: int = _TOP_EVIDENCE_LIMIT,
 ) -> list[CareerEvidence]:
-    """Select bounded, requirement-aware evidence with stable ordering.
+    """Compatibility view of the provider union from the retrieval plan."""
+    return list(requirement_evidence_plan(evidence, job_profile, limit=limit).provider_evidence)
 
-    Each semantic requirement receives its own small lexical retrieval pass.
-    The resulting evidence is selected round-robin by per-requirement rank,
-    deduplicated by ID, and bounded by the total prompt budget. Requirement and
-    source order break ties deterministically.
+
+def requirement_evidence_plan(
+    evidence: list[CareerEvidence],
+    job_profile: JobProfile,
+    *,
+    limit: int = _TOP_EVIDENCE_LIMIT,
+    per_requirement_limit: int = _PER_REQUIREMENT_EVIDENCE_LIMIT,
+) -> RequirementEvidencePlan:
+    """Create one deterministic, requirement-scoped provider evidence plan.
+
+    Lexical/skill overlap is the primary ordering signal.  Category/type
+    affinity only settles equal-overlap candidates; evidence IDs are the final
+    stable tie-break, so input list order cannot affect the plan.
     """
     if limit < 1:
-        return []
+        plan = RequirementEvidencePlan(
+            provider_evidence=(),
+            scopes=tuple(
+                RequirementEvidenceScope(requirement_index=index)
+                for index in range(len(job_profile.requirements))
+            ),
+        )
+        plan.validate_for(
+            requirement_count=len(job_profile.requirements),
+            provider_limit=limit,
+            per_requirement_limit=per_requirement_limit,
+        )
+        return plan
 
     ranked_by_requirement: list[list[CareerEvidence]] = []
     for requirement in job_profile.requirements:
         requirement_terms = _terms(requirement.text)
-        ranked = [
-            item
-            for _, item in sorted(
-            enumerate(evidence),
-            key=lambda indexed: (
-                -len(
-                    requirement_terms
-                    & _terms(
-                        " ".join(
-                            [
-                                indexed[1].title,
-                                indexed[1].text,
-                                *indexed[1].skills,
-                            ]
-                        )
-                    )
-                ),
-                indexed[0],
+        ranked = sorted(
+            (
+                item
+                for item in evidence
+                if requirement_terms & _evidence_terms(item)
             ),
-            )
-            if requirement_terms
-            & _terms(" ".join([item.title, item.text, *item.skills]))
-        ]
-        ranked_by_requirement.append(ranked[:_PER_REQUIREMENT_EVIDENCE_LIMIT])
+            key=lambda item: (
+                -len(requirement_terms & _evidence_terms(item)),
+                -_type_preference(requirement.category.value, item.evidence_type),
+                item.evidence_id,
+            ),
+        )
+        ranked_by_requirement.append(ranked[:per_requirement_limit])
 
     selected: list[CareerEvidence] = []
     selected_ids: set[str] = set()
-    for rank in range(_PER_REQUIREMENT_EVIDENCE_LIMIT):
-        for ranked in ranked_by_requirement:
+    scoped_ids: list[list[str]] = [[] for _ in ranked_by_requirement]
+    for rank in range(per_requirement_limit):
+        for requirement_index, ranked in enumerate(ranked_by_requirement):
             if rank >= len(ranked):
                 continue
             item = ranked[rank]
+            if item.evidence_id not in selected_ids:
+                if len(selected) == limit:
+                    continue
+                selected.append(item)
+                selected_ids.add(item.evidence_id)
+            # A duplicate is permitted in multiple scopes, but only after it
+            # survives into the bounded provider union.
             if item.evidence_id in selected_ids:
-                continue
-            selected.append(item)
-            selected_ids.add(item.evidence_id)
-            if len(selected) == limit:
-                return selected
-    return selected
+                scoped_ids[requirement_index].append(item.evidence_id)
+
+    plan = RequirementEvidencePlan(
+        provider_evidence=tuple(selected),
+        scopes=tuple(
+            RequirementEvidenceScope(
+                requirement_index=index,
+                allowed_evidence_ids=tuple(ids),
+            )
+            for index, ids in enumerate(scoped_ids)
+        ),
+    )
+    plan.validate_for(
+        requirement_count=len(job_profile.requirements),
+        provider_limit=limit,
+        per_requirement_limit=per_requirement_limit,
+    )
+    return plan
 
 
 def _candidate_skills(candidate: CandidateContext) -> list[str]:
@@ -154,3 +203,18 @@ def _compact_text(value: str, *, limit: int = _PROFILE_SUMMARY_LIMIT) -> str:
 
 def _terms(value: str) -> set[str]:
     return {match.group(0).casefold() for match in _TOKEN_PATTERN.finditer(value)}
+
+
+def _evidence_terms(item: CareerEvidence) -> set[str]:
+    return _terms(" ".join([item.title, item.text, *item.skills]))
+
+
+def _type_preference(requirement_category: str, evidence_type: str) -> int:
+    """Conservative secondary ranking only; unknown types stay eligible."""
+    normalized = evidence_type.casefold()
+    preferred = {
+        "education": {"education", "credential"},
+        "experience": {"employment", "project", "achievement"},
+        "leadership": {"employment", "project", "achievement"},
+    }
+    return int(normalized in preferred.get(requirement_category, set()))

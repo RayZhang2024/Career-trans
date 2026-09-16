@@ -25,10 +25,13 @@ from app.schemas.candidate import CandidateMatchingProfile
 from app.schemas.job import JobProfile
 from app.schemas.matching import (
     MatchType,
+    REQUIREMENT_EVIDENCE_PER_REQUIREMENT_LIMIT,
+    REQUIREMENT_EVIDENCE_PROVIDER_LIMIT,
     RequirementMatchingJobProfile,
     RequirementMatchingRequirement,
     RequirementMatch,
     RequirementMatchSet,
+    RequirementEvidencePlan,
     SemanticRequirementMatchSet,
 )
 
@@ -42,6 +45,7 @@ class RequirementMatchingError(RuntimeError):
             "wrong_match_count",
             "invalid_indexes",
             "unknown_evidence_ids",
+            "out_of_scope_evidence_ids",
             "provider_failure",
             "structured_output_model_unsupported",
             "structured_output_schema_rejected",
@@ -65,6 +69,8 @@ class RequirementMatcher(Protocol):
         self,
         job_profile: JobProfile,
         candidate_context: CandidateMatchingProfile,
+        *,
+        evidence_plan: RequirementEvidencePlan | None = None,
     ) -> RequirementMatchSet:
         """Match every job requirement against candidate evidence."""
 
@@ -86,21 +92,39 @@ class _RequirementMatchingContract:
     expected_match_count: int
     allowed_requirement_indexes: tuple[int, ...]
     allowed_evidence_ids: tuple[str, ...]
+    allowed_evidence_ids_by_requirement: tuple[tuple[str, ...], ...]
 
     @classmethod
     def from_inputs(
         cls,
         job_profile: JobProfile,
         candidate_context: CandidateMatchingProfile,
+        evidence_plan: RequirementEvidencePlan | None = None,
     ) -> "_RequirementMatchingContract":
+        provider_evidence_ids = tuple(dict.fromkeys(
+            evidence.evidence_id for evidence in candidate_context.evidence
+        ))
+        if evidence_plan is None:
+            # Compatibility for direct matcher callers that already provide a
+            # bounded profile. Workflow callers always supply the one
+            # application-owned retrieval plan.
+            scopes = tuple(
+                provider_evidence_ids for _ in range(len(job_profile.requirements))
+            )
+        else:
+            evidence_plan.validate_for(
+                requirement_count=len(job_profile.requirements),
+                provider_limit=REQUIREMENT_EVIDENCE_PROVIDER_LIMIT,
+                per_requirement_limit=REQUIREMENT_EVIDENCE_PER_REQUIREMENT_LIMIT,
+            )
+            if tuple(item.evidence_id for item in evidence_plan.provider_evidence) != provider_evidence_ids:
+                raise ValueError("Requirement evidence plan does not match the provider evidence union.")
+            scopes = tuple(scope.allowed_evidence_ids for scope in evidence_plan.scopes)
         return cls(
             expected_match_count=len(job_profile.requirements),
             allowed_requirement_indexes=tuple(range(len(job_profile.requirements))),
-            # Preserve the compact profile's canonical evidence order while
-            # making duplicate IDs harmless in the provider schema.
-            allowed_evidence_ids=tuple(dict.fromkeys(
-                evidence.evidence_id for evidence in candidate_context.evidence
-            )),
+            allowed_evidence_ids=provider_evidence_ids,
+            allowed_evidence_ids_by_requirement=scopes,
         )
 
     def model_input(self) -> dict[str, object]:
@@ -108,6 +132,10 @@ class _RequirementMatchingContract:
             "expected_match_count": self.expected_match_count,
             "allowed_requirement_indexes": list(self.allowed_requirement_indexes),
             "allowed_evidence_ids": list(self.allowed_evidence_ids),
+            "allowed_evidence_ids_by_requirement": {
+                str(index): list(scope)
+                for index, scope in enumerate(self.allowed_evidence_ids_by_requirement)
+            },
         }
 
     @staticmethod
@@ -125,6 +153,12 @@ class _RequirementMatchingContract:
             "unknown_evidence_ids": (
                 "Use only exact IDs from allowed_evidence_ids, or an empty evidence_ids list "
                 "when no supplied evidence supports the requirement."
+            ),
+            "out_of_scope_evidence_ids": (
+                "For each requirement_index, cite only IDs listed in "
+                "allowed_evidence_ids_by_requirement for that requirement. Use an empty "
+                "evidence_ids list when none of that requirement's allowed evidence supports "
+                "the match."
             ),
         }
         return guidance.get(failure_kind)
@@ -155,9 +189,15 @@ class OpenAIRequirementMatcher:
         self,
         job_profile: JobProfile,
         candidate_context: CandidateMatchingProfile,
+        *,
+        evidence_plan: RequirementEvidencePlan | None = None,
     ) -> RequirementMatchSet:
         prompt = self._load_prompt()
-        contract = _RequirementMatchingContract.from_inputs(job_profile, candidate_context)
+        contract = _RequirementMatchingContract.from_inputs(
+            job_profile,
+            candidate_context,
+            evidence_plan,
+        )
         schema = self._openai_strict_schema_for_contract(contract)
 
         payload = {
@@ -198,7 +238,7 @@ class OpenAIRequirementMatcher:
                         payload=payload,
                         corrective_guidance=contract.corrective_guidance(previous_failure_kind),
                     )
-                self._validate_result(result, job_profile, candidate_context)
+                self._validate_result(result, job_profile, candidate_context, contract)
                 return self._attach_canonical_requirements(result, job_profile)
             except RequirementMatchingError as exc:
                 if (
@@ -287,6 +327,7 @@ class OpenAIRequirementMatcher:
         result: SemanticRequirementMatchSet,
         job_profile: JobProfile,
         candidate_context: CandidateMatchingProfile,
+        contract: _RequirementMatchingContract | None = None,
     ) -> None:
         requirements = job_profile.requirements
         if len(result.matches) != len(requirements):
@@ -313,6 +354,15 @@ class OpenAIRequirementMatcher:
                     "candidate context.",
                     kind="unknown_evidence_ids",
                 )
+            if contract is not None:
+                allowed_for_requirement = set(
+                    contract.allowed_evidence_ids_by_requirement[match.requirement_index]
+                )
+                if set(match.evidence_ids) - allowed_for_requirement:
+                    raise RequirementMatchingError(
+                        "The matcher referenced evidence IDs outside the requirement scope.",
+                        kind="out_of_scope_evidence_ids",
+                    )
 
     @staticmethod
     def _attach_canonical_requirements(
@@ -375,6 +425,7 @@ class OpenAIRequirementMatcher:
             "wrong_match_count",
             "invalid_indexes",
             "unknown_evidence_ids",
+            "out_of_scope_evidence_ids",
         }
     )
 

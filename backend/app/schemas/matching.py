@@ -2,13 +2,17 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.candidate import CandidateContext
+from app.schemas.candidate import CandidateContext, CareerEvidence
 from app.schemas.job import (
     JobProfile,
     JobRequirement,
     RequirementCategory,
     RequirementImportance,
 )
+
+
+REQUIREMENT_EVIDENCE_PROVIDER_LIMIT = 8
+REQUIREMENT_EVIDENCE_PER_REQUIREMENT_LIMIT = 3
 
 
 class MatchType(StrEnum):
@@ -74,6 +78,55 @@ class SemanticRequirementMatchSet(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     matches: list[SemanticRequirementMatch] = Field(default_factory=list)
+
+
+class RequirementEvidenceScope(BaseModel):
+    """Request-owned citation permissions for one local semantic requirement."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    requirement_index: int = Field(ge=0)
+    allowed_evidence_ids: tuple[str, ...] = ()
+
+
+class RequirementEvidencePlan(BaseModel):
+    """Deterministic bounded evidence retrieval for one semantic match request.
+
+    This is deliberately not candidate state: it records the evidence union and
+    citation scopes selected for one set of local semantic requirements.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_evidence: tuple[CareerEvidence, ...] = ()
+    scopes: tuple[RequirementEvidenceScope, ...] = ()
+
+    def validate_for(
+        self,
+        *,
+        requirement_count: int,
+        provider_limit: int,
+        per_requirement_limit: int,
+    ) -> None:
+        expected_indexes = tuple(range(requirement_count))
+        scope_indexes = tuple(scope.requirement_index for scope in self.scopes)
+        if scope_indexes != expected_indexes:
+            raise ValueError("Requirement evidence scopes must cover each local index exactly once.")
+
+        provider_ids = tuple(item.evidence_id for item in self.provider_evidence)
+        if len(provider_ids) != len(set(provider_ids)):
+            raise ValueError("Requirement evidence provider union contains duplicate IDs.")
+        if len(provider_ids) > provider_limit:
+            raise ValueError("Requirement evidence provider union exceeds its configured bound.")
+
+        provider_id_set = set(provider_ids)
+        for scope in self.scopes:
+            if len(scope.allowed_evidence_ids) > per_requirement_limit:
+                raise ValueError("Requirement evidence scope exceeds its configured bound.")
+            if len(scope.allowed_evidence_ids) != len(set(scope.allowed_evidence_ids)):
+                raise ValueError("Requirement evidence scope contains duplicate IDs.")
+            if not set(scope.allowed_evidence_ids).issubset(provider_id_set):
+                raise ValueError("Requirement evidence scope contains an ID outside the provider union.")
 
 
 class RequirementMatchingRequirement(BaseModel):

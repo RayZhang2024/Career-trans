@@ -13,7 +13,7 @@ from app.providers.llm import (
     SemanticProviderRequestError,
     SemanticStructuredOutputSchemaError,
 )
-from app.schemas.candidate import CandidateMatchingProfile, CareerEvidence
+from app.schemas.candidate import CandidateMatchingEvidence, CandidateMatchingProfile, CareerEvidence
 from app.schemas.job import (
     JobProfile,
     JobRequirement,
@@ -22,6 +22,8 @@ from app.schemas.job import (
 )
 from app.schemas.matching import (
     MatchType,
+    RequirementEvidencePlan,
+    RequirementEvidenceScope,
     SemanticRequirementMatch,
     SemanticRequirementMatchSet,
 )
@@ -182,6 +184,7 @@ def test_matcher_sends_only_compact_canonical_requirement_fields() -> None:
         "expected_match_count": 1,
         "allowed_requirement_indexes": [0],
         "allowed_evidence_ids": ["EVIDENCE-1"],
+        "allowed_evidence_ids_by_requirement": {"0": ["EVIDENCE-1"]},
     }
     assert "Private advert section" not in json.dumps(payload)
     assert "Private responsibility detail" not in json.dumps(payload)
@@ -392,6 +395,111 @@ def test_unknown_evidence_retry_receives_safe_correction_and_accepts_valid_secon
     retry_content = responses.calls[1]["input"][1]["content"]  # type: ignore[index]
     assert "Use only exact IDs from allowed_evidence_ids" in retry_content
     assert "UNKNOWN-EVIDENCE" not in retry_content
+
+
+def test_out_of_scope_evidence_retries_with_same_plan_and_accepts_valid_second_result() -> None:
+    candidate = CandidateMatchingProfile(
+        evidence=[
+            CandidateMatchingEvidence(
+                evidence_id="PYTHON-1", title="Python", text="Python delivery", skills=["Python"]
+            ),
+            CandidateMatchingEvidence(
+                evidence_id="SECURITY-1", title="Security", text="Security architecture", skills=["security"]
+            ),
+        ]
+    )
+    plan = RequirementEvidencePlan(
+        provider_evidence=(
+            CareerEvidence(evidence_id="PYTHON-1", title="Python", text="Python delivery", skills=["Python"]),
+            CareerEvidence(evidence_id="SECURITY-1", title="Security", text="Security architecture", skills=["security"]),
+        ),
+        scopes=(
+            RequirementEvidenceScope(requirement_index=0, allowed_evidence_ids=("PYTHON-1",)),
+            RequirementEvidenceScope(requirement_index=1, allowed_evidence_ids=("SECURITY-1",)),
+        ),
+    )
+    invalid = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(requirement_index=0, match_type=MatchType.DEMONSTRATED, score=0.9, evidence_ids=["SECURITY-1"]),
+            SemanticRequirementMatch(requirement_index=1, match_type=MatchType.DEMONSTRATED, score=0.9, evidence_ids=["SECURITY-1"]),
+        ]
+    ).model_dump_json()
+    valid = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(requirement_index=0, match_type=MatchType.DEMONSTRATED, score=0.9, evidence_ids=["PYTHON-1"]),
+            SemanticRequirementMatch(requirement_index=1, match_type=MatchType.DEMONSTRATED, score=0.9, evidence_ids=["SECURITY-1"]),
+        ]
+    ).model_dump_json()
+    matcher, responses = _matcher([invalid, valid])
+
+    result = matcher.match(JOB_PROFILE, candidate, evidence_plan=plan)
+
+    assert len(result.matches) == 2
+    assert len(responses.calls) == 2
+    first_contract = _request_payload(responses.calls[0])["matching_contract"]
+    second_contract = _request_payload(responses.calls[1])["matching_contract"]
+    assert first_contract == second_contract
+    assert first_contract["allowed_evidence_ids_by_requirement"] == {
+        "0": ["PYTHON-1"], "1": ["SECURITY-1"]
+    }
+    retry_content = responses.calls[1]["input"][1]["content"]  # type: ignore[index]
+    assert "allowed_evidence_ids_by_requirement" in retry_content
+    assert invalid not in retry_content
+
+
+def test_repeated_out_of_scope_evidence_fails_closed_without_leaking_ids() -> None:
+    candidate = CandidateMatchingProfile(
+        evidence=[
+            CandidateMatchingEvidence(evidence_id="A", title="A", text="Python", skills=["Python"]),
+            CandidateMatchingEvidence(evidence_id="B", title="B", text="Customer", skills=["customer"]),
+        ]
+    )
+    plan = RequirementEvidencePlan(
+        provider_evidence=(
+            CareerEvidence(evidence_id="A", title="A", text="Python", skills=["Python"]),
+            CareerEvidence(evidence_id="B", title="B", text="Customer", skills=["customer"]),
+        ),
+        scopes=(
+            RequirementEvidenceScope(requirement_index=0, allowed_evidence_ids=("A",)),
+            RequirementEvidenceScope(requirement_index=1, allowed_evidence_ids=("B",)),
+        ),
+    )
+    invalid = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(requirement_index=0, match_type=MatchType.DEMONSTRATED, score=0.9, evidence_ids=["B"]),
+            SemanticRequirementMatch(requirement_index=1, match_type=MatchType.MISSING, score=0.0, evidence_ids=[]),
+        ]
+    ).model_dump_json()
+    matcher, responses = _matcher([invalid, invalid])
+
+    with pytest.raises(RequirementMatchingError) as exc_info:
+        matcher.match(JOB_PROFILE, candidate, evidence_plan=plan)
+
+    assert exc_info.value.kind == "out_of_scope_evidence_ids"
+    assert len(responses.calls) == 2
+    assert "B" not in str(exc_info.value)
+
+
+def test_unknown_evidence_is_classified_before_requirement_scope() -> None:
+    invalid = SemanticRequirementMatchSet(
+        matches=[
+            SemanticRequirementMatch(requirement_index=0, match_type=MatchType.DEMONSTRATED, score=0.9, evidence_ids=["UNKNOWN"]),
+            SemanticRequirementMatch(requirement_index=1, match_type=MatchType.MISSING, score=0.0, evidence_ids=[]),
+        ]
+    ).model_dump_json()
+    plan = RequirementEvidencePlan(
+        provider_evidence=(CareerEvidence(evidence_id="EVIDENCE-1", title="Python", text="Python", skills=["Python"]),),
+        scopes=(
+            RequirementEvidenceScope(requirement_index=0, allowed_evidence_ids=("EVIDENCE-1",)),
+            RequirementEvidenceScope(requirement_index=1, allowed_evidence_ids=()),
+        ),
+    )
+    matcher, responses = _matcher([invalid, invalid])
+    with pytest.raises(RequirementMatchingError) as exc_info:
+        matcher.match(JOB_PROFILE, CANDIDATE, evidence_plan=plan)
+
+    assert exc_info.value.kind == "unknown_evidence_ids"
+    assert len(responses.calls) == 2
 
 
 def test_zero_evidence_context_allows_empty_evidence_ids_only() -> None:

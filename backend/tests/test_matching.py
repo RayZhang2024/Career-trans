@@ -19,6 +19,7 @@ from app.schemas.matching import (
     MatchType,
     RequirementMatch,
     RequirementMatchSet,
+    RequirementEvidencePlan,
 )
 from app.services.requirement_matching_service import RequirementMatchingService
 
@@ -58,6 +59,7 @@ class FakeRequirementMatcher:
         self,
         job_profile: JobProfile,
         candidate_context: CandidateMatchingProfile,
+        **kwargs: object,
     ) -> RequirementMatchSet:
         assert job_profile == JOB_PROFILE
         assert [item.model_dump() for item in candidate_context.evidence] == [
@@ -161,6 +163,7 @@ def test_factual_requirement_bypasses_semantic_matcher() -> None:
             self,
             semantic_job_profile: JobProfile,
             supplied_candidate_context: CandidateMatchingProfile,
+            **kwargs: object,
         ) -> RequirementMatchSet:
             assert len(semantic_job_profile.requirements) == 1
             assert semantic_job_profile.requirements[0] == PYTHON_REQUIREMENT
@@ -241,6 +244,7 @@ def test_semantic_subset_indexes_remap_to_original_indexes_independent_of_output
             self,
             semantic_job_profile: JobProfile,
             _: CandidateMatchingProfile,
+            **kwargs: object,
         ) -> RequirementMatchSet:
             assert semantic_job_profile.requirements == [REACT_REQUIREMENT, PYTHON_REQUIREMENT]
             return RequirementMatchSet(
@@ -293,6 +297,7 @@ def test_semantic_matching_receives_deterministic_top_evidence_only() -> None:
             self,
             _: JobProfile,
             matching_profile: CandidateMatchingProfile,
+            **kwargs: object,
         ) -> RequirementMatchSet:
             received.append(matching_profile)
             return RequirementMatchSet(
@@ -316,6 +321,47 @@ def test_semantic_matching_receives_deterministic_top_evidence_only() -> None:
     assert [item.evidence_id for item in received[0].evidence] == [
         "EVIDENCE-2",
         "EVIDENCE-7",
+    ]
+
+
+def test_service_constructs_one_plan_and_passes_its_exact_union_to_matcher() -> None:
+    received_plans: list[RequirementEvidencePlan] = []
+    received_profiles: list[CandidateMatchingProfile] = []
+
+    class FakeSemanticMatcher:
+        def match(
+            self,
+            _: JobProfile,
+            matching_profile: CandidateMatchingProfile,
+            *,
+            evidence_plan: RequirementEvidencePlan,
+        ) -> RequirementMatchSet:
+            received_plans.append(evidence_plan)
+            received_profiles.append(matching_profile)
+            return RequirementMatchSet(
+                matches=[
+                    RequirementMatch(
+                        requirement_index=0,
+                        requirement=PYTHON_REQUIREMENT,
+                        match_type=MatchType.MISSING,
+                        score=0.0,
+                        evidence_ids=[],
+                        reasoning="No matching evidence.",
+                    )
+                ]
+            )
+
+    RequirementMatchingService(matcher=FakeSemanticMatcher()).match(
+        JobProfile(requirements=[PYTHON_REQUIREMENT]),
+        CandidateContext(evidence=[
+            CareerEvidence(evidence_id="PY-1", title="Python", text="Python delivery", skills=["Python"]),
+            CareerEvidence(evidence_id="OTHER", title="Other", text="Unrelated work"),
+        ]),
+    )
+
+    assert len(received_plans) == 1
+    assert [item.evidence_id for item in received_profiles[0].evidence] == [
+        item.evidence_id for item in received_plans[0].provider_evidence
     ]
 
 
@@ -350,6 +396,7 @@ def test_requirement_aware_retrieval_keeps_evidence_for_distinct_topics() -> Non
             self,
             _: JobProfile,
             matching_profile: CandidateMatchingProfile,
+            **kwargs: object,
         ) -> RequirementMatchSet:
             received.append(matching_profile)
             return RequirementMatchSet(
