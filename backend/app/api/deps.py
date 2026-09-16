@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.candidate_adviser import SemanticCandidateAdviser
+from app.agents.candidate_adviser_clarification import SemanticCandidateAdviserClarificationInterpreter
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_extraction import OpenAIJobExtractor
 from app.agents.job_relevance import OpenAIJobRelevanceAgent
@@ -188,6 +189,14 @@ def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
                 current_settings,
                 model=current_settings.candidate_adviser_model,
                 operation="candidate_adviser",
+            ),
+            current_settings.candidate_adviser_model,
+        ),
+        clarification_interpreter=SemanticCandidateAdviserClarificationInterpreter(
+            get_semantic_response_client(
+                current_settings,
+                model=current_settings.candidate_adviser_model,
+                operation="candidate_adviser_clarification",
             ),
             current_settings.candidate_adviser_model,
         ),

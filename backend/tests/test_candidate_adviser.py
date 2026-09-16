@@ -399,4 +399,5 @@ def test_adviser_reference_catalog_includes_only_populated_exact_intake_tokens()
     assert candidate_adviser_reference_catalog(semantic_input) == {
         "intake": ["career_direction", "eligibility.work_authorisation", "eligibility.locations"],
         "career_evidence": [],
+        "clarification": [],
     }

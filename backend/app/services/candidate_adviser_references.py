@@ -39,6 +39,7 @@ def candidate_adviser_reference_catalog(semantic_input: CandidateAdviserSemantic
     return {
         "intake": intake_tokens,
         "career_evidence": list(dict.fromkeys(item.evidence_id for item in semantic_input.career_evidence)),
+        "clarification": list(dict.fromkeys(item.clarification_id for item in semantic_input.clarifications)),
     }
 
 

@@ -1,3 +1,6 @@
+import re
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -6,7 +9,7 @@ class CareerEvidenceProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_kind: str = "cv"
+    source_kind: Literal["cv", "confirmed_profile", "user_confirmed"] = "cv"
     document_sha256: str | None = None
     segment_ids: list[str] = Field(default_factory=list)
     source_ref: str | None = None
@@ -17,6 +20,11 @@ class CareerEvidenceProvenance(BaseModel):
             raise ValueError("CV career-evidence provenance requires a document SHA.")
         if self.source_kind == "confirmed_profile" and not self.source_ref:
             raise ValueError("Confirmed-profile career-evidence provenance requires a source reference.")
+        if self.source_kind == "user_confirmed":
+            if not self.source_ref or not re.fullmatch(r"clarification:[0-9a-f]{64}", self.source_ref):
+                raise ValueError("User-confirmed career-evidence provenance requires a clarification source reference.")
+            if self.document_sha256 or self.segment_ids:
+                raise ValueError("User-confirmed career-evidence provenance cannot use CV document provenance.")
         return self
 
 

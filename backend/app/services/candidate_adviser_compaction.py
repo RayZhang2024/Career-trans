@@ -3,7 +3,7 @@
 from collections.abc import Iterable
 
 from app.schemas.candidate import CandidateEligibility
-from app.schemas.candidate_adviser import CandidateAdviserEvidenceInput, CandidateAdviserIntake, CandidateAdviserSemanticInput
+from app.schemas.candidate_adviser import CandidateAdviserClarificationInput, CandidateAdviserEvidenceInput, CandidateAdviserIntake, CandidateAdviserSemanticInput
 from app.schemas.cv_ingestion import Achievement, CandidateCVData, Credential, Education, Employment, Project, Skill
 
 
@@ -24,6 +24,9 @@ _EVIDENCE_TITLE_LIMIT = 240
 _EVIDENCE_TEXT_LIMIT = 1_200
 _EVIDENCE_SKILL_LIMIT = 16
 _SKILL_ITEM_LIMIT = 120
+_CLARIFICATION_LIMIT = 12
+_CLARIFICATION_QUESTION_LIMIT = 600
+_CLARIFICATION_SUMMARY_LIMIT = 1_200
 
 
 def compact_candidate_adviser_input(
@@ -31,6 +34,7 @@ def compact_candidate_adviser_input(
     intake: CandidateAdviserIntake,
     structured_cv: CandidateCVData,
     career_evidence: Iterable[dict[str, object]],
+    clarifications: Iterable[dict[str, object]] = (),
 ) -> CandidateAdviserSemanticInput:
     """Project persisted sources into the one bounded payload sent to the model.
 
@@ -50,6 +54,15 @@ def compact_candidate_adviser_input(
                 skills=_items(item.get("skills", []), limit=_EVIDENCE_SKILL_LIMIT, item_limit=_SKILL_ITEM_LIMIT),
             )
             for item in list(career_evidence)[:_EVIDENCE_LIMIT]
+        ],
+        clarifications=[
+            CandidateAdviserClarificationInput(
+                clarification_id=str(item["clarification_id"]),
+                question=_text(str(item["question"]), _CLARIFICATION_QUESTION_LIMIT),
+                confirmed_context_summary=_text(str(item["confirmed_context_summary"]), _CLARIFICATION_SUMMARY_LIMIT),
+                answer_kind=str(item["answer_kind"]),
+            )
+            for item in list(clarifications)[:_CLARIFICATION_LIMIT]
         ],
     )
 
