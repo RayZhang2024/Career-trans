@@ -139,6 +139,38 @@ def test_unconfirmed_siblings_become_noncurrent_after_one_confirmation(db_sessio
         service.answer_clarification(user_id, second.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic."))
 
 
+def test_confirmed_clarification_remains_authoritative_after_explicit_reassessment(db_session) -> None:
+    user_id = _user(db_session, "clarification-durable-confirmation@example.com")
+    _ready_profile(db_session, user_id)
+    adviser = _Adviser("What delivery work did you own?", "What stakeholder scope did you own?")
+    service = _confirmed_service(db_session, user_id, adviser, _Interpreter(_career_fact()))
+    first, sibling = service.list_clarifications(user_id)
+    service.answer_clarification(user_id, first.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic."))
+    service.confirm_clarification(user_id, first.clarification_id)
+    assert service.get_assessment(user_id).status == "stale"
+
+    assessment_b = service.assess(user_id)
+    assert assessment_b.status == "review_ready"
+    confirmed_b = service.confirm_assessment(user_id)
+    assert confirmed_b.status == "confirmed"
+
+    original = db_session.scalar(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user_id,
+        CandidateAdviserClarificationRecord.clarification_id == first.clarification_id,
+    ))
+    assert original is not None
+    assert original.status == "confirmed"
+    assert original.origin_assessment_fingerprint != confirmed_b.input_fingerprint
+    semantic_input = service._semantic_input(user_id)
+    assert [item.clarification_id for item in semantic_input.clarifications] == [first.clarification_id]
+    assert service.input_fingerprint(user_id) == confirmed_b.input_fingerprint
+    active = db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)).all()
+    assert len(active) == 1
+    assert service._confirmed_clarification_state(user_id)[0]["clarification_id"] == first.clarification_id
+    with pytest.raises(ValueError, match="no longer current"):
+        service.answer_clarification(user_id, sibling.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic."))
+
+
 @pytest.mark.parametrize("kind", [ClarificationAnswerKind.PREFERENCE_INTENT, ClarificationAnswerKind.ELIGIBILITY_FACT, ClarificationAnswerKind.INSUFFICIENT])
 def test_noncareer_and_eligibility_clarifications_never_create_matching_evidence(db_session, kind) -> None:
     user_id = _user(db_session, f"clarification-{kind}@example.com")

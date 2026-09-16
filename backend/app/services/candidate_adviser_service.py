@@ -254,9 +254,10 @@ class CandidateAdviserService:
             CandidateAdviserClarificationRecord.user_id == user_id,
             CandidateAdviserClarificationRecord.status == CandidateAdviserClarificationStatus.CONFIRMED,
         )).all())
-        # A current assessment can itself contain semantically identical
-        # questions with different source references. Ask once; the first
-        # ordered question remains the deterministic representative.
+        # A current assessment can itself contain the same canonical question
+        # text with different source references. Ask once; the first ordered
+        # question remains the deterministic representative. This is exact
+        # canonical-text equality only, not semantic paraphrase detection.
         seen_question_keys = set(existing_confirmed_keys)
         for priority, question in enumerate(assessment.content.open_questions):
             clarification_id, question_key, references = self._clarification_identity(
