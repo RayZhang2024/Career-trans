@@ -34,6 +34,24 @@ class InvalidResponseClient:
             return type("Response", (), {"output_text": "not valid JSON"})()
 
 
+class CapturingResponseClient:
+    def __init__(self, output: str) -> None:
+        self.output = output
+        self.kwargs: dict[str, object] | None = None
+
+    class _Responses:
+        def __init__(self, parent) -> None:
+            self._parent = parent
+
+        def create(self, **kwargs):
+            self._parent.kwargs = kwargs
+            return type("Response", (), {"output_text": self._parent.output})()
+
+    @property
+    def responses(self):
+        return self._Responses(self)
+
+
 def _pdf_with_pages(*pages: str) -> bytes:
     writer = PdfWriter()
     for text in pages:
@@ -95,14 +113,15 @@ def test_json_upload_import_is_deterministic_reviewable_and_requires_confirmatio
         assert db_session.scalars(select(CandidateStructuredProfile)).all() == []
         confirmed = client.post(f"/api/v1/cv-ingestion/{draft_id}/confirm", headers=headers)
         assert confirmed.status_code == 200
-        assert confirmed.json()["confirmed_evidence_count"] == 1
+        # Semantic claim plus deterministic current employment evidence.
+        assert confirmed.json()["confirmed_evidence_count"] == 2
         record = db_session.scalar(select(CandidateEvidenceRecord))
         assert record is not None and record.user_id
         assert db_session.scalar(select(CandidateStructuredProfile)) is not None
         repeated = client.post(f"/api/v1/cv-ingestion/{draft_id}/confirm", headers=headers)
         assert repeated.status_code == 200
         assert repeated.json()["confirmed_evidence_count"] == 0
-        assert len(db_session.scalars(select(CandidateEvidenceRecord)).all()) == 1
+        assert len(db_session.scalars(select(CandidateEvidenceRecord)).all()) == 2
     finally:
         app.dependency_overrides.pop(get_cv_ingestion_service, None)
 
@@ -205,6 +224,50 @@ def test_invalid_semantic_output_is_rejected_without_persistence(db_session) -> 
         service.interpret("user-1", draft.id)
     assert db_session.scalars(select(CandidateEvidenceRecord)).all() == []
     assert db_session.scalars(select(CandidateStructuredProfile)).all() == []
+
+
+def test_semantic_cv_interpreter_uses_provider_strict_schema_and_keeps_pydantic_authority() -> None:
+    client = CapturingResponseClient('{"employment":[],"education":[],"credentials":[],"skills":[],"projects":[],"achievements":[],"evidence":[]}')
+    document = CVFileExtractionService().extract(
+        filename="cv.md", content_type="text/markdown", content=b"# CV\nSource text"
+    )
+    result = SemanticCVInterpreter(client, "test-model").interpret([document])
+
+    assert result.credentials == []
+    assert client.kwargs is not None
+    response_format = client.kwargs["text"]["format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["strict"] is True
+    schema = response_format["schema"]
+    assert set(schema["required"]) == set(schema["properties"])
+    encoded_schema = json.dumps(schema)
+    assert "certification" in encoded_schema
+    assert "professional_registration" in encoded_schema
+    assert "source_ref" not in encoded_schema
+    assert '"cv"' in encoded_schema
+    assert "JSON schema:" not in client.kwargs["input"][1]["content"]
+
+    with pytest.raises(Exception):
+        CandidateCVData.model_validate(
+            {"credentials": [{"name": "Cert", "credential_type": "unsupported"}]}
+        )
+    with pytest.raises(Exception):
+        CandidateCVData.model_validate(
+            {"credentials": [{"name": "Cert", "credential_type": "certification", "extra": "no"}]}
+        )
+    with pytest.raises(Exception):
+        CandidateCVData.model_validate(
+            {
+                "evidence": [
+                    {
+                        "evidence_type": "project",
+                        "title": "Claim",
+                        "text": "Claim text.",
+                        "provenance": [{"document_sha256": "a", "source_kind": "confirmed_profile"}],
+                    }
+                ]
+            }
+        )
 
 
 def test_interpret_state_machine_rejects_repeat_and_preserves_confirmed_data(db_session) -> None:

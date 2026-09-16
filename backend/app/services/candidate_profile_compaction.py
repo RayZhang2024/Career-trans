@@ -6,6 +6,7 @@ from app.schemas.candidate import (
     CandidateCareerProfile,
     CandidateContext,
     CandidateMatchingProfile,
+    CandidateMatchingEvidence,
     CandidateSearchProfile,
     CareerEvidence,
 )
@@ -59,7 +60,16 @@ def candidate_matching_profile(
     return CandidateMatchingProfile(
         profile_summary=_compact_text(candidate.profile_text),
         skills=_candidate_skills(candidate),
-        evidence=top_evidence(candidate.evidence, job_profile, limit=limit),
+        evidence=[
+            CandidateMatchingEvidence(
+                evidence_id=item.evidence_id,
+                evidence_type=item.evidence_type,
+                title=item.title,
+                text=item.text,
+                skills=item.skills,
+            )
+            for item in top_evidence(candidate.evidence, job_profile, limit=limit)
+        ],
     )
 
 

@@ -31,6 +31,7 @@ class CandidateAdviserEvidenceInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     evidence_id: str = Field(min_length=1)
+    evidence_type: str = "other"
     title: str = ""
     text: str = ""
     skills: list[str] = Field(default_factory=list)

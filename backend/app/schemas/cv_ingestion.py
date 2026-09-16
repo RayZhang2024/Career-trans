@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,6 +45,29 @@ class Education(BaseModel):
     description: str = ""
 
 
+class CredentialType(StrEnum):
+    CERTIFICATION = "certification"
+    PROFESSIONAL_QUALIFICATION = "professional_qualification"
+    PROFESSIONAL_REGISTRATION = "professional_registration"
+    FORMAL_TRAINING = "formal_training"
+    PROFESSIONAL_MEMBERSHIP = "professional_membership"
+    OTHER = "other"
+
+
+class Credential(BaseModel):
+    """A source-supported professional credential, separate from education."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    credential_type: CredentialType
+    issuer: str | None = None
+    issued_date: str | None = None
+    expiry_date: str | None = None
+    status: str | None = None
+    description: str = ""
+
+
 class Skill(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -63,10 +87,12 @@ class Achievement(BaseModel):
 
 
 class EvidenceProvenance(BaseModel):
+    """Extraction-only provenance known by the semantic CV interpreter."""
+
     model_config = ConfigDict(extra="forbid")
     document_sha256: str
     segment_ids: list[str] = Field(default_factory=list)
-    source_kind: str = "cv"
+    source_kind: Literal["cv"] = "cv"
 
 
 class CareerEvidenceDraft(BaseModel):
@@ -84,6 +110,7 @@ class CandidateCVData(BaseModel):
     model_config = ConfigDict(extra="forbid")
     employment: list[Employment] = Field(default_factory=list)
     education: list[Education] = Field(default_factory=list)
+    credentials: list[Credential] = Field(default_factory=list)
     skills: list[Skill] = Field(default_factory=list)
     projects: list[Project] = Field(default_factory=list)
     achievements: list[Achievement] = Field(default_factory=list)
