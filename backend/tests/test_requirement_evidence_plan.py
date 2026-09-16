@@ -104,6 +104,25 @@ def test_no_lexical_overlap_creates_an_explicit_empty_scope() -> None:
     assert plan.scopes == (RequirementEvidenceScope(requirement_index=0),)
 
 
+def test_repeated_identical_candidate_evidence_id_is_deduplicated_in_scope_and_union() -> None:
+    repeated = _evidence("PYTHON", "Python delivery")
+    plan = requirement_evidence_plan(
+        [repeated, repeated.model_copy(deep=True)],
+        JobProfile(requirements=[JobRequirement(text="Python delivery")]),
+    )
+
+    assert [item.evidence_id for item in plan.provider_evidence] == ["PYTHON"]
+    assert plan.scopes[0].allowed_evidence_ids == ("PYTHON",)
+
+
+def test_conflicting_duplicate_candidate_evidence_id_fails_before_plan_creation() -> None:
+    with pytest.raises(ValueError, match="conflicting content"):
+        requirement_evidence_plan(
+            [_evidence("SAME", "Python delivery"), _evidence("SAME", "Security architecture")],
+            JobProfile(requirements=[JobRequirement(text="Python delivery")]),
+        )
+
+
 @pytest.mark.parametrize(
     "plan",
     [
@@ -122,4 +141,39 @@ def test_no_lexical_overlap_creates_an_explicit_empty_scope() -> None:
 )
 def test_malformed_plan_fails_closed_before_provider_invocation(plan: RequirementEvidencePlan) -> None:
     with pytest.raises(ValueError):
+        plan.validate_for(requirement_count=1, provider_limit=8, per_requirement_limit=3)
+
+
+def test_plan_rejects_duplicate_ids_within_one_scope() -> None:
+    plan = RequirementEvidencePlan(
+        provider_evidence=(_evidence("A", "Python"),),
+        scopes=(RequirementEvidenceScope(requirement_index=0, allowed_evidence_ids=("A", "A")),),
+    )
+
+    with pytest.raises(ValueError, match="scope contains duplicate IDs"):
+        plan.validate_for(requirement_count=1, provider_limit=8, per_requirement_limit=3)
+
+
+def test_plan_rejects_provider_union_exceeding_global_limit() -> None:
+    plan = RequirementEvidencePlan(
+        provider_evidence=tuple(_evidence(f"E-{index}", f"Python {index}") for index in range(9)),
+        scopes=(RequirementEvidenceScope(requirement_index=0, allowed_evidence_ids=("E-0",)),),
+    )
+
+    with pytest.raises(ValueError, match="provider union exceeds"):
+        plan.validate_for(requirement_count=1, provider_limit=8, per_requirement_limit=3)
+
+
+def test_plan_rejects_scope_exceeding_per_requirement_limit() -> None:
+    plan = RequirementEvidencePlan(
+        provider_evidence=tuple(_evidence(f"E-{index}", f"Python {index}") for index in range(4)),
+        scopes=(
+            RequirementEvidenceScope(
+                requirement_index=0,
+                allowed_evidence_ids=("E-0", "E-1", "E-2", "E-3"),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="scope exceeds"):
         plan.validate_for(requirement_count=1, provider_limit=8, per_requirement_limit=3)

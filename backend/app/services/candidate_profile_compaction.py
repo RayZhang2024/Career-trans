@@ -114,6 +114,7 @@ def requirement_evidence_plan(
     affinity only settles equal-overlap candidates; evidence IDs are the final
     stable tie-break, so input list order cannot affect the plan.
     """
+    evidence = _unique_evidence_by_id(evidence)
     if limit < 1:
         plan = RequirementEvidencePlan(
             provider_evidence=(),
@@ -161,7 +162,10 @@ def requirement_evidence_plan(
                 selected_ids.add(item.evidence_id)
             # A duplicate is permitted in multiple scopes, but only after it
             # survives into the bounded provider union.
-            if item.evidence_id in selected_ids:
+            if (
+                item.evidence_id in selected_ids
+                and item.evidence_id not in scoped_ids[requirement_index]
+            ):
                 scoped_ids[requirement_index].append(item.evidence_id)
 
     plan = RequirementEvidencePlan(
@@ -207,6 +211,24 @@ def _terms(value: str) -> set[str]:
 
 def _evidence_terms(item: CareerEvidence) -> set[str]:
     return _terms(" ".join([item.title, item.text, *item.skills]))
+
+
+def _unique_evidence_by_id(evidence: list[CareerEvidence]) -> list[CareerEvidence]:
+    """Deduplicate exact repeats; reject conflicting canonical records early.
+
+    Evidence IDs are canonical identifiers.  Repeated identical records are
+    harmless input duplication, while a single ID carrying different canonical
+    content would make a citation ambiguous and therefore fails closed before
+    any provider request.
+    """
+    by_id: dict[str, CareerEvidence] = {}
+    for item in evidence:
+        existing = by_id.get(item.evidence_id)
+        if existing is None:
+            by_id[item.evidence_id] = item
+        elif existing != item:
+            raise ValueError("Duplicate candidate evidence ID has conflicting content.")
+    return list(by_id.values())
 
 
 def _type_preference(requirement_category: str, evidence_type: str) -> int:
