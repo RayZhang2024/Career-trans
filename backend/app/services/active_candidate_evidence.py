@@ -11,7 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord
+from app.models.candidate_adviser import CandidateAdviserClarificationRecord
 from app.schemas.candidate import CareerEvidence, CareerEvidenceProvenance
+from app.schemas.candidate_adviser import ClarificationAnswerKind, ClarificationInterpretation
 from app.schemas.cv_ingestion import (
     CandidateCVData,
     CareerEvidenceDraft,
@@ -48,11 +50,16 @@ class CanonicalCareerEvidenceDraft:
 class CanonicalCandidateEvidenceBuilder:
     """Build factual, current-profile evidence without semantic paraphrasing."""
 
-    def build(self, data: CandidateCVData) -> list[CanonicalCareerEvidenceDraft]:
+    def build(
+        self,
+        data: CandidateCVData,
+        clarification_drafts: Iterable[CanonicalCareerEvidenceDraft] = (),
+    ) -> list[CanonicalCareerEvidenceDraft]:
         drafts = [self._from_semantic(item) for item in data.evidence]
         drafts.extend(self._employment(item) for item in data.employment)
         drafts.extend(self._education(item) for item in data.education)
         drafts.extend(self._credential(item) for item in data.credentials)
+        drafts.extend(clarification_drafts)
         return self._deduplicate_current(drafts)
 
     @staticmethod
@@ -180,7 +187,7 @@ class ActiveCandidateEvidenceResolver:
         self._builder = builder or CanonicalCandidateEvidenceBuilder()
 
     def resolve(self, user_id: str, data: CandidateCVData) -> list[CareerEvidence]:
-        drafts = self._builder.build(data)
+        drafts = self._builder.build(data, self._confirmed_clarification_drafts(user_id))
         with self._session.begin_nested():
             records = list(
                 self._session.scalars(
@@ -218,6 +225,36 @@ class ActiveCandidateEvidenceResolver:
                 self._session.flush()
                 active.append(_runtime(record))
         return active
+
+    def _confirmed_clarification_drafts(self, user_id: str) -> list[CanonicalCareerEvidenceDraft]:
+        records = self._session.scalars(
+            select(CandidateAdviserClarificationRecord).where(
+                CandidateAdviserClarificationRecord.user_id == user_id,
+                CandidateAdviserClarificationRecord.status == "confirmed",
+            ).order_by(CandidateAdviserClarificationRecord.clarification_id)
+        ).all()
+        drafts: list[CanonicalCareerEvidenceDraft] = []
+        for record in records:
+            if not record.interpretation_json:
+                continue
+            interpretation = ClarificationInterpretation.model_validate(json.loads(record.interpretation_json))
+            if interpretation.answer_kind not in {
+                ClarificationAnswerKind.CAREER_FACT,
+                ClarificationAnswerKind.MIXED,
+            }:
+                continue
+            for proposal in interpretation.proposed_evidence:
+                drafts.append(CanonicalCareerEvidenceDraft(
+                    evidence_type=proposal.evidence_type,
+                    title=proposal.title,
+                    text=proposal.text,
+                    skills=proposal.skills,
+                    provenance=[CareerEvidenceProvenance(
+                        source_kind="user_confirmed",
+                        source_ref=f"clarification:{record.clarification_id}",
+                    )],
+                ))
+        return drafts
 
 
 def _runtime(record: CandidateEvidenceRecord) -> CareerEvidence:

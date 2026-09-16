@@ -4,16 +4,17 @@ import pytest
 from sqlalchemy import select
 
 import app.services.active_candidate_evidence as active_candidate_evidence
+from app.models.candidate_adviser import CandidateAdviserClarificationRecord
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
 from app.schemas.candidate import CandidateContext
-from app.schemas.candidate_adviser import CandidateAdviserIntake
+from app.schemas.candidate_adviser import CandidateAdviserIntake, ClarificationInterpretation
 from app.schemas.cv_ingestion import CandidateCVData
-from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
+from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver, CanonicalCareerEvidenceDraft
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_profile_compaction import candidate_matching_profile
-from app.services.career_evidence_fingerprint import legacy_career_evidence_fingerprint
+from app.services.career_evidence_fingerprint import career_evidence_fingerprint, legacy_career_evidence_fingerprint
 from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
 from app.services.cv_merge_service import CVMergeService
 from app.schemas.job import JobProfile, JobRequirement
@@ -123,6 +124,64 @@ def test_current_duplicate_metadata_unions_but_corrected_metadata_replaces_histo
     )
     replacement = resolver.resolve(user_id, corrected)
     assert replacement[0].skills == ["Go"]
+
+
+def test_current_cv_and_confirmed_clarification_same_fingerprint_reconcile_to_one_active_identity(db_session) -> None:
+    user_id = _user(db_session, "clarification-cross-source@example.com")
+    clarification_id = "c" * 64
+    data = CandidateCVData.model_validate({
+        "evidence": [{
+            "evidence_type": "project",
+            "title": "Production delivery",
+            "text": "Built the production service.",
+            "skills": ["Python"],
+            "provenance": [{"document_sha256": "a" * 64, "segment_ids": ["segment-1"]}],
+        }],
+    })
+    interpretation = ClarificationInterpretation.model_validate({
+        "answer_kind": "career_fact",
+        "confirmed_context_summary": "Candidate confirmed the production delivery.",
+        "proposed_evidence": [{
+            "fact_domain": "career",
+            "evidence_type": "project",
+            "title": " Production  delivery ",
+            "text": " Built the production service. ",
+            "skills": ["Rust"],
+        }],
+    })
+    db_session.add(CandidateAdviserClarificationRecord(
+        user_id=user_id,
+        clarification_id=clarification_id,
+        question_key="q" * 64,
+        origin_assessment_fingerprint="f" * 64,
+        question_text="What delivery work did you own?",
+        question_source_references_json="[]",
+        priority_index=0,
+        interpretation_json=interpretation.model_dump_json(),
+        status="confirmed",
+    ))
+    db_session.commit()
+
+    cv_claim = CanonicalCareerEvidenceDraft(
+        evidence_type="project", title="Production delivery", text="Built the production service.",
+    )
+    clarification_claim = CanonicalCareerEvidenceDraft(
+        evidence_type="project", title=" Production  delivery ", text=" Built the production service. ",
+    )
+    assert career_evidence_fingerprint(cv_claim) == career_evidence_fingerprint(clarification_claim)
+
+    resolver = ActiveCandidateEvidenceResolver(db_session)
+    first = resolver.resolve(user_id, data)
+    second = resolver.resolve(user_id, data)
+
+    assert len(first) == len(second) == 1
+    assert first[0].evidence_id == second[0].evidence_id
+    assert first[0].skills == ["Python", "Rust"]
+    assert [item.model_dump(mode="json") for item in first[0].provenance] == [
+        {"source_kind": "cv", "document_sha256": "a" * 64, "segment_ids": ["segment-1"], "source_ref": None},
+        {"source_kind": "user_confirmed", "document_sha256": None, "segment_ids": [], "source_ref": f"clarification:{clarification_id}"},
+    ]
+    assert len(db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)).all()) == 1
 
 
 def test_credential_evidence_merge_compaction_and_provider_projections(db_session) -> None:
