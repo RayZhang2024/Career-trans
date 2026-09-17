@@ -51,7 +51,7 @@ class UserJobDiscoveryService:
             raise ValueError("One or more submitted jobs are unavailable.")
         run = DiscoveryRun(
             user_id=user_id,
-            search_input_json=_canonical_json(self._normalised_search_input(request.query)),
+            search_input_json=_canonical_json(self._run_input_snapshot(request)),
             search_input_fingerprint=self.search_input_fingerprint(request.query),
             candidate_evaluation_fingerprint=candidate_fingerprint,
             evaluation_contract_fingerprint=contract_fingerprint,
@@ -166,9 +166,22 @@ class UserJobDiscoveryService:
     @staticmethod
     def _normalised_search_input(query) -> dict[str, object]:
         value = query.model_dump(mode="json")
-        for key in ("keywords", "locations", "companies", "excluded_companies"):
+        for key in (
+            "keywords", "locations", "companies", "excluded_companies",
+            "excluded_title_terms", "employment_types",
+        ):
             value[key] = sorted({" ".join(item.split()).casefold() for item in value.get(key, []) if item.strip()})
         return value
+
+    @staticmethod
+    def _run_input_snapshot(request: DiscoveryRunCreateRequest) -> dict[str, object]:
+        """Historical execution input, separate from query-only identity."""
+        return {
+            "query": UserJobDiscoveryService._normalised_search_input(request.query),
+            "max_semantic_candidates": request.max_semantic_candidates,
+            "max_full_analyses": request.max_full_analyses,
+            "min_relevance_score": request.min_relevance_score,
+        }
 
     @staticmethod
     def candidate_evaluation_fingerprint(context: CandidateContext) -> str:
@@ -261,7 +274,11 @@ class UserJobDiscoveryService:
             if row.outcome == DiscoveryRunJobOutcome.ANALYSIS_FAILED.value:
                 row.failure_stage = "orchestration"
                 row.failure_kind = "ranking_failed"
-        run.status = DiscoveryRunStatus.FAILED.value
+        successful = any(
+            row.outcome in {DiscoveryRunJobOutcome.NEWLY_EVALUATED.value, DiscoveryRunJobOutcome.REUSED_EVALUATION.value}
+            for row in rows.values()
+        )
+        run.status = (DiscoveryRunStatus.PARTIAL_FAILED.value if successful else DiscoveryRunStatus.FAILED.value)
         run.failure_summary_json = _canonical_json({"orchestration": 1})
         run.completed_at = datetime.now(timezone.utc)
 

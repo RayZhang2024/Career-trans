@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from app.models.discovered_job import DiscoveredJob
-from app.models.user_job_discovery import UserJobEvaluation
+from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob, UserJobEvaluation
 from app.models.user import User
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext, CareerEvidence, CareerEvidenceProvenance
@@ -41,13 +41,14 @@ def _context() -> CandidateContext:
     return CandidateContext(profile_text="Profile", skills_text="Python", evidence=[CareerEvidence(evidence_id="e1", title="Project", text="Python delivery", skills=["Python"], provenance=[CareerEvidenceProvenance(document_sha256="a" * 64, segment_ids=["s1"])])])
 
 
-def _job() -> DiscoveredJob:
+def _job(suffix: str = "1") -> DiscoveredJob:
     now = datetime.now(timezone.utc)
-    return DiscoveredJob(identity_key="provider:j1", source="greenhouse", source_token="board", external_id="j1", title="AI Engineer", company="Example", location="London", url="https://jobs.example/j1", description="Full verified job description with requirements.", detail_authority="verified_employer_detail", verification_status="verified", content_hash="b" * 64, state=DiscoveredJobState.UNCHANGED.value, first_seen_at=now, last_seen_at=now, last_changed_at=now)
+    return DiscoveredJob(identity_key=f"provider:j{suffix}", source="greenhouse", source_token="board", external_id=f"j{suffix}", title=f"AI Engineer {suffix}", company="Example", location="London", url=f"https://jobs.example/j{suffix}", description="Full verified job description with requirements.", detail_authority="verified_employer_detail", verification_status="verified", content_hash=("b" * 63) + suffix[-1], state=DiscoveredJobState.UNCHANGED.value, first_seen_at=now, last_seen_at=now, last_changed_at=now)
 
 
-def _request(job_id: str, *, location: str = "London", threshold: float = .5) -> DiscoveryRunCreateRequest:
-    return DiscoveryRunCreateRequest(query=JobSearchQuery(keywords=["AI"], locations=[location]), discovered_job_ids=[job_id], max_semantic_candidates=10, max_full_analyses=5, min_relevance_score=threshold)
+def _request(job_id: str | list[str], *, location: str = "London", threshold: float = .5, max_semantic: int = 10, max_full: int = 5) -> DiscoveryRunCreateRequest:
+    ids = [job_id] if isinstance(job_id, str) else job_id
+    return DiscoveryRunCreateRequest(query=JobSearchQuery(keywords=["AI"], locations=[location]), discovered_job_ids=ids, max_semantic_candidates=max_semantic, max_full_analyses=max_full, min_relevance_score=threshold)
 
 
 def _user(user_id: str) -> User:
@@ -196,6 +197,100 @@ def test_contract_fingerprint_uses_local_revision_and_relevant_configuration(db_
 
 
 def test_search_fingerprint_normalises_harmless_order() -> None:
-    first = JobSearchQuery(keywords=[" AI ", "Engineer"], locations=["London", "UK"])
-    second = JobSearchQuery(keywords=["engineer", "ai"], locations=["uk", " london "])
+    first = JobSearchQuery(keywords=[" AI ", "Engineer"], locations=["London", "UK"], companies=[" Acme "], excluded_companies=[" Other "], excluded_title_terms=["Intern"], employment_types=["Full Time"])
+    second = JobSearchQuery(keywords=["engineer", "ai", "AI"], locations=["uk", " london "], companies=["acme"], excluded_companies=["other"], excluded_title_terms=[" intern "], employment_types=["full time"])
     assert UserJobDiscoveryService.search_input_fingerprint(first) == UserJobDiscoveryService.search_input_fingerprint(second)
+
+
+def test_historical_run_input_includes_execution_budgets(db_session, monkeypatch) -> None:
+    job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
+    run_a = service.start("user-a", _request(job.id, max_semantic=3, max_full=2, threshold=.8))
+    service.start("user-a", _request(job.id, max_semantic=9, max_full=4, threshold=.5))
+    historical = service.get_run("user-a", run_a.id)
+    assert historical.run_input["max_semantic_candidates"] == 3
+    assert historical.run_input["max_full_analyses"] == 2
+    assert historical.run_input["min_relevance_score"] == .8
+    assert historical.run_input["query"]["keywords"] == ["ai"]
+
+
+def test_job_content_change_creates_new_evaluation_and_preserves_old_run(db_session, monkeypatch) -> None:
+    job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
+    old = service.start("user-a", _request(job.id))
+    job.content_hash = "c" * 64; db_session.commit()
+    new = service.start("user-a", _request(job.id))
+    assert ranking.calls == 2
+    assert old.jobs[0].evaluation_id != new.jobs[0].evaluation_id
+    assert service.get_run("user-a", old.id).jobs[0].evaluation_id == old.jobs[0].evaluation_id
+
+
+def test_candidate_fingerprint_ignores_source_name_but_tracks_stage_inputs() -> None:
+    context = _context(); baseline = UserJobDiscoveryService.candidate_evaluation_fingerprint(context)
+    context.source_name = "storage-only source"
+    assert UserJobDiscoveryService.candidate_evaluation_fingerprint(context) == baseline
+    context.career_strategy_text = "New direction"
+    assert UserJobDiscoveryService.candidate_evaluation_fingerprint(context) != baseline
+    context = _context(); context.eligibility.locations = ["London"]
+    assert UserJobDiscoveryService.candidate_evaluation_fingerprint(context) != baseline
+    context = _context(); context.evidence[0].text = "Changed evidence"
+    assert UserJobDiscoveryService.candidate_evaluation_fingerprint(context) != baseline
+
+
+def test_mixed_reuse_and_unexpected_failure_is_partial_failed(db_session, monkeypatch) -> None:
+    class BrokenRanking:
+        def rank(self, _request):
+            raise RuntimeError("private provider body")
+    job_a, job_b = _job("1"), _job("2")
+    db_session.add_all([_user("user-a"), job_a, job_b]); db_session.commit()
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
+    service.start("user-a", _request(job_a.id))
+    service = UserJobDiscoveryService(db_session, ranking_service=BrokenRanking())
+    try:
+        service.start("user-a", _request([job_a.id, job_b.id]))
+    except RuntimeError:
+        pass
+    run = service.list_runs("user-a")[0]
+    outcomes = {item.discovered_job_id: item.outcome for item in run.jobs}
+    assert run.status == "partial_failed" and run.completed_at is not None
+    assert outcomes[job_a.id] == "reused_evaluation"
+    assert outcomes[job_b.id] == "analysis_failed"
+    assert "private" not in str(run.failure_summary)
+
+
+def test_current_opportunities_ignore_historical_rank_for_deterministic_order(db_session, monkeypatch) -> None:
+    jobs = [_job("1"), _job("2"), _job("3")]
+    db_session.add_all([_user("user-a"), *jobs]); db_session.commit()
+    context = _context(); monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: context)
+    service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
+    candidate, contract = service.candidate_evaluation_fingerprint(context), service.evaluation_contract_fingerprint()
+    specs = [(Recommendation.CONSIDER, 99, 99), (Recommendation.APPLY, 60, 70), (Recommendation.APPLY, 80, 60)]
+    for job, (recommendation, fit, historical_rank) in zip(jobs, specs, strict=True):
+        listing = service._listing(job)
+        base = _Ranking().rank(type("Request", (), {"jobs": [listing]})()).results[0]
+        assessment = base.recommendation_assessment.model_copy(update={"recommendation": recommendation, "fit_score": fit})
+        opportunity = base.model_copy(update={"rank": historical_rank, "fit_assessment": FitAssessment(fit_score=fit), "recommendation_assessment": assessment})
+        db_session.add(UserJobEvaluation(user_id="user-a", discovered_job_id=job.id, job_content_hash=job.content_hash, candidate_evaluation_fingerprint=candidate, evaluation_contract_fingerprint=contract, job_snapshot_json="{}", evaluation_json=opportunity.model_dump_json()))
+    db_session.commit()
+    ordered = service.current_opportunities("user-a").opportunities
+    assert [item.discovered_job_id for item in ordered] == [jobs[2].id, jobs[1].id, jobs[0].id]
+
+
+def test_duplicate_evaluation_materialisation_reconciles_to_existing_version(db_session, monkeypatch) -> None:
+    job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
+    context = _context(); monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: context)
+    ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
+    first = service.start("user-a", _request(job.id))
+    existing_id = first.jobs[0].evaluation_id
+    run = DiscoveryRun(user_id="user-a", search_input_json="{}", search_input_fingerprint="s" * 64, candidate_evaluation_fingerprint=service.candidate_evaluation_fingerprint(context), evaluation_contract_fingerprint=service.evaluation_contract_fingerprint())
+    db_session.add(run); db_session.commit()
+    row = DiscoveryRunJob(discovery_run_id=run.id, discovered_job_id=job.id, outcome="analysis_failed")
+    db_session.add(row); db_session.commit()
+    response = ranking.rank(type("Request", (), {"jobs": [service._listing(job)]})())
+    service._persist_ranking(run, {job.id: row}, {service._listing_key(service._listing(job)): job.id}, response, "user-a", service.candidate_evaluation_fingerprint(context), service.evaluation_contract_fingerprint(), .5)
+    db_session.commit()
+    assert db_session.query(UserJobEvaluation).count() == 1
+    assert row.evaluation_id == existing_id

@@ -206,4 +206,3 @@ class JobRankingService:
             stage="insufficient_job_detail",
             error=f"Job detail is insufficient for deep fit assessment: {reason}.",
         )
-import logging
