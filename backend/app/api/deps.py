@@ -40,6 +40,7 @@ from app.schemas.candidate import CandidateContext
 from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
+from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
@@ -476,6 +477,14 @@ def get_job_ranking_service(
     career_analysis_graph: Annotated[CareerAnalysisGraph, Depends(get_career_analysis_graph)],
 ) -> JobRankingService:
     return JobRankingService(relevance_agent=relevance_agent, archetype_agent=archetype_agent, career_analysis_graph=career_analysis_graph)
+
+
+def get_user_job_discovery_service(
+    db: DbSession,
+    ranking_service: Annotated[JobRankingService, Depends(get_job_ranking_service)],
+) -> UserJobDiscoveryService:
+    """Server-owned personal run/reuse policy over canonical shared job IDs."""
+    return UserJobDiscoveryService(db, ranking_service=ranking_service)
 
 
 def get_discover_and_rank_service(

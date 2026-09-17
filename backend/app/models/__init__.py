@@ -4,6 +4,7 @@ from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, Candi
 from app.models.company_career_source import CompanyCareerSource
 from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
+from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob, UserJobEvaluation
 from app.models.user import User
 
-__all__ = ["CandidateProfile", "CandidateCVIngestionDraft", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "User"]
+__all__ = ["CandidateProfile", "CandidateCVIngestionDraft", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "User"]

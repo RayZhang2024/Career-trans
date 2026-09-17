@@ -116,6 +116,9 @@ class JobRankingResponse(BaseModel):
     relevance_screened_count: int
     finalist_count: int
     analysed_count: int
+    # Additive application-owned diagnostics permit run orchestration to give
+    # deterministic gate rejections a truthful terminal outcome.
+    gated_out_jobs: list[JobListing] = Field(default_factory=list)
     semantic_screening: list[SemanticScreeningDiagnostic] = Field(default_factory=list)
     results: list[RankedJobOpportunity] = Field(default_factory=list)
     failures: list[JobRankingFailure] = Field(default_factory=list)
