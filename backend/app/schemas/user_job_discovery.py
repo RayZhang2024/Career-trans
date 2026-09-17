@@ -42,6 +42,7 @@ class DiscoveryRunJobRead(BaseModel):
     outcome: DiscoveryRunJobOutcome
     failure_stage: str | None = None
     failure_kind: str | None = None
+    opportunity: RankedJobOpportunity | None = None
 
 
 class DiscoveryRunRead(BaseModel):
@@ -51,6 +52,7 @@ class DiscoveryRunRead(BaseModel):
     search_input_fingerprint: str
     candidate_evaluation_fingerprint: str
     evaluation_contract_fingerprint: str
+    run_input: dict[str, object] = Field(default_factory=dict)
     funnel: dict[str, int] = Field(default_factory=dict)
     failure_summary: dict[str, int] = Field(default_factory=dict)
     started_at: datetime

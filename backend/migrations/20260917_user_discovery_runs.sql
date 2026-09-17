@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS discovery_runs (
     completed_at TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS ix_discovery_runs_user_id ON discovery_runs(user_id);
+CREATE INDEX IF NOT EXISTS ix_discovery_runs_search_input_fingerprint ON discovery_runs(search_input_fingerprint);
+CREATE INDEX IF NOT EXISTS ix_discovery_runs_candidate_evaluation_fingerprint ON discovery_runs(candidate_evaluation_fingerprint);
+CREATE INDEX IF NOT EXISTS ix_discovery_runs_evaluation_contract_fingerprint ON discovery_runs(evaluation_contract_fingerprint);
 
 CREATE TABLE IF NOT EXISTS user_job_evaluations (
     id VARCHAR(36) PRIMARY KEY,
@@ -28,6 +31,9 @@ CREATE TABLE IF NOT EXISTS user_job_evaluations (
 );
 CREATE INDEX IF NOT EXISTS ix_user_job_evaluations_user_id ON user_job_evaluations(user_id);
 CREATE INDEX IF NOT EXISTS ix_user_job_evaluations_discovered_job_id ON user_job_evaluations(discovered_job_id);
+CREATE INDEX IF NOT EXISTS ix_user_job_evaluations_job_content_hash ON user_job_evaluations(job_content_hash);
+CREATE INDEX IF NOT EXISTS ix_user_job_evaluations_candidate_evaluation_fingerprint ON user_job_evaluations(candidate_evaluation_fingerprint);
+CREATE INDEX IF NOT EXISTS ix_user_job_evaluations_evaluation_contract_fingerprint ON user_job_evaluations(evaluation_contract_fingerprint);
 
 CREATE TABLE IF NOT EXISTS discovery_run_jobs (
     id VARCHAR(36) PRIMARY KEY,
@@ -41,3 +47,5 @@ CREATE TABLE IF NOT EXISTS discovery_run_jobs (
     CONSTRAINT uq_discovery_run_job UNIQUE (discovery_run_id, discovered_job_id)
 );
 CREATE INDEX IF NOT EXISTS ix_discovery_run_jobs_discovery_run_id ON discovery_run_jobs(discovery_run_id);
+CREATE INDEX IF NOT EXISTS ix_discovery_run_jobs_discovered_job_id ON discovery_run_jobs(discovered_job_id);
+CREATE INDEX IF NOT EXISTS ix_discovery_run_jobs_evaluation_id ON discovery_run_jobs(evaluation_id);

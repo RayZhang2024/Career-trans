@@ -29,6 +29,8 @@ class JobRankingService:
 
     def rank(self, request: JobRankingRequest) -> JobRankingResponse:
         gated, gated_out_count = self._gate_service.gate(request.jobs)
+        gated_ids = {id(job) for _, job in gated}
+        gated_out_jobs = [job for job in request.jobs if id(job) not in gated_ids]
         failures: list[JobRankingFailure] = []
         semantic_screening: list[SemanticScreeningDiagnostic] = []
         screened = []
@@ -126,7 +128,7 @@ class JobRankingService:
         priority = {Recommendation.APPLY: 0, Recommendation.CONSIDER: 1, Recommendation.SKIP: 2}
         opportunities.sort(key=lambda item: (priority[item[1].recommendation_assessment.recommendation], -item[1].fit_assessment.fit_score, -item[1].career_assessment.career_alignment_score, -item[1].relevance.score, item[0]))
         results = [opportunity.model_copy(update={"rank": rank}) for rank, (_, opportunity) in enumerate(opportunities, start=1)]
-        return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=gated_out_count, relevance_screened_count=len(semantic_candidates), finalist_count=finalist_count, analysed_count=len(results), semantic_screening=semantic_screening, results=results, failures=failures)
+        return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=gated_out_count, relevance_screened_count=len(semantic_candidates), finalist_count=finalist_count, analysed_count=len(results), gated_out_jobs=gated_out_jobs, semantic_screening=semantic_screening, results=results, failures=failures)
 
     @staticmethod
     def _select_semantic_candidates(
