@@ -19,6 +19,8 @@ from app.api.deps import (
     get_job_detail_enrichment_service,
     get_requirement_matching_service,
     get_user_job_discovery_service,
+    get_discovery_schedule_service,
+    get_scheduled_discovery_execution_service,
 )
 from app.schemas.discovery import (
     JobDiscoveryResponse,
@@ -51,6 +53,7 @@ from app.schemas.job_ranking import JobRankingMeRequest, JobRankingRequest, JobR
 from app.schemas.opportunity_inbox import OpportunityInboxResponse
 from app.schemas.job_enrichment import JobEnrichmentRequest, JobEnrichmentResponse
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest, DiscoveryRunRead, UserOpportunityResponse
+from app.schemas.discovery_schedule import DiscoveryScheduleCreate, DiscoverySchedulePatch, DiscoveryScheduleRead, ScheduledExecutionRead
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
@@ -67,8 +70,56 @@ from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
+from app.services.discovery_schedule_service import DiscoveryScheduleService
+from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
+from datetime import datetime, timezone
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@router.post("/discovery-schedules", response_model=DiscoveryScheduleRead, status_code=status.HTTP_201_CREATED)
+def create_discovery_schedule(payload: DiscoveryScheduleCreate, current_user: CurrentUser, service: DiscoveryScheduleService = Depends(get_discovery_schedule_service)) -> DiscoveryScheduleRead:
+    return service.create(current_user.id, payload, datetime.now(timezone.utc))
+
+
+@router.get("/discovery-schedules", response_model=list[DiscoveryScheduleRead])
+def list_discovery_schedules(current_user: CurrentUser, service: DiscoveryScheduleService = Depends(get_discovery_schedule_service)) -> list[DiscoveryScheduleRead]:
+    return service.list(current_user.id)
+
+
+@router.get("/discovery-schedules/{schedule_id}", response_model=DiscoveryScheduleRead)
+def get_discovery_schedule(schedule_id: str, current_user: CurrentUser, service: DiscoveryScheduleService = Depends(get_discovery_schedule_service)) -> DiscoveryScheduleRead:
+    try:
+        return service.read(service.get(current_user.id, schedule_id))
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery schedule not found.") from exc
+
+
+@router.patch("/discovery-schedules/{schedule_id}", response_model=DiscoveryScheduleRead)
+def patch_discovery_schedule(schedule_id: str, payload: DiscoverySchedulePatch, current_user: CurrentUser, service: DiscoveryScheduleService = Depends(get_discovery_schedule_service)) -> DiscoveryScheduleRead:
+    try:
+        return service.patch(current_user.id, schedule_id, payload, datetime.now(timezone.utc))
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery schedule not found.") from exc
+
+
+@router.post("/discovery-schedules/{schedule_id}/run-now", response_model=ScheduledExecutionRead)
+def run_discovery_schedule_now(schedule_id: str, current_user: CurrentUser, service: ScheduledDiscoveryExecutionService = Depends(get_scheduled_discovery_execution_service)) -> ScheduledExecutionRead:
+    try:
+        execution = service.run_now(current_user.id, schedule_id, datetime.now(timezone.utc))
+        return DiscoveryScheduleService.execution_read(execution)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery schedule not found.") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Schedule execution already running.") from exc
+
+
+@router.get("/discovery-schedules/{schedule_id}/executions", response_model=list[ScheduledExecutionRead])
+def list_discovery_schedule_executions(schedule_id: str, current_user: CurrentUser, service: DiscoveryScheduleService = Depends(get_discovery_schedule_service)) -> list[ScheduledExecutionRead]:
+    try:
+        return service.executions(current_user.id, schedule_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery schedule not found.") from exc
 
 
 @router.post("/discovery-runs", response_model=DiscoveryRunRead, status_code=status.HTTP_201_CREATED)

@@ -41,6 +41,8 @@ from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
+from app.services.discovery_schedule_service import DiscoveryScheduleService
+from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
@@ -485,6 +487,24 @@ def get_user_job_discovery_service(
 ) -> UserJobDiscoveryService:
     """Server-owned personal run/reuse policy over canonical shared job IDs."""
     return UserJobDiscoveryService(db, ranking_service=ranking_service)
+
+
+def get_discovery_schedule_service(db: DbSession) -> DiscoveryScheduleService:
+    return DiscoveryScheduleService(db)
+
+
+def get_scheduled_discovery_execution_service(
+    db: DbSession,
+    structured_ats: Annotated[StructuredAtsDiscoveryService, Depends(get_structured_ats_discovery_service)],
+    user_runs: Annotated[UserJobDiscoveryService, Depends(get_user_job_discovery_service)],
+) -> ScheduledDiscoveryExecutionService:
+    """The agentic service is deliberately built only if a schedule enables it."""
+    return ScheduledDiscoveryExecutionService(
+        db,
+        structured_ats=structured_ats,
+        agentic_web_factory=lambda: get_agentic_job_discovery_service(db),
+        user_runs=user_runs,
+    )
 
 
 def get_discover_and_rank_service(

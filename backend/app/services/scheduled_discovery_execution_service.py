@@ -1,0 +1,225 @@
+"""Durable claim-then-execute orchestration for saved discovery schedules."""
+
+import json
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.models.discovered_job import DiscoveredJob
+from app.models.discovery_schedule import DiscoverySchedule, ScheduledDiscoveryExecution
+from app.schemas.agentic_discovery import AgenticDiscoveryRequest
+from app.schemas.discovery import JobSearchQuery
+from app.schemas.discovery_schedule import AcquisitionConfig, EvaluationConfig, ExecutionStatus, TriggerKind
+from app.schemas.structured_ats_discovery import StructuredAtsDiscoveryRequest
+from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
+from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
+from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
+
+STALE_EXECUTION_AGE = timedelta(hours=2)
+
+
+def _utc(value: datetime) -> datetime:
+    return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+class ScheduledDiscoveryExecutionService:
+    """Claims commit before acquisition, so provider work is never in a DB transaction."""
+
+    def __init__(self, session: Session, *, structured_ats: object, agentic_web_factory: Callable[[], object], user_runs: object) -> None:
+        self._session = session
+        self._structured_ats = structured_ats
+        self._agentic_web_factory = agentic_web_factory
+        self._user_runs = user_runs
+
+    def process_due(self, now: datetime, limit: int) -> list[ScheduledDiscoveryExecution]:
+        schedules = self._session.scalars(
+            select(DiscoverySchedule)
+            .where(DiscoverySchedule.enabled.is_(True), DiscoverySchedule.next_run_at <= now)
+            .order_by(DiscoverySchedule.next_run_at, DiscoverySchedule.id)
+            .limit(limit)
+        ).all()
+        results: list[ScheduledDiscoveryExecution] = []
+        for schedule in schedules:
+            claimed = self.claim(schedule.id, TriggerKind.SCHEDULED, now)
+            if claimed is not None:
+                try:
+                    results.append(self.execute_claimed(claimed.id, now))
+                except Exception:
+                    # A per-schedule bug must not block later due schedules. No raw exception is persisted.
+                    results.append(self._finish_by_id(claimed.id, ExecutionStatus.FAILED, now, {}, {"execution": 1}))
+        return results
+
+    def run_now(self, user_id: str, schedule_id: str, now: datetime) -> ScheduledDiscoveryExecution:
+        DiscoveryScheduleService(self._session).get(user_id, schedule_id)
+        claimed = self.claim(schedule_id, TriggerKind.MANUAL, now)
+        if claimed is None:
+            raise RuntimeError("A discovery schedule execution is already running.")
+        return self.execute_claimed(claimed.id, now)
+
+    def claim(self, schedule_id: str, trigger: TriggerKind, now: datetime) -> ScheduledDiscoveryExecution | None:
+        """Atomically create an execution, acquire lease, and consume a scheduled slot."""
+        schedule = self._session.get(DiscoverySchedule, schedule_id)
+        if schedule is None:
+            return None
+        self._recover_stale(schedule, now)
+        self._session.refresh(schedule)
+        if schedule.active_execution_id:
+            return None
+        if trigger is TriggerKind.SCHEDULED and (not schedule.enabled or schedule.next_run_at is None or _utc(schedule.next_run_at) > _utc(now)):
+            return None
+        spec = DiscoveryScheduleService.spec(schedule)
+        scheduled_for = most_recent_due(spec, now) if trigger is TriggerKind.SCHEDULED else None
+        if trigger is TriggerKind.SCHEDULED and scheduled_for is None:
+            return None
+        execution = ScheduledDiscoveryExecution(
+            schedule_id=schedule.id,
+            user_id=schedule.user_id,
+            trigger_kind=trigger.value,
+            scheduled_for=scheduled_for,
+            config_snapshot_json=json.dumps(DiscoveryScheduleService.snapshot(schedule), sort_keys=True),
+        )
+        try:
+            self._session.add(execution)
+            self._session.flush()
+            values: dict[str, object] = {"active_execution_id": execution.id}
+            if trigger is TriggerKind.SCHEDULED:
+                values["next_run_at"] = next_occurrence(spec, now)
+            claim = update(DiscoverySchedule).where(
+                DiscoverySchedule.id == schedule.id,
+                DiscoverySchedule.active_execution_id.is_(None),
+            )
+            if trigger is TriggerKind.SCHEDULED:
+                claim = claim.where(DiscoverySchedule.enabled.is_(True), DiscoverySchedule.next_run_at <= _utc(now).replace(tzinfo=None))
+            if self._session.execute(claim.values(**values).execution_options(synchronize_session=False)).rowcount != 1:
+                self._session.rollback()
+                return None
+            self._session.commit()
+            self._session.refresh(schedule)
+            return execution
+        except IntegrityError:
+            self._session.rollback()
+            return None
+
+    def execute_claimed(self, execution_id: str, now: datetime) -> ScheduledDiscoveryExecution:
+        execution = self._session.get(ScheduledDiscoveryExecution, execution_id)
+        if execution is None or execution.status != ExecutionStatus.RUNNING.value:
+            raise LookupError("Claimed schedule execution is unavailable.")
+        snapshot = json.loads(execution.config_snapshot_json)
+        context = PersistedCandidateContextLoader(self._session).load_confirmed(execution.user_id)
+        if context is None:
+            return self._finish(execution, ExecutionStatus.SKIPPED, now, {}, {"candidate_not_ready": 1})
+
+        query = JobSearchQuery.model_validate(snapshot["query"])
+        acquisition = AcquisitionConfig.model_validate(snapshot["acquisition"])
+        canonical_ids: set[str] = set()
+        failures: dict[str, int] = {}
+        useful_channel = False
+
+        if acquisition.structured_ats.enabled:
+            try:
+                config = acquisition.structured_ats
+                response = self._structured_ats.discover(
+                    StructuredAtsDiscoveryRequest(
+                        keywords=query.keywords,
+                        locations=query.locations,
+                        companies=config.companies,
+                        providers=config.providers,
+                        max_sources=config.max_sources,
+                        max_results=config.max_results,
+                    )
+                )
+                useful_channel = True
+                canonical_ids.update(self._canonical_ids(response.listings))
+                failed = sum(not diagnostic.succeeded for diagnostic in response.source_diagnostics)
+                if failed:
+                    failures["structured_ats"] = failed
+            except Exception:
+                failures["structured_ats"] = 1
+
+        if acquisition.agentic_web.enabled:
+            try:
+                config = acquisition.agentic_web
+                response = self._agentic_web_factory().discover(
+                    AgenticDiscoveryRequest(
+                        candidate_context=context,
+                        query=query,
+                        country=config.country,
+                        max_search_queries=config.max_search_queries,
+                        max_search_results_per_query=config.max_search_results_per_query,
+                        max_pages_to_open=config.max_pages_to_open,
+                        max_discovered_jobs=config.max_discovered_jobs,
+                    )
+                )
+                useful_channel = True
+                canonical_ids.update(self._canonical_ids(response.listings))
+                if response.diagnostics.search_errors or response.diagnostics.page_errors:
+                    failures["agentic_web"] = 1
+            except Exception:
+                failures["agentic_web"] = 1
+
+        if not canonical_ids:
+            status = ExecutionStatus.FAILED if failures and not useful_channel else (ExecutionStatus.PARTIAL_FAILED if failures else ExecutionStatus.COMPLETED)
+            return self._finish(execution, status, now, {"canonical_jobs": 0}, failures)
+
+        evaluation = EvaluationConfig.model_validate(snapshot["evaluation"])
+        try:
+            run = self._user_runs.start(
+                execution.user_id,
+                DiscoveryRunCreateRequest(
+                    query=query,
+                    discovered_job_ids=sorted(canonical_ids),
+                    max_semantic_candidates=evaluation.max_semantic_candidates,
+                    max_full_analyses=evaluation.max_full_analyses,
+                    min_relevance_score=evaluation.min_relevance_score,
+                ),
+            )
+            execution.discovery_run_id = run.id
+            if run.status.value == "failed":
+                status = ExecutionStatus.FAILED
+            elif failures or run.status.value == "partial_failed":
+                status = ExecutionStatus.PARTIAL_FAILED
+            else:
+                status = ExecutionStatus.COMPLETED
+            return self._finish(execution, status, now, {"canonical_jobs": len(canonical_ids), "reused": run.funnel.get("reused", 0), "analysed": run.funnel.get("analysed", 0)}, failures)
+        except Exception:
+            return self._finish(execution, ExecutionStatus.FAILED, now, {"canonical_jobs": len(canonical_ids)}, {"evaluation": 1})
+
+    def _recover_stale(self, schedule: DiscoverySchedule, now: datetime) -> None:
+        if not schedule.active_execution_id:
+            return
+        active = self._session.get(ScheduledDiscoveryExecution, schedule.active_execution_id)
+        if active and active.status == ExecutionStatus.RUNNING.value and _utc(active.started_at) < _utc(now) - STALE_EXECUTION_AGE:
+            active.status = ExecutionStatus.FAILED.value
+            active.completed_at = now
+            active.failure_summary_json = json.dumps({"stale_execution": 1})
+            schedule.active_execution_id = None
+            self._session.commit()
+
+    def _finish_by_id(self, execution_id: str, status: ExecutionStatus, now: datetime, summary: dict[str, int], failures: dict[str, int]) -> ScheduledDiscoveryExecution:
+        execution = self._session.get(ScheduledDiscoveryExecution, execution_id)
+        if execution is None:
+            raise LookupError("Schedule execution is unavailable.")
+        return self._finish(execution, status, now, summary, failures)
+
+    def _finish(self, execution: ScheduledDiscoveryExecution, status: ExecutionStatus, now: datetime, summary: dict[str, int], failures: dict[str, int]) -> ScheduledDiscoveryExecution:
+        execution.status = status.value
+        execution.completed_at = now
+        execution.acquisition_summary_json = json.dumps(summary, sort_keys=True)
+        execution.failure_summary_json = json.dumps(failures, sort_keys=True)
+        schedule = self._session.get(DiscoverySchedule, execution.schedule_id)
+        # Never update schedule timing/config here. A later edit or claim wins.
+        if schedule is not None and schedule.active_execution_id == execution.id:
+            schedule.active_execution_id = None
+            schedule.last_execution_at = now
+        self._session.commit()
+        return execution
+
+    def _canonical_ids(self, listings: list[object]) -> set[str]:
+        keys = [SqlAlchemyDiscoveredJobStateStore.identity_key(listing) for listing in listings]
+        if not keys:
+            return set()
+        return set(self._session.scalars(select(DiscoveredJob.id).where(DiscoveredJob.identity_key.in_(keys))).all())
