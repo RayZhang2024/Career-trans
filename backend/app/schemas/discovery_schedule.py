@@ -2,6 +2,7 @@
 
 from datetime import datetime, time
 from enum import StrEnum
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -32,6 +33,14 @@ class ScheduleSpec(BaseModel):
     timezone: str = Field(min_length=1, max_length=64)
     local_time: time
     weekdays: list[int] = Field(default_factory=list, max_length=7)
+
+    @model_validator(mode="after")
+    def validate_timezone(self) -> "ScheduleSpec":
+        try:
+            ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a valid IANA timezone") from exc
+        return self
 
     @model_validator(mode="after")
     def validate_weekdays(self) -> "ScheduleSpec":

@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
@@ -26,6 +27,15 @@ def _utc(value: datetime) -> datetime:
     return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
+@dataclass(frozen=True)
+class _ChannelOutcome:
+    """Safe structural outcome; it deliberately contains no provider body/text."""
+    succeeded: bool
+    failed: bool
+    canonical_ids: set[str] = field(default_factory=set)
+    counters: dict[str, int] = field(default_factory=dict)
+
+
 class ScheduledDiscoveryExecutionService:
     """Claims commit before acquisition, so provider work is never in a DB transaction."""
 
@@ -46,11 +56,7 @@ class ScheduledDiscoveryExecutionService:
         for schedule in schedules:
             claimed = self.claim(schedule.id, TriggerKind.SCHEDULED, now)
             if claimed is not None:
-                try:
-                    results.append(self.execute_claimed(claimed.id, now))
-                except Exception:
-                    # A per-schedule bug must not block later due schedules. No raw exception is persisted.
-                    results.append(self._finish_by_id(claimed.id, ExecutionStatus.FAILED, now, {}, {"execution": 1}))
+                results.append(self._execute_safely(claimed.id, now))
         return results
 
     def run_now(self, user_id: str, schedule_id: str, now: datetime) -> ScheduledDiscoveryExecution:
@@ -58,7 +64,17 @@ class ScheduledDiscoveryExecutionService:
         claimed = self.claim(schedule_id, TriggerKind.MANUAL, now)
         if claimed is None:
             raise RuntimeError("A discovery schedule execution is already running.")
-        return self.execute_claimed(claimed.id, now)
+        return self._execute_safely(claimed.id, now)
+
+    def _execute_safely(self, execution_id: str, now: datetime) -> ScheduledDiscoveryExecution:
+        """Both triggers terminalize catchable orchestration failures after claim."""
+        try:
+            return self.execute_claimed(execution_id, now)
+        except Exception:
+            # The claim was committed already; clear any failed unit of work before
+            # terminalizing that durable execution record.
+            self._session.rollback()
+            return self._finish_by_id(execution_id, ExecutionStatus.FAILED, now, {}, {"execution": 1})
 
     def claim(self, schedule_id: str, trigger: TriggerKind, now: datetime) -> ScheduledDiscoveryExecution | None:
         """Atomically create an execution, acquire lease, and consume a scheduled slot."""
@@ -115,9 +131,7 @@ class ScheduledDiscoveryExecutionService:
 
         query = JobSearchQuery.model_validate(snapshot["query"])
         acquisition = AcquisitionConfig.model_validate(snapshot["acquisition"])
-        canonical_ids: set[str] = set()
-        failures: dict[str, int] = {}
-        useful_channel = False
+        outcomes: list[_ChannelOutcome] = []
 
         if acquisition.structured_ats.enabled:
             try:
@@ -126,19 +140,28 @@ class ScheduledDiscoveryExecutionService:
                     StructuredAtsDiscoveryRequest(
                         keywords=query.keywords,
                         locations=query.locations,
+                        remote_ok=query.remote_ok,
+                        excluded_companies=query.excluded_companies,
+                        excluded_title_terms=query.excluded_title_terms,
+                        employment_types=query.employment_types,
                         companies=config.companies,
                         providers=config.providers,
                         max_sources=config.max_sources,
                         max_results=config.max_results,
                     )
                 )
-                useful_channel = True
-                canonical_ids.update(self._canonical_ids(response.listings))
+                ids = self._canonical_ids(response.listings)
+                attempted = len(response.source_diagnostics)
+                succeeded = sum(diagnostic.succeeded for diagnostic in response.source_diagnostics)
                 failed = sum(not diagnostic.succeeded for diagnostic in response.source_diagnostics)
-                if failed:
-                    failures["structured_ats"] = failed
+                outcomes.append(_ChannelOutcome(
+                    succeeded=(attempted == 0 or succeeded > 0),
+                    failed=failed > 0,
+                    canonical_ids=ids,
+                    counters={"sources_attempted": attempted, "sources_succeeded": succeeded, "sources_failed": failed},
+                ))
             except Exception:
-                failures["structured_ats"] = 1
+                outcomes.append(_ChannelOutcome(succeeded=False, failed=True, counters={"sources_attempted": 0, "sources_succeeded": 0, "sources_failed": 1}))
 
         if acquisition.agentic_web.enabled:
             try:
@@ -154,16 +177,30 @@ class ScheduledDiscoveryExecutionService:
                         max_discovered_jobs=config.max_discovered_jobs,
                     )
                 )
-                useful_channel = True
-                canonical_ids.update(self._canonical_ids(response.listings))
-                if response.diagnostics.search_errors or response.diagnostics.page_errors:
-                    failures["agentic_web"] = 1
+                errors = bool(response.diagnostics.search_errors or response.diagnostics.page_errors)
+                outcomes.append(_ChannelOutcome(
+                    succeeded=bool(response.listings) or not errors,
+                    failed=errors,
+                    canonical_ids=self._canonical_ids(response.listings),
+                    counters={"search_queries_executed": response.diagnostics.search_queries_executed, "pages_opened": response.diagnostics.pages_opened, "extraction_successes": response.diagnostics.extraction_successes},
+                ))
             except Exception:
-                failures["agentic_web"] = 1
+                outcomes.append(_ChannelOutcome(succeeded=False, failed=True, counters={"search_queries_executed": 0, "pages_opened": 0, "extraction_successes": 0}))
+
+        canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes)) if outcomes else set()
+        failures = {}
+        summaries: dict[str, int] = {}
+        for name, outcome in zip([name for name, enabled in (("structured_ats", acquisition.structured_ats.enabled), ("agentic_web", acquisition.agentic_web.enabled)) if enabled], outcomes, strict=True):
+            if outcome.failed:
+                failures[name] = 1
+            for key, value in outcome.counters.items():
+                summaries[f"{name}_{key}"] = value
+        useful_channel = any(outcome.succeeded for outcome in outcomes)
 
         if not canonical_ids:
             status = ExecutionStatus.FAILED if failures and not useful_channel else (ExecutionStatus.PARTIAL_FAILED if failures else ExecutionStatus.COMPLETED)
-            return self._finish(execution, status, now, {"canonical_jobs": 0}, failures)
+            summaries["canonical_jobs"] = 0
+            return self._finish(execution, status, now, summaries, failures)
 
         evaluation = EvaluationConfig.model_validate(snapshot["evaluation"])
         try:
@@ -184,7 +221,8 @@ class ScheduledDiscoveryExecutionService:
                 status = ExecutionStatus.PARTIAL_FAILED
             else:
                 status = ExecutionStatus.COMPLETED
-            return self._finish(execution, status, now, {"canonical_jobs": len(canonical_ids), "reused": run.funnel.get("reused", 0), "analysed": run.funnel.get("analysed", 0)}, failures)
+            summaries.update({"canonical_jobs": len(canonical_ids), "reused": run.funnel.get("reused", 0), "relevance_screened": run.funnel.get("relevance_screened", 0), "analysed": run.funnel.get("analysed", 0)})
+            return self._finish(execution, status, now, summaries, failures)
         except Exception:
             return self._finish(execution, ExecutionStatus.FAILED, now, {"canonical_jobs": len(canonical_ids)}, {"evaluation": 1})
 
