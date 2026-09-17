@@ -1,5 +1,6 @@
 from datetime import datetime, time, timezone
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -46,12 +47,19 @@ def _ats_response(listings=(), diagnostics=()):
     return StructuredAtsDiscoveryResponse(listings=list(listings), source_diagnostics=list(diagnostics), raw_count=len(listings), deduplicated_count=0, rejected_count=0, lifecycle_counts=DiscoveryLifecycleCounts())
 
 
-def _agentic_response(listings=(), *, errors=False):
-    return AgenticDiscoveryResponse(listings=list(listings), diagnostics=AgenticDiscoveryDiagnostics(search_errors={"safe": "failure"} if errors else {}))
+def _agentic_response(listings=(), *, errors=False, page_fetch_failures=0, extraction_failures=0):
+    return AgenticDiscoveryResponse(
+        listings=list(listings),
+        diagnostics=AgenticDiscoveryDiagnostics(
+            search_errors={"safe": "failure"} if errors else {},
+            page_fetch_failures=page_fetch_failures,
+            extraction_failures=extraction_failures,
+        ),
+    )
 
 
 def _claimed_runner(db_session, monkeypatch, *, payload, ats, agentic, user_runs):
-    user = _user(db_session, f"{id(ats)}@example.com")
+    user = _user(db_session, f"schedule-{uuid4()}@example.com")
     schedule = DiscoveryScheduleService(db_session).create(user.id, payload, datetime(2026, 9, 14, 8, tzinfo=UTC))
     runner = ScheduledDiscoveryExecutionService(db_session, structured_ats=ats, agentic_web_factory=lambda: agentic, user_runs=user_runs)
     monkeypatch.setattr("app.services.scheduled_discovery_execution_service.PersistedCandidateContextLoader.load_confirmed", lambda *_: CandidateContext())
@@ -203,6 +211,58 @@ def test_partial_channel_and_manual_exception_are_terminalized(db_session, monke
     assert "private failure" not in result.failure_summary_json
 
 
+def test_agentic_clean_zero_extraction_failure_and_partial_listing_statuses(db_session, monkeypatch):
+    payload = _payload(acquisition=AcquisitionConfig(agentic_web=AgenticWebScheduleConfig(enabled=True)))
+    completed_run = SimpleNamespace(id="agentic-run", status=SimpleNamespace(value="completed"), funnel={})
+    # A clean search with no jobs is a clean completed acquisition, not a failure.
+    runner, claimed = _claimed_runner(db_session, monkeypatch, payload=payload, ats=object(), agentic=SimpleNamespace(discover=lambda _: _agentic_response()), user_runs=SimpleNamespace(start=lambda *_: completed_run))
+    assert runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC)).status == "completed"
+
+    # A bounded extraction failure with no recovered listing is a failed channel.
+    runner, claimed = _claimed_runner(db_session, monkeypatch, payload=payload, ats=object(), agentic=SimpleNamespace(discover=lambda _: _agentic_response(extraction_failures=2)), user_runs=object())
+    failed = runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    assert failed.status == "failed"
+    assert '"agentic_web_extraction_failures": 2' in failed.acquisition_summary_json
+
+    listing = _listing()
+    SqlAlchemyDiscoveredJobStateStore(db_session).persist([listing])
+    runner, claimed = _claimed_runner(db_session, monkeypatch, payload=payload, ats=object(), agentic=SimpleNamespace(discover=lambda _: _agentic_response([listing], extraction_failures=1)), user_runs=SimpleNamespace(start=lambda *_: completed_run))
+    assert runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC)).status == "partial_failed"
+
+
+def test_missed_slot_coalescing_stale_recovery_and_snapshot_after_edit(db_session, monkeypatch):
+    user = _user(db_session, "recovery@example.com")
+    schedules = DiscoveryScheduleService(db_session)
+    payload = _payload(query=JobSearchQuery(keywords=["old"], locations=["London"]))
+    schedule = schedules.create(user.id, payload, datetime(2026, 9, 1, 8, tzinfo=UTC))
+    record = schedules.get(user.id, schedule.id)
+    # Multiple daily slots were missed; only today's most recent valid slot is materialized.
+    record.next_run_at = datetime(2026, 9, 1, 8, 30, tzinfo=UTC)
+    db_session.commit()
+    received = []
+    runner = ScheduledDiscoveryExecutionService(db_session, structured_ats=SimpleNamespace(discover=lambda request: received.append(request) or _ats_response()), agentic_web_factory=lambda: object(), user_runs=object())
+    monkeypatch.setattr("app.services.scheduled_discovery_execution_service.PersistedCandidateContextLoader.load_confirmed", lambda *_: CandidateContext())
+    now = datetime(2026, 9, 5, 10, tzinfo=UTC)
+    claimed = runner.claim(schedule.id, TriggerKind.SCHEDULED, now)
+    assert claimed and claimed.scheduled_for == datetime(2026, 9, 5, 8, 30, tzinfo=UTC)
+    # New edits affect future work only; this claimed execution uses old snapshot.
+    newer_next = schedules.patch(user.id, schedule.id, DiscoverySchedulePatch(query=JobSearchQuery(keywords=["new"]), schedule=ScheduleSpec(cadence=ScheduleCadence.DAILY, timezone="Europe/London", local_time=time(11))), now).next_run_at
+    runner.execute_claimed(claimed.id, now)
+    assert received[0].keywords == ["old"]
+    assert schedules.read(schedules.get(user.id, schedule.id)).next_run_at == newer_next
+
+    # A stale lease is terminalized with a safe reason and no longer blocks a later claim.
+    record = schedules.get(user.id, schedule.id)
+    stale = runner.claim(record.id, TriggerKind.MANUAL, now)
+    assert stale is not None
+    stale.started_at = now.replace(hour=0)
+    db_session.commit()
+    later = now + __import__("datetime").timedelta(hours=3)
+    assert runner.claim(record.id, TriggerKind.MANUAL, later) is not None
+    stale_record = db_session.get(ScheduledDiscoveryExecution, stale.id)
+    assert stale_record.status == "failed" and stale_record.failure_summary_json == '{"stale_execution": 1}'
+
+
 def test_invalid_timezone_is_rejected_at_authenticated_api_boundary(client):
     credentials = {"email": "timezone-api@example.com", "password": "strong-password"}
     assert client.post("/api/v1/auth/register", json=credentials).status_code == 201
@@ -218,3 +278,15 @@ def test_invalid_timezone_is_rejected_at_authenticated_api_boundary(client):
         },
     )
     assert response.status_code == 422
+
+
+def test_api_cross_user_schedule_routes_are_isolated(client, db_session):
+    from app.core.security import create_access_token
+
+    owner, other = _user(db_session, "owner-api@example.com"), _user(db_session, "other-api@example.com")
+    schedule = DiscoveryScheduleService(db_session).create(owner.id, _payload(enabled=False), datetime(2026, 9, 14, 8, tzinfo=UTC))
+    headers = {"Authorization": f"Bearer {create_access_token(other.id)}"}
+    assert client.get(f"/api/v1/jobs/discovery-schedules/{schedule.id}", headers=headers).status_code == 404
+    assert client.patch(f"/api/v1/jobs/discovery-schedules/{schedule.id}", headers=headers, json={"name": "no"}).status_code == 404
+    assert client.get(f"/api/v1/jobs/discovery-schedules/{schedule.id}/executions", headers=headers).status_code == 404
+    assert client.post(f"/api/v1/jobs/discovery-schedules/{schedule.id}/run-now", headers=headers).status_code == 404

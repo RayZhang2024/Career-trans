@@ -177,15 +177,27 @@ class ScheduledDiscoveryExecutionService:
                         max_discovered_jobs=config.max_discovered_jobs,
                     )
                 )
-                errors = bool(response.diagnostics.search_errors or response.diagnostics.page_errors)
+                diagnostics = response.diagnostics
+                errors = bool(
+                    diagnostics.search_errors
+                    or diagnostics.page_errors
+                    or diagnostics.page_fetch_failures
+                    or diagnostics.extraction_failures
+                )
                 outcomes.append(_ChannelOutcome(
                     succeeded=bool(response.listings) or not errors,
                     failed=errors,
                     canonical_ids=self._canonical_ids(response.listings),
-                    counters={"search_queries_executed": response.diagnostics.search_queries_executed, "pages_opened": response.diagnostics.pages_opened, "extraction_successes": response.diagnostics.extraction_successes},
+                    counters={
+                        "search_queries_executed": diagnostics.search_queries_executed,
+                        "pages_opened": diagnostics.pages_opened,
+                        "page_fetch_failures": diagnostics.page_fetch_failures,
+                        "extraction_successes": diagnostics.extraction_successes,
+                        "extraction_failures": diagnostics.extraction_failures,
+                    },
                 ))
             except Exception:
-                outcomes.append(_ChannelOutcome(succeeded=False, failed=True, counters={"search_queries_executed": 0, "pages_opened": 0, "extraction_successes": 0}))
+                outcomes.append(_ChannelOutcome(succeeded=False, failed=True, counters={"search_queries_executed": 0, "pages_opened": 0, "page_fetch_failures": 0, "extraction_successes": 0, "extraction_failures": 1}))
 
         canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes)) if outcomes else set()
         failures = {}
