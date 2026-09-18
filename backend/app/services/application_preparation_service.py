@@ -164,6 +164,24 @@ class ApplicationPreparationService:
         for index, item in enumerate(data.credentials):
             if len(catalog) >= _MAX_CONTEXT_SOURCES: break
             catalog.setdefault((EvidenceSourceType.CREDENTIAL.value, f"credential:{index}"), " ".join(value for value in [item.name, item.issuer, item.issued_date, item.expiry_date, item.description] if value))
+        for index, item in enumerate(data.projects):
+            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
+            catalog.setdefault((EvidenceSourceType.PROJECT.value, f"project:{index}"), f"{item.name}. {item.description}")
+        profile_values = {
+            "career_profile": context.profile_text,
+            "career_strategy": context.career_strategy_text,
+            "job_search_criteria": context.job_search_criteria_text,
+        }
+        for source_ref, value in profile_values.items():
+            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
+            if value.strip(): catalog.setdefault((EvidenceSourceType.CANDIDATE_PROFILE.value, source_ref), value)
+        for source_ref, values in {
+            "work_authorisation": context.eligibility.work_authorisation,
+            "locations": context.eligibility.locations,
+            "security_clearances": context.eligibility.security_clearances,
+        }.items():
+            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
+            if values: catalog.setdefault((EvidenceSourceType.CANDIDATE_ELIGIBILITY.value, source_ref), ", ".join(values))
         return catalog
 
     def _draft_context(self, target: ApplicationTargetSnapshot, catalog: dict[tuple[str, str], str], data: CandidateCVData) -> dict[str, object]:
