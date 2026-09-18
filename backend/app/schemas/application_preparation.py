@@ -121,6 +121,22 @@ class TailoredRole(BaseModel):
     bullets: list[TailoredBullet] = Field(default_factory=list)
 
 
+class TailoredProjectDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    project_index: int = Field(ge=0)
+    text: str = Field(min_length=1, max_length=800)
+    source_refs: list[ApplicationSourceRef] = Field(min_length=1, max_length=4)
+    priority: int = Field(ge=1, le=100)
+
+
+class TailoredProject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    text: str = Field(min_length=1, max_length=800)
+    source_refs: list[ApplicationSourceRef] = Field(min_length=1, max_length=4)
+    priority: int = Field(ge=1, le=100)
+
+
 class TailoredCVContent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -128,6 +144,7 @@ class TailoredCVContent(BaseModel):
     summary_source_refs: list[ApplicationSourceRef] = Field(min_length=1, max_length=5)
     key_skills: list[str] = Field(default_factory=list, max_length=20)
     roles: list[TailoredRole] = Field(default_factory=list)
+    selected_projects: list[TailoredProject] = Field(default_factory=list)
     education: list[str] = Field(default_factory=list)
     credentials: list[str] = Field(default_factory=list)
 
@@ -139,6 +156,7 @@ class CVWritingDraft(BaseModel):
     summary_source_refs: list[ApplicationSourceRef] = Field(min_length=1, max_length=5)
     key_skills: list[str] = Field(default_factory=list, max_length=20)
     role_drafts: list[TailoredRoleDraft] = Field(default_factory=list, max_length=20)
+    project_drafts: list[TailoredProjectDraft] = Field(default_factory=list, max_length=8)
 
 
 class CoverLetterContent(BaseModel):

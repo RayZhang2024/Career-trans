@@ -4,12 +4,13 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
-from html.parser import HTMLParser
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.application_drafting import ApplicationDraftingAgent
+from app.agents.agentic_discovery import PageVacancyExtractor
+from app.core.config import Settings, get_settings
 from app.models.application_preparation import ApplicationPreparation
 from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.models.candidate_profile import CandidateProfile
@@ -29,12 +30,14 @@ from app.schemas.matching import EvidenceRef, EvidenceSourceType, RequirementMat
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.user_job_discovery_service import UserJobDiscoveryService, _application_revision
 from app.services.application_document_renderer import ApplicationDocumentRenderer
+from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
 
 
 _CONTRACT_VERSION = "application-preparation-v1"
 _MAX_CONTEXT_SOURCES = 18
 _NUMBER = re.compile(r"(?<![A-Za-z])(?:£|\$|€)?\d+(?:[.,]\d+)?(?:\s*(?:%|years?|months?|hours?|minutes?|days?|k|m|million|bn))?", re.IGNORECASE)
+_KNOWN_TECHNOLOGY_TOKENS = frozenset({"aws", "azure", "gcp", "kubernetes", "docker", "terraform", "python", "java", "typescript", "javascript", "sql", "langchain", "langgraph", "openai"})
 
 
 class ApplicationPreparationService:
@@ -43,13 +46,17 @@ class ApplicationPreparationService:
     def __init__(
         self, session: Session, *, graph: CareerAnalysisGraph,
         drafting_agent: ApplicationDraftingAgent, user_discovery: UserJobDiscoveryService,
-        page_fetcher: PageFetcher | None = None,
+        page_fetcher: PageFetcher | None = None, vacancy_extractor: PageVacancyExtractor | None = None,
+        settings: Settings | None = None, renderer_template_version: str = "ats_standard-v1",
     ) -> None:
         self._session = session
         self._graph = graph
         self._drafting_agent = drafting_agent
         self._user_discovery = user_discovery
         self._page_fetcher = page_fetcher
+        self._vacancy_extractor = vacancy_extractor
+        self._settings = settings or get_settings()
+        self._renderer_template_version = renderer_template_version
 
     def prepare(self, user_id: str, request: ApplicationPrepareRequest) -> ApplicationPreparationRead:
         # Validate every deterministic prerequisite before a semantic call.
@@ -84,7 +91,7 @@ class ApplicationPreparationService:
         record = ApplicationPreparation(
             user_id=user_id,
             target_snapshot_json=_dump(target), identity_snapshot_json=_dump(identity),
-            preparation_input_fingerprint=self._input_fingerprint(target, identity, source_catalog, structured),
+            preparation_input_fingerprint=self._input_fingerprint(target, identity, source_catalog, structured, request),
             preparation_contract_fingerprint=self._contract_fingerprint(), preparation_result_json=_dump(result),
         )
         self._session.add(record); self._session.commit(); self._session.refresh(record)
@@ -122,12 +129,15 @@ class ApplicationPreparationService:
             raise ApplicationInsufficientDetailError("Job URL detail is unavailable; provide job text.")
         try:
             page = self._page_fetcher.fetch(url)
-            detail = _html_text(page.html)
+            extracted = AgenticJobDiscoveryService._metadata_vacancy(page)
+            if extracted is None and self._vacancy_extractor is not None:
+                extracted = self._vacancy_extractor.extract(page)
         except Exception as exc:
             raise ApplicationInsufficientDetailError("Job URL detail is unavailable; provide job text.") from exc
-        if len(detail) < 500:
+        if extracted is None or not extracted.title or not extracted.description or len(" ".join(extracted.description.split())) < 500:
             raise ApplicationInsufficientDetailError("Job URL detail is insufficient; provide job text.")
-        listing = JobListing(source="application_url", title="Application target", url=page.final_url, description=detail)
+        detail = " ".join(extracted.description.split())
+        listing = JobListing(source="application_url", title=extracted.title.strip(), company=extracted.company, location=extracted.location, url=page.final_url, description=detail, employment_type=extracted.employment_type, work_arrangement=extracted.work_arrangement)
         return self._analysis_snapshot(target.kind, listing, context, content_hash=_hash(detail))
 
     def _analysis_snapshot(self, kind: ApplicationTargetKind, listing: JobListing, context: CandidateContext, *, canonical_id: str | None = None, content_hash: str) -> ApplicationTargetSnapshot:
@@ -143,6 +153,11 @@ class ApplicationPreparationService:
     def _bounded_sources(self, context: CandidateContext, data: CandidateCVData, matches: list[RequirementMatch]) -> dict[tuple[str, str], str]:
         catalog: dict[tuple[str, str], str] = {}
         by_id = {item.evidence_id: item for item in context.evidence}
+        # Employment anchors are factual structure, not model-owned evidence.
+        # They are always available to attribute a drafted bullet to its role.
+        for index, item in enumerate(data.employment):
+            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
+            catalog[(EvidenceSourceType.EMPLOYMENT.value, f"employment:{index}")] = f"{item.title} at {item.employer}. {item.description}"
         for match in sorted(matches, key=lambda item: (item.requirement.importance.value != "essential", item.requirement_index)):
             refs = match.evidence_refs or [EvidenceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref=item) for item in match.evidence_ids]
             for ref in refs:
@@ -155,9 +170,6 @@ class ApplicationPreparationService:
             if len(catalog) >= _MAX_CONTEXT_SOURCES:
                 break
         # Confirmed deterministic facts are separately typed, never fake evidence.
-        for index, item in enumerate(data.employment):
-            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
-            catalog.setdefault((EvidenceSourceType.EMPLOYMENT.value, f"employment:{index}"), f"{item.title} at {item.employer}. {item.description}")
         for index, item in enumerate(data.education):
             if len(catalog) >= _MAX_CONTEXT_SOURCES: break
             catalog.setdefault((EvidenceSourceType.EDUCATION.value, f"education:{index}"), f"{item.qualification} at {item.institution}. {item.description}")
@@ -185,7 +197,17 @@ class ApplicationPreparationService:
         return catalog
 
     def _draft_context(self, target: ApplicationTargetSnapshot, catalog: dict[tuple[str, str], str], data: CandidateCVData) -> dict[str, object]:
-        return {"job": {"title": target.title, "company": target.company, "requirements": [item.requirement.text for item in target.requirement_matches]}, "sources": [{"source_type": key[0], "source_ref": key[1], "text": value} for key, value in catalog.items()], "allowed_skills": sorted({item.name for item in data.skills}, key=str.casefold), "employment_count": len(data.employment)}
+        return {
+            "job": {"title": target.title, "company": target.company, "requirements": [item.requirement.text for item in target.requirement_matches]},
+            "sources": [{"source_type": key[0], "source_ref": key[1], "text": value} for key, value in catalog.items()],
+            "allowed_skills": sorted({item.name for item in data.skills}, key=str.casefold),
+            "employment": [
+                {"employment_index": index, "employer": item.employer, "title": item.title, "start_date": item.start_date, "end_date": item.end_date, "location": item.location, "required_anchor_ref": {"source_type": "employment", "source_ref": f"employment:{index}"}}
+                for index, item in enumerate(data.employment)
+                if (EvidenceSourceType.EMPLOYMENT.value, f"employment:{index}") in catalog
+            ],
+            "projects": [{"project_index": index, "name": item.name} for index, item in enumerate(data.projects) if (EvidenceSourceType.PROJECT.value, f"project:{index}") in catalog],
+        }
 
     def _materialize_cv(self, draft: CVWritingDraft, data: CandidateCVData, catalog: dict[tuple[str, str], str]) -> TailoredCVContent:
         self._validate_text_and_refs(draft.professional_summary, draft.summary_source_refs, catalog)
@@ -201,8 +223,23 @@ class ApplicationPreparationService:
             bullets = drafts.get(index).bullets if index in drafts else []
             for bullet in bullets:
                 self._validate_text_and_refs(bullet.text, bullet.source_refs, catalog)
+                anchor = ApplicationSourceRef(source_type=EvidenceSourceType.EMPLOYMENT, source_ref=f"employment:{index}")
+                if anchor not in bullet.source_refs:
+                    raise ValueError("Generated role bullet is missing its canonical employment attribution.")
             roles.append(TailoredRole(employer=item.employer, title=item.title, start_date=item.start_date, end_date=item.end_date, location=item.location, bullets=bullets))
-        return TailoredCVContent(professional_summary=draft.professional_summary, summary_source_refs=draft.summary_source_refs, key_skills=[allowed_skills[item.casefold()] for item in draft.key_skills], roles=roles, education=[f"{item.qualification} — {item.institution}" for item in data.education], credentials=[item.name for item in data.credentials])
+        projects = []
+        seen_projects: set[int] = set()
+        for project in draft.project_drafts:
+            if project.project_index >= len(data.projects) or project.project_index in seen_projects:
+                raise ValueError("Generated CV references an unknown or duplicate project record.")
+            self._validate_text_and_refs(project.text, project.source_refs, catalog)
+            anchor = ApplicationSourceRef(source_type=EvidenceSourceType.PROJECT, source_ref=f"project:{project.project_index}")
+            if anchor not in project.source_refs:
+                raise ValueError("Generated selected project is missing its canonical project attribution.")
+            seen_projects.add(project.project_index)
+            from app.schemas.application_preparation import TailoredProject
+            projects.append(TailoredProject(name=data.projects[project.project_index].name, text=project.text, source_refs=project.source_refs, priority=project.priority))
+        return TailoredCVContent(professional_summary=draft.professional_summary, summary_source_refs=draft.summary_source_refs, key_skills=[allowed_skills[item.casefold()] for item in draft.key_skills], roles=roles, selected_projects=projects, education=[f"{item.qualification} — {item.institution}" for item in data.education], credentials=[item.name for item in data.credentials])
 
     def _validate_text_and_refs(self, text: str, refs: list[ApplicationSourceRef], catalog: dict[tuple[str, str], str]) -> None:
         if not text.strip() or not refs:
@@ -217,6 +254,14 @@ class ApplicationPreparationService:
             normalized = _normal(token)
             if normalized and not any(normalized in source for source in sources):
                 raise ValueError("Generated application content contains an unsupported numerical claim.")
+        self._validate_known_technology_mentions(text, sources)
+
+    @staticmethod
+    def _validate_known_technology_mentions(text: str, cited_sources: list[str]) -> None:
+        allowed = {token for source in cited_sources for token in _technology_tokens(source)}
+        for token in _technology_tokens(text):
+            if token in _KNOWN_TECHNOLOGY_TOKENS and token not in allowed:
+                raise ValueError("Generated application content contains an unsupported skill or technology claim.")
 
     def _draft_answers(self, questions: list[str], draft_context: dict[str, object], catalog: dict[tuple[str, str], str]):
         if not questions:
@@ -242,35 +287,19 @@ class ApplicationPreparationService:
         return CandidateCVData.model_validate(json.loads(record.structured_json))
 
     @staticmethod
-    def _input_fingerprint(target, identity, catalog, data) -> str:
+    def _input_fingerprint(target, identity, catalog, data, request) -> str:
         sources = [
             {"source_type": source_type, "source_ref": source_ref, "text": text}
             for (source_type, source_ref), text in sorted(catalog.items())
         ]
-        return _hash(_dump({"target": target, "identity": identity, "sources": sources, "structured": data}))
+        return _hash(_dump({"target": target, "identity": identity, "sources": sources, "structured": data, "options": {"target_pages": request.target_pages, "include_cover_letter": request.include_cover_letter, "application_questions": request.application_questions}}))
 
-    @staticmethod
-    def _contract_fingerprint() -> str:
-        return _hash(_dump({"contract": _CONTRACT_VERSION, "revision": _application_revision(), "renderer": "ats_standard-v1", "provider": "semantic", "models": "application_drafting"}))
+    def _contract_fingerprint(self) -> str:
+        return _hash(_dump({"contract": _CONTRACT_VERSION, "revision": _application_revision(), "renderer": self._renderer_template_version, "provider": self._settings.default_llm_provider.casefold().strip(), "models": {"cv": self._settings.application_drafting_model, "cover_letter": self._settings.application_drafting_model, "answer": self._settings.application_drafting_model}}))
 
     @staticmethod
     def _read(row: ApplicationPreparation) -> ApplicationPreparationRead:
         return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=ApplicationPreparationResult.model_validate_json(row.preparation_result_json), created_at=row.created_at)
-
-
-class _TextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(); self.parts: list[str] = []; self._ignored = 0
-    def handle_starttag(self, tag: str, attrs) -> None:
-        if tag in {"script", "style", "noscript"}: self._ignored += 1
-    def handle_endtag(self, tag: str) -> None:
-        if tag in {"script", "style", "noscript"}: self._ignored = max(0, self._ignored - 1)
-    def handle_data(self, data: str) -> None:
-        if not self._ignored: self.parts.append(data)
-
-
-def _html_text(value: str) -> str:
-    parser = _TextExtractor(); parser.feed(value); return " ".join(" ".join(parser.parts).split())
 
 
 def _dump(value: object) -> str:
@@ -291,3 +320,7 @@ def _hash(value: str) -> str:
 
 def _normal(value: str) -> str:
     return " ".join(value.casefold().replace("approximately", "").replace("~", "").split())
+
+
+def _technology_tokens(value: str) -> set[str]:
+    return {item.casefold() for item in re.findall(r"[A-Za-z][A-Za-z0-9+#.-]*", value)}

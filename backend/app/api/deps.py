@@ -142,6 +142,7 @@ def validate_semantic_configuration(settings: Settings) -> None:
         "JOB_RELEVANCE_MODEL": settings.job_relevance_model,
         "JOB_ARCHETYPE_MODEL": settings.job_archetype_model,
         "AGENTIC_DISCOVERY_MODEL": settings.agentic_discovery_model,
+        "APPLICATION_DRAFTING_MODEL": settings.application_drafting_model,
     }
     for name, model in models.items():
         if not model.strip():
@@ -158,6 +159,7 @@ def validate_semantic_configuration(settings: Settings) -> None:
         )
         if provider == "openai":
             validate_openai_structured_output_model(settings.requirement_matching_model)
+            validate_openai_structured_output_model(settings.application_drafting_model)
     except LLMProviderConfigurationError as exc:
         raise SemanticProviderConfigurationError(str(exc)) from exc
 

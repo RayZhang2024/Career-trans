@@ -38,6 +38,11 @@ class ApplicationDocumentRenderer:
             for bullet in role.bullets: doc.add_paragraph(bullet.text, style="List Bullet")
         if result.cv.education: self._docx_heading(doc, "Education"); [doc.add_paragraph(item) for item in result.cv.education]
         if result.cv.credentials: self._docx_heading(doc, "Credentials"); [doc.add_paragraph(item) for item in result.cv.credentials]
+        if result.cv.selected_projects:
+            self._docx_heading(doc, "Selected Projects")
+            for project in result.cv.selected_projects:
+                doc.add_paragraph(project.name).runs[0].bold = True
+                doc.add_paragraph(project.text)
         output = BytesIO(); doc.save(output); return output.getvalue()
 
     def render_cover_letter_docx(self, identity: ApplicationIdentitySnapshot, target: ApplicationTargetSnapshot, result: ApplicationPreparationResult) -> bytes:
@@ -95,6 +100,11 @@ class ApplicationDocumentRenderer:
             for bullet in role.bullets: story.append(Paragraph("• " + _paragraph(bullet.text), normal))
         if result.cv.education: story.append(Paragraph("Education", heading)); story.extend(Paragraph(_paragraph(item), normal) for item in result.cv.education)
         if result.cv.credentials: story.append(Paragraph("Credentials", heading)); story.extend(Paragraph(_paragraph(item), normal) for item in result.cv.credentials)
+        if result.cv.selected_projects:
+            story.append(Paragraph("Selected Projects", heading))
+            for project in result.cv.selected_projects:
+                story.append(Paragraph(f"<b>{_paragraph(project.name)}</b>", normal))
+                story.append(Paragraph(_paragraph(project.text), normal))
         return story
 
     def _pdf(self, story, target_pages: int) -> tuple[bytes, int, ApplicationLayoutStatus]:
