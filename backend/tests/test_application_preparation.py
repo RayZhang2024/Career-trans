@@ -99,9 +99,15 @@ def test_raw_text_creates_immutable_preparation_and_documents(db_session, monkey
     assert PdfReader(__import__("io").BytesIO(pdf)).pages and pages <= 2 and status == "fit"
     docx_text = "\n".join(item.text for item in Document(__import__("io").BytesIO(docx)).paragraphs)
     pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(__import__("io").BytesIO(pdf)).pages)
-    assert "Example Person" in pdf_text
+    expected_substantive_content = {
+        "Example Person", "Led delivery from 2 hours to 20 minutes", "Python",
+        "Engineer", "Example", "MSc", "Certification", "Canonical Project",
+        "Built Python delivery system",
+    }
+    normalized_docx = " ".join(docx_text.replace("•", " ").split())
+    normalized_pdf = " ".join(pdf_text.replace("•", " ").split())
+    assert all(item in normalized_docx and item in normalized_pdf for item in expected_substantive_content)
     assert "Selected Projects" in docx_text and "Selected Projects" in pdf_text
-    assert "Canonical Project" in docx_text and "Canonical Project" in pdf_text
     db_session.query(CandidateProfile).filter_by(user_id="u1").one().preferred_email = "new@example.test"; db_session.commit()
     assert service.get("u1", result.id).identity.email == "old@example.test"
 
@@ -135,6 +141,42 @@ def test_identity_is_checked_before_drafting(db_session, monkeypatch):
     assert drafting.calls == 0
 
 
+def test_identity_uses_authenticated_account_email_when_preferred_email_is_absent(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    db_session.query(CandidateProfile).filter_by(user_id="u1").one().preferred_email = None
+    db_session.commit()
+    result = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False))
+    assert result.identity.email == "account@example.test"
+
+
+def test_historical_preparation_uses_persisted_candidate_snapshot_after_current_data_changes(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    result = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20)))
+    original = service.get("u1", result.id)
+    original_result = original.result.model_dump(mode="json")
+    db_session.query(CandidateProfile).filter_by(user_id="u1").one().display_name = "Changed Person"
+    db_session.query(CandidateStructuredProfile).filter_by(user_id="u1").one().structured_json = CandidateCVData(skills=[Skill(name="Kubernetes")]).model_dump_json()
+    db_session.commit()
+    historical = service.get("u1", result.id)
+    rendered = ApplicationDocumentRenderer().render_cv_docx(historical.identity, historical.target, historical.result)
+    assert historical.result.model_dump(mode="json") == original_result
+    assert "Example Person" in "\n".join(item.text for item in Document(__import__("io").BytesIO(rendered)).paragraphs)
+
+
+def test_historical_preparation_keeps_canonical_job_snapshot_after_live_job_changes(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    job = _job(); db_session.add(job); db_session.commit()
+    result = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(discovered_job_id=job.id)))
+    original_target = result.target.model_dump(mode="json")
+    job.title = "Changed title"; job.description = "Changed description"; job.content_hash = "c" * 64
+    db_session.commit()
+    historical = service.get("u1", result.id)
+    cover = ApplicationDocumentRenderer().render_cover_letter_docx(historical.identity, historical.target, historical.result)
+    cover_text = "\n".join(item.text for item in Document(__import__("io").BytesIO(cover)).paragraphs)
+    assert historical.target.model_dump(mode="json") == original_target
+    assert "Dear Company," in cover_text
+
+
 def test_unsupported_questions_are_not_fabricated(db_session, monkeypatch):
     service, _ = _service(db_session, monkeypatch)
     result = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20), include_cover_letter=False, application_questions=["Unsupported question?"]))
@@ -151,6 +193,14 @@ def test_renderer_compacts_low_priority_bullets_before_overflow():
     compacted, pages, status = ApplicationDocumentRenderer().compact_cv_to_target(identity, target, result)
     assert len(compacted.cv.roles[0].bullets) < len(role.bullets)
     assert status.value in {"fit", "overflow"} and pages >= 1
+
+
+def test_cover_letter_pdf_is_a_valid_single_page_document(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    preparation = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20)))
+    payload, pages, status = ApplicationDocumentRenderer().render_cover_letter_pdf(preparation.identity, preparation.target, preparation.result)
+    assert PdfReader(__import__("io").BytesIO(payload)).pages
+    assert pages <= 1 and status.value == "fit"
 
 
 def _job() -> DiscoveredJob:
@@ -190,6 +240,25 @@ def test_url_without_plausible_vacancy_fails_safely(db_session, monkeypatch):
     from app.schemas.application_preparation import ApplicationInsufficientDetailError
     with pytest.raises(ApplicationInsufficientDetailError):
         service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_url="https://jobs.example/no-job"), include_cover_letter=False))
+
+
+def test_essential_requirement_evidence_precedes_structural_anchor_budget(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    data = _data()
+    data.employment.extend(
+        Employment(employer=f"Employer {index}", title="Engineer", start_date=str(2000 + index), description="Delivered systems")
+        for index in range(30)
+    )
+    context = _context().model_copy(update={"evidence": _context().evidence + [CareerEvidence(evidence_id="essential-evidence", title="Essential", text="Essential Python delivery evidence", skills=["Python"], provenance=[CareerEvidenceProvenance(document_sha256="b" * 64, segment_ids=["s2"])]) ]})
+    requirement = JobRequirement(text="Python delivery", category=RequirementCategory.TECHNICAL, importance=RequirementImportance.ESSENTIAL, source_text="Python delivery")
+    match = RequirementMatch(requirement_index=0, requirement=requirement, match_type=MatchType.DEMONSTRATED, score=1, evidence_ids=["essential-evidence"], reasoning="safe")
+    catalog = service._bounded_sources(context, data, [match])
+    assert (EvidenceSourceType.CAREER_EVIDENCE.value, "essential-evidence") in catalog
+    assert len(catalog) <= 18
+    target = service._resolve_target("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20)), context)
+    draft_context = service._draft_context(target, catalog, data)
+    assert draft_context["employment"]
+    assert all((EvidenceSourceType.EMPLOYMENT.value, item["required_anchor_ref"]["source_ref"]) in catalog for item in draft_context["employment"])
 
 
 def test_role_attribution_project_and_prose_skill_boundaries(db_session, monkeypatch):

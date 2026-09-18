@@ -36,6 +36,10 @@ from app.workflows.career_analysis_graph import CareerAnalysisGraph
 
 _CONTRACT_VERSION = "application-preparation-v1"
 _MAX_CONTEXT_SOURCES = 18
+# Match support has priority over structural attribution anchors.  The latter
+# are separately bounded and only exposed when they can be cited canonically.
+_MAX_SUPPORT_SOURCES = 12
+_MAX_STRUCTURAL_ANCHORS = _MAX_CONTEXT_SOURCES - _MAX_SUPPORT_SOURCES
 _NUMBER = re.compile(r"(?<![A-Za-z])(?:£|\$|€)?\d+(?:[.,]\d+)?(?:\s*(?:%|years?|months?|hours?|minutes?|days?|k|m|million|bn))?", re.IGNORECASE)
 _KNOWN_TECHNOLOGY_TOKENS = frozenset({"aws", "azure", "gcp", "kubernetes", "docker", "terraform", "python", "java", "typescript", "javascript", "sql", "langchain", "langgraph", "openai"})
 
@@ -153,47 +157,62 @@ class ApplicationPreparationService:
     def _bounded_sources(self, context: CandidateContext, data: CandidateCVData, matches: list[RequirementMatch]) -> dict[tuple[str, str], str]:
         catalog: dict[tuple[str, str], str] = {}
         by_id = {item.evidence_id: item for item in context.evidence}
-        # Employment anchors are factual structure, not model-owned evidence.
-        # They are always available to attribute a drafted bullet to its role.
-        for index, item in enumerate(data.employment):
-            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
-            catalog[(EvidenceSourceType.EMPLOYMENT.value, f"employment:{index}")] = f"{item.title} at {item.employer}. {item.description}"
+
+        def add_support(source_type: EvidenceSourceType, source_ref: str, value: str | None) -> None:
+            if len(catalog) < _MAX_SUPPORT_SOURCES and value:
+                catalog.setdefault((source_type.value, source_ref), value)
+
+        # Requirement evidence is selected first so structural CV anchors can
+        # never crowd out evidence for essential target requirements.
         for match in sorted(matches, key=lambda item: (item.requirement.importance.value != "essential", item.requirement_index)):
             refs = match.evidence_refs or [EvidenceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref=item) for item in match.evidence_ids]
             for ref in refs:
                 if ref.source_type == EvidenceSourceType.CAREER_EVIDENCE and ref.source_ref in by_id:
-                    catalog.setdefault((ref.source_type.value, ref.source_ref), by_id[ref.source_ref].text)
+                    add_support(ref.source_type, ref.source_ref, by_id[ref.source_ref].text)
                 elif ref.value:
-                    catalog.setdefault((ref.source_type.value, ref.source_ref), ref.value)
-                if len(catalog) >= _MAX_CONTEXT_SOURCES:
+                    add_support(ref.source_type, ref.source_ref, ref.value)
+                if len(catalog) >= _MAX_SUPPORT_SOURCES:
                     break
-            if len(catalog) >= _MAX_CONTEXT_SOURCES:
+            if len(catalog) >= _MAX_SUPPORT_SOURCES:
                 break
         # Confirmed deterministic facts are separately typed, never fake evidence.
         for index, item in enumerate(data.education):
-            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
-            catalog.setdefault((EvidenceSourceType.EDUCATION.value, f"education:{index}"), f"{item.qualification} at {item.institution}. {item.description}")
+            add_support(EvidenceSourceType.EDUCATION, f"education:{index}", f"{item.qualification} at {item.institution}. {item.description}")
         for index, item in enumerate(data.credentials):
-            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
-            catalog.setdefault((EvidenceSourceType.CREDENTIAL.value, f"credential:{index}"), " ".join(value for value in [item.name, item.issuer, item.issued_date, item.expiry_date, item.description] if value))
-        for index, item in enumerate(data.projects):
-            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
-            catalog.setdefault((EvidenceSourceType.PROJECT.value, f"project:{index}"), f"{item.name}. {item.description}")
+            add_support(EvidenceSourceType.CREDENTIAL, f"credential:{index}", " ".join(value for value in [item.name, item.issuer, item.issued_date, item.expiry_date, item.description] if value))
         profile_values = {
             "career_profile": context.profile_text,
             "career_strategy": context.career_strategy_text,
             "job_search_criteria": context.job_search_criteria_text,
         }
         for source_ref, value in profile_values.items():
-            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
-            if value.strip(): catalog.setdefault((EvidenceSourceType.CANDIDATE_PROFILE.value, source_ref), value)
+            add_support(EvidenceSourceType.CANDIDATE_PROFILE, source_ref, value.strip())
         for source_ref, values in {
             "work_authorisation": context.eligibility.work_authorisation,
             "locations": context.eligibility.locations,
             "security_clearances": context.eligibility.security_clearances,
         }.items():
-            if len(catalog) >= _MAX_CONTEXT_SOURCES: break
-            if values: catalog.setdefault((EvidenceSourceType.CANDIDATE_ELIGIBILITY.value, source_ref), ", ".join(values))
+            if values:
+                add_support(EvidenceSourceType.CANDIDATE_ELIGIBILITY, source_ref, ", ".join(values))
+
+        # Structural anchors have their own finite budget.  They are selected
+        # in canonical CV order, and only these exposed records may be used by
+        # the drafting model for attributed roles or selected projects.
+        remaining_anchors = _MAX_STRUCTURAL_ANCHORS
+        for index, item in enumerate(data.employment):
+            if remaining_anchors == 0:
+                break
+            key = (EvidenceSourceType.EMPLOYMENT.value, f"employment:{index}")
+            if key not in catalog:
+                catalog[key] = f"{item.title} at {item.employer}. {item.description}"
+                remaining_anchors -= 1
+        for index, item in enumerate(data.projects):
+            if remaining_anchors == 0:
+                break
+            key = (EvidenceSourceType.PROJECT.value, f"project:{index}")
+            if key not in catalog:
+                catalog[key] = f"{item.name}. {item.description}"
+                remaining_anchors -= 1
         return catalog
 
     def _draft_context(self, target: ApplicationTargetSnapshot, catalog: dict[tuple[str, str], str], data: CandidateCVData) -> dict[str, object]:
