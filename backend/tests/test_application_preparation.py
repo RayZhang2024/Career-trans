@@ -273,6 +273,12 @@ def test_role_attribution_project_and_prose_skill_boundaries(db_session, monkeyp
     bad_role.role_drafts.append(TailoredRoleDraft(employment_index=1, bullets=[TailoredBullet(text="Designed systems", source_refs=[ApplicationSourceRef(source_type=EvidenceSourceType.EMPLOYMENT, source_ref="employment:0")], priority=50)]))
     with pytest.raises(ValueError, match="canonical employment attribution"):
         service._materialize_cv(bad_role, data, catalog)
+    duplicate_role = good.model_copy(deep=True)
+    duplicate_role.role_drafts.append(
+        TailoredRoleDraft(employment_index=0, bullets=[])
+    )
+    with pytest.raises(ValueError, match="duplicate employment drafts"):
+        service._materialize_cv(duplicate_role, data, catalog)
     with pytest.raises(ValueError, match="unsupported skill"):
         service._validate_text_and_refs("Built AWS platform", [ApplicationSourceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref="e1")], catalog)
 

@@ -233,6 +233,8 @@ class ApplicationPreparationService:
         allowed_skills = {item.name.casefold(): item.name for item in data.skills}
         if any(skill.casefold() not in allowed_skills for skill in draft.key_skills):
             raise ValueError("Generated CV contains a skill outside confirmed candidate skills.")
+        if len({item.employment_index for item in draft.role_drafts}) != len(draft.role_drafts):
+            raise ValueError("Generated CV contains duplicate employment drafts.")
         drafts = {item.employment_index: item for item in draft.role_drafts}
         if any(index < 0 or index >= len(data.employment) for index in drafts):
             raise ValueError("Generated CV references an unknown employment record.")
