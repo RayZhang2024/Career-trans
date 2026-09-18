@@ -290,9 +290,33 @@ class ApplicationPreparationService:
         """Keep structured citation identifiers out of user-visible prose."""
         if _UUID_IDENTIFIER.search(text):
             raise ValueError("Generated application content contains an internal provenance identifier.")
-        for _, source_ref in catalog:
-            if source_ref in text:
+        for source_type, source_ref in catalog:
+            if ApplicationPreparationService._is_internal_identifier_ref(source_type, source_ref):
+                if source_ref in text:
+                    raise ValueError("Generated application content contains an internal provenance identifier.")
+            elif ApplicationPreparationService._has_citation_like_natural_ref(text, source_ref):
                 raise ValueError("Generated application content contains an internal provenance identifier.")
+
+    @staticmethod
+    def _is_internal_identifier_ref(source_type: str, source_ref: str) -> bool:
+        """Return whether a bounded source reference is identifier-shaped, not prose."""
+        del source_type  # The source-ref syntax, rather than its value, is authoritative here.
+        return bool(
+            _UUID_IDENTIFIER.fullmatch(source_ref)
+            or ":" in source_ref
+            or "_" in source_ref
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*-\d+", source_ref)
+        )
+
+    @staticmethod
+    def _has_citation_like_natural_ref(text: str, source_ref: str) -> bool:
+        """Reject only explicit citation forms for natural-word source references."""
+        escaped = re.escape(source_ref)
+        return bool(
+            re.search(rf"\[{escaped}\]", text, flags=re.IGNORECASE)
+            or re.search(rf"`{escaped}`", text, flags=re.IGNORECASE)
+            or re.search(rf"\(source_ref:\s*{escaped}\)", text, flags=re.IGNORECASE)
+        )
 
     @staticmethod
     def _validate_known_technology_mentions(text: str, cited_sources: list[str]) -> None:

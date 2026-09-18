@@ -342,6 +342,41 @@ def test_unknown_uuid_in_prose_is_rejected_as_identifier_hygiene(db_session, mon
         service._validate_text_and_refs("Delivered systems 123e4567-e89b-12d3-a456-426614174000.", [ApplicationSourceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref="evidence")], catalog)
 
 
+def test_natural_language_source_refs_are_allowed_in_ordinary_prose(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    catalog = {(EvidenceSourceType.CANDIDATE_ELIGIBILITY.value, "locations"): "London"}
+    ref = ApplicationSourceRef(source_type=EvidenceSourceType.CANDIDATE_ELIGIBILITY, source_ref="locations")
+    service._validate_text_and_refs("Worked across multiple customer locations.", [ref], catalog)
+    service._validate_text_and_refs("The role covers locations across London.", [ref], catalog)
+
+
+@pytest.mark.parametrize(
+    "source_type,source_ref",
+    [
+        (EvidenceSourceType.EMPLOYMENT, "employment:0"),
+        (EvidenceSourceType.PROJECT, "project:0"),
+        (EvidenceSourceType.EDUCATION, "education:0"),
+        (EvidenceSourceType.CREDENTIAL, "credential:0"),
+        (EvidenceSourceType.CANDIDATE_PROFILE, "career_strategy"),
+        (EvidenceSourceType.CANDIDATE_ELIGIBILITY, "work_authorisation"),
+    ],
+)
+def test_structural_source_refs_remain_rejected_in_prose(db_session, monkeypatch, source_type, source_ref):
+    service, _ = _service(db_session, monkeypatch)
+    catalog = {(source_type.value, source_ref): "Supported statement."}
+    with pytest.raises(ValueError, match="internal provenance identifier"):
+        service._validate_text_and_refs(f"Delivered {source_ref} work.", [ApplicationSourceRef(source_type=source_type, source_ref=source_ref)], catalog)
+
+
+@pytest.mark.parametrize("text", ["[locations]", "`locations`", "(source_ref: locations)"])
+def test_citation_like_natural_source_refs_are_rejected(db_session, monkeypatch, text):
+    service, _ = _service(db_session, monkeypatch)
+    catalog = {(EvidenceSourceType.CANDIDATE_ELIGIBILITY.value, "locations"): "London"}
+    ref = ApplicationSourceRef(source_type=EvidenceSourceType.CANDIDATE_ELIGIBILITY, source_ref="locations")
+    with pytest.raises(ValueError, match="internal provenance identifier"):
+        service._validate_text_and_refs(text, [ref], catalog)
+
+
 def test_literal_employment_dates_support_only_literal_date_claims(db_session, monkeypatch):
     service, _ = _service(db_session, monkeypatch)
     data = _data().model_copy(update={"employment": [Employment(employer="Example", title="Engineer", start_date="2023", end_date="Present", location="London", description="Delivered systems")]})
