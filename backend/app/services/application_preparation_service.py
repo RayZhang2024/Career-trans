@@ -79,7 +79,7 @@ class ApplicationPreparationService:
         result = ApplicationPreparationResult(cv=cv, cover_letter=letter, answers=answers, target_pages=request.target_pages)
         # PDF is the authoritative V1 pagination measurement.  Persist only
         # its safe layout result; document bytes are rendered again on download.
-        _, pages, layout_status = ApplicationDocumentRenderer().render_cv_pdf(identity, target, result)
+        result, pages, layout_status = ApplicationDocumentRenderer().compact_cv_to_target(identity, target, result)
         result = result.model_copy(update={"actual_pdf_pages": pages, "layout_status": layout_status})
         record = ApplicationPreparation(
             user_id=user_id,

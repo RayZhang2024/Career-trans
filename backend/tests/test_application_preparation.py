@@ -118,3 +118,15 @@ def test_unsupported_questions_are_not_fabricated(db_session, monkeypatch):
     service, _ = _service(db_session, monkeypatch)
     result = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20), include_cover_letter=False, application_questions=["Unsupported question?"]))
     assert result.result.answers[0].status == "unsupported" and result.result.answers[0].answer is None
+
+
+def test_renderer_compacts_low_priority_bullets_before_overflow():
+    from app.schemas.application_preparation import ApplicationIdentitySnapshot, ApplicationPreparationResult, ApplicationTargetSnapshot, TailoredCVContent, TailoredRole
+    from app.schemas.job import JobProfile
+    role = TailoredRole(employer="Example", title="Engineer", bullets=[TailoredBullet(text="Useful evidence " * 35, source_refs=[ApplicationSourceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref="e1")], priority=1) for _ in range(12)])
+    result = ApplicationPreparationResult(cv=TailoredCVContent(professional_summary="Supported summary", summary_source_refs=[ApplicationSourceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref="e1")], roles=[role]), target_pages=1)
+    identity = ApplicationIdentitySnapshot(display_name="Person", email="person@example.test")
+    target = ApplicationTargetSnapshot(source_kind="job_text", title="Role", job_profile=JobProfile(title="Role", requirements=[]), job_content_hash="a" * 64)
+    compacted, pages, status = ApplicationDocumentRenderer().compact_cv_to_target(identity, target, result)
+    assert len(compacted.cv.roles[0].bullets) < len(role.bullets)
+    assert status.value in {"fit", "overflow"} and pages >= 1

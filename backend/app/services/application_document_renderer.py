@@ -51,6 +51,34 @@ class ApplicationDocumentRenderer:
         story = self._cv_story(identity, result)
         return self._pdf(story, result.target_pages)
 
+    def compact_cv_to_target(
+        self, identity: ApplicationIdentitySnapshot, target: ApplicationTargetSnapshot, result: ApplicationPreparationResult,
+    ) -> tuple[ApplicationPreparationResult, int, ApplicationLayoutStatus]:
+        """Drop only optional lower-priority bullets before reporting overflow.
+
+        This is deliberately deterministic and has no semantic/model retry.  It
+        never removes chronology, education, credentials, or changes font size.
+        """
+        current = result
+        _, pages, status = self.render_cv_pdf(identity, target, current)
+        while status == ApplicationLayoutStatus.OVERFLOW:
+            candidates = [
+                (bullet.priority, -role_index, bullet_index)
+                for role_index, role in enumerate(current.cv.roles)
+                for bullet_index, bullet in enumerate(role.bullets)
+                if bullet.priority < 100
+            ]
+            if not candidates:
+                break
+            _, negative_role_index, bullet_index = min(candidates)
+            role_index = -negative_role_index
+            roles = list(current.cv.roles); role = roles[role_index]
+            bullets = list(role.bullets); bullets.pop(bullet_index)
+            roles[role_index] = role.model_copy(update={"bullets": bullets})
+            current = current.model_copy(update={"cv": current.cv.model_copy(update={"roles": roles})})
+            _, pages, status = self.render_cv_pdf(identity, target, current)
+        return current, pages, status
+
     def render_cover_letter_pdf(self, identity: ApplicationIdentitySnapshot, target: ApplicationTargetSnapshot, result: ApplicationPreparationResult) -> tuple[bytes, int, ApplicationLayoutStatus]:
         normal, title = self._styles()
         story = [Paragraph(identity.display_name, title), Paragraph(self._contact(identity), normal), Spacer(1, 10), Paragraph(f"Dear {target.company or 'Hiring Team'},", normal), Spacer(1, 8), Paragraph(_paragraph(result.cover_letter.body if result.cover_letter else ""), normal), Spacer(1, 8), Paragraph("Sincerely,<br/>" + identity.display_name, normal)]
