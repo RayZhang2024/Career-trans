@@ -159,6 +159,26 @@ class UserJobDiscoveryService:
         opportunities.sort(key=lambda item: (priority[item.opportunity.recommendation_assessment.recommendation], -item.opportunity.fit_assessment.fit_score, -item.opportunity.career_assessment.career_alignment_score, -item.opportunity.relevance.score, item.discovered_job_id))
         return UserOpportunityResponse(opportunities=opportunities)
 
+    def current_evaluation_for_job(
+        self, user_id: str, job: DiscoveredJob
+    ) -> RankedJobOpportunity | None:
+        """The shared #154 authority for a reusable complete evaluation."""
+        context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+        if context is None or not self._is_actionable(job):
+            return None
+        evaluation = self._reusable_evaluation(
+            user_id, job, self.candidate_evaluation_fingerprint(context),
+            self.evaluation_contract_fingerprint(),
+        )
+        if evaluation is None:
+            return None
+        result = RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)
+        return result if result.job_profile is not None and result.requirement_matches else None
+
+    def is_currently_actionable(self, job: DiscoveredJob) -> bool:
+        """Expose the shared public-job actionability rule without copying it."""
+        return self._is_actionable(job)
+
     @staticmethod
     def search_input_fingerprint(query) -> str:
         return _fingerprint(UserJobDiscoveryService._normalised_search_input(query))

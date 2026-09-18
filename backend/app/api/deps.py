@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.candidate_adviser import SemanticCandidateAdviser
+from app.agents.application_drafting import OpenAIApplicationDraftingAgent
 from app.agents.candidate_adviser_clarification import SemanticCandidateAdviserClarificationInterpreter
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_extraction import OpenAIJobExtractor
@@ -42,6 +43,7 @@ from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
+from app.services.application_preparation_service import ApplicationPreparationService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.ashby import AshbyJobSource
@@ -140,6 +142,7 @@ def validate_semantic_configuration(settings: Settings) -> None:
         "JOB_RELEVANCE_MODEL": settings.job_relevance_model,
         "JOB_ARCHETYPE_MODEL": settings.job_archetype_model,
         "AGENTIC_DISCOVERY_MODEL": settings.agentic_discovery_model,
+        "APPLICATION_DRAFTING_MODEL": settings.application_drafting_model,
     }
     for name, model in models.items():
         if not model.strip():
@@ -156,6 +159,7 @@ def validate_semantic_configuration(settings: Settings) -> None:
         )
         if provider == "openai":
             validate_openai_structured_output_model(settings.requirement_matching_model)
+            validate_openai_structured_output_model(settings.application_drafting_model)
     except LLMProviderConfigurationError as exc:
         raise SemanticProviderConfigurationError(str(exc)) from exc
 
@@ -487,6 +491,24 @@ def get_user_job_discovery_service(
 ) -> UserJobDiscoveryService:
     """Server-owned personal run/reuse policy over canonical shared job IDs."""
     return UserJobDiscoveryService(db, ranking_service=ranking_service)
+
+
+def get_application_preparation_service(
+    db: DbSession,
+    graph: Annotated[CareerAnalysisGraph, Depends(get_career_analysis_graph)],
+    discovery: Annotated[UserJobDiscoveryService, Depends(get_user_job_discovery_service)],
+) -> ApplicationPreparationService:
+    settings = get_settings()
+    agent = OpenAIApplicationDraftingAgent(
+        cv_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cv_drafting"),
+        cover_letter_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cover_letter"),
+        answer_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_answer_drafting"),
+        model=settings.application_drafting_model,
+    )
+    return ApplicationPreparationService(
+        db, graph=graph, drafting_agent=agent, user_discovery=discovery,
+        page_fetcher=PublicHttpPageFetcher(),
+    )
 
 
 def get_discovery_schedule_service(db: DbSession) -> DiscoveryScheduleService:

@@ -7,6 +7,7 @@ from langsmith import run_helpers
 from app.agents.requirement_matching import (
     OpenAIRequirementMatcher,
     RequirementMatchingError,
+    _RequirementMatchingContract,
 )
 from app.providers.llm import (
     SemanticProviderConfigurationError,
@@ -115,9 +116,15 @@ def test_matcher_uses_native_strict_schema_and_accepts_valid_result() -> None:
     assert response_format["schema"]["additionalProperties"] is False
     assert response_format["schema"]["properties"]["matches"]["minItems"] == 2
     assert response_format["schema"]["properties"]["matches"]["maxItems"] == 2
-    semantic_match = response_format["schema"]["$defs"]["SemanticRequirementMatch"]
-    assert semantic_match["properties"]["requirement_index"]["enum"] == [0, 1]
-    assert semantic_match["properties"]["evidence_ids"]["items"]["enum"] == ["EVIDENCE-1"]
+    branches = response_format["schema"]["properties"]["matches"]["items"]["anyOf"]
+    assert len(branches) == 2
+    assert [branch["properties"]["requirement_index"]["enum"] for branch in branches] == [[0], [1]]
+    assert all(
+        branch["properties"]["evidence_ids"]["items"]["enum"] == ["EVIDENCE-1"]
+        for branch in branches
+    )
+    assert all(branch["additionalProperties"] is False for branch in branches)
+    assert all(set(branch["required"]) == set(branch["properties"]) for branch in branches)
 
 
 def test_matcher_reattaches_exact_canonical_requirement_not_present_in_model_output() -> None:
@@ -205,6 +212,66 @@ def test_sdk_schema_preserves_nested_nullable_fields_without_defaults() -> None:
     assert "reasoning" not in semantic_match["properties"]
     assert semantic_match["properties"]["score"]["minimum"] == 0.0
     assert semantic_match["properties"]["score"]["maximum"] == 1.0
+
+
+def _schema_for_scopes(*scopes: tuple[str, ...]) -> dict[str, object]:
+    requirements = [
+        JobRequirement(
+            text=f"Synthetic requirement {index}",
+            category=RequirementCategory.TECHNICAL,
+        )
+        for index in range(len(scopes))
+    ]
+    evidence_ids = tuple(dict.fromkeys(item for scope in scopes for item in scope))
+    candidate = CandidateMatchingProfile(
+        evidence=[
+            CandidateMatchingEvidence(evidence_id=item, title=item, text=item)
+            for item in evidence_ids
+        ]
+    )
+    plan = RequirementEvidencePlan(
+        provider_evidence=tuple(
+            CareerEvidence(evidence_id=item, title=item, text=item)
+            for item in evidence_ids
+        ),
+        scopes=tuple(
+            RequirementEvidenceScope(requirement_index=index, allowed_evidence_ids=scope)
+            for index, scope in enumerate(scopes)
+        ),
+    )
+    contract = _RequirementMatchingContract.from_inputs(
+        JobProfile(title="Synthetic", requirements=requirements), candidate, plan
+    )
+    return OpenAIRequirementMatcher._openai_strict_schema_for_contract(contract)
+
+
+def test_provider_schema_enforces_exact_per_requirement_evidence_scopes() -> None:
+    schema = _schema_for_scopes(("PYTHON-1",), ("SECURITY-1",))
+    branches = schema["properties"]["matches"]["items"]["anyOf"]  # type: ignore[index]
+    assert len(branches) == 2
+    assert branches[0]["properties"]["requirement_index"]["enum"] == [0]
+    assert branches[0]["properties"]["evidence_ids"]["items"]["enum"] == ["PYTHON-1"]
+    assert branches[1]["properties"]["requirement_index"]["enum"] == [1]
+    assert branches[1]["properties"]["evidence_ids"]["items"]["enum"] == ["SECURITY-1"]
+    assert "SECURITY-1" not in branches[0]["properties"]["evidence_ids"]["items"]["enum"]
+
+
+def test_provider_schema_handles_empty_shared_and_multi_evidence_scopes() -> None:
+    schema = _schema_for_scopes(("A", "B", "C"), (), ("SHARED",), ("SHARED",))
+    branches = schema["properties"]["matches"]["items"]["anyOf"]  # type: ignore[index]
+    assert branches[0]["properties"]["evidence_ids"]["items"]["enum"] == ["A", "B", "C"]
+    assert branches[1]["properties"]["requirement_index"]["enum"] == [1]
+    assert branches[1]["properties"]["evidence_ids"]["maxItems"] == 0
+    assert "enum" not in branches[1]["properties"]["evidence_ids"]["items"]
+    assert branches[2]["properties"]["evidence_ids"]["items"]["enum"] == ["SHARED"]
+    assert branches[3]["properties"]["evidence_ids"]["items"]["enum"] == ["SHARED"]
+
+
+def test_provider_schema_constructs_a_branch_per_requirement_for_large_contract() -> None:
+    schema = _schema_for_scopes(*(tuple() for _ in range(24)))
+    branches = schema["properties"]["matches"]["items"]["anyOf"]  # type: ignore[index]
+    assert len(branches) == 24
+    assert [branch["properties"]["requirement_index"]["enum"] for branch in branches] == [[index] for index in range(24)]
 
 
 def test_malformed_output_retries_once_without_leaking_candidate_context() -> None:
@@ -520,10 +587,9 @@ def test_zero_evidence_context_allows_empty_evidence_ids_only() -> None:
     result = matcher.match(JOB_PROFILE, candidate)
 
     assert len(result.matches) == len(REQUIREMENTS)
-    semantic_match = responses.calls[0]["text"]["format"]["schema"]["$defs"]["SemanticRequirementMatch"]  # type: ignore[index]
-    evidence_schema = semantic_match["properties"]["evidence_ids"]
-    assert evidence_schema["maxItems"] == 0
-    assert "enum" not in evidence_schema["items"]
+    branches = responses.calls[0]["text"]["format"]["schema"]["properties"]["matches"]["items"]["anyOf"]  # type: ignore[index]
+    assert all(branch["properties"]["evidence_ids"]["maxItems"] == 0 for branch in branches)
+    assert all("enum" not in branch["properties"]["evidence_ids"]["items"] for branch in branches)
 
 
 def test_provider_failure_is_not_retried_or_exposed() -> None:
