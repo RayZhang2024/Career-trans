@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -106,3 +107,15 @@ def test_empty_source_catalog_fails_before_provider_invocation() -> None:
     with pytest.raises(SemanticOutputError, match="factual source"):
         agent.draft_cv(_context(sources=[]))
     assert client.responses.calls == []
+
+
+def test_all_application_drafting_prompts_keep_refs_out_of_user_visible_prose() -> None:
+    prompts = Path(__file__).resolve().parents[2] / "prompts"
+    for name in (
+        "application_cv_drafting.md",
+        "application_cover_letter.md",
+        "application_answer_drafting.md",
+    ):
+        text = (prompts / name).read_text(encoding="utf-8")
+        assert "structured source_refs" in text
+        assert "UUIDs" in text

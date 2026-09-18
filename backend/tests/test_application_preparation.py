@@ -314,6 +314,55 @@ def test_typed_provenance_refs_are_accepted_only_from_the_bounded_catalog(db_ses
         service._validate_text_and_refs("Unsupported statement", [ApplicationSourceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref="inactive")], catalog)
 
 
+@pytest.mark.parametrize(
+    ("surface", "text", "source_type", "source_ref"),
+    [
+        ("cover letter", "I delivered Python systems [db217c96-c103-4eb1-9061-be43457422e9].", EvidenceSourceType.CAREER_EVIDENCE, "db217c96-c103-4eb1-9061-be43457422e9"),
+        ("summary", "db217c96-c103-4eb1-9061-be43457422e9 delivered Python systems.", EvidenceSourceType.CAREER_EVIDENCE, "db217c96-c103-4eb1-9061-be43457422e9"),
+        ("role bullet", "employment:0 delivered Python systems.", EvidenceSourceType.EMPLOYMENT, "employment:0"),
+        ("selected project", "project:0 delivered Python systems.", EvidenceSourceType.PROJECT, "project:0"),
+        ("drafted answer", "db217c96-c103-4eb1-9061-be43457422e9 delivered Python systems.", EvidenceSourceType.CAREER_EVIDENCE, "db217c96-c103-4eb1-9061-be43457422e9"),
+    ],
+)
+def test_internal_provenance_identifiers_are_rejected_before_numeric_validation(db_session, monkeypatch, surface, text, source_type, source_ref):
+    service, _ = _service(db_session, monkeypatch)
+    catalog = {
+        (EvidenceSourceType.CAREER_EVIDENCE.value, "db217c96-c103-4eb1-9061-be43457422e9"): "Delivered Python systems.",
+        (EvidenceSourceType.EMPLOYMENT.value, "employment:0"): "Engineer at Example.",
+        (EvidenceSourceType.PROJECT.value, "project:0"): "Project delivery.",
+    }
+    with pytest.raises(ValueError, match="internal provenance identifier"):
+        service._validate_text_and_refs(text, [ApplicationSourceRef(source_type=source_type, source_ref=source_ref)], catalog)
+
+
+def test_unknown_uuid_in_prose_is_rejected_as_identifier_hygiene(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    catalog = {(EvidenceSourceType.CAREER_EVIDENCE.value, "evidence"): "Delivered Python systems."}
+    with pytest.raises(ValueError, match="internal provenance identifier"):
+        service._validate_text_and_refs("Delivered systems 123e4567-e89b-12d3-a456-426614174000.", [ApplicationSourceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref="evidence")], catalog)
+
+
+def test_literal_employment_dates_support_only_literal_date_claims(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    data = _data().model_copy(update={"employment": [Employment(employer="Example", title="Engineer", start_date="2023", end_date="Present", location="London", description="Delivered systems")]})
+    catalog = service._bounded_sources(_context(), data, _Graph().invoke(job_text="x", candidate_context=_context())["requirement_matches"])
+    employment_key = (EvidenceSourceType.EMPLOYMENT.value, "employment:0")
+    assert "2023" in catalog[employment_key]
+    ref = ApplicationSourceRef(source_type=EvidenceSourceType.EMPLOYMENT, source_ref="employment:0")
+    service._validate_text_and_refs("Engineer at Example since 2023.", [ref], catalog)
+    with pytest.raises(ValueError, match="unsupported numerical"):
+        service._validate_text_and_refs("Engineer at Example for 3 years.", [ref], catalog)
+
+
+def test_supported_literal_numeric_claim_passes_but_derived_percentage_fails(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    catalog = {(EvidenceSourceType.CAREER_EVIDENCE.value, "e1"): "Reduced document processing time from 90 minutes to 20 minutes."}
+    ref = ApplicationSourceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref="e1")
+    service._validate_text_and_refs("Reduced document processing time from 90 minutes to 20 minutes.", [ref], catalog)
+    with pytest.raises(ValueError, match="unsupported numerical"):
+        service._validate_text_and_refs("Reduced processing time by 78%.", [ref], catalog)
+
+
 def test_actual_contract_and_input_fingerprints_change_only_for_contract_or_options(db_session, monkeypatch):
     settings = Settings(default_llm_provider="openai", application_drafting_model="model-a")
     service, _ = _service(db_session, monkeypatch, settings=settings)

@@ -41,6 +41,10 @@ _MAX_CONTEXT_SOURCES = 18
 _MAX_SUPPORT_SOURCES = 12
 _MAX_STRUCTURAL_ANCHORS = _MAX_CONTEXT_SOURCES - _MAX_SUPPORT_SOURCES
 _NUMBER = re.compile(r"(?<![A-Za-z])(?:£|\$|€)?\d+(?:[.,]\d+)?(?:\s*(?:%|years?|months?|hours?|minutes?|days?|k|m|million|bn))?", re.IGNORECASE)
+_UUID_IDENTIFIER = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
 _KNOWN_TECHNOLOGY_TOKENS = frozenset({"aws", "azure", "gcp", "kubernetes", "docker", "terraform", "python", "java", "typescript", "javascript", "sql", "langchain", "langgraph", "openai"})
 
 
@@ -204,7 +208,7 @@ class ApplicationPreparationService:
                 break
             key = (EvidenceSourceType.EMPLOYMENT.value, f"employment:{index}")
             if key not in catalog:
-                catalog[key] = f"{item.title} at {item.employer}. {item.description}"
+                catalog[key] = _employment_anchor(item.title, item.employer, item.start_date, item.end_date, item.location, item.description)
                 remaining_anchors -= 1
         for index, item in enumerate(data.projects):
             if remaining_anchors == 0:
@@ -271,11 +275,24 @@ class ApplicationPreparationService:
             if value is None:
                 raise ValueError("Generated application content referenced an unknown or inactive source.")
             sources.append(_normal(value))
+        self._validate_no_internal_source_identifiers(text, catalog)
         for token in _NUMBER.findall(text):
             normalized = _normal(token)
             if normalized and not any(normalized in source for source in sources):
                 raise ValueError("Generated application content contains an unsupported numerical claim.")
         self._validate_known_technology_mentions(text, sources)
+
+    @staticmethod
+    def _validate_no_internal_source_identifiers(
+        text: str,
+        catalog: dict[tuple[str, str], str],
+    ) -> None:
+        """Keep structured citation identifiers out of user-visible prose."""
+        if _UUID_IDENTIFIER.search(text):
+            raise ValueError("Generated application content contains an internal provenance identifier.")
+        for _, source_ref in catalog:
+            if source_ref in text:
+                raise ValueError("Generated application content contains an internal provenance identifier.")
 
     @staticmethod
     def _validate_known_technology_mentions(text: str, cited_sources: list[str]) -> None:
@@ -345,3 +362,23 @@ def _normal(value: str) -> str:
 
 def _technology_tokens(value: str) -> set[str]:
     return {item.casefold() for item in re.findall(r"[A-Za-z][A-Za-z0-9+#.-]*", value)}
+
+
+def _employment_anchor(
+    title: str,
+    employer: str,
+    start_date: str | None,
+    end_date: str | None,
+    location: str | None,
+    description: str,
+) -> str:
+    values = [f"{title} at {employer}."]
+    if start_date:
+        values.append(f"Start: {start_date}.")
+    if end_date:
+        values.append(f"End: {end_date}.")
+    if location:
+        values.append(f"Location: {location}.")
+    if description:
+        values.append(description)
+    return " ".join(values)
