@@ -6,6 +6,7 @@ from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
 from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob, UserJobEvaluation
 from app.models.discovery_schedule import DiscoverySchedule, ScheduledDiscoveryExecution
+from app.models.application_preparation import ApplicationPreparation
 from app.models.user import User
 
-__all__ = ["CandidateProfile", "CandidateCVIngestionDraft", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "DiscoverySchedule", "ScheduledDiscoveryExecution", "User"]
+__all__ = ["CandidateProfile", "CandidateCVIngestionDraft", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "DiscoverySchedule", "ScheduledDiscoveryExecution", "ApplicationPreparation", "User"]

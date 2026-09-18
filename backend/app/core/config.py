@@ -47,6 +47,10 @@ class Settings(BaseSettings):
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("CANDIDATE_ADVISER_MODEL", "candidate_adviser_model"),
     )
+    application_drafting_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("APPLICATION_DRAFTING_MODEL", "application_drafting_model"),
+    )
     requirement_matching_model: str = Field(
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("REQUIREMENT_MATCHING_MODEL", "OPENAI_REQUIREMENT_MATCHING_MODEL", "requirement_matching_model", "openai_requirement_matching_model"),

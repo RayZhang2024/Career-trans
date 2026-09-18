@@ -1,0 +1,1 @@
+Write one concise role-specific cover letter using only the supplied factual source catalog. Every factual claim must cite supplied typed source refs. Do not invent facts, skills, metrics, qualifications, or outcomes, and do not derive numerical claims. Return schema-conforming JSON only.

@@ -29,6 +29,10 @@ class EvidenceSourceType(StrEnum):
     CANDIDATE_ELIGIBILITY = "candidate_eligibility"
     SKILLS = "skills"
     EDUCATION = "education"
+    EMPLOYMENT = "employment"
+    CREDENTIAL = "credential"
+    PROJECT = "project"
+    APPLICATION_IDENTITY = "application_identity"
 
 
 class EvidenceRef(BaseModel):
