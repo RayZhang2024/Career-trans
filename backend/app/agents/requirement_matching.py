@@ -453,26 +453,38 @@ class OpenAIRequirementMatcher:
         """
         schema = deepcopy(cls._openai_strict_schema())
         matches = schema["properties"]["matches"]
-        semantic_match = schema["$defs"]["SemanticRequirementMatch"]
-        properties = semantic_match["properties"]
 
         matches["minItems"] = contract.expected_match_count
         matches["maxItems"] = contract.expected_match_count
-        properties["requirement_index"] = {
-            "type": "integer",
-            "enum": list(contract.allowed_requirement_indexes),
-        }
-
-        evidence_ids = properties["evidence_ids"]
-        if contract.allowed_evidence_ids:
-            evidence_ids["items"] = {
-                "type": "string",
-                "enum": list(contract.allowed_evidence_ids),
+        semantic_match = schema["$defs"].pop("SemanticRequirementMatch")
+        branches: list[dict[str, Any]] = []
+        for requirement_index, allowed_evidence_ids in enumerate(
+            contract.allowed_evidence_ids_by_requirement
+        ):
+            branch = deepcopy(semantic_match)
+            properties = branch["properties"]
+            properties["requirement_index"] = {
+                "type": "integer",
+                "enum": [requirement_index],
             }
-        else:
-            # An empty enum is not a useful provider contract. A zero upper
-            # bound permits the valid empty list while rejecting invented IDs.
-            evidence_ids["maxItems"] = 0
+            evidence_ids = properties["evidence_ids"]
+            if allowed_evidence_ids:
+                evidence_ids["items"] = {
+                    "type": "string",
+                    "enum": list(allowed_evidence_ids),
+                }
+            else:
+                # An empty enum is not a useful provider contract. A zero
+                # upper bound permits exactly the valid empty list without
+                # borrowing IDs from a different requirement's scope.
+                evidence_ids["maxItems"] = 0
+            branches.append(branch)
+
+        # A nested union lets strict Structured Outputs enforce the same
+        # requirement-index/evidence-ID authority that Python validates below.
+        # The root stays an object and every branch remains a complete strict
+        # SemanticRequirementMatch schema.
+        matches["items"] = {"anyOf": branches}
 
         return schema
 
