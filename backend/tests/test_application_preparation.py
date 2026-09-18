@@ -50,11 +50,21 @@ class _Drafting:
 
 
 class _Graph:
-    def __init__(self): self.calls = 0
+    def __init__(self): self.calls = 0; self.job_listings = []
     def invoke(self, *, job_text, candidate_context, job_listing=None):
         self.calls += 1
+        self.job_listings.append(job_listing)
         requirement = JobRequirement(text="Python delivery", category=RequirementCategory.TECHNICAL, importance=RequirementImportance.ESSENTIAL, source_text="Python delivery")
         return {"job_profile": JobProfile(title="Engineer", requirements=[requirement]), "requirement_matches": [RequirementMatch(requirement_index=0, requirement=requirement, match_type=MatchType.DEMONSTRATED, score=1, evidence_ids=["e1"], reasoning="safe")]}
+
+
+class _RawTextGraph(_Graph):
+    def invoke(self, *, job_text, candidate_context, job_listing=None):
+        self.calls += 1
+        self.job_listings.append(job_listing)
+        requirement = JobRequirement(text="Python delivery", category=RequirementCategory.TECHNICAL, importance=RequirementImportance.ESSENTIAL, source_text="Python delivery")
+        profile = JobProfile(title="AI Engineer", company="Brunswick Group", location="London", requirements=[requirement])
+        return {"job_profile": profile, "requirement_matches": [RequirementMatch(requirement_index=0, requirement=requirement, match_type=MatchType.DEMONSTRATED, score=1, evidence_ids=["e1"], reasoning="safe")]}
 
 
 class _Discovery:
@@ -110,6 +120,22 @@ def test_raw_text_creates_immutable_preparation_and_documents(db_session, monkey
     assert "Selected Projects" in docx_text and "Selected Projects" in pdf_text
     db_session.query(CandidateProfile).filter_by(user_id="u1").one().preferred_email = "new@example.test"; db_session.commit()
     assert service.get("u1", result.id).identity.email == "old@example.test"
+
+
+def test_raw_job_text_uses_semantic_metadata_without_synthetic_listing_authority(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch)
+    graph = _RawTextGraph()
+    service._graph = graph
+
+    result = service.prepare(
+        "u1",
+        ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="AI Engineer at Brunswick Group. " * 20), include_cover_letter=False),
+    )
+
+    assert graph.job_listings == [None]
+    assert result.target.source_kind == "job_text"
+    assert result.target.title == "AI Engineer"
+    assert result.target.company == "Brunswick Group"
 
 
 def test_unknown_skill_and_derived_number_fail_closed(db_session, monkeypatch):
@@ -215,6 +241,8 @@ def test_canonical_target_uses_shared_authority_and_graph_when_not_reusable(db_s
     result = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(discovered_job_id=job.id), include_cover_letter=False))
     assert result.target.canonical_discovered_job_id == job.id
     assert discovery.actionability_calls == 1 and discovery.reuse_calls == 1 and graph.calls == 1
+    assert graph.job_listings[0] is not None
+    assert graph.job_listings[0].title == "Canonical Job"
 
 
 def test_reusable_canonical_analysis_bypasses_graph(db_session, monkeypatch):
@@ -233,6 +261,8 @@ def test_url_requires_jobposting_metadata_and_stays_local(db_session, monkeypatc
     before = db_session.query(DiscoveredJob).count()
     result = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_url="https://jobs.example/url"), include_cover_letter=False))
     assert result.target.source_kind == "job_url" and db_session.query(DiscoveredJob).count() == before
+    assert service._graph.job_listings[0] is not None
+    assert service._graph.job_listings[0].title == "URL Engineer"
 
 
 def test_url_without_plausible_vacancy_fails_safely(db_session, monkeypatch):

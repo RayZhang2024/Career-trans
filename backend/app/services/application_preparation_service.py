@@ -151,7 +151,10 @@ class ApplicationPreparationService:
     def _analysis_snapshot(self, kind: ApplicationTargetKind, listing: JobListing, context: CandidateContext, *, canonical_id: str | None = None, content_hash: str) -> ApplicationTargetSnapshot:
         if not listing.description:
             raise ApplicationInsufficientDetailError("Job detail is unavailable; provide job text.")
-        state = self._graph.invoke(job_text=listing.description, candidate_context=context, job_listing=listing)
+        # A raw-text target has no independent listing authority.  Its local
+        # wrapper is only a fallback if extraction does not identify a field.
+        graph_listing = None if kind == ApplicationTargetKind.JOB_TEXT else listing
+        state = self._graph.invoke(job_text=listing.description, candidate_context=context, job_listing=graph_listing)
         profile = state.get("job_profile")
         matches = state.get("requirement_matches")
         if profile is None or not profile.requirements or not matches:
