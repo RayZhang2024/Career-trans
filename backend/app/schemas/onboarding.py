@@ -3,13 +3,14 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.schemas.candidate_adviser import CandidateAdviserAssessmentStatus
+from app.schemas.cv_ingestion import CVIngestionState
 
 
 class OnboardingCVDraftRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    state: str
+    state: CVIngestionState
     created_at: datetime
     updated_at: datetime
 

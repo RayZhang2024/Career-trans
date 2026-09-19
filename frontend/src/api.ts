@@ -32,8 +32,9 @@ export class SessionApi {
       const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers, signal: controller.signal });
       if (authenticated && response.status === 401 && epoch === this.epoch) this.onAuthenticated401();
       if (!response.ok) throw new ApiError(response.status, "Request could not be completed.");
+      const value = await response.json() as T;
       if (epoch !== this.epoch) throw new DOMException("Superseded auth session", "AbortError");
-      return response.json() as Promise<T>;
+      return value;
     } finally { this.controllers.delete(controller); }
   }
 }

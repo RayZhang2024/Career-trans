@@ -21,4 +21,16 @@ describe("SessionApi", () => {
     await expect(api.request("/api/v1/onboarding/status")).rejects.toMatchObject({ status: 401 });
     expect(expired).toHaveBeenCalledOnce();
   });
+
+  it("discards data when a prior session changes during delayed body parsing", async () => {
+    let resolveBody!: (value: unknown) => void;
+    const body = new Promise<unknown>((resolve) => { resolveBody = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: () => body })));
+    const api = new SessionApi("token-a", vi.fn());
+    const request = api.request<{ owner: string }>("/api/v1/profile");
+    await Promise.resolve();
+    api.replaceToken("token-b");
+    resolveBody({ owner: "a" });
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  });
 });
