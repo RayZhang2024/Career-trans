@@ -226,6 +226,23 @@ class ActiveCandidateEvidenceResolver:
                 active.append(_runtime(record))
         return active
 
+    def read_active(self, user_id: str, data: CandidateCVData) -> list[CareerEvidence]:
+        """Return the persisted current set without reconciling or mutating rows."""
+        drafts = self._builder.build(data, self._confirmed_clarification_drafts(user_id))
+        records = list(self._session.scalars(
+            select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)
+        ))
+        by_fingerprint = {record.fingerprint: record for record in records}
+        active: list[CareerEvidence] = []
+        for item in drafts:
+            canonical = career_evidence_fingerprint(item)
+            record = by_fingerprint.get(canonical) or by_fingerprint.get(
+                legacy_career_evidence_fingerprint(item)
+            )
+            if record is not None:
+                active.append(_runtime(record))
+        return active
+
     def _confirmed_clarification_drafts(self, user_id: str) -> list[CanonicalCareerEvidenceDraft]:
         records = self._session.scalars(
             select(CandidateAdviserClarificationRecord).where(
