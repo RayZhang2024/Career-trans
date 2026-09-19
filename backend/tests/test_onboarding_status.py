@@ -9,10 +9,18 @@ from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, Candida
 from app.models.candidate_profile import CandidateProfile
 from app.models.user import User
 from app.core.config import Settings
-from app.schemas.candidate_adviser import CandidateAdviserIntake
+from app.schemas.candidate_adviser import (
+    CandidateAdviserAssessmentContent,
+    CandidateAdviserClarificationAnswer,
+    CandidateAdviserIntake,
+    ClarificationAnswerKind,
+    ClarificationInterpretation,
+    ClarificationProposedEvidence,
+)
 from app.schemas.cv_ingestion import CandidateCVData
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.services.candidate_adviser_service import CandidateAdviserService
+from app.services.cv_ingestion_service import CVIngestionService
 from tests.test_profile import auth_header, register_and_login
 
 
@@ -53,6 +61,49 @@ def _assessment_state(db_session, user_id: str) -> CandidateAdviserService:
     ))
     db_session.commit()
     return service
+
+
+class _Adviser:
+    def __init__(self, *, question: str | None = None) -> None:
+        self.question = question
+        self.calls = 0
+
+    def assess(self, *, semantic_input):
+        self.calls += 1
+        references = [{"source_type": "intake", "reference": "career_direction"}]
+        if semantic_input.career_evidence:
+            references.append({"source_type": "career_evidence", "reference": semantic_input.career_evidence[0].evidence_id})
+        insight = {"text": "Synthetic grounded assessment.", "source_references": references}
+        return CandidateAdviserAssessmentContent.model_validate({
+            "professional_positioning": insight,
+            "transferable_strengths": [], "development_gaps": [], "role_hypotheses": [],
+            "transition_assessment": insight,
+            "open_questions": ([{"text": self.question, "source_references": references}] if self.question else []),
+            "career_strategy_summary": insight, "job_search_strategy_summary": insight,
+        })
+
+
+class _Interpreter:
+    def interpret(self, *, question_text: str, answer_text: str) -> ClarificationInterpretation:
+        return ClarificationInterpretation(
+            answer_kind=ClarificationAnswerKind.CAREER_FACT,
+            confirmed_context_summary="Synthetic confirmed factual context.",
+            proposed_evidence=[ClarificationProposedEvidence(
+                fact_domain="career", evidence_type="project", title="Confirmed delivery",
+                text="Confirmed a synthetic delivery fact.", skills=["Python"],
+            )],
+        )
+
+
+def _confirm_cv(db_session, user_id: str, text: str) -> None:
+    data = CandidateCVData.model_validate({
+        "employment": [{"employer": "Example", "title": "Engineer", "description": text}],
+        "evidence": [{"evidence_type": "project", "title": "Delivery", "text": text, "skills": ["Python"]}],
+    })
+    ingestion = CVIngestionService(db_session)
+    draft = ingestion.upload(user_id, [("cv.json", "application/json", json.dumps(data.model_dump(mode="json")).encode())])
+    ingestion.interpret(user_id, draft.id)
+    ingestion.confirm(user_id, draft.id)
 
 
 def test_onboarding_status_is_user_scoped_and_pure(client, db_session):
@@ -148,12 +199,26 @@ def test_onboarding_status_counts_only_persisted_confirmed_clarifications_and_ne
             question_source_references_json="[]", priority_index=index, status=state,
         ))
     db_session.commit()
-    before = db_session.scalar(select(CandidateAdviserClarificationRecord.id).where(CandidateAdviserClarificationRecord.user_id == user.id))
+    before = [
+        (record.id, record.clarification_id, record.status)
+        for record in db_session.scalars(
+            select(CandidateAdviserClarificationRecord)
+            .where(CandidateAdviserClarificationRecord.user_id == user.id)
+            .order_by(CandidateAdviserClarificationRecord.id)
+        )
+    ]
     response = client.get("/api/v1/onboarding/status", headers=auth_header(token))
     assert response.status_code == 200
     assert response.json()["adviser"]["confirmed_clarification_count"] == 1
-    assert db_session.scalars(select(CandidateAdviserClarificationRecord).where(CandidateAdviserClarificationRecord.user_id == user.id)).all()
-    assert before is not None
+    after = [
+        (record.id, record.clarification_id, record.status)
+        for record in db_session.scalars(
+            select(CandidateAdviserClarificationRecord)
+            .where(CandidateAdviserClarificationRecord.user_id == user.id)
+            .order_by(CandidateAdviserClarificationRecord.id)
+        )
+    ]
+    assert after == before
 
 
 def test_onboarding_readiness_is_structured_profile_existence_not_draft_or_profile_completeness(client, db_session):
@@ -182,3 +247,52 @@ def test_onboarding_latest_draft_breaks_equal_timestamp_ties_by_id(client, db_se
     response = client.get("/api/v1/onboarding/status", headers=auth_header(token))
     assert response.status_code == 200
     assert response.json()["latest_cv_draft"]["id"] == high.id
+
+
+def test_confirmed_cv_change_has_exact_normal_read_only_and_onboarding_stale_parity(client, db_session):
+    token = register_and_login(client, "onboarding-cv-parity@example.com")
+    user = db_session.query(User).filter_by(email="onboarding-cv-parity@example.com").one()
+    _confirm_cv(db_session, user.id, "Delivered the authoritative CV-A system.")
+    adviser = _Adviser()
+    service = CandidateAdviserService(db_session, agent=adviser)
+    service.save_intake(user.id, CandidateAdviserIntake(career_direction="Applied AI delivery"))
+    assessment_a = service.assess(user.id)
+    service.confirm_assessment(user.id)
+    assert assessment_a.input_fingerprint == service.input_fingerprint(user.id) == service.input_fingerprint(user.id, read_only=True)
+    assert client.get("/api/v1/onboarding/status", headers=auth_header(token)).json()["adviser"]["assessment_status"] == "confirmed"
+
+    _confirm_cv(db_session, user.id, "Delivered the authoritative CV-B system with a changed factual scope.")
+    normal_b = service.input_fingerprint(user.id)
+    read_only_b = service.input_fingerprint(user.id, read_only=True)
+    assert normal_b != assessment_a.input_fingerprint
+    assert normal_b == read_only_b
+    assert service.get_assessment(user.id).status == "stale"
+    assert client.get("/api/v1/onboarding/status", headers=auth_header(token)).json()["adviser"]["assessment_status"] == "stale"
+    record = db_session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user.id))
+    assert record is not None and record.status == "confirmed"
+
+    assessment_b = service.assess(user.id)
+    confirmed_b = service.confirm_assessment(user.id)
+    assert assessment_b.input_fingerprint == confirmed_b.input_fingerprint == normal_b == service.input_fingerprint(user.id, read_only=True)
+    assert service.get_assessment(user.id).status == "confirmed"
+    assert client.get("/api/v1/onboarding/status", headers=auth_header(token)).json()["adviser"]["assessment_status"] == "confirmed"
+
+
+def test_confirmed_clarification_has_exact_normal_read_only_and_onboarding_stale_parity(client, db_session):
+    token = register_and_login(client, "onboarding-clarification-parity@example.com")
+    user = db_session.query(User).filter_by(email="onboarding-clarification-parity@example.com").one()
+    _confirm_cv(db_session, user.id, "Delivered the initial synthetic system.")
+    service = CandidateAdviserService(db_session, agent=_Adviser(question="What delivery fact should be confirmed?"), clarification_interpreter=_Interpreter())
+    service.save_intake(user.id, CandidateAdviserIntake(career_direction="Applied AI delivery"))
+    assessment = service.assess(user.id)
+    service.confirm_assessment(user.id)
+    clarification = service.list_clarifications(user.id)[0]
+    service.answer_clarification(user.id, clarification.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic confirmation."))
+    service.confirm_clarification(user.id, clarification.clarification_id)
+
+    normal = service.input_fingerprint(user.id)
+    read_only = service.input_fingerprint(user.id, read_only=True)
+    assert normal != assessment.input_fingerprint
+    assert normal == read_only
+    assert service.get_assessment(user.id).status == "stale"
+    assert client.get("/api/v1/onboarding/status", headers=auth_header(token)).json()["adviser"]["assessment_status"] == "stale"

@@ -94,6 +94,19 @@ describe("AuthProvider routed lifecycle", () => {
     expect(sessionStorage.getItem(TOKEN)).toBe("stored-token");
   });
 
+  it("recovers a rejected bootstrap fetch without discarding the original token", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    let attempts = 0;
+    vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/users/me": () => {
+      attempts += 1;
+      return attempts === 1 ? Promise.reject(new TypeError("network unavailable")) : response(user);
+    } }));
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await screen.findByText("Welcome person@example.test");
+    expect(sessionStorage.getItem(TOKEN)).toBe("stored-token");
+  });
+
   it("clears the session when retry proves it is invalid", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     let attempts = 0;
@@ -181,12 +194,24 @@ describe("AuthProvider routed lifecycle", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("onboarding status is unavailable");
   });
 
-  it("keeps the onboarding stepper usable when profile loading fails", async () => {
+  it("does not infer profile absence from a server failure", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/profile": () => response(undefined, 503) }));
     renderApp();
     expect(await screen.findByRole("alert")).toHaveTextContent("profile is unavailable");
     expect(screen.getByText("○ Profile")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
+  });
+
+  it("does not infer profile absence from a rejected fetch", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/profile": () => Promise.reject(new TypeError("network unavailable")) }));
+    renderApp();
+    expect(await screen.findByRole("alert")).toHaveTextContent("profile is unavailable");
+    expect(screen.getByText("○ Profile")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
   });
 
   it("clears an authenticated session after a later protected 401", async () => {
