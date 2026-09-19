@@ -165,8 +165,14 @@ class CandidateAdviserService:
         self._session.refresh(record)
         return self._read_clarification(record)
 
-    def input_fingerprint(self, user_id: str, *, semantic_input: CandidateAdviserSemanticInput | None = None) -> str:
-        payload = (semantic_input or self._semantic_input(user_id)).model_dump(mode="json")
+    def input_fingerprint(
+        self,
+        user_id: str,
+        *,
+        semantic_input: CandidateAdviserSemanticInput | None = None,
+        read_only: bool = False,
+    ) -> str:
+        payload = (semantic_input or self._semantic_input(user_id, read_only=read_only)).model_dump(mode="json")
         # Preserve pre-#152 fingerprints when the user has no confirmation
         # state at all; bounded projection does not replace authoritative state.
         if not payload.get("clarifications"):
@@ -182,10 +188,21 @@ class CandidateAdviserService:
             raise ValueError("Candidate adviser intake has not been provided.")
         return CandidateAdviserIntake.model_validate(found.model_dump(exclude={"updated_at"}))
 
-    def _semantic_input(self, user_id: str, *, intake: CandidateAdviserIntake | None = None) -> CandidateAdviserSemanticInput:
+    def _semantic_input(
+        self,
+        user_id: str,
+        *,
+        intake: CandidateAdviserIntake | None = None,
+        read_only: bool = False,
+    ) -> CandidateAdviserSemanticInput:
         structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
         data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
-        active_evidence = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
+        resolver = ActiveCandidateEvidenceResolver(self._session)
+        active_evidence = (
+            resolver.read_active(user_id, data)
+            if read_only
+            else resolver.resolve(user_id, data)
+        )
         evidence = [
             {
                 "evidence_id": item.evidence_id,
