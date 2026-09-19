@@ -191,15 +191,15 @@ describe("AuthProvider routed lifecycle", () => {
     }));
     renderApp();
     await screen.findByRole("heading", { name: "Edit profile" });
-    expect(screen.getByRole("alert")).toHaveTextContent("onboarding status is unavailable");
+    expect(screen.getByRole("alert")).toHaveTextContent("Onboarding status is unavailable.");
   });
 
   it("does not infer profile absence from a server failure", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/profile": () => response(undefined, 503) }));
     renderApp();
-    expect(await screen.findByRole("alert")).toHaveTextContent("profile is unavailable");
-    expect(screen.getByText("○ Profile")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Profile is unavailable.");
+    expect(screen.getByText("Not saved yet")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
   });
@@ -208,8 +208,8 @@ describe("AuthProvider routed lifecycle", () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/profile": () => Promise.reject(new TypeError("network unavailable")) }));
     renderApp();
-    expect(await screen.findByRole("alert")).toHaveTextContent("profile is unavailable");
-    expect(screen.getByText("○ Profile")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Profile is unavailable.");
+    expect(screen.getByText("Not saved yet")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
   });
@@ -238,5 +238,138 @@ describe("AuthProvider routed lifecycle", () => {
     resolveProfile(response({ id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "late" }));
     await screen.findByRole("heading", { name: "Sign in" });
     await waitFor(() => expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument());
+  });
+
+  it("renders labelled auth controls and router navigation links", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderApp("/login");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("name", "email");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("name", "password");
+    expect(screen.getByRole("link", { name: "Create account" })).toHaveAttribute("href", "/register");
+  });
+
+  it("renders labelled register controls and a sign-in router link", () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderApp("/register");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("name", "email");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("name", "password");
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+  });
+
+  it("keeps pending onboarding neutral instead of implying a negative backend profile state", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    let resolveStatus!: (value: Response) => void;
+    vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/onboarding/status": () => new Promise<Response>((done) => { resolveStatus = done; }) }));
+    renderApp();
+    await screen.findByRole("heading", { name: "Create profile" });
+    expect(screen.getByText("Loading onboarding status…")).toBeInTheDocument();
+    expect(screen.queryByText("Not saved yet")).not.toBeInTheDocument();
+    resolveStatus(response(status));
+    await screen.findByText("Not saved yet");
+  });
+
+  it("keeps profile and onboarding failures independently visible", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    vi.stubGlobal("fetch", authenticatedFetch({
+      "/api/v1/onboarding/status": () => response(undefined, 503),
+      "/api/v1/profile": () => Promise.reject(new TypeError("network unavailable")),
+    }));
+    renderApp();
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.map((alert) => alert.textContent)).toEqual(expect.arrayContaining(["Onboarding status is unavailable.", "Profile is unavailable."]));
+    expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the newest onboarding refresh authoritative when an older request resolves late", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    let resolveInitialStatus!: (value: Response) => void;
+    let statusCalls = 0;
+    let profileGets = 0;
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/v1/users/me") return Promise.resolve(response(user));
+      if (path === "/api/v1/onboarding/status") {
+        statusCalls += 1;
+        if (statusCalls === 1) return new Promise<Response>((done) => { resolveInitialStatus = done; });
+        return Promise.resolve(response({ ...status, profile_exists: true }));
+      }
+      if (path === "/api/v1/profile") {
+        if (init?.method === "POST") return Promise.resolve(response({ id: "p", user_id: "user-1", created_at: "", updated_at: "" }));
+        profileGets += 1;
+        return Promise.resolve(profileGets === 1 ? response({}, 404) : response({ id: "p", user_id: "user-1", created_at: "", updated_at: "" }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+    renderApp();
+    await screen.findByRole("heading", { name: "Create profile" });
+    expect(screen.getByText("Loading onboarding status…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await screen.findByText("Saved");
+    resolveInitialStatus(response(status));
+    await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
+    expect(screen.queryByText("Not saved yet")).not.toBeInTheDocument();
+  });
+
+  it("does not render stale negative onboarding state when a post-save status refresh fails", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    let statusCalls = 0;
+    let profileGets = 0;
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/v1/users/me") return Promise.resolve(response(user));
+      if (path === "/api/v1/onboarding/status") {
+        statusCalls += 1;
+        return Promise.resolve(statusCalls === 1 ? response(status) : response(undefined, 503));
+      }
+      if (path === "/api/v1/profile") {
+        if (init?.method === "POST") return Promise.resolve(response({ id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Created" }));
+        profileGets += 1;
+        return Promise.resolve(profileGets === 1 ? response({}, 404) : response({ id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Created" }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+    renderApp();
+    await screen.findByRole("heading", { name: "Create profile" });
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Onboarding status is unavailable.");
+    await screen.findByRole("heading", { name: "Edit profile" });
+    expect(screen.queryByText("Not saved yet")).not.toBeInTheDocument();
+  });
+
+  it("does not render stale Create/Edit controls when a post-save profile refresh fails", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    let statusCalls = 0;
+    let profileGets = 0;
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/v1/users/me") return Promise.resolve(response(user));
+      if (path === "/api/v1/onboarding/status") {
+        statusCalls += 1;
+        return Promise.resolve(response(statusCalls === 1 ? status : { ...status, profile_exists: true }));
+      }
+      if (path === "/api/v1/profile") {
+        if (init?.method === "POST") return Promise.resolve(response({ id: "p", user_id: "user-1", created_at: "", updated_at: "" }));
+        profileGets += 1;
+        return Promise.resolve(profileGets === 1 ? response({}, 404) : response(undefined, 503));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+    renderApp();
+    await screen.findByRole("heading", { name: "Create profile" });
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Profile is unavailable.");
+    expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+  });
+
+  it("shows backend-driven future stages as non-interactive text", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    vi.stubGlobal("fetch", authenticatedFetch());
+    renderApp();
+    await screen.findByText("Coming in the next UI slice");
+    expect(screen.queryByRole("link", { name: /CV|Career Adviser/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Coming in the next UI slice").closest("li")).toHaveAttribute("aria-disabled", "true");
   });
 });
