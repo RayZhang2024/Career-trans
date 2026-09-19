@@ -281,6 +281,36 @@ describe("AuthProvider routed lifecycle", () => {
     expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
   });
 
+  it("keeps the newest onboarding refresh authoritative when an older request resolves late", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    let resolveInitialStatus!: (value: Response) => void;
+    let statusCalls = 0;
+    let profileGets = 0;
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/v1/users/me") return Promise.resolve(response(user));
+      if (path === "/api/v1/onboarding/status") {
+        statusCalls += 1;
+        if (statusCalls === 1) return new Promise<Response>((done) => { resolveInitialStatus = done; });
+        return Promise.resolve(response({ ...status, profile_exists: true }));
+      }
+      if (path === "/api/v1/profile") {
+        if (init?.method === "POST") return Promise.resolve(response({ id: "p", user_id: "user-1", created_at: "", updated_at: "" }));
+        profileGets += 1;
+        return Promise.resolve(profileGets === 1 ? response({}, 404) : response({ id: "p", user_id: "user-1", created_at: "", updated_at: "" }));
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+    renderApp();
+    await screen.findByRole("heading", { name: "Create profile" });
+    expect(screen.getByText("Loading onboarding status…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await screen.findByText("Saved");
+    resolveInitialStatus(response(status));
+    await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
+    expect(screen.queryByText("Not saved yet")).not.toBeInTheDocument();
+  });
+
   it("does not render stale negative onboarding state when a post-save status refresh fails", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     let statusCalls = 0;
