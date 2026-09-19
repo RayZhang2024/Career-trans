@@ -66,19 +66,19 @@ export function ProfileForm({ profile, onSaved }: { profile: Profile | null; onS
   return <section className="card profile-card"><form className="form-stack" onSubmit={submit}><div><h2>{profile ? "Edit profile" : "Create profile"}</h2><p className="muted">All profile fields are optional and can be updated later.</p></div><div className="profile-fields">{fields.map((field) => <div className={longFields.has(field) ? "field field-wide" : "field"} key={field}><label htmlFor={`profile-${field}`}>{fieldLabels[field]}</label>{longFields.has(field) ? <textarea id={`profile-${field}`} name={field} value={values[field]} onChange={(event) => setValues({ ...values, [field]: event.target.value })} /> : <input id={`profile-${field}`} name={field} value={values[field]} onChange={(event) => setValues({ ...values, [field]: event.target.value })} />}</div>)}</div><button>Save profile</button>{error && <p role="alert">{error}</p>}</form></section>;
 }
 
-function OnboardingCard({ status, error }: { status: OnboardingStatus | null; error: string }) {
+function OnboardingCard({ status, error }: { status: OnboardingStatus | undefined; error: string }) {
   if (!status) return <section className="card onboarding-card"><h2>Getting started</h2>{error ? <p role="alert">{error}</p> : <p className="muted">Loading onboarding status…</p>}</section>;
   return <section className="card onboarding-card"><h2>Getting started</h2>{error && <p role="alert">{error}</p>}<ol className="onboarding-list"><li><strong>Account</strong><span>Ready</span></li><li><strong>Profile</strong><span>{status.profile_exists ? "Saved" : "Not saved yet"}</span></li><li aria-disabled="true"><strong>CV</strong><span>Coming in the next UI slice</span></li><li aria-disabled="true"><strong>Career Adviser</strong><span>Available after confirmed CV</span></li></ol>{status.candidate_context_ready && status.latest_cv_draft?.state === "review_ready" && <p className="notice">Active candidate profile ready; newer CV update awaiting review.</p>}</section>;
 }
 
 function Home() {
   const { api, logout, user } = useAuth();
-  const [status, setStatus] = useState<OnboardingStatus | null>(null);
+  const [status, setStatus] = useState<OnboardingStatus | undefined>(undefined);
   const [profile, setProfile] = useState<Profile | null | undefined>(undefined);
   const [statusError, setStatusError] = useState("");
   const [profileError, setProfileError] = useState("");
-  const loadStatus = async () => { try { setStatus(await api.request<OnboardingStatus>("/api/v1/onboarding/status")); setStatusError(""); } catch { setStatusError("Onboarding status is unavailable."); } };
-  const loadProfile = async () => { try { setProfile(await api.request<Profile>("/api/v1/profile")); setProfileError(""); } catch (e) { if (e instanceof ApiError && e.status === 404) { setProfile(null); setProfileError(""); } else setProfileError("Profile is unavailable."); } };
+  const loadStatus = async () => { setStatus(undefined); setStatusError(""); try { setStatus(await api.request<OnboardingStatus>("/api/v1/onboarding/status")); } catch { setStatus(undefined); setStatusError("Onboarding status is unavailable."); } };
+  const loadProfile = async () => { setProfile(undefined); setProfileError(""); try { setProfile(await api.request<Profile>("/api/v1/profile")); } catch (e) { if (e instanceof ApiError && e.status === 404) { setProfile(null); } else { setProfile(undefined); setProfileError("Profile is unavailable."); } } };
   const load = () => { void loadStatus(); void loadProfile(); };
   useEffect(() => { load(); }, []);
   return <AppShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Welcome {user?.email}</h1></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area">{profileError && <p role="alert">{profileError}</p>}{profile === undefined ? <p className="muted">Loading profile…</p> : <ProfileForm profile={profile} onSaved={load} />}</section></main></AppShell>;
