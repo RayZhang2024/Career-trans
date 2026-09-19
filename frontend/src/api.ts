@@ -14,7 +14,7 @@ export type Profile = {
 };
 export type OnboardingStatus = {
   profile_exists: boolean; candidate_context_ready: boolean;
-  latest_cv_draft: { id: string; state: string; created_at: string; updated_at: string } | null;
+  latest_cv_draft: { id: string; state: "uploaded" | "review_ready" | "confirmed"; created_at: string; updated_at: string } | null;
   adviser: { intake_exists: boolean; assessment_status: "review_ready" | "confirmed" | "stale" | null; confirmed_clarification_count: number };
 };
 
