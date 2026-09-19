@@ -1,65 +1,19 @@
-# Career Agent
+# Career-trans
 
-Career Agent is a multi-user AI-powered web application for job discovery, job-fit assessment, career strategy, application preparation, and application tracking.
+Career-trans is a multi-user AI-assisted job-search and career-application platform.
 
-The application is intended to support different users with different backgrounds, career goals, skills, locations, and job-search strategies.
-
-It must not be optimised around one fixed candidate profile.
-
----
-
-## Product Vision
-
-Career Agent should help a user move from:
+It is designed to help different users turn their own career history, evidence, goals and constraints into:
 
 ```text
-Career history + goals
-        +
-     Job market
-        |
-        v
+Candidate context
+      +
+Job market / job descriptions
+      |
+      v
 Relevant opportunities
-        |
-        v
-Evidence-based fit assessment
-        |
-        v
-Career-value assessment
-        |
-        v
-Application preparation
-        |
-        v
-Application tracking and learning
-```
-
-The system should eventually answer two separate questions for each role:
-
-1. **Can this user realistically obtain and perform the role?**
-2. **Should this user pursue the role given their longer-term career direction?**
-
----
-
-## Intended User Journey
-
-```text
-Register / login
       |
       v
-Create profile
-      |
-      +--> upload CV
-      +--> enter preferences
-      +--> review extracted experience
-      |
-      v
-Submit job URL or description
-      |
-      v
-Extract job requirements
-      |
-      v
-Match against user's evidence
+Evidence-based requirement matching
       |
       v
 Fit assessment
@@ -71,62 +25,139 @@ Career-alignment assessment
 APPLY / CONSIDER / SKIP
       |
       v
-CV tailoring / cover letter
+Application preparation
       |
       v
-Application tracking
+Application tracking and learning
 ```
 
-Later versions will add recurring job discovery and shortlist generation.
+The repository is intentionally user-agnostic. Demo candidate data exists only for development/evaluation and must never become global product logic.
 
 ---
 
-# Architecture
+## Current product status
 
-Target architecture:
+The backend is substantially ahead of the browser UI.
+
+### Available in the browser today
+
+UI V1A is implemented:
+
+- register;
+- sign in / sign out;
+- authenticated session restore;
+- create and edit the user's basic profile;
+- backend-owned onboarding status;
+- responsive desktop/mobile presentation;
+- explicit placeholder stages for CV and Career Adviser.
+
+The current browser flow is:
 
 ```text
-React / TypeScript frontend
+Register
+  -> Sign in
+  -> Profile
+  -> CV                 (UI planned next)
+  -> Career Adviser     (UI planned after CV)
+```
+
+CV and Career Adviser are not yet interactive in the frontend, even though their backend capabilities already exist.
+
+### Implemented in the backend
+
+Current backend capabilities include:
+
+- email/password registration and JWT authentication;
+- authenticated, user-scoped profile CRUD;
+- onboarding-status read model;
+- CV upload and text extraction;
+- semantic CV interpretation into structured candidate data;
+- explicit CV review/edit/confirmation lifecycle;
+- persisted candidate context and CareerEvidence;
+- Candidate Adviser intake, assessment, confirmation and adaptive clarification lifecycle;
+- structured job-description extraction into `JobProfile`;
+- evidence-limited requirement matching;
+- authenticated-user matching through persisted confirmed candidate context;
+- deterministic fit scoring and gap classification;
+- career-alignment assessment;
+- deterministic `APPLY` / `CONSIDER` / `SKIP` recommendation rules;
+- structured ATS discovery;
+- bounded agentic/public-web discovery;
+- external discovery import and verification;
+- job enrichment, deduplication and lifecycle handling;
+- job ranking and current-user ranking;
+- persisted user discovery runs and current opportunities;
+- recurring discovery schedules and execution history;
+- application preparation with grounded CV/cover-letter drafting;
+- downloadable CV and cover-letter DOCX/PDF outputs;
+- multi-user ownership and isolation tests;
+- deterministic fake-provider tests with no live LLM/network dependency.
+
+### Not yet exposed in the browser
+
+The following are implemented partly or fully in the backend but do not yet have normal end-user UI:
+
+- CV upload/review/confirmation — tracked by #161;
+- Candidate Adviser and clarification loop — tracked by #162;
+- job discovery/ranking dashboard;
+- application-preparation UI;
+- recurring-discovery controls.
+
+### Still planned
+
+- application tracking/status history;
+- production database migration;
+- production identity/session hardening;
+- Docker/local full-stack packaging — tracked by #163;
+- deployment, monitoring and production storage.
+
+---
+
+## Architecture
+
+Current local-development architecture:
+
+```text
+React / TypeScript / Vite
           |
           v
       FastAPI API
           |
-          +--> authentication / authorization
+          +--> auth / authorization
+          +--> candidate profile + CV ingestion
+          +--> Candidate Adviser
+          +--> job analysis / discovery / ranking
+          +--> requirement matching / scoring
+          +--> application preparation
           |
-          +--> candidate-profile services
+          v
+        SQLite
+
+Semantic/provider boundaries
           |
-          +--> job-analysis services
-          |
-          +--> matching / scoring
-          |
-          +--> agent workflows
-          |
-          +--> PostgreSQL
-          |
-          +--> file/object storage
-          |
-          +--> LLM and web providers
+          +--> OpenAI or configured LLM provider
+          +--> public ATS / discovery providers where enabled
 ```
 
-The application should support local development first and production deployment later.
+Current development persistence uses SQLite.
 
-See `docs/ARCHITECTURE.md` for the detailed design.
+Production direction remains:
+
+```text
+React frontend
+      |
+FastAPI service
+      |
+PostgreSQL + private document storage
+      |
+provider integrations / monitoring
+```
+
+See `docs/ARCHITECTURE.md` for the broader target architecture. That document contains both current and future design material; this README is the shorter current-state guide.
 
 ---
 
-# Multi-User Design
-
-Career Agent is designed for external users.
-
-Each registered user owns their own candidate profile, career evidence, skills, projects, uploaded CVs, preferences, saved jobs, assessments, application materials, and application history.
-
-Production data must be isolated by authenticated user identity.
-
-Shared prompts and source code must not contain candidate-specific information.
-
----
-
-# Repository Structure
+## Repository structure
 
 ```text
 career-trans/
@@ -140,19 +171,20 @@ career-trans/
 |   |   |-- api/
 |   |   |-- core/
 |   |   |-- models/
+|   |   |-- providers/
 |   |   |-- schemas/
 |   |   |-- services/
 |   |   `-- workflows/
-|   `-- tests/
+|   |-- tests/
+|   `-- pyproject.toml
 |
 |-- frontend/
-|   |-- public/
-|   `-- src/
+|   |-- src/
+|   |-- package.json
+|   `-- package-lock.json
 |
 |-- docs/
 |   `-- ARCHITECTURE.md
-|
-|-- prompts/
 |
 |-- resources/
 |   |-- README.md
@@ -164,222 +196,327 @@ career-trans/
 
 ---
 
-# Resources
+## Core concepts
 
-`resources/` contains development resources, templates, and demo fixtures. It does **not** contain production registered-user data.
+### Candidate Profile
 
-Demo profiles exist only for development, testing, evaluation, and examples. They must never be treated as globally applicable candidate information.
+User-owned high-level career information such as headline, current role, location, summary, career goal and job-search criteria.
 
----
+### Structured Candidate Context
 
-# Core Concepts
+The typed candidate representation consumed by downstream matching and career workflows.
 
-## Candidate Context
+For authenticated-user workflows it can be assembled from persisted confirmed candidate data. Demo Markdown loading remains available for development/evaluation.
 
-A typed, user-agnostic representation of candidate information consumed by matching workflows. During development it can be loaded from demo Markdown resources; in production it will be assembled from authenticated user data.
+### CareerEvidence
 
-## Career Evidence
+Atomic, provenance-aware evidence supporting claims about candidate capability.
 
-Atomic evidence supporting claims about candidate capability. Evidence items have stable IDs so requirement matches can cite the exact supporting records.
+Requirement matching may cite only permitted evidence records; the matcher cannot invent evidence IDs.
 
-## Job Profile
+### CV Ingestion Draft
 
-Structured representation of a job including title, company, location, responsibilities, essential/desirable requirements, technical skills, seniority, and eligibility constraints.
+A user-scoped CV workflow with explicit states:
 
-## Requirement Match
+```text
+uploaded
+   -> interpret
+review_ready
+   -> review/edit
+   -> confirm
+confirmed
+```
 
-An evidence-first assessment of one job requirement. Match types are:
+AI-extracted content does not silently become authoritative.
 
-- `demonstrated`
-- `transferable`
-- `inferred`
-- `missing`
+### Candidate Adviser
 
-Each match includes a 0–1 evidence-strength score, cited evidence IDs, and concise reasoning.
+A separate career-strategy enrichment workflow with:
 
-## Fit Assessment
+- intake;
+- assessment;
+- explicit confirmation;
+- adaptive clarifications;
+- reassessment when confirmed context changes.
 
-Measures how well the user's current evidence matches the role. V1 deterministically
-aggregates requirement scores and reports strengths, classified gaps, and confirmed
-hard blockers.
+It enriches career/search context without silently rewriting CV provenance.
 
-## Career Assessment
+### JobProfile
 
-Measures whether the role moves the user in their preferred strategic direction.
-Career Alignment V1 scores six explainable dimensions independently of current-role
-fit, aggregates them with centrally configured Python weights, and reports explicit
-confidence based on the supplied strategy, preferences, and job information.
+Structured job representation containing role information, responsibilities, requirements, skills, seniority and eligibility constraints.
 
-## Recommendation Assessment
+### Requirement Match
 
-Combines fit and career alignment through explicit deterministic rules while
-preserving both scores. Recommendation V1 returns `apply`, `consider`, or `skip`, a
-stable rule ID, concise reasoning, existing strengths/trade-offs, and hard blockers.
+Evidence-first assessment of one requirement.
 
----
+Match types include:
 
-# Implemented Backend Capabilities
+- `demonstrated`;
+- `transferable`;
+- `inferred`;
+- `missing`.
 
-Current backend functionality includes:
+### Fit Assessment
 
-- FastAPI application;
-- email/password registration and login;
-- JWT-protected current-user endpoint;
-- user-scoped candidate profile CRUD;
-- structured job-description extraction through `POST /api/v1/jobs/analyse`;
-- typed `JobProfile` and `JobRequirement` schemas;
-- generic Markdown demo-candidate loading into `CandidateContext`;
-- evidence-first requirement matching through `POST /api/v1/jobs/match`;
-- typed `RequirementMatch` output;
-- validation that matchers cannot alter requirements or invent evidence IDs;
-- deterministic fit scoring and gap classification;
-- career-alignment assessment across six strategic dimensions, kept separate from fit;
-- deterministic career-alignment aggregation with explicit input-confidence handling;
-- development demo workflow returning fit, career, and recommendation assessments;
-- deterministic APPLY / CONSIDER / SKIP recommendation with hard-blocker precedence;
-- backend tests using fake AI components so automated tests do not call OpenAI.
+Deterministic aggregation of requirement-level evidence into strengths, gaps, fit score and hard blockers.
 
-The matching endpoint currently accepts candidate context directly in the request. Production user-data loading and persistence will be connected later.
+### Career Alignment
 
----
+A separate assessment of whether a role supports the user's own longer-term direction.
 
-# Planned Development Stages
+It remains distinct from current-role fit.
 
-## Web Foundation
+### Recommendation
 
-Backend registration/login/profile support exists. React authentication/profile UI is deferred while the core intelligence workflow is developed.
+Deterministic recommendation logic returning:
 
-## Profile Intelligence
+- `apply`;
+- `consider`;
+- `skip`.
 
-Planned:
+Fit and career-alignment scores remain visible rather than being collapsed into an unexplained single model judgement.
 
-- CV upload;
-- CV parsing;
-- structured candidate profile;
-- evidence extraction;
-- user review/editing.
+### Discovered Job
 
-## Job Analysis
+A normalized vacancy collected from supported ATS/public-web discovery paths with source/lifecycle provenance.
 
-Implemented for raw job-description text. Job URL fetching is still planned.
+Discovery omission alone is not treated as proof that a job is inactive.
 
-## Matching and Scoring
+### Application Preparation
 
-Requirement/evidence matching is implemented at V1 level.
+A user-scoped immutable preparation snapshot combining the target role and confirmed candidate context to generate grounded application material.
 
-The backend demo workflow also implements deterministic aggregate fit scoring,
-explainable strengths, gap classification, and hard-blocker detection.
+Current backend output can include:
 
-## Career Strategy
+- tailored CV content;
+- cover letter;
+- application-question answers;
+- DOCX;
+- PDF.
 
-Career Alignment V1 is implemented in the backend demo workflow. It consumes the
-candidate's dynamically loaded strategy and preferences and returns dimension-level
-reasoning, strategic strengths/trade-offs, a deterministic 0–100 score, and explicit
-confidence.
-
-Recommendation V1 is also implemented in the demo workflow. It uses centrally
-configured thresholds, supports a documented strategic-stretch APPLY case, downgrades
-score-based APPLY decisions when career confidence is low, and otherwise preserves
-mixed or uncertain cases for human review with CONSIDER.
-
-## Application Preparation
-
-Planned:
-
-- evidence selection;
-- CV tailoring;
-- cover-letter drafting.
-
-## Application Tracking
-
-Planned:
-
-- saved jobs;
-- application status;
-- events;
-- outcomes;
-- notes.
-
-## Job Discovery
-
-Implemented foundations:
-
-- bounded agentic public-web discovery from a supplied candidate context and search criteria;
-- structured search strategies, provider-neutral web-search and page-fetch boundaries;
-- deterministic URL filtering, page caps, vacancy normalization, deduplication, and non-authoritative lifecycle persistence;
-- existing downstream screening and ranking APIs for normalized listings.
-
-Agentic discovery never submits applications and does not treat web-search omission as proof that a posting is inactive.
+It does not submit applications.
 
 ---
 
-# Technology Direction
+## Important API areas
 
-## Frontend
+The exact API is visible through Swagger at `/docs`. Major route groups currently include:
 
-- React
-- TypeScript
+```text
+/api/v1/auth
+/api/v1/users
+/api/v1/profile
+/api/v1/onboarding
+/api/v1/cv-ingestion
+/api/v1/candidate-adviser
+/api/v1/jobs
+/api/v1/applications
+/api/v1/demo
+```
 
-## Backend
+Examples include:
 
-- Python
-- FastAPI
-- Pydantic
-- SQLAlchemy
+```text
+POST /api/v1/auth/register
+POST /api/v1/auth/login
+GET  /api/v1/users/me
 
-## Database
+GET   /api/v1/profile
+POST  /api/v1/profile
+PATCH /api/v1/profile
+GET   /api/v1/onboarding/status
 
-Development currently uses SQLite. Production target is PostgreSQL.
+POST /api/v1/cv-ingestion/upload
+POST /api/v1/cv-ingestion/{draft_id}/interpret
+PATCH /api/v1/cv-ingestion/{draft_id}
+POST /api/v1/cv-ingestion/{draft_id}/confirm
 
-## AI
+PUT  /api/v1/candidate-adviser/intake
+POST /api/v1/candidate-adviser/assessment
+POST /api/v1/candidate-adviser/assessment/confirm
+GET  /api/v1/candidate-adviser/clarifications
 
-AI/provider logic is kept behind interfaces. Current semantic uses are job extraction,
-requirement matching, and career alignment. Final recommendation selection is
-deterministic Python and does not call another model.
+POST /api/v1/jobs/analyse
+POST /api/v1/jobs/match
+POST /api/v1/jobs/match-me
+POST /api/v1/jobs/discover
+POST /api/v1/jobs/discover-agentic-me
+POST /api/v1/jobs/rank
+POST /api/v1/jobs/rank-me
+POST /api/v1/jobs/discovery-runs
+GET  /api/v1/jobs/opportunities
+POST /api/v1/jobs/discovery-schedules
 
-## Workflow
+POST /api/v1/applications/prepare
+GET  /api/v1/applications
+```
 
-LangGraph will be introduced when the workflow has enough stateful stages to justify orchestration complexity.
+Swagger is the authoritative route reference.
 
 ---
 
-# Security
+## Local development
 
-Security is a core product requirement because the application stores private career information.
+### Prerequisites
 
-Important principles:
+Backend:
 
-- user-owned production data is scoped to authenticated users;
-- passwords are never stored in plaintext;
-- secrets are never committed;
-- authorization is enforced server-side;
-- uploaded documents will be private;
-- demo data is never mixed with production user data.
+- Python 3.11+
 
----
+Frontend:
 
-# Development
+- Node.js 24.15+
+- npm 11+
 
-Repository-wide coding instructions are defined in `AGENTS.md`.
+### 1. Backend
 
-From `backend/`, with the virtual environment active:
+Open a PowerShell terminal:
 
 ```powershell
+cd D:\Career-trans\backend
+.\.venv\Scripts\Activate.ps1
+
 python -m pip install -e ".[dev]"
-python -m pytest
 uvicorn app.main:app --reload
 ```
 
-Swagger is available locally at:
+The API runs at:
+
+```text
+http://127.0.0.1:8000
+```
+
+Swagger:
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
+Default local persistence:
+
+```text
+sqlite:///./career_agent.db
+```
+
+Settings are loaded from environment variables and/or `backend/.env`.
+
+Common optional settings include:
+
+```text
+OPENAI_API_KEY
+DATABASE_URL
+JWT_SECRET_KEY
+DEFAULT_LLM_PROVIDER
+LLM_BASE_URL
+AGENTIC_SEARCH_PROVIDER
+BRAVE_SEARCH_API_KEY
+```
+
+Provider-backed semantic operations require the corresponding provider configuration. Deterministic automated tests do not require live provider calls.
+
+### 2. Frontend
+
+Open a second PowerShell terminal:
+
+```powershell
+cd D:\Career-trans\frontend
+
+npm ci
+npm run dev
+```
+
+The Vite UI runs at:
+
+```text
+http://localhost:5173
+```
+
+By default the frontend calls:
+
+```text
+http://127.0.0.1:8000
+```
+
+Override it when needed with:
+
+```text
+VITE_API_BASE_URL
+```
+
+The Python virtual environment is required for the backend, not for the frontend.
+
 ---
 
-# Demo Data
+## Validation
 
-Example candidate profiles under `resources/examples/` are fixtures for development and evaluation only.
+Backend:
 
-The application itself must work for users with very different backgrounds and goals.
+```powershell
+cd D:\Career-trans\backend
+.\.venv\Scripts\Activate.ps1
+python -m pytest
+```
+
+Frontend:
+
+```powershell
+cd D:\Career-trans\frontend
+npm run test
+npm run typecheck
+npm run build
+```
+
+Automated tests should remain deterministic and must not depend on live LLM or public-network calls unless a test is explicitly designed and authorized as live validation.
+
+---
+
+## Security and privacy
+
+Career-trans handles private career information, so the main design principles are:
+
+- authenticated user ownership is enforced server-side;
+- one user's private candidate context must not leak into another user's workflow;
+- passwords are hashed rather than stored in plaintext;
+- secrets are not committed;
+- private CV/evidence content is not used as global shared product state;
+- demo fixtures are separate from production/user data;
+- LLM/provider outputs are validated before becoming trusted domain state;
+- user confirmation is required at important AI-extraction boundaries;
+- application preparation never autonomously submits an application.
+
+The current browser auth stores the V1 bearer token in `sessionStorage`. This is a development-stage implementation, not the final production identity architecture.
+
+---
+
+## Demo data
+
+Files under `resources/examples/` are development/evaluation fixtures only.
+
+They exist to exercise the system and must not be treated as globally applicable candidate information.
+
+---
+
+## Near-term UI roadmap
+
+The next planned UI slices are:
+
+1. **#161 — CV Upload, Safe Review, Confirmation & Resume**
+2. **#162 — Candidate Adviser & Adaptive Clarification Loop**
+3. **#163 — Docker & Local Full-Stack Developer Packaging**
+
+Job discovery/ranking and application-preparation browser workflows come after the onboarding UI is complete.
+
+---
+
+## Development policy
+
+Repository-wide implementation instructions are in `AGENTS.md`.
+
+General project expectations include:
+
+- preserve user isolation and evidence provenance;
+- keep deterministic rules outside LLM prompts where practical;
+- fail closed at trust boundaries;
+- keep automated tests provider-independent;
+- use synthetic fixtures rather than real user data;
+- do not merge implementation PRs without explicit product-owner approval.
