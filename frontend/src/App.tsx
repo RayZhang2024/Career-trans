@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { type OnboardingStatus, type Profile } from "./api";
 import { ApiError, useAuth } from "./auth";
@@ -77,8 +77,38 @@ function Home() {
   const [profile, setProfile] = useState<Profile | null | undefined>(undefined);
   const [statusError, setStatusError] = useState("");
   const [profileError, setProfileError] = useState("");
-  const loadStatus = async () => { setStatus(undefined); setStatusError(""); try { setStatus(await api.request<OnboardingStatus>("/api/v1/onboarding/status")); } catch { setStatus(undefined); setStatusError("Onboarding status is unavailable."); } };
-  const loadProfile = async () => { setProfile(undefined); setProfileError(""); try { setProfile(await api.request<Profile>("/api/v1/profile")); } catch (e) { if (e instanceof ApiError && e.status === 404) { setProfile(null); } else { setProfile(undefined); setProfileError("Profile is unavailable."); } } };
+  const statusRequest = useRef(0);
+  const profileRequest = useRef(0);
+  const loadStatus = async () => {
+    const request = ++statusRequest.current;
+    setStatus(undefined);
+    setStatusError("");
+    try {
+      const found = await api.request<OnboardingStatus>("/api/v1/onboarding/status");
+      if (request === statusRequest.current) setStatus(found);
+    } catch {
+      if (request === statusRequest.current) {
+        setStatus(undefined);
+        setStatusError("Onboarding status is unavailable.");
+      }
+    }
+  };
+  const loadProfile = async () => {
+    const request = ++profileRequest.current;
+    setProfile(undefined);
+    setProfileError("");
+    try {
+      const found = await api.request<Profile>("/api/v1/profile");
+      if (request === profileRequest.current) setProfile(found);
+    } catch (e) {
+      if (request !== profileRequest.current) return;
+      if (e instanceof ApiError && e.status === 404) setProfile(null);
+      else {
+        setProfile(undefined);
+        setProfileError("Profile is unavailable.");
+      }
+    }
+  };
   const load = () => { void loadStatus(); void loadProfile(); };
   useEffect(() => { load(); }, []);
   return <AppShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Welcome {user?.email}</h1></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area">{profileError && <p role="alert">{profileError}</p>}{profile === undefined ? <p className="muted">Loading profile…</p> : <ProfileForm profile={profile} onSaved={load} />}</section></main></AppShell>;
