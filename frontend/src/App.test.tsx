@@ -8,8 +8,8 @@ afterEach(cleanup);
 
 it("populates an existing profile and preserves untouched fields on patch", async () => {
   render(<ProfileForm profile={{ id: "p", user_id: "u", created_at: "", updated_at: "", headline: "Engineer", location: "London" }} onSaved={() => {}} />);
-  expect(screen.getByRole("textbox", { name: "headline" })).toHaveValue("Engineer");
-  fireEvent.change(screen.getByRole("textbox", { name: "location" }), { target: { value: "Oxford" } });
+  expect(screen.getByRole("textbox", { name: "Headline" })).toHaveValue("Engineer");
+  fireEvent.change(screen.getByRole("textbox", { name: "Location" }), { target: { value: "Oxford" } });
   fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
   await vi.waitFor(() => expect(request).toHaveBeenCalled());
   const call = request.mock.calls[0] as unknown as [string, { method: string; body: string }];
@@ -17,6 +17,13 @@ it("populates an existing profile and preserves untouched fields on patch", asyn
   expect(payload.headline).toBe("Engineer");
   expect(payload.location).toBe("Oxford");
   expect(call[1].method).toBe("PATCH");
+});
+
+it("uses multi-line controls for the long-form optional profile fields", () => {
+  render(<ProfileForm profile={null} onSaved={() => {}} />);
+  expect(screen.getByRole("textbox", { name: "Summary" }).tagName).toBe("TEXTAREA");
+  expect(screen.getByRole("textbox", { name: "Career goal" }).tagName).toBe("TEXTAREA");
+  expect(screen.getByRole("textbox", { name: "Job-search criteria" }).tagName).toBe("TEXTAREA");
 });
 
 it("uses create semantics when no profile exists", async () => {
