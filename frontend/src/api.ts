@@ -28,7 +28,11 @@ export class SessionApi {
     try {
       const headers = new Headers(init.headers);
       if (authenticated && this.token) headers.set("Authorization", `Bearer ${this.token}`);
-      if (init.body) headers.set("Content-Type", "application/json");
+      // FormData owns its multipart boundary.  Setting a JSON content type here
+      // would make the browser send an unreadable CV upload.
+      if (init.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
       const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers, signal: controller.signal });
       if (authenticated && response.status === 401 && epoch === this.epoch) this.onAuthenticated401();
       if (!response.ok) throw new ApiError(response.status, "Request could not be completed.");

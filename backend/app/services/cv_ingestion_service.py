@@ -1,10 +1,17 @@
 import json
+from collections import Counter
 from collections.abc import Callable
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateEvidenceRecord, CandidateStructuredProfile
+from app.models.candidate_cv_ingestion import (
+    CandidateCVIngestionDraft,
+    CandidateCVReviewBaseline,
+    CandidateEvidenceRecord,
+    CandidateStructuredProfile,
+)
 from app.models.candidate_profile import CandidateProfile
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.schemas.candidate import CandidateContext, CandidateContextSummary, CandidateEligibility, CareerEvidence
@@ -70,6 +77,7 @@ class CVIngestionService:
         merged = self._merger.merge(imported)
         draft.merged_json = json.dumps(merged.model_dump(mode="json"))
         draft.state = CVIngestionState.REVIEW_READY
+        self._create_baseline_once(draft, merged.evidence)
         self._session.commit()
         self._session.refresh(draft)
         return self._read(draft)
@@ -81,6 +89,8 @@ class CVIngestionService:
         draft = self._draft(user_id, draft_id)
         if draft.state != CVIngestionState.REVIEW_READY:
             raise ValueError("Only a review-ready CV ingestion draft can be edited.")
+        baseline = self._baseline_for_review(draft)
+        self._validate_evidence_subset(corrected.evidence, baseline)
         draft.merged_json = json.dumps(corrected.model_dump(mode="json"))
         self._session.commit()
         self._session.refresh(draft)
@@ -129,6 +139,73 @@ class CVIngestionService:
     @staticmethod
     def _documents(draft: CandidateCVIngestionDraft) -> list[ExtractedCVDocument]:
         return [ExtractedCVDocument.model_validate(value) for value in json.loads(draft.documents_json)]
+
+    def _create_baseline_once(
+        self,
+        draft: CandidateCVIngestionDraft,
+        evidence: list,
+    ) -> CandidateCVReviewBaseline:
+        """Persist one immutable baseline, including safely racing legacy callers."""
+        existing = self._session.scalar(
+            select(CandidateCVReviewBaseline).where(
+                CandidateCVReviewBaseline.draft_id == draft.id
+            )
+        )
+        if existing is not None:
+            return existing
+        serialized = json.dumps([item.model_dump(mode="json") for item in evidence], sort_keys=True)
+        try:
+            with self._session.begin_nested():
+                baseline = CandidateCVReviewBaseline(
+                    draft_id=draft.id,
+                    evidence_json=serialized,
+                )
+                self._session.add(baseline)
+                self._session.flush()
+                return baseline
+        except IntegrityError:
+            baseline = self._session.scalar(
+                select(CandidateCVReviewBaseline).where(
+                    CandidateCVReviewBaseline.draft_id == draft.id
+                )
+            )
+            if baseline is None:
+                raise
+            return baseline
+
+    def _baseline_for_review(self, draft: CandidateCVIngestionDraft) -> list:
+        baseline = self._session.scalar(
+            select(CandidateCVReviewBaseline).where(
+                CandidateCVReviewBaseline.draft_id == draft.id
+            )
+        )
+        if baseline is None:
+            # Grandfather one immutable snapshot for legacy review-ready drafts,
+            # before considering the caller's mutable correction.
+            current = CandidateCVData.model_validate(json.loads(draft.merged_json or "{}"))
+            baseline = self._create_baseline_once(draft, current.evidence)
+        return [
+            self._evidence_key(value)
+            for value in json.loads(baseline.evidence_json)
+        ]
+
+    @staticmethod
+    def _evidence_key(value: object) -> str:
+        """Exact canonical identity for CV semantic evidence, preserving provenance."""
+        item = value if isinstance(value, dict) else value.model_dump(mode="json")
+        selected = {
+            key: item.get(key)
+            for key in ("evidence_type", "title", "text", "skills", "provenance")
+        }
+        return json.dumps(selected, sort_keys=True, separators=(",", ":"))
+
+    def _validate_evidence_subset(self, submitted: list, baseline: list[str]) -> None:
+        submitted_keys = Counter(self._evidence_key(value) for value in submitted)
+        baseline_keys = Counter(baseline)
+        if any(count > baseline_keys[key] for key, count in submitted_keys.items()):
+            raise ValueError(
+                "Career Evidence can only retain or exclude unchanged evidence from the interpreted CV."
+            )
 
     @staticmethod
     def _enrich_provenance(

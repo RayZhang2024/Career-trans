@@ -1,5 +1,5 @@
 from app.models.candidate_profile import CandidateProfile
-from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateEvidenceRecord, CandidateStructuredProfile
+from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateCVReviewBaseline, CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord, CandidateAdviserIntakeRecord
 from app.models.company_career_source import CompanyCareerSource
 from app.models.discovered_job import DiscoveredJob
@@ -9,4 +9,4 @@ from app.models.discovery_schedule import DiscoverySchedule, ScheduledDiscoveryE
 from app.models.application_preparation import ApplicationPreparation
 from app.models.user import User
 
-__all__ = ["CandidateProfile", "CandidateCVIngestionDraft", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "DiscoverySchedule", "ScheduledDiscoveryExecution", "ApplicationPreparation", "User"]
+__all__ = ["CandidateProfile", "CandidateCVIngestionDraft", "CandidateCVReviewBaseline", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "DiscoverySchedule", "ScheduledDiscoveryExecution", "ApplicationPreparation", "User"]
