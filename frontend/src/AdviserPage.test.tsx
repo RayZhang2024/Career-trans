@@ -409,9 +409,9 @@ it("confirms one sibling, suppresses an old delayed list, and completes a fresh 
   expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/clarifications")).toHaveLength(1);
   request.mockResolvedValueOnce(assessment("review_ready")); fireEvent.click(screen.getByRole("button", { name: "Reassess" })); await screen.findByText("Assessment ready for your review.");
   expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/clarifications")).toHaveLength(1);
-  request.mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([next]);
+  request.mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce({ ...status(), adviser: { intake_exists: true, assessment_status: "confirmed", confirmed_clarification_count: 3 } }).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([next]);
   fireEvent.click(screen.getByRole("button", { name: "Confirm assessment" }));
-  expect(await screen.findByText("Question next")).toBeInTheDocument(); expect(screen.queryByText("Question sibling")).not.toBeInTheDocument();
+  expect(await screen.findByText("Question next")).toBeInTheDocument(); expect(screen.queryByText("Question sibling")).not.toBeInTheDocument(); expect(screen.getByText("Confirmed clarifications: 3")).toBeInTheDocument();
 });
 
 it("keeps non-career confirmation out of intake and disables Reassess while intake is dirty", async () => {
@@ -431,5 +431,5 @@ it.each([[404, "stale"], [409, "confirmed"]] as const)("recovers answer conflict
   request.mockRejectedValueOnce(new ApiError(code, "")).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment(recovered)); if (recovered === "confirmed") request.mockResolvedValueOnce([restored]);
   fireEvent.click(screen.getByRole("button", { name: "Interpret answer" }));
   if (recovered === "stale") await screen.findByRole("button", { name: "Reassess" }); else await screen.findByText("Question restored");
-  expect(request.mock.calls.filter((call) => String(call[0]).endsWith("/answer"))).toHaveLength(1); expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/intake" && !call[1])).toHaveLength(1);
+  expect(request.mock.calls.filter((call) => String(call[0]).endsWith("/answer"))).toHaveLength(1); expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/intake" && !call[1])).toHaveLength(1); expect(screen.getByRole("status")).toHaveTextContent("Adviser state changed. The current state has been refreshed.");
 });
