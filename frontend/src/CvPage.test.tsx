@@ -74,6 +74,19 @@ it("validates file count, individual size, and total size locally", async () => 
   expect(screen.getByRole("alert")).toHaveTextContent("15 MB total");
 });
 
+
+it("removes selected local files before upload", async () => {
+  request.mockResolvedValueOnce(noDraft);
+  render(<CvPage />);
+  const input = await screen.findByLabelText("CV files");
+  fireEvent.change(input, { target: { files: [new File(["a"], "a.md"), new File(["b"], "b.md")] } });
+  expect(screen.getByText("a.md")).toBeInTheDocument();
+  expect(screen.getByText("b.md")).toBeInTheDocument();
+  fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0]);
+  expect(screen.queryByText("a.md")).not.toBeInTheDocument();
+  expect(screen.getByText("b.md")).toBeInTheDocument();
+});
+
 it("uploads FormData and resumes the authoritative newly-created draft", async () => {
   const uploaded = draftWith("draft-new", "uploaded");
   request
@@ -131,6 +144,28 @@ it("keeps semantic evidence read-only and blocks confirmation until exclusions a
   await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/v1/cv-ingestion/draft-2", expect.objectContaining({ method: "PATCH" })));
   expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled();
   expect(request.mock.calls.some(([path]) => String(path).includes("/confirm"))).toBe(false);
+});
+
+
+it("removes an ordinary structured item and saves the corrected review", async () => {
+  const merged = {
+    ...mergedEmpty,
+    employment: [{ employer: "Example", title: "Engineer", start_date: "", end_date: "", location: "", description: "Built systems" }],
+  };
+  const draft = draftWith("draft-remove", "review_ready", merged);
+  request
+    .mockResolvedValueOnce(statusWith("draft-remove", "review_ready"))
+    .mockResolvedValueOnce(draft)
+    .mockResolvedValueOnce({ ...draft, merged: mergedEmpty });
+  render(<CvPage />);
+  await screen.findByRole("heading", { name: "Review your CV" });
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await vi.waitFor(() => {
+    const patch = request.mock.calls.find(([path, init]) => path === "/api/v1/cv-ingestion/draft-remove" && init?.method === "PATCH");
+    expect(patch).toBeTruthy();
+    expect(JSON.parse(String(patch?.[1]?.body)).employment).toEqual([]);
+  });
 });
 
 it("adds credentials with a valid constrained credential type before save", async () => {
