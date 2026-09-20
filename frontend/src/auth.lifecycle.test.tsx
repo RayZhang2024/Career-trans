@@ -364,6 +364,17 @@ describe("AuthProvider routed lifecycle", () => {
     expect(screen.getByText("Saved")).toBeInTheDocument();
   });
 
+  it("protects /cv and resumes the authenticated CV page", async () => {
+    renderApp("/cv");
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+
+    cleanup();
+    sessionStorage.setItem(TOKEN, "stored-token");
+    vi.stubGlobal("fetch", authenticatedFetch());
+    renderApp("/cv");
+    expect(await screen.findByRole("heading", { name: "Upload your CV" })).toBeInTheDocument();
+  });
+
   it("links the CV stage while keeping Career Adviser non-interactive", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     vi.stubGlobal("fetch", authenticatedFetch());
