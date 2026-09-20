@@ -2,11 +2,11 @@
 * { box-sizing: border-box; }
 html, body, #root { min-width: 100%; width: 100%; }
 body { margin: 0; min-width: 320px; }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button { border: 0; border-radius: 0.5rem; background: #2458d3; color: #fff; cursor: pointer; font-weight: 650; padding: 0.7rem 1rem; }
 button:hover { background: #1847b8; }
-button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline: 3px solid #93b4ff; outline-offset: 2px; }
-input, textarea { background: #fff; border: 1px solid #b9c2d4; border-radius: 0.45rem; color: #172033; padding: 0.65rem 0.75rem; width: 100%; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #93b4ff; outline-offset: 2px; }
+input, textarea, select { background: #fff; border: 1px solid #b9c2d4; border-radius: 0.45rem; color: #172033; padding: 0.65rem 0.75rem; width: 100%; }
 textarea { min-height: 7rem; resize: vertical; }
 a { color: #1747b8; }
 h1, h2, p { margin: 0; }
@@ -47,6 +47,7 @@ h2 { font-size: 1.2rem; }
 .evidence-card h3 { margin: 0.25rem 0; }
 .cv-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
 .button-danger { background: #fff1f2; color: #9f1239; }
+.supersede-warning { border-color: #eab308; display: grid; gap: 0.75rem; }
 .profile-fields { display: grid; gap: 0.9rem 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .field { display: grid; gap: 0.35rem; min-width: 0; }
 .field-wide { grid-column: 1 / -1; }
