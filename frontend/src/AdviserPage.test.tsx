@@ -308,3 +308,17 @@ it("locks Save, confirmation, and sibling selection while an interpretation is i
   resolveInterpret({ ...unanswered("a", 0), status: "review_ready", answer_text: "Answer", interpretation: { answer_kind: "preference_intent", confirmed_context_summary: "Preference", proposed_evidence: [] } });
   await vi.waitFor(() => expect(screen.getByRole("button", { name: "Confirm clarification" })).toBeEnabled());
 });
+
+it("ignores a delayed pre-save clarification list after a changed intake makes the assessment stale", async () => {
+  let resolveClarifications!: (value: unknown) => void;
+  const delayedClarifications = new Promise<unknown>((resolve) => { resolveClarifications = resolve; });
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockReturnValueOnce(delayedClarifications);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findByRole("button", { name: "Save intake" });
+  fireEvent.change(screen.getByRole("textbox", { name: "Career direction" }), { target: { value: "Changed" } });
+  request.mockResolvedValueOnce({ ...intake, career_direction: "Changed" }).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("stale"));
+  fireEvent.click(screen.getByRole("button", { name: "Save intake" }));
+  expect(await screen.findByRole("button", { name: "Reassess" })).toBeEnabled();
+  resolveClarifications([unanswered("late")]);
+  await vi.waitFor(() => expect(screen.queryByRole("textbox", { name: "Clarification answer" })).not.toBeInTheDocument());
+  expect(screen.queryByText("Question late")).not.toBeInTheDocument();
+});
