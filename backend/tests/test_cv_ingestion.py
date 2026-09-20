@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.api.deps import get_cv_ingestion_service
 from app.main import app
 from app.models.candidate_cv_ingestion import (
+    CandidateCVIngestionDraft,
     CandidateCVReviewBaseline,
     CandidateEvidenceRecord,
     CandidateStructuredProfile,
@@ -375,3 +376,41 @@ def test_legacy_review_draft_snapshots_once_before_first_edit(db_session) -> Non
     assert created is not None
     with pytest.raises(ValueError, match="Career Evidence"):
         service.edit_review("user-1", draft.id, CandidateCVData.model_validate({**original, "evidence": [{**original["evidence"][0], "text": "changed"}]}))
+
+
+
+def test_duplicate_baseline_race_recovers_the_single_immutable_row(db_session, monkeypatch) -> None:
+    """Exercise the IntegrityError recovery path that closes a duplicate-create race."""
+    service = CVIngestionService(db_session, interpreter=FakeInterpreter())
+    uploaded = service.upload("user-race", [("cv.json", "application/json", json.dumps(_json_cv()).encode())])
+    reviewed = service.interpret("user-race", uploaded.id)
+    existing = db_session.scalar(
+        select(CandidateCVReviewBaseline).where(CandidateCVReviewBaseline.draft_id == uploaded.id)
+    )
+    draft = db_session.scalar(
+        select(CandidateCVIngestionDraft).where(CandidateCVIngestionDraft.id == uploaded.id)
+    )
+    assert existing is not None and draft is not None and reviewed.merged is not None
+
+    real_scalar = db_session.scalar
+    baseline_lookup_calls = 0
+
+    def racing_scalar(statement, *args, **kwargs):
+        nonlocal baseline_lookup_calls
+        rendered = str(statement)
+        if "candidate_cv_review_baselines" in rendered:
+            baseline_lookup_calls += 1
+            if baseline_lookup_calls == 1:
+                # Simulate this session checking just before another writer commits
+                # the row that is already present in the database.
+                return None
+        return real_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "scalar", racing_scalar)
+    recovered = service._create_baseline_once(draft, reviewed.merged.evidence)
+
+    assert recovered.id == existing.id
+    rows = db_session.scalars(
+        select(CandidateCVReviewBaseline).where(CandidateCVReviewBaseline.draft_id == uploaded.id)
+    ).all()
+    assert [row.id for row in rows] == [existing.id]
