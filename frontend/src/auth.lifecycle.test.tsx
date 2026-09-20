@@ -45,6 +45,20 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("AuthProvider routed lifecycle", () => {
+  it("protects the Adviser route for an unauthenticated session", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    renderApp("/adviser");
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+  });
+
+  it("exposes the Career Adviser link when confirmed candidate context is ready", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    const readyStatus = { ...status, candidate_context_ready: true, latest_cv_draft: { id: "draft", state: "confirmed", created_at: "", updated_at: "" } };
+    vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/onboarding/status": () => response(readyStatus) }));
+    renderApp();
+    expect(await screen.findByRole("link", { name: "Start Career Adviser" })).toHaveAttribute("href", "/adviser");
+  });
+
   it("keeps protected UI in checking state without a login flicker", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     let resolve!: (value: Response) => void;
