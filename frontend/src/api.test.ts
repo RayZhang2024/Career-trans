@@ -33,6 +33,16 @@ describe("SessionApi", () => {
     expect(expired).not.toHaveBeenCalled();
   });
 
+  it("discards a delayed authenticated CV operation after session replacement", async () => {
+    let finish!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+    const api = new SessionApi("token-a", vi.fn());
+    const request = api.request("/api/v1/cv-ingestion/draft-1/interpret", { method: "POST" });
+    api.replaceToken("token-b");
+    finish(new Response(JSON.stringify({ state: "review_ready" }), { status: 200 }));
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+  });
+
   it("handles authenticated 401 through the session-expiry boundary", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
     const expired = vi.fn();
