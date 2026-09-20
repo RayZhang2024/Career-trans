@@ -29,6 +29,19 @@ it("treats authoritative intake 404 as first-time editable intake and strips upd
   expect(String((options as { body: string }).body)).not.toContain("updated_at");
 });
 
+it("requires first intake Save before Generate and retains PUT authority without another intake GET", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  request.mockResolvedValueOnce(status()).mockRejectedValueOnce(new ApiError(404, "")).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const generate = await screen.findByRole("button", { name: "Generate assessment" });
+  expect(generate).toBeDisabled();
+  fireEvent.change(screen.getByRole("textbox", { name: "Career direction" }), { target: { value: "First saved direction" } });
+  request.mockResolvedValueOnce({ ...intake, career_direction: "First saved direction" }).mockResolvedValueOnce(status()).mockRejectedValueOnce(new ApiError(404, ""));
+  fireEvent.click(screen.getByRole("button", { name: "Save intake" }));
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Generate assessment" })).toBeEnabled());
+  expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/intake" && !call[1]).length).toBe(1);
+});
+
 it("loads an existing intake before editing and preserves untouched values on PUT", async () => {
   const ApiError = (await import("./auth")).ApiError;
   const existing = { ...intake, work_preferences: ["Hybrid"], constraints: ["UK only"] };
@@ -54,6 +67,17 @@ it("does not render a blank authoritative intake when intake retrieval is unavai
   expect(await screen.findByText("Adviser intake is unavailable.")).toBeInTheDocument();
   expect(screen.getByText("Loading Adviser intake…")).toBeInTheDocument();
   expect(screen.queryByRole("textbox", { name: "Career direction" })).not.toBeInTheDocument();
+});
+
+it("keeps an authoritative recovery notice after an assessment conflict refresh", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("button", { name: "Generate assessment" });
+  request.mockRejectedValueOnce(new ApiError(409, "")).mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  fireEvent.click(screen.getByRole("button", { name: "Generate assessment" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Adviser state changed. The current state has been refreshed.");
+  expect(screen.getByRole("button", { name: "Generate assessment" })).toBeEnabled();
 });
 
 it("renders confirmed assessment empty clarification state and persistent count", async () => {
