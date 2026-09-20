@@ -46,11 +46,12 @@ export function AdviserPage() {
     else setError("Adviser status is unavailable.");
     if (assessmentResult.status === "fulfilled") {
       setAssessment(assessmentResult.value);
+      if (assessmentResult.value.status !== "stale") setConfirmedTransition(null);
       if (assessmentResult.value.status === "confirmed") await loadClarifications(request);
       return;
     }
     const caught = assessmentResult.reason;
-    if (caught instanceof ApiError && caught.status === 404) setAssessment(null);
+    if (caught instanceof ApiError && caught.status === 404) { setAssessment(null); setConfirmedTransition(null); }
     else { setAssessment(undefined); setError("Adviser assessment is unavailable."); }
   };
   useEffect(() => { void load(); }, []);

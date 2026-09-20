@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { AdviserPage } from "./AdviserPage";
@@ -8,6 +8,9 @@ vi.mock("./auth", () => ({ ApiError: class ApiError extends Error { constructor(
 afterEach(() => { cleanup(); request.mockReset(); });
 const status = (ready = true) => ({ profile_exists: true, candidate_context_ready: ready, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 2 } });
 const intake = { career_direction: "Direction", work_preferences: [], constraints: [], self_assessment: [], motivations: [], tradeoffs: [], eligibility: { work_authorisation: [], security_clearances: [], locations: [] }, updated_at: "2026-01-01" };
+const content = { professional_positioning: { text: "Position", source_references: [{ source_type: "intake", reference: "career_direction" }] }, transferable_strengths: [{ text: "Strength", source_references: [{ source_type: "career_evidence", reference: "safe" }] }], development_gaps: [{ text: "Gap", source_references: [] }], role_hypotheses: [{ text: "Role", source_references: [] }], transition_assessment: { text: "Transition", source_references: [] }, open_questions: [{ text: "Question", source_references: [{ source_type: "clarification", reference: "safe" }] }], career_strategy_summary: { text: "Strategy", source_references: [] }, job_search_strategy_summary: { text: "Search", source_references: [] } };
+const assessment = (state: "review_ready" | "confirmed" | "stale") => ({ status: state, content });
+const unanswered = (id = "question", priority_index = 0) => ({ clarification_id: id, question_text: `Question ${id}`, priority_index, status: "unanswered" as const, answer_text: null, interpretation: null });
 
 it("gates direct Adviser access before confirmed candidate context without Adviser calls", async () => {
   request.mockResolvedValueOnce(status(false)); render(<MemoryRouter><AdviserPage /></MemoryRouter>);
@@ -148,4 +151,160 @@ it("keeps a confirmed clarification read-only through dependent refresh until re
   request.mockResolvedValueOnce({ status: "review_ready", content });
   fireEvent.click(screen.getByRole("button", { name: "Reassess" }));
   await vi.waitFor(() => expect(screen.queryByRole("heading", { name: "Clarification confirmed" })).not.toBeInTheDocument());
+});
+
+it("round-trips every intake list, exposes dirty state, and discards to its authoritative baseline", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("button", { name: "Generate assessment" });
+  for (const label of ["work preferences", "constraints", "self assessment", "motivations", "tradeoffs", "work authorisation", "security clearances", "locations"]) {
+    const group = screen.getByRole("group", { name: label });
+    fireEvent.click(within(group).getByRole("button", { name: "Add" }));
+    const value = screen.getByRole("textbox", { name: `${label} 1` });
+    fireEvent.change(value, { target: { value: `${label} value` } });
+    expect(value).toHaveValue(`${label} value`);
+    fireEvent.click(within(group).getByRole("button", { name: "Remove" }));
+    expect(screen.queryByRole("textbox", { name: `${label} 1` })).not.toBeInTheDocument();
+  }
+  fireEvent.change(screen.getByRole("textbox", { name: "Career direction" }), { target: { value: "Changed" } });
+  expect(screen.getByText("Unsaved intake changes")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Generate assessment" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+  expect(screen.getByRole("textbox", { name: "Career direction" })).toHaveValue("Direction");
+  expect(screen.queryByText("Unsaved intake changes")).not.toBeInTheDocument();
+});
+
+it("drives generate, review, confirm, stale reassessment, and all assessment sections without fetching clarifications early", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const generate = await screen.findByRole("button", { name: "Generate assessment" });
+  expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/clarifications")).toHaveLength(0);
+  request.mockResolvedValueOnce(assessment("review_ready")); fireEvent.click(generate);
+  await screen.findByText("Assessment ready for your review.");
+  for (const title of ["Professional positioning", "Transferable strengths", "Development gaps", "Role hypotheses", "Transition assessment", "Open questions", "Career strategy summary", "Job-search strategy summary"]) expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+  expect(screen.getByText("Based on your adviser intake")).toBeInTheDocument();
+  request.mockResolvedValueOnce(assessment("review_ready")); fireEvent.click(screen.getByRole("button", { name: "Regenerate assessment" }));
+  await screen.findByText("Assessment ready for your review.");
+  request.mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("stale"));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm assessment" }));
+  await screen.findByRole("button", { name: "Reassess" });
+  request.mockResolvedValueOnce(assessment("review_ready")); fireEvent.click(screen.getByRole("button", { name: "Reassess" }));
+  await screen.findByText("Assessment ready for your review.");
+});
+
+it("adopts normalized interpretation answers, re-interprets edited answers, and only renders returned evidence", async () => {
+  const first = { ...unanswered(), status: "review_ready" as const, answer_text: "Normalized answer", interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Fact context", proposed_evidence: [] } };
+  const second = { ...first, answer_text: "Second normalized answer", interpretation: { answer_kind: "mixed", confirmed_context_summary: "Mixed context", proposed_evidence: [{ title: "Returned evidence", text: "Only returned evidence", skills: ["safe"] }] } };
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([unanswered()]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("button", { name: "Work on this question" });
+  fireEvent.click(screen.getByRole("button", { name: "Work on this question" }));
+  const editor = await screen.findByRole("textbox", { name: "Clarification answer" });
+  fireEvent.change(editor, { target: { value: "  raw answer  " } });
+  request.mockResolvedValueOnce(first); fireEvent.click(screen.getByRole("button", { name: "Interpret answer" }));
+  await vi.waitFor(() => expect(editor).toHaveValue("Normalized answer"));
+  expect(screen.getByText("Fact context")).toBeInTheDocument();
+  expect(screen.queryByText("Returned evidence")).not.toBeInTheDocument();
+  fireEvent.change(editor, { target: { value: "edited" } });
+  expect(screen.getByText("Answer changed — re-interpret before confirmation.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirm clarification" })).toBeDisabled();
+  request.mockResolvedValueOnce(second); fireEvent.click(screen.getByRole("button", { name: "Re-interpret answer" }));
+  await vi.waitFor(() => expect(editor).toHaveValue("Second normalized answer"));
+  expect(screen.getByText("Returned evidence: Only returned evidence")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirm clarification" })).toBeEnabled();
+});
+
+it("keeps provider failures safe and never runs state recovery for failed semantic mutations", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("button", { name: "Generate assessment" });
+  request.mockRejectedValueOnce(new ApiError(503, "private provider body")); fireEvent.click(screen.getByRole("button", { name: "Generate assessment" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Assessment generation is temporarily unavailable.");
+  expect(screen.queryByText("private provider body")).not.toBeInTheDocument();
+  expect(request.mock.calls.filter((call) => call[0] === "/api/v1/onboarding/status")).toHaveLength(1);
+});
+
+it("locks cross-operation controls while Save, assessment, interpretation, and clarification confirmation are pending", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  let resolveSave!: (value: unknown) => void;
+  const delayedSave = new Promise<unknown>((resolve) => { resolveSave = resolve; });
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findByRole("button", { name: "Generate assessment" });
+  fireEvent.change(screen.getByRole("textbox", { name: "Career direction" }), { target: { value: "Dirty" } });
+  request.mockReturnValueOnce(delayedSave).mockResolvedValueOnce(status()).mockRejectedValueOnce(new ApiError(404, "")); fireEvent.click(screen.getByRole("button", { name: "Save intake" }));
+  expect(screen.getByRole("button", { name: "Generate assessment" })).toBeDisabled();
+  resolveSave(intake); await vi.waitFor(() => expect(screen.getByRole("button", { name: "Save intake" })).toBeEnabled());
+});
+
+it("does not let a confirmed transition survive a 409 recovery whose authoritative assessment moved to review-ready", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  const reviewing = { ...unanswered(), status: "review_ready" as const, answer_text: "Answer", interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Context", proposed_evidence: [] } };
+  const confirmed = { ...reviewing, status: "confirmed" as const };
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([reviewing]).mockResolvedValueOnce(confirmed).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("stale"));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findByRole("button", { name: "Confirm clarification" });
+  fireEvent.click(screen.getByRole("button", { name: "Confirm clarification" })); await screen.findByRole("button", { name: "Reassess" });
+  expect(screen.getByRole("heading", { name: "Clarification confirmed" })).toBeInTheDocument();
+  request.mockRejectedValueOnce(new ApiError(409, "")).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("review_ready"));
+  fireEvent.click(screen.getByRole("button", { name: "Reassess" }));
+  await screen.findByText("Assessment ready for your review.");
+  expect(screen.queryByRole("heading", { name: "Clarification confirmed" })).not.toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("Adviser state changed. The current state has been refreshed.");
+});
+
+it("restores persisted review-ready clarification after unchanged Save, but clears it when the refreshed assessment is stale", async () => {
+  const reviewing = { ...unanswered(), status: "review_ready" as const, answer_text: "Persisted", interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Persisted context", proposed_evidence: [] } };
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([reviewing]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findByRole("textbox", { name: "Clarification answer" });
+  request.mockResolvedValueOnce(intake).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([reviewing]);
+  fireEvent.click(screen.getByRole("button", { name: "Save intake" }));
+  expect(await screen.findByRole("textbox", { name: "Clarification answer" })).toHaveValue("Persisted");
+  fireEvent.change(screen.getByRole("textbox", { name: "Career direction" }), { target: { value: "Changed" } });
+  request.mockResolvedValueOnce({ ...intake, career_direction: "Changed" }).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("stale"));
+  fireEvent.click(screen.getByRole("button", { name: "Save intake" }));
+  expect(await screen.findByRole("button", { name: "Reassess" })).toBeEnabled();
+  expect(screen.queryByRole("textbox", { name: "Clarification answer" })).not.toBeInTheDocument();
+});
+
+it("recovers clarification answer conflicts without retrying the failed mutation", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  const item = unanswered();
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([item]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findByRole("button", { name: "Work on this question" });
+  fireEvent.click(screen.getByRole("button", { name: "Work on this question" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Clarification answer" }), { target: { value: "Answer" } });
+  request.mockRejectedValueOnce(new ApiError(409, "")).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("stale"));
+  fireEvent.click(screen.getByRole("button", { name: "Interpret answer" }));
+  expect(await screen.findByRole("button", { name: "Reassess" })).toBeEnabled();
+  expect(screen.queryByRole("textbox", { name: "Clarification answer" })).not.toBeInTheDocument();
+  expect(request.mock.calls.filter((call) => String(call[0]).endsWith("/answer"))).toHaveLength(1);
+});
+
+it("recovers clarification confirmation conflicts without retrying the failed mutation", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  const reviewing = { ...unanswered(), status: "review_ready" as const, answer_text: "Answer", interpretation: { answer_kind: "eligibility_fact", confirmed_context_summary: "Eligibility", proposed_evidence: [] } };
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([reviewing]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findByRole("button", { name: "Confirm clarification" });
+  request.mockRejectedValueOnce(new ApiError(404, "")).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("stale"));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm clarification" }));
+  expect(await screen.findByRole("button", { name: "Reassess" })).toBeEnabled();
+  expect(screen.queryByRole("textbox", { name: "Clarification answer" })).not.toBeInTheDocument();
+  expect(request.mock.calls.filter((call) => String(call[0]).endsWith("/confirm"))).toHaveLength(1);
+});
+
+it("locks Save, confirmation, and sibling selection while an interpretation is in flight", async () => {
+  let resolveInterpret!: (value: unknown) => void;
+  const delayedInterpret = new Promise<unknown>((resolve) => { resolveInterpret = resolve; });
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([unanswered("a", 0), unanswered("b", 1)]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findAllByRole("button", { name: "Work on this question" });
+  fireEvent.click(screen.getAllByRole("button", { name: "Work on this question" })[0]);
+  fireEvent.change(screen.getByRole("textbox", { name: "Clarification answer" }), { target: { value: "Answer" } });
+  request.mockReturnValueOnce(delayedInterpret); fireEvent.click(screen.getByRole("button", { name: "Interpret answer" }));
+  expect(screen.getByRole("button", { name: "Save intake" })).toBeDisabled();
+  expect(screen.getAllByRole("button", { name: "Work on this question" })[1]).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Confirm clarification" })).toBeDisabled();
+  resolveInterpret({ ...unanswered("a", 0), status: "review_ready", answer_text: "Answer", interpretation: { answer_kind: "preference_intent", confirmed_context_summary: "Preference", proposed_evidence: [] } });
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Confirm clarification" })).toBeEnabled());
 });
