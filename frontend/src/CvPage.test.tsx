@@ -11,13 +11,22 @@ vi.mock("./auth", () => ({
 afterEach(() => { cleanup(); request.mockReset(); });
 
 const noDraft = { profile_exists: true, candidate_context_ready: false, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 } };
-const mergedEmpty = { employment: [], education: [], credentials: [], skills: [], projects: [], achievements: [], evidence: [] };
+type TestCVData = {
+  employment: Array<Record<string, unknown>>;
+  education: Array<Record<string, unknown>>;
+  credentials: Array<Record<string, unknown>>;
+  skills: Array<Record<string, unknown>>;
+  projects: Array<Record<string, unknown>>;
+  achievements: Array<Record<string, unknown>>;
+  evidence: Array<Record<string, unknown>>;
+};
+const mergedEmpty: TestCVData = { employment: [], education: [], credentials: [], skills: [], projects: [], achievements: [], evidence: [] };
 const statusWith = (id: string, state: "uploaded" | "review_ready" | "confirmed", candidate_context_ready = false) => ({
   ...noDraft,
   candidate_context_ready,
   latest_cv_draft: { id, state, created_at: "", updated_at: "" },
 });
-const draftWith = (id: string, state: "uploaded" | "review_ready" | "confirmed", merged: typeof mergedEmpty | null = null) => ({
+const draftWith = (id: string, state: "uploaded" | "review_ready" | "confirmed", merged: TestCVData | null = null) => ({
   id, state, documents: [{ provenance: { filename: "cv.md" } }], merged, created_at: "", updated_at: "",
 });
 const sizedFile = (name: string, size: number) => {
@@ -142,7 +151,7 @@ it("keeps semantic evidence read-only and blocks confirmation until exclusions a
 
   fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/v1/cv-ingestion/draft-2", expect.objectContaining({ method: "PATCH" })));
-  expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled();
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled());
   expect(request.mock.calls.some(([path]) => String(path).includes("/confirm"))).toBe(false);
 });
 
