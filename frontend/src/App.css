@@ -47,6 +47,14 @@ h2 { font-size: 1.2rem; }
 .evidence-card h3 { margin: 0.25rem 0; }
 .cv-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
 .button-danger { background: #fff1f2; color: #9f1239; }
+.adviser-page { display: block; max-width: 70rem; }
+.adviser-page > .card { margin-top: 1rem; }
+.adviser-intake { display: grid; gap: 0.9rem; }
+.adviser-intake > label { display: grid; gap: 0.35rem; }
+.adviser-list { border: 1px solid #d9e0ea; border-radius: 0.45rem; display: grid; gap: 0.45rem; margin: 0; padding: 0.75rem; }
+.inline-control { display: flex; gap: 0.5rem; }
+.inline-control input { min-width: 0; flex: 1; }
+.clarification-card { border-bottom: 1px solid #d9e0ea; padding: 0.75rem 0; }
 .supersede-warning { border-color: #eab308; display: grid; gap: 0.75rem; }
 .profile-fields { display: grid; gap: 0.9rem 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .field { display: grid; gap: 0.35rem; min-width: 0; }

@@ -188,25 +188,32 @@ def get_persisted_candidate_context_loader(db: DbSession) -> PersistedCandidateC
 
 
 def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
-    current_settings = get_settings()
-    return CandidateAdviserService(
-        db,
-        agent=SemanticCandidateAdviser(
+    def build_agent() -> SemanticCandidateAdviser:
+        current_settings = get_settings()
+        return SemanticCandidateAdviser(
             get_semantic_response_client(
                 current_settings,
                 model=current_settings.candidate_adviser_model,
                 operation="candidate_adviser",
             ),
             current_settings.candidate_adviser_model,
-        ),
-        clarification_interpreter=SemanticCandidateAdviserClarificationInterpreter(
+        )
+
+    def build_interpreter() -> SemanticCandidateAdviserClarificationInterpreter:
+        current_settings = get_settings()
+        return SemanticCandidateAdviserClarificationInterpreter(
             get_semantic_response_client(
                 current_settings,
                 model=current_settings.candidate_adviser_model,
                 operation="candidate_adviser_clarification",
             ),
             current_settings.candidate_adviser_model,
-        ),
+        )
+
+    return CandidateAdviserService(
+        db,
+        agent_factory=build_agent,
+        clarification_interpreter_factory=build_interpreter,
     )
 
 

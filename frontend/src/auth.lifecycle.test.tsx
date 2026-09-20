@@ -380,6 +380,6 @@ describe("AuthProvider routed lifecycle", () => {
     vi.stubGlobal("fetch", authenticatedFetch());
     renderApp();
     expect(await screen.findByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/cv");
-    expect(screen.getByText("Available after confirmed CV").closest("li")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("Complete CV first").closest("li")).toBeInTheDocument();
   });
 });

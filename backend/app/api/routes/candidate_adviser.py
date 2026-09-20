@@ -33,14 +33,14 @@ def read_assessment(current_user: CurrentUser, service: CandidateAdviserService 
 def generate_assessment(current_user: CurrentUser, service: CandidateAdviserService = Depends(get_candidate_adviser_service)) -> CandidateAdviserAssessmentRead:
     try:
         return service.assess(current_user.id)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except SemanticProviderConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except SemanticProviderUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except (SemanticProviderRequestError, SemanticOutputError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/assessment/confirm", response_model=CandidateAdviserAssessmentRead)
@@ -70,14 +70,14 @@ def answer_clarification(
         return service.answer_clarification(current_user.id, clarification_id, payload)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clarification not found.") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except SemanticProviderConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except SemanticProviderUnavailableError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except (SemanticProviderRequestError, SemanticOutputError) as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.post("/clarifications/{clarification_id}/confirm", response_model=CandidateAdviserClarificationRead)
