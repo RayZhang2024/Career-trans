@@ -364,12 +364,11 @@ describe("AuthProvider routed lifecycle", () => {
     expect(screen.getByText("Saved")).toBeInTheDocument();
   });
 
-  it("shows backend-driven future stages as non-interactive text", async () => {
+  it("links the CV stage while keeping Career Adviser non-interactive", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     vi.stubGlobal("fetch", authenticatedFetch());
     renderApp();
-    await screen.findByText("Coming in the next UI slice");
-    expect(screen.queryByRole("link", { name: /CV|Career Adviser/ })).not.toBeInTheDocument();
-    expect(screen.getByText("Coming in the next UI slice").closest("li")).toHaveAttribute("aria-disabled", "true");
+    expect(await screen.findByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/cv");
+    expect(screen.getByText("Available after confirmed CV").closest("li")).toHaveAttribute("aria-disabled", "true");
   });
 });

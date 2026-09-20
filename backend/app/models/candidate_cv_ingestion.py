@@ -19,6 +19,29 @@ class CandidateCVIngestionDraft(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class CandidateCVReviewBaseline(Base):
+    """Immutable original semantic-evidence snapshot for one reviewable draft.
+
+    This is deliberately an additive table: ``create_all`` can add it to an
+    existing local SQLite database without requiring a destructive migration.
+    """
+
+    __tablename__ = "candidate_cv_review_baselines"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    draft_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("candidate_cv_ingestion_drafts.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    evidence_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class CandidateStructuredProfile(Base):
     __tablename__ = "candidate_structured_profiles"
 

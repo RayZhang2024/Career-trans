@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { type OnboardingStatus, type Profile } from "./api";
 import { ApiError, useAuth } from "./auth";
+import { CvPage } from "./CvPage";
 import "./App.css";
 
 function AppShell({ children }: { children: React.ReactNode }) {
@@ -68,7 +69,7 @@ export function ProfileForm({ profile, onSaved }: { profile: Profile | null; onS
 
 function OnboardingCard({ status, error }: { status: OnboardingStatus | undefined; error: string }) {
   if (!status) return <section className="card onboarding-card"><h2>Getting started</h2>{error ? <p role="alert">{error}</p> : <p className="muted">Loading onboarding status…</p>}</section>;
-  return <section className="card onboarding-card"><h2>Getting started</h2>{error && <p role="alert">{error}</p>}<ol className="onboarding-list"><li><strong>Account</strong><span>Ready</span></li><li><strong>Profile</strong><span>{status.profile_exists ? "Saved" : "Not saved yet"}</span></li><li aria-disabled="true"><strong>CV</strong><span>Coming in the next UI slice</span></li><li aria-disabled="true"><strong>Career Adviser</strong><span>Available after confirmed CV</span></li></ol>{status.candidate_context_ready && status.latest_cv_draft?.state === "review_ready" && <p className="notice">Active candidate profile ready; newer CV update awaiting review.</p>}</section>;
+  return <section className="card onboarding-card"><h2>Getting started</h2>{error && <p role="alert">{error}</p>}<ol className="onboarding-list"><li><strong>Account</strong><span>Ready</span></li><li><strong>Profile</strong><span>{status.profile_exists ? "Saved" : "Not saved yet"}</span></li><li><strong>CV</strong><Link to="/cv">{status.latest_cv_draft?.state === "confirmed" ? "Confirmed" : "Continue CV onboarding"}</Link></li><li aria-disabled="true"><strong>Career Adviser</strong><span>Available after confirmed CV</span></li></ol>{status.candidate_context_ready && status.latest_cv_draft && status.latest_cv_draft.state !== "confirmed" && <p className="notice">Active candidate profile ready; newer CV update awaiting review.</p>}</section>;
 }
 
 function Home() {
@@ -114,4 +115,4 @@ function Home() {
   return <AppShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Welcome {user?.email}</h1></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area">{profileError && <p role="alert">{profileError}</p>}{profile === undefined ? <p className="muted">Loading profile…</p> : <ProfileForm profile={profile} onSaved={load} />}</section></main></AppShell>;
 }
 
-export function App() { return <Routes><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/" element={<Protected><Home /></Protected>} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>; }
+export function App() { return <Routes><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/" element={<Protected><Home /></Protected>} /><Route path="/cv" element={<Protected><AppShell><CvPage /></AppShell></Protected>} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>; }
