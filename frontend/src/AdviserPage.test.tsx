@@ -80,6 +80,21 @@ it("keeps an authoritative recovery notice after an assessment conflict refresh"
   expect(screen.getByRole("button", { name: "Generate assessment" })).toBeEnabled();
 });
 
+it("refreshes assessment independently when onboarding fails after a changed intake Save", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  const content = { professional_positioning: { text: "Position", source_references: [] }, transferable_strengths: [], development_gaps: [], role_hypotheses: [], transition_assessment: { text: "Transition", source_references: [] }, open_questions: [], career_strategy_summary: { text: "Strategy", source_references: [] }, job_search_strategy_summary: { text: "Search", source_references: [] } };
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce({ status: "confirmed", content }).mockResolvedValueOnce([]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findByText("Assessment is current.")).toBeInTheDocument();
+  fireEvent.change(screen.getByRole("textbox", { name: "Career direction" }), { target: { value: "Changed direction" } });
+  request.mockResolvedValueOnce({ ...intake, career_direction: "Changed direction" }).mockRejectedValueOnce(new ApiError(503, "")).mockResolvedValueOnce({ status: "stale", content });
+  fireEvent.click(screen.getByRole("button", { name: "Save intake" }));
+  expect(await screen.findByRole("button", { name: "Reassess" })).toBeEnabled();
+  expect(screen.getByText("Adviser status is unavailable.")).toBeInTheDocument();
+  expect(screen.queryByText("Assessment is current.")).not.toBeInTheDocument();
+  expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/clarifications").length).toBe(1);
+});
+
 it("renders confirmed assessment empty clarification state and persistent count", async () => {
   const assessment = { status: "confirmed", content: { professional_positioning: { text: "Position", source_references: [{ source_type: "intake", reference: "career_direction" }] }, transferable_strengths: [], development_gaps: [], role_hypotheses: [], transition_assessment: { text: "Transition", source_references: [{ source_type: "intake", reference: "career_direction" }] }, open_questions: [], career_strategy_summary: { text: "Strategy", source_references: [{ source_type: "intake", reference: "career_direction" }] }, job_search_strategy_summary: { text: "Search", source_references: [{ source_type: "intake", reference: "career_direction" }] } } };
   request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment).mockResolvedValueOnce([]);
@@ -110,4 +125,27 @@ it("restores the deterministic review-ready clarification, normalized answer, an
   fireEvent.change(answer, { target: { value: "Edited answer" } });
   expect(screen.getByText("Answer changed — re-interpret before confirmation.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Confirm clarification" })).toBeDisabled();
+});
+
+it("keeps a confirmed clarification read-only through dependent refresh until reassessment replaces it", async () => {
+  const content = { professional_positioning: { text: "Position", source_references: [] }, transferable_strengths: [], development_gaps: [], role_hypotheses: [], transition_assessment: { text: "Transition", source_references: [] }, open_questions: [], career_strategy_summary: { text: "Strategy", source_references: [] }, job_search_strategy_summary: { text: "Search", source_references: [] } };
+  const reviewing = { clarification_id: "question", question_text: "What delivery fact?", priority_index: 0, status: "review_ready", answer_text: "Normalized answer", interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Confirmed context", proposed_evidence: [{ title: "Synthetic delivery", text: "Delivered a system.", skills: [] }] } };
+  const confirmed = { ...reviewing, status: "confirmed" };
+  let resolveStatus!: (value: unknown) => void; let resolveAssessment!: (value: unknown) => void;
+  const delayedStatus = new Promise<unknown>((resolve) => { resolveStatus = resolve; });
+  const delayedAssessment = new Promise<unknown>((resolve) => { resolveAssessment = resolve; });
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce({ status: "confirmed", content }).mockResolvedValueOnce([reviewing]).mockResolvedValueOnce(confirmed).mockReturnValueOnce(delayedStatus).mockReturnValueOnce(delayedAssessment);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("button", { name: "Confirm clarification" });
+  fireEvent.click(screen.getByRole("button", { name: "Confirm clarification" }));
+  expect(await screen.findByRole("heading", { name: "Clarification confirmed" })).toBeInTheDocument();
+  expect(screen.getByText("Normalized answer")).toBeInTheDocument();
+  expect(screen.getByText("Confirmed context")).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "Clarification answer" })).not.toBeInTheDocument();
+  resolveStatus(status()); resolveAssessment({ status: "stale", content });
+  expect(await screen.findByRole("button", { name: "Reassess" })).toBeEnabled();
+  expect(screen.getByRole("heading", { name: "Clarification confirmed" })).toBeInTheDocument();
+  request.mockResolvedValueOnce({ status: "review_ready", content });
+  fireEvent.click(screen.getByRole("button", { name: "Reassess" }));
+  await vi.waitFor(() => expect(screen.queryByRole("heading", { name: "Clarification confirmed" })).not.toBeInTheDocument());
 });
