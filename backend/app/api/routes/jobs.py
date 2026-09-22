@@ -19,6 +19,7 @@ from app.api.deps import (
     get_job_detail_enrichment_service,
     get_requirement_matching_service,
     get_user_job_discovery_service,
+    get_user_job_discovery_read_service,
     get_discovery_schedule_service,
     get_scheduled_discovery_execution_service,
 )
@@ -50,9 +51,13 @@ from app.schemas.job_sources import (
     CompanySourceDiscoveryResponse,
 )
 from app.schemas.job_ranking import JobRankingMeRequest, JobRankingRequest, JobRankingResponse
-from app.schemas.opportunity_inbox import OpportunityInboxResponse
+from app.schemas.opportunity_inbox import OpportunityInboxResponse, OpportunityInboxSummaryResponse
 from app.schemas.job_enrichment import JobEnrichmentRequest, JobEnrichmentResponse
-from app.schemas.user_job_discovery import DiscoveryRunCreateRequest, DiscoveryRunRead, UserOpportunityResponse
+from app.schemas.user_job_discovery import (
+    DiscoveryRunCreateRequest, DiscoveryRunRead, UserOpportunityResponse,
+    UserOpportunitySummaryResponse, DiscoveryRunSummaryResponse,
+    DiscoveryRunDetailRead, DiscoveryRunJobDetailRead,
+)
 from app.schemas.discovery_schedule import DiscoveryScheduleCreate, DiscoverySchedulePatch, DiscoveryScheduleRead, ScheduledExecutionRead
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
@@ -135,32 +140,56 @@ def create_discovery_run(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.get("/discovery-runs", response_model=list[DiscoveryRunRead])
+@router.get("/discovery-runs", response_model=DiscoveryRunSummaryResponse)
 def list_discovery_runs(
     current_user: CurrentUser,
-    service: UserJobDiscoveryService = Depends(get_user_job_discovery_service),
-) -> list[DiscoveryRunRead]:
-    return service.list_runs(current_user.id)
+    limit: int = Query(default=20, ge=1, le=100),
+    service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
+) -> DiscoveryRunSummaryResponse:
+    return service.list_run_summaries(current_user.id, limit=limit)
 
 
-@router.get("/discovery-runs/{run_id}", response_model=DiscoveryRunRead)
+@router.get("/discovery-runs/{run_id}/jobs/{discovered_job_id}", response_model=DiscoveryRunJobDetailRead)
+def get_historical_discovery_run_job(
+    run_id: str, discovered_job_id: str, current_user: CurrentUser,
+    service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
+) -> DiscoveryRunJobDetailRead:
+    try:
+        return service.get_historical_run_job_detail(current_user.id, run_id, discovered_job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery run job not found.") from exc
+
+
+@router.get("/discovery-runs/{run_id}", response_model=DiscoveryRunDetailRead)
 def get_discovery_run(
     run_id: str,
     current_user: CurrentUser,
-    service: UserJobDiscoveryService = Depends(get_user_job_discovery_service),
-) -> DiscoveryRunRead:
+    service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
+) -> DiscoveryRunDetailRead:
     try:
-        return service.get_run(current_user.id, run_id)
+        return service.get_run_detail(current_user.id, run_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovery run not found.") from exc
 
 
-@router.get("/opportunities", response_model=UserOpportunityResponse)
+@router.get("/opportunities", response_model=UserOpportunitySummaryResponse)
 def list_current_opportunities(
     current_user: CurrentUser,
-    service: UserJobDiscoveryService = Depends(get_user_job_discovery_service),
-) -> UserOpportunityResponse:
-    return service.current_opportunities(current_user.id)
+    limit: int = Query(default=20, ge=1, le=100),
+    service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
+) -> UserOpportunitySummaryResponse:
+    return service.current_opportunity_summaries(current_user.id, limit=limit)
+
+
+@router.get("/opportunities/{evaluation_id}")
+def get_current_opportunity(
+    evaluation_id: str, current_user: CurrentUser,
+    service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
+):
+    try:
+        return service.current_opportunity_detail(current_user.id, evaluation_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Current opportunity not found.") from exc
 
 
 @router.post(
@@ -207,15 +236,15 @@ def discover_known_ats_sources(
     return service.discover(payload)
 
 
-@router.get("/inbox", response_model=OpportunityInboxResponse, status_code=status.HTTP_200_OK)
+@router.get("/inbox", response_model=OpportunityInboxSummaryResponse, status_code=status.HTTP_200_OK)
 def list_opportunity_inbox(
     current_user: CurrentUser,
     limit: int = Query(default=20, ge=1, le=100),
     service: OpportunityInboxService = Depends(get_opportunity_inbox_service),
-) -> OpportunityInboxResponse:
+) -> OpportunityInboxSummaryResponse:
     """Inspect recent shared external discoveries without starting a runtime or ranking job."""
     del current_user  # Authentication gates public-job inspection; candidate data is never returned.
-    return service.list_recent(limit=limit)
+    return service.list_recent_summary(limit=limit)
 
 
 @router.post("/enrich-imported", response_model=JobEnrichmentResponse, status_code=status.HTTP_200_OK)

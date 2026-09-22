@@ -253,18 +253,20 @@ class PersistedCandidateContextLoader:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def load(self, user_id: str) -> CandidateContext:
+    def load(self, user_id: str, *, read_only: bool = False) -> CandidateContext:
         profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
         structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
         data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
-        evidence = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
-        self._session.commit()
+        resolver = ActiveCandidateEvidenceResolver(self._session)
+        evidence = resolver.read_active(user_id, data) if read_only else resolver.resolve(user_id, data)
+        if not read_only:
+            self._session.commit()
         profile_text = " ".join(value for value in ([profile.headline, profile.current_role, profile.summary, profile.location] if profile else []) if value)
         employment_text = "\n".join(f"{item.title} at {item.employer}. {item.description}" for item in data.employment)
         education_text = "\n".join(f"{item.qualification} at {item.institution}. {item.description}" for item in data.education)
         adviser = CandidateAdviserService(self._session)
         intake = adviser.get_intake(user_id)
-        assessment = adviser.current_assessment(user_id)
+        assessment = adviser.current_assessment_read_only(user_id) if read_only else adviser.current_assessment(user_id)
         career_strategy_parts = [
             profile.career_goal if profile and profile.career_goal else "",
             intake.career_direction if intake else "",
@@ -293,6 +295,11 @@ class PersistedCandidateContextLoader:
             select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
         )
         return self.load(user_id) if structured is not None else None
+
+    def load_confirmed_read_only(self, user_id: str) -> CandidateContext | None:
+        """Confirmed authority composition with no reconciliation or writes."""
+        structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+        return self.load(user_id, read_only=True) if structured is not None else None
 
     def summary(self, user_id: str) -> CandidateContextSummary:
         profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))

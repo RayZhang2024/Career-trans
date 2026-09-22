@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.discovery import JobSearchQuery
 from app.schemas.job_ranking import RankedJobOpportunity
+from app.schemas.job_ranking import PostingLegitimacyAssessment
 
 
 class DiscoveryRunStatus(StrEnum):
@@ -70,3 +71,70 @@ class UserOpportunityRead(BaseModel):
 class UserOpportunityResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     opportunities: list[UserOpportunityRead] = Field(default_factory=list)
+
+
+class UserOpportunitySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    evaluation_id: str
+    discovered_job_id: str
+    recommendation: str
+    title: str
+    company: str
+    location: str | None = None
+    work_arrangement: str | None = None
+    fit_score: float
+    career_alignment_score: float
+    career_alignment_confidence: str
+    relevance_score: float
+    archetype: str
+    url: str
+    posting_recency: PostingLegitimacyAssessment
+
+
+class UserOpportunitySummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[UserOpportunitySummary] = Field(default_factory=list)
+    limit: int
+    truncated: bool
+
+
+class DiscoveryRunSummaryRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    status: DiscoveryRunStatus
+    run_input: dict[str, object] = Field(default_factory=dict)
+    funnel: dict[str, int] = Field(default_factory=dict)
+    failure_summary: dict[str, int] = Field(default_factory=dict)
+    started_at: datetime
+    completed_at: datetime | None = None
+
+
+class DiscoveryRunSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[DiscoveryRunSummaryRead] = Field(default_factory=list)
+    limit: int
+    truncated: bool
+
+
+class DiscoveryRunJobSummaryRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    discovered_job_id: str
+    evaluation_id: str | None = None
+    outcome: DiscoveryRunJobOutcome
+    failure_stage: str | None = None
+    failure_kind: str | None = None
+    opportunity: UserOpportunitySummary | None = None
+
+
+class DiscoveryRunDetailRead(DiscoveryRunSummaryRead):
+    jobs: list[DiscoveryRunJobSummaryRead] = Field(default_factory=list)
+
+
+class DiscoveryRunJobDetailRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    discovered_job_id: str
+    evaluation_id: str | None = None
+    outcome: DiscoveryRunJobOutcome
+    failure_stage: str | None = None
+    failure_kind: str | None = None
+    opportunity: RankedJobOpportunity | None = None

@@ -102,8 +102,19 @@ class CandidateAdviserService:
         fingerprint = self.input_fingerprint(user_id)
         return self._read_assessment(record, fingerprint)
 
+    def get_assessment_read_only(self, user_id: str) -> CandidateAdviserAssessmentRead | None:
+        record = self._session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user_id))
+        if record is None:
+            return None
+        fingerprint = self.input_fingerprint(user_id, read_only=True)
+        return self._read_assessment(record, fingerprint)
+
     def current_assessment(self, user_id: str) -> CandidateAdviserAssessmentRead | None:
         assessment = self.get_assessment(user_id)
+        return assessment if assessment and assessment.status is CandidateAdviserAssessmentStatus.CONFIRMED else None
+
+    def current_assessment_read_only(self, user_id: str) -> CandidateAdviserAssessmentRead | None:
+        assessment = self.get_assessment_read_only(user_id)
         return assessment if assessment and assessment.status is CandidateAdviserAssessmentStatus.CONFIRMED else None
 
     def list_clarifications(self, user_id: str) -> list[CandidateAdviserClarificationRead]:

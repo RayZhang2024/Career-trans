@@ -39,3 +39,29 @@ class OpportunityInboxResponse(BaseModel):
 
     limit: int
     jobs: list[OpportunityInboxItem] = Field(default_factory=list)
+
+
+class OpportunityInboxSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    discovered_job_id: str
+    title: str
+    company: str
+    location: str | None = None
+    work_arrangement: str | None = None
+    employment_type: str | None = None
+    url: str
+    state: DiscoveredJobState
+    verification_status: JobVerificationStatus
+    verification_reason: str | None = None
+    actionable: bool
+    first_seen_at: datetime
+    last_seen_at: datetime
+    provenance: list[PersistedJobProvenance] = Field(default_factory=list)
+    provenance_count: int
+
+
+class OpportunityInboxSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    items: list[OpportunityInboxSummary] = Field(default_factory=list)
+    limit: int
+    truncated: bool
