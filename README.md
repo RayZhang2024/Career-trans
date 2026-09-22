@@ -37,11 +37,11 @@ The repository is intentionally user-agnostic. Demo candidate data exists only f
 
 ## Current product status
 
-The backend is substantially ahead of the browser UI.
+The browser now exposes the main onboarding flow and a Jobs workspace over the existing backend read models.
 
 ### Available in the browser today
 
-UI V1A/V1B/V1C are implemented:
+The authenticated browser workspace includes:
 
 - register;
 - sign in / sign out;
@@ -51,6 +51,9 @@ UI V1A/V1B/V1C are implemented:
 - responsive desktop/mobile presentation;
 - CV upload, review, correction, and confirmation;
 - Candidate Adviser intake, reviewable assessment, confirmation, and clarification answers.
+- current ranked opportunities with lazy current-detail views;
+- bounded discovery-run history with lazy run and historical job detail;
+- a recent shared imported-vacancy inbox and selection of actionable records for evaluation.
 
 The current browser flow is:
 
@@ -60,6 +63,7 @@ Register
   -> Profile
   -> CV
   -> Career Adviser
+  -> Jobs
 ```
 
 
@@ -93,22 +97,15 @@ Current backend capabilities include:
 - multi-user ownership and isolation tests;
 - deterministic fake-provider tests with no live LLM/network dependency.
 
-### Not yet exposed in the browser
+### Later browser work
 
-The following are implemented partly or fully in the backend but do not yet have normal end-user UI:
-
-- CV upload/review/confirmation — tracked by #161;
-- Candidate Adviser and clarification loop — tracked by #162;
-- job discovery/ranking dashboard;
-- application-preparation UI;
-- recurring-discovery controls.
+Application-preparation UI and broader application tracking are later milestones. Broad external Codex discovery remains a host-side workflow outside the browser. The Jobs inbox reads persisted public vacancies; it does not run Codex or web discovery.
 
 ### Still planned
 
 - application tracking/status history;
 - production database migration;
 - production identity/session hardening;
-- Docker/local full-stack packaging — tracked by #163;
 - deployment, monitoring and production storage.
 
 ---
@@ -454,7 +451,7 @@ docker compose up --build
 Open the UI at `http://127.0.0.1:5173`; the API remains available to host-side
 tools at `http://127.0.0.1:8000`. The browser only calls same-origin `/api/*`;
 nginx proxies that path internally to the backend container. Direct refreshes
-of `/`, `/cv`, and `/adviser` are served by the SPA fallback.
+of `/`, `/cv`, `/adviser`, and `/jobs` are served by the SPA fallback.
 
 Compose uses `sqlite:////data/career_agent.db` in the named
 `career_agent_data` volume. `docker compose down` retains it; `docker compose
@@ -522,15 +519,9 @@ They exist to exercise the system and must not be treated as globally applicable
 
 ---
 
-## Near-term UI roadmap
+## Later product work
 
-The next planned UI slices are:
-
-1. **#161 — CV Upload, Safe Review, Confirmation & Resume**
-2. **#162 — Candidate Adviser & Adaptive Clarification Loop**
-3. **#163 — Docker & Local Full-Stack Developer Packaging**
-
-Job discovery/ranking and application-preparation browser workflows come after the onboarding UI is complete.
+Application-preparation UI and application tracking remain later product work. Broad external Codex discovery continues through the host-side workflow; the browser evaluates only persisted public vacancies selected from the Jobs inbox. Recurring-discovery controls are also outside the current Jobs workspace.
 
 ---
 

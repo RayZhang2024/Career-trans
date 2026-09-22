@@ -21,6 +21,58 @@ export type OnboardingStatus = {
   adviser: { intake_exists: boolean; assessment_status: "review_ready" | "confirmed" | "stale" | null; confirmed_clarification_count: number };
 };
 
+export type PostingRecency = { legitimacy: "high_confidence" | "proceed_with_caution" | "unknown"; reasoning: string };
+export type JobRequirement = { text: string; importance: "essential" | "desirable" | "unspecified"; category: string; source_text?: string | null };
+export type JobProfile = {
+  title?: string | null; company?: string | null; location?: string | null; work_arrangement?: string | null;
+  seniority?: string | null; salary?: string | null; employment_type?: string | null; application_deadline?: string | null;
+  responsibilities: string[]; requirements: JobRequirement[]; technical_skills: string[]; domain_knowledge: string[];
+  security_requirements: string[]; work_authorization_requirements: string[];
+};
+export type RankedJobOpportunity = {
+  job: { title: string; company?: string | null; location?: string | null; work_arrangement?: string | null; employment_type?: string | null; url: string; posted_at?: string | null };
+  relevance: { relevant: boolean; score: number; reasoning: string };
+  archetype: { archetype: string; reasoning: string };
+  fit_assessment: { fit_score: number; essential_score?: number | null; desirable_score?: number | null; strengths: number[]; hard_blockers: number[]; gaps: Array<{ requirement_index: number; requirement: JobRequirement; gap_type: string; severity: string; reason: string }> };
+  career_assessment: { career_alignment_score: number; confidence: string; dimensions: Array<{ dimension: string; score: number; reasoning: string }>; strategic_strengths: string[]; strategic_tradeoffs: string[]; reasoning: string };
+  recommendation_assessment: { recommendation: "apply" | "consider" | "skip"; fit_score: number; career_alignment_score: number; career_alignment_confidence: string; rule_id: string; reasoning: string; key_strengths: string[]; key_tradeoffs: string[]; hard_blockers: number[] };
+  legitimacy: PostingRecency;
+  rank: number;
+  job_profile?: JobProfile | null;
+  requirement_matches: Array<{ requirement_index: number; requirement: JobRequirement; match_type: string; score: number; evidence_ids: string[]; reasoning: string }>;
+};
+export type UserOpportunitySummary = {
+  evaluation_id: string; discovered_job_id: string; recommendation: "apply" | "consider" | "skip"; title: string;
+  company: string | null; location: string | null; work_arrangement: string | null; fit_score: number;
+  career_alignment_score: number; career_alignment_confidence: string; relevance_score: number; archetype: string;
+  url: string; posting_recency: PostingRecency;
+};
+export type BoundedResponse<T> = { items: T[]; limit: number; truncated: boolean };
+export type DiscoveryRunStatus = "running" | "completed" | "partial_failed" | "failed";
+export type DiscoveryRunSummary = {
+  id: string; status: DiscoveryRunStatus; run_input: Record<string, unknown>; funnel: Record<string, number>;
+  failure_summary: Record<string, number>; started_at: string; completed_at: string | null;
+};
+export type DiscoveryRunJobSummary = {
+  discovered_job_id: string; evaluation_id: string | null;
+  outcome: "newly_evaluated" | "reused_evaluation" | "not_actionable" | "presemantic_filtered" | "outside_semantic_budget" | "semantic_rejected" | "outside_deep_analysis_budget" | "analysis_failed";
+  failure_stage: string | null; failure_kind: string | null; opportunity: UserOpportunitySummary | null;
+};
+export type DiscoveryRunDetail = DiscoveryRunSummary & { jobs: DiscoveryRunJobSummary[] };
+export type HistoricalRunJobDetail = { discovered_job_id: string; evaluation_id: string | null; outcome: DiscoveryRunJobSummary["outcome"]; failure_stage: string | null; failure_kind: string | null; opportunity: RankedJobOpportunity | null };
+export type InboxProvenance = { runtime: string; source_ref: string | null; discovered_via: string | null; imported_at: string };
+export type InboxSummary = {
+  discovered_job_id: string; title: string; company: string | null; location: string | null;
+  work_arrangement: string | null; employment_type: string | null; url: string; state: "new" | "updated" | "unchanged" | "inactive";
+  verification_status: "verified" | "unverified"; verification_reason: string | null; actionable: boolean;
+  first_seen_at: string; last_seen_at: string; provenance: InboxProvenance[]; provenance_count: number;
+};
+export type CreateDiscoveryRun = {
+  query: { keywords: string[]; locations: string[]; remote_ok: boolean | null; companies: string[]; excluded_companies: string[]; excluded_title_terms: string[]; employment_types: string[]; max_results: number };
+  discovered_job_ids: string[]; max_semantic_candidates: number; max_full_analyses: number; min_relevance_score: number;
+};
+export type DiscoveryRunCreated = DiscoveryRunSummary & { search_input_fingerprint: string; candidate_evaluation_fingerprint: string; evaluation_contract_fingerprint: string; jobs: Array<DiscoveryRunJobSummary & { opportunity: RankedJobOpportunity | null }> };
+
 export class SessionApi {
   private epoch = 0;
   private controllers = new Set<AbortController>();
