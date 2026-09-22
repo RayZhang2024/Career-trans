@@ -1,4 +1,7 @@
-export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+// The default is deliberately same-origin so both the Compose nginx proxy and
+// the Vite development proxy can route browser requests to the API. Native
+// deployments can still set VITE_API_BASE_URL at build time.
+export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 export class ApiError extends Error {
   constructor(public readonly status: number, message: string) { super(message); }
