@@ -52,6 +52,12 @@ function renderJobs(fetch = fakeFetch(), path = "/jobs") {
 function requestPaths(fetch: ReturnType<typeof fakeFetch>) { return fetch.mock.calls.map(([input]) => { const url = new URL(String(input), window.location.origin); return `${url.pathname}${url.search}`; }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 async function loaded() { await screen.findByRole("heading", { name: "Current ranked opportunities" }); await screen.findByText("Alpha"); }
+async function growToLimit(fetch: ReturnType<typeof fakeFetch>, endpoint: string, buttonName: string) {
+  for (const limit of [40, 60, 80, 100]) {
+    fireEvent.click(screen.getByRole("button", { name: buttonName }));
+    await waitFor(() => expect(requestPaths(fetch)).toContain(`${endpoint}?limit=${limit}`));
+  }
+}
 
 beforeEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 afterEach(cleanup);
@@ -99,6 +105,36 @@ describe("Issue #171 Jobs workspace", () => {
     expect(await screen.findByText("New top window")).toBeInTheDocument();
     expect(screen.queryByText("Old window")).not.toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=40");
+  });
+
+  it("caps opportunities at 100 and explains a truncated maximum window", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([op("at-limit")], true)) });
+    renderJobs(fetch); await screen.findByText("at-limit");
+    await growToLimit(fetch, "/api/v1/jobs/opportunities", "Show more current opportunities");
+    expect(screen.queryByRole("button", { name: "Show more current opportunities" })).not.toBeInTheDocument();
+    expect(screen.getByText("Showing the first 100 current opportunities available through this view.")).toBeInTheDocument();
+    const limits = requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/opportunities?")).map((path) => Number(new URL(path, window.location.origin).searchParams.get("limit")));
+    expect(limits).toContain(100); expect(limits.every((limit) => limit <= 100)).toBe(true); expect(limits).not.toContain(120);
+  });
+
+  it("caps discovery runs at 100 and explains a truncated maximum window", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([run()], true)) });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Discovery runs" }));
+    await growToLimit(fetch, "/api/v1/jobs/discovery-runs", "Show more runs");
+    expect(screen.queryByRole("button", { name: "Show more runs" })).not.toBeInTheDocument();
+    expect(screen.getByText("Showing the first 100 discovery runs available through this view.")).toBeInTheDocument();
+    const limits = requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/discovery-runs?")).map((path) => Number(new URL(path, window.location.origin).searchParams.get("limit")));
+    expect(limits).toContain(100); expect(limits.every((limit) => limit <= 100)).toBe(true); expect(limits).not.toContain(120);
+  });
+
+  it("caps the recent inbox at 100 and explains a truncated maximum window", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/inbox": () => json(page([inboxItem("at-limit")], true)) });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Recent vacancies" }));
+    await growToLimit(fetch, "/api/v1/jobs/inbox", "Show more recent vacancies");
+    expect(screen.queryByRole("button", { name: "Show more recent vacancies" })).not.toBeInTheDocument();
+    expect(screen.getByText("Showing the first 100 recent vacancies available through this view.")).toBeInTheDocument();
+    const limits = requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/inbox?")).map((path) => Number(new URL(path, window.location.origin).searchParams.get("limit")));
+    expect(limits).toContain(100); expect(limits.every((limit) => limit <= 100)).toBe(true); expect(limits).not.toContain(120);
   });
 
   it("loads current detail lazily, renders backend explanations safely, and never shows evidence IDs", async () => {
@@ -177,11 +213,53 @@ describe("Issue #171 Jobs workspace", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox blocked" }));
     fireEvent.change(screen.getByRole("textbox", { name: /Search themes/ }), { target: { value: "AI Engineer, Applied AI Engineer" } });
-    fireEvent.change(screen.getByRole("textbox", { name: "Location eligibility" }), { target: { value: "London" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Location eligibility (one location per line)" }), { target: { value: "London, United Kingdom" } });
     fireEvent.change(screen.getByRole("combobox", { name: "Remote policy" }), { target: { value: "exclude_remote" } });
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await waitFor(() => expect(postBody).toBeDefined());
-    expect(postBody).toMatchObject({ discovered_job_ids: ["actionable"], query: { keywords: ["AI Engineer", "Applied AI Engineer"], locations: ["London"], remote_ok: false, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 }, max_semantic_candidates: 10, max_full_analyses: 5 });
+    expect(postBody).toMatchObject({ discovered_job_ids: ["actionable"], query: { keywords: ["AI Engineer", "Applied AI Engineer"], locations: ["London, United Kingdom"], remote_ok: false, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 }, max_semantic_candidates: 10, max_full_analyses: 5 });
+  });
+
+  it("removes a disappearing selected inbox job from selection and submission", async () => {
+    let inboxCalls = 0; let postBody: { discovered_job_ids: string[] } | undefined;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/inbox": () => json(page(inboxCalls++ === 0 ? [inboxItem("selected-A")] : [inboxItem("replacement-B")], true)),
+      "POST /api/v1/jobs/discovery-runs": (_url, init) => { postBody = JSON.parse(String(init?.body)); return json({ ...run("run-new"), jobs: [] }); },
+    });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Recent vacancies" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Search themes/ }), { target: { value: "AI" } });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Inbox selected-A" }));
+    expect(screen.getByRole("button", { name: "Evaluate 1 jobs" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText("Inbox replacement-B")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Select Inbox selected-A" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox replacement-B" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Search themes/ }), { target: { value: "AI" } });
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    await waitFor(() => expect(postBody).toBeDefined());
+    expect(postBody?.discovered_job_ids).toEqual(["replacement-B"]);
+    expect(postBody?.discovered_job_ids).not.toContain("selected-A");
+  });
+
+  it("drops a selected inbox job when the backend changes it to non-actionable", async () => {
+    let inboxCalls = 0; let postBody: { discovered_job_ids: string[] } | undefined;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/inbox": () => json(page(inboxCalls++ === 0 ? [inboxItem("selected-A")] : [inboxItem("selected-A", false), inboxItem("replacement-B")], true)),
+      "POST /api/v1/jobs/discovery-runs": (_url, init) => { postBody = JSON.parse(String(init?.body)); return json({ ...run("run-new"), jobs: [] }); },
+    });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Recent vacancies" }));
+    const selected = await screen.findByRole("checkbox", { name: "Select Inbox selected-A" }); fireEvent.click(selected);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    const nowBlocked = await screen.findByRole("checkbox", { name: "Select Inbox selected-A" });
+    expect(nowBlocked).toBeDisabled(); expect(nowBlocked).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox replacement-B" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Search themes/ }), { target: { value: "AI" } });
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    await waitFor(() => expect(postBody).toBeDefined());
+    expect(postBody?.discovered_job_ids).toEqual(["replacement-B"]);
+    expect(postBody?.discovered_job_ids).not.toContain("selected-A");
   });
 
   it("keeps a long evaluation visibly pending and prevents a duplicate submission", async () => {
