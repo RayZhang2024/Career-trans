@@ -4,7 +4,11 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import event
 
-from app.api.deps import get_job_ranking_service, get_user_job_discovery_read_service, get_user_job_discovery_service
+from app.api.deps import (
+    get_career_analysis_graph, get_job_analysis_service, get_job_archetype_agent,
+    get_job_ranking_service, get_job_relevance_agent, get_requirement_matching_service,
+    get_user_job_discovery_read_service, get_user_job_discovery_service,
+)
 from app.core.security import create_access_token
 from app.main import app
 from app.models.discovered_job import DiscoveredJob
@@ -26,6 +30,8 @@ from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
+import app.api.deps as deps_module
+import app.services.user_job_discovery_service as discovery_module
 
 
 def _context() -> CandidateContext:
@@ -201,6 +207,49 @@ def test_jobs_dashboard_gets_are_provider_free_and_emit_no_sql_writes(client, db
     assert not any(statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for statement in observed)
 
 
+def test_real_read_dependency_gets_need_no_provider_credentials_or_semantic_factories(client, db_session, monkeypatch) -> None:
+    """Use FastAPI's actual get_user_job_discovery_read_service dependency."""
+    monkeypatch.setenv("CAREER_TRANS_DEPLOYMENT_REVISION", "provider-free-read-test")
+    jobs, run, _setup_service, _ranking = _prepared(db_session, monkeypatch, count=2)
+    # Keep the dashboard fixture deterministic while exercising the real read-service dependency.
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user_id: _context())
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("A provider/ranking semantic factory was constructed by a Jobs GET.")
+
+    app.dependency_overrides[get_job_ranking_service] = forbidden
+    for dependency in (
+        get_job_relevance_agent,
+        get_job_archetype_agent,
+        get_career_analysis_graph,
+        get_job_analysis_service,
+        get_requirement_matching_service,
+    ):
+        app.dependency_overrides[dependency] = forbidden
+    monkeypatch.setattr(deps_module, "get_semantic_response_client", forbidden)
+    try:
+        headers = _headers("owner")
+        assert client.get("/api/v1/jobs/opportunities", headers=headers).status_code == 200
+        assert client.get("/api/v1/jobs/discovery-runs", headers=headers).status_code == 200
+        assert client.get(f"/api/v1/jobs/discovery-runs/{run.id}", headers=headers).status_code == 200
+        assert client.get(
+            f"/api/v1/jobs/opportunities/{run.jobs[0].evaluation_id}", headers=headers
+        ).status_code == 200
+    finally:
+        _clear_services()
+        for dependency in (
+            get_job_relevance_agent,
+            get_job_archetype_agent,
+            get_career_analysis_graph,
+            get_job_analysis_service,
+            get_requirement_matching_service,
+        ):
+            app.dependency_overrides.pop(dependency, None)
+    assert jobs
+
+
 def test_post_discovery_run_remains_ranking_backed(client, db_session, monkeypatch) -> None:
     jobs, _run, service, ranking = _prepared(db_session, monkeypatch)
     _override_services(service)
@@ -260,6 +309,20 @@ def test_current_detail_rejects_stale_fingerprints_and_content_hash(db_session, 
         raise AssertionError("A changed public job must not remain current.")
 
 
+def test_current_detail_rejects_stale_evaluation_contract(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("CAREER_TRANS_DEPLOYMENT_REVISION", "contract-before")
+    jobs, run, service, _ranking = _prepared(db_session, monkeypatch)
+    evaluation_id = run.jobs[0].evaluation_id
+    monkeypatch.setenv("CAREER_TRANS_DEPLOYMENT_REVISION", "contract-after")
+    try:
+        service.current_opportunity_detail("owner", evaluation_id)
+    except LookupError:
+        pass
+    else:
+        raise AssertionError("An evaluation from an old contract must not be current.")
+    assert jobs
+
+
 def test_run_read_models_are_bounded_historical_and_user_scoped(client, db_session, monkeypatch) -> None:
     jobs, run, service, _ranking = _prepared(db_session, monkeypatch, count=2)
     older = DiscoveryRun(user_id="owner", search_input_json="{}", search_input_fingerprint="a" * 64, candidate_evaluation_fingerprint="b" * 64, evaluation_contract_fingerprint="c" * 64, status="running", funnel_json="{}", failure_summary_json="{}", started_at=datetime.now(timezone.utc) - timedelta(days=1))
@@ -276,6 +339,10 @@ def test_run_read_models_are_bounded_historical_and_user_scoped(client, db_sessi
         assert client.get(f"/api/v1/jobs/discovery-runs/{run.id}", headers=_headers("other")).status_code == 404
         historical = client.get(f"/api/v1/jobs/discovery-runs/{run.id}/jobs/{jobs[0].id}", headers=headers)
         assert historical.status_code == 200 and historical.json()["opportunity"] is not None
+        assert client.get(
+            f"/api/v1/jobs/discovery-runs/{run.id}/jobs/{jobs[0].id}",
+            headers=_headers("other"),
+        ).status_code == 404
         assert client.get(f"/api/v1/jobs/discovery-runs/{run.id}/jobs/{jobs[1].id}-missing", headers=headers).status_code == 404
         assert client.get("/api/v1/jobs/discovery-runs?limit=0", headers=headers).status_code == 422
     finally:
