@@ -44,6 +44,22 @@ Open:
 - API docs: `http://127.0.0.1:8000/docs`
 - Health check: `http://127.0.0.1:8000/health`
 
+## Local Docker Compose
+
+From the repository root, `docker compose up --build` runs this same FastAPI
+application on `0.0.0.0:8000` with an absolute SQLite URL in a named volume:
+`sqlite:////data/career_agent.db`. `Base.metadata.create_all()` remains the
+local-development initializer. The container does not install or use Codex;
+the host CLI can reach this published API at `http://127.0.0.1:8000`.
+
+`docker compose down` keeps the volume. Use `docker compose down -v` only when
+you deliberately want to delete its local data.
+
+Compose accepts optional provider secrets only from the shell environment or a
+root-level Compose `.env`; `backend/.env` is not read automatically by
+Compose. No secret file is needed for credential-free startup, and those
+backend-only values are never made available to the frontend container.
+
 ## Tests
 
 ```powershell

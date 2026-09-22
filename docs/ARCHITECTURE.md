@@ -874,14 +874,18 @@ FastAPI local server
 SQLite
 ```
 
-## Stage 2
+## Stage 2 — Local Compose packaging
 
 ```text
-React build
+Production React static build + nginx same-origin `/api/*` proxy
 FastAPI container
-PostgreSQL
+SQLite named volume for local developer persistence
 Docker Compose
 ```
+
+This is local developer packaging, not a production database migration. A
+later production/deployment stage may introduce PostgreSQL, managed secrets,
+and deployment controls independently of this Compose stack.
 
 ## Stage 3
 

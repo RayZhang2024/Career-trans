@@ -41,7 +41,7 @@ The backend is substantially ahead of the browser UI.
 
 ### Available in the browser today
 
-UI V1A is implemented:
+UI V1A/V1B/V1C are implemented:
 
 - register;
 - sign in / sign out;
@@ -49,7 +49,8 @@ UI V1A is implemented:
 - create and edit the user's basic profile;
 - backend-owned onboarding status;
 - responsive desktop/mobile presentation;
-- explicit placeholder stages for CV and Career Adviser.
+- CV upload, review, correction, and confirmation;
+- Candidate Adviser intake, reviewable assessment, confirmation, and clarification answers.
 
 The current browser flow is:
 
@@ -57,11 +58,10 @@ The current browser flow is:
 Register
   -> Sign in
   -> Profile
-  -> CV                 (UI planned next)
-  -> Career Adviser     (UI planned after CV)
+  -> CV
+  -> Career Adviser
 ```
 
-CV and Career Adviser are not yet interactive in the frontend, even though their backend capabilities already exist.
 
 ### Implemented in the backend
 
@@ -431,19 +431,45 @@ The Vite UI runs at:
 http://localhost:5173
 ```
 
-By default the frontend calls:
-
-```text
-http://127.0.0.1:8000
-```
-
-Override it when needed with:
+By default the Vite development server proxies same-origin `/api/*` requests
+to `http://127.0.0.1:8000`. A separately hosted API can be selected at build
+time with:
 
 ```text
 VITE_API_BASE_URL
 ```
 
 The Python virtual environment is required for the backend, not for the frontend.
+
+### 3. Local Docker Compose stack
+
+Docker Desktop can run the production frontend build, reverse proxy, FastAPI,
+and a disposable local SQLite volume without provider credentials:
+
+```powershell
+cd D:\Career-trans
+docker compose up --build
+```
+
+Open the UI at `http://127.0.0.1:5173`; the API remains available to host-side
+tools at `http://127.0.0.1:8000`. The browser only calls same-origin `/api/*`;
+nginx proxies that path internally to the backend container. Direct refreshes
+of `/`, `/cv`, and `/adviser` are served by the SPA fallback.
+
+Compose uses `sqlite:////data/career_agent.db` in the named
+`career_agent_data` volume. `docker compose down` retains it; `docker compose
+down -v` permanently removes this local Compose data. It never reuses the
+native development database.
+
+The stack starts without `OPENAI_API_KEY` or any secret file. Compose reads
+optional backend-only provider settings from the shell environment and/or a
+root-level Compose `.env` file; `backend/.env` is used by native backend runs
+but is not automatically a Compose environment source. Provider settings are
+never passed to the frontend image. The host `career-trans jobs
+discover-external` and `career-trans jobs hunt` commands continue to use the
+locally installed/authenticated Codex CLI and should target the published API
+URL (for example `--base-url http://127.0.0.1:8000`). Codex is intentionally
+not installed or configured inside Compose.
 
 ---
 
