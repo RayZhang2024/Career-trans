@@ -204,7 +204,7 @@ export function JobsPage() {
       const runsRefreshed = await loadRuns(runLimit);
       setEvaluationError(error instanceof ApiError
         ? `Career-trans returned an error while creating the evaluation. ${runsRefreshed ? "Recent run history has been refreshed." : "Recent run history could not be confirmed as refreshed."}`
-        : "The evaluation request was interrupted. Career-trans cannot confirm from this response whether the run started. Recent run history has been refreshed.");
+        : `The evaluation request was interrupted. Career-trans cannot confirm from this response whether the run started. ${runsRefreshed ? "Recent run history has been refreshed." : "Recent run history could not be confirmed as refreshed."}`);
     } finally { submitLock.current = false; if (alive.current) setSubmitting(false); }
   };
 

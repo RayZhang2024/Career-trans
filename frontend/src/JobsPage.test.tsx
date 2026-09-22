@@ -311,6 +311,22 @@ describe("Issue #171 Jobs workspace", () => {
     expect(runRequests).toBeGreaterThan(1);
   });
 
+  it("does not claim run history refreshed when the post-transport-failure GET also fails", async () => {
+    let runRequests = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/discovery-runs": () => { runRequests += 1; return runRequests === 1 ? json(page([run("run-initial")])) : json(undefined, 503); },
+      "POST /api/v1/jobs/discovery-runs": () => Promise.reject(new TypeError("offline")),
+    });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Recent vacancies" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Search themes/ }), { target: { value: "AI" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    expect(await screen.findByText(/cannot confirm from this response whether the run started/)).toBeInTheDocument();
+    expect(screen.getByText(/Recent run history could not be confirmed as refreshed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Recent run history has been refreshed/)).not.toBeInTheDocument();
+    expect(runRequests).toBe(2);
+  });
+
   it("reports an authoritative HTTP evaluation error separately from transport uncertainty", async () => {
     let runRequests = 0;
     const fetch = fakeFetch({
