@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.models.discovered_job import DiscoveredJob
 from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob, UserJobEvaluation
@@ -182,6 +182,32 @@ def test_authenticated_run_and_opportunity_routes_enforce_user_scope(client, db_
     finally:
         fastapi_app.dependency_overrides.pop(get_user_job_discovery_service, None)
         fastapi_app.dependency_overrides.pop(get_user_job_discovery_read_service, None)
+
+
+def test_read_models_revalidate_current_recency_without_mutating_historical_snapshot(db_session, monkeypatch) -> None:
+    job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user: _context())
+    service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
+    run = service.start("user-a", _request(job.id))
+    evaluation = db_session.get(UserJobEvaluation, run.jobs[0].evaluation_id)
+    stored = evaluation.evaluation_json
+    job.posted_at = datetime.now(timezone.utc) - timedelta(days=365); db_session.commit()
+    current = service.current_opportunity_detail("user-a", evaluation.id)
+    historical = service.get_historical_run_job_detail("user-a", run.id, job.id)
+    assert current.legitimacy.legitimacy == PostingLegitimacy.PROCEED_WITH_CAUTION
+    assert historical.opportunity.legitimacy.legitimacy == PostingLegitimacy.HIGH_CONFIDENCE
+    assert db_session.get(UserJobEvaluation, evaluation.id).evaluation_json == stored
+
+
+def test_shared_actionability_rejects_inactive_and_unverified_jobs(db_session) -> None:
+    from app.services.public_job_actionability import is_public_job_actionable
+    active = _job("1")
+    inactive = _job("2"); inactive.state = DiscoveredJobState.INACTIVE.value
+    unverified = _job("3"); unverified.verification_status = "unverified"
+    assert is_public_job_actionable(active) is True
+    assert is_public_job_actionable(inactive) is False
+    assert is_public_job_actionable(unverified) is False
 
 
 def test_contract_fingerprint_uses_local_revision_and_relevant_configuration(db_session, monkeypatch) -> None:

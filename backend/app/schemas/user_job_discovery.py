@@ -79,7 +79,7 @@ class UserOpportunitySummary(BaseModel):
     discovered_job_id: str
     recommendation: str
     title: str
-    company: str
+    company: str | None = None
     location: str | None = None
     work_arrangement: str | None = None
     fit_score: float

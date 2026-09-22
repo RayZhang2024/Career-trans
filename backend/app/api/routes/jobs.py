@@ -50,7 +50,7 @@ from app.schemas.job_sources import (
     CompanySourceDiscoveryRequest,
     CompanySourceDiscoveryResponse,
 )
-from app.schemas.job_ranking import JobRankingMeRequest, JobRankingRequest, JobRankingResponse
+from app.schemas.job_ranking import JobRankingMeRequest, JobRankingRequest, JobRankingResponse, RankedJobOpportunity
 from app.schemas.opportunity_inbox import OpportunityInboxResponse, OpportunityInboxSummaryResponse
 from app.schemas.job_enrichment import JobEnrichmentRequest, JobEnrichmentResponse
 from app.schemas.user_job_discovery import (
@@ -181,11 +181,11 @@ def list_current_opportunities(
     return service.current_opportunity_summaries(current_user.id, limit=limit)
 
 
-@router.get("/opportunities/{evaluation_id}")
+@router.get("/opportunities/{evaluation_id}", response_model=RankedJobOpportunity)
 def get_current_opportunity(
     evaluation_id: str, current_user: CurrentUser,
     service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
-):
+) -> RankedJobOpportunity:
     try:
         return service.current_opportunity_detail(current_user.id, evaluation_id)
     except LookupError as exc:

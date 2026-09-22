@@ -173,7 +173,10 @@ class UserJobDiscoveryService:
     def current_opportunity_detail(self, user_id: str, evaluation_id: str) -> RankedJobOpportunity:
         for item in self._current_opportunity_items_read_only(user_id):
             if item.evaluation_id == evaluation_id:
-                return item.opportunity
+                job = self._session.get(DiscoveredJob, item.discovered_job_id)
+                # Current reads project current deterministic recency without
+                # rewriting the historical evaluation snapshot.
+                return item.opportunity.model_copy(update={"legitimacy": PostingLegitimacyService().assess(self._listing(job))})
         raise LookupError("Current opportunity not found.")
 
     def list_run_summaries(self, user_id: str, *, limit: int) -> DiscoveryRunSummaryResponse:
@@ -234,9 +237,9 @@ class UserJobDiscoveryService:
         return DiscoveryRunSummaryRead(id=run.id, status=run.status, run_input=json.loads(run.search_input_json), funnel=json.loads(run.funnel_json), failure_summary=json.loads(run.failure_summary_json), started_at=run.started_at, completed_at=run.completed_at)
 
     def _run_row_summary(self, row: DiscoveryRunJob) -> DiscoveryRunJobSummaryRead:
-        evaluation = self._session.get(UserJobEvaluation, row.evaluation_id) if row.evaluation_id else None
-        item = UserOpportunityRead(evaluation_id=row.evaluation_id, discovered_job_id=row.discovered_job_id, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)) if evaluation else None
-        return DiscoveryRunJobSummaryRead(discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id, outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind, opportunity=self._summary(item) if item else None)
+        # Run summaries are strictly historical outcome rows. Full historical
+        # snapshots are available only through the exact run-job detail route.
+        return DiscoveryRunJobSummaryRead(discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id, outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind, opportunity=None)
 
     def _owned_run(self, user_id: str, run_id: str) -> DiscoveryRun:
         run = self._session.scalar(select(DiscoveryRun).where(DiscoveryRun.id == run_id, DiscoveryRun.user_id == user_id))

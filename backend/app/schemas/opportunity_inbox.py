@@ -45,7 +45,7 @@ class OpportunityInboxSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
     discovered_job_id: str
     title: str
-    company: str
+    company: str | None = None
     location: str | None = None
     work_arrangement: str | None = None
     employment_type: str | None = None
