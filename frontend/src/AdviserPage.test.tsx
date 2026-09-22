@@ -499,7 +499,7 @@ it("clears an obsolete mutation error after a successful assessment retry", asyn
   expect(screen.queryByText("Assessment generation is temporarily unavailable.")).not.toBeInTheDocument();
 });
 
-it("#60 ignores a real delayed older intake GET after a newer Retry authority", async () => {
+it("ignores a real delayed older intake Retry GET after newer Retry authority", async () => {
   const ApiError = (await import("./auth")).ApiError;
   let resolveOlderIntake!: (value: unknown) => void;
   const olderIntake = new Promise<unknown>((resolve) => { resolveOlderIntake = resolve; });
@@ -518,7 +518,7 @@ it("#60 ignores a real delayed older intake GET after a newer Retry authority", 
   await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Career direction" })).toHaveValue("New retry intake"));
 });
 
-it("#61 ignores a real delayed old assessment GET after Save refreshes authority", async () => {
+it("ignores a real delayed old assessment GET after Save refreshes authority", async () => {
   let resolveOldAssessment!: (value: unknown) => void;
   const oldAssessment = new Promise<unknown>((resolve) => { resolveOldAssessment = resolve; });
   request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockReturnValueOnce(oldAssessment);
