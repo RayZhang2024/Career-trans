@@ -1,7 +1,7 @@
 import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -32,10 +32,12 @@ from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolv
 
 
 class CandidateAdviserService:
-    def __init__(self, session: Session, *, agent: CandidateAdviserAgent | None = None, clarification_interpreter: CandidateAdviserClarificationInterpreter | None = None) -> None:
+    def __init__(self, session: Session, *, agent: CandidateAdviserAgent | None = None, clarification_interpreter: CandidateAdviserClarificationInterpreter | None = None, agent_factory: Callable[[], CandidateAdviserAgent] | None = None, clarification_interpreter_factory: Callable[[], CandidateAdviserClarificationInterpreter] | None = None) -> None:
         self._session = session
         self._agent = agent
         self._clarification_interpreter = clarification_interpreter
+        self._agent_factory = agent_factory
+        self._clarification_interpreter_factory = clarification_interpreter_factory
 
     def get_intake(self, user_id: str) -> CandidateAdviserIntakeRead | None:
         record = self._session.scalar(select(CandidateAdviserIntakeRecord).where(CandidateAdviserIntakeRecord.user_id == user_id))
@@ -56,13 +58,11 @@ class CandidateAdviserService:
         return CandidateAdviserIntakeRead(**intake.model_dump(mode="json"), updated_at=record.updated_at)
 
     def assess(self, user_id: str) -> CandidateAdviserAssessmentRead:
-        if self._agent is None:
-            raise ValueError("No semantic candidate adviser is configured.")
         intake = self._intake(user_id)
         if not self._session.scalar(select(CandidateStructuredProfile.id).where(CandidateStructuredProfile.user_id == user_id)):
             raise ValueError("Candidate adviser requires a confirmed CV before assessment.")
         semantic_input = self._semantic_input(user_id, intake=intake)
-        content = self._agent.assess(semantic_input=semantic_input)
+        content = self._semantic_agent().assess(semantic_input=semantic_input)
         self._validate_sources(content, semantic_input)
         fingerprint = self.input_fingerprint(user_id, semantic_input=semantic_input)
         record = self._session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user_id))
@@ -131,9 +131,7 @@ class CandidateAdviserService:
         record = self._current_clarification(user_id, clarification_id)
         if record.status == CandidateAdviserClarificationStatus.CONFIRMED:
             raise ValueError("Confirmed clarification records are immutable.")
-        if self._clarification_interpreter is None:
-            raise ValueError("No semantic clarification interpreter is configured.")
-        interpretation = self._clarification_interpreter.interpret(
+        interpretation = self._clarification_agent().interpret(
             question_text=record.question_text,
             answer_text=payload.answer_text,
         )
@@ -144,6 +142,20 @@ class CandidateAdviserService:
         self._session.commit()
         self._session.refresh(record)
         return self._read_clarification(record)
+
+    def _semantic_agent(self) -> CandidateAdviserAgent:
+        if self._agent is None:
+            if self._agent_factory is None:
+                raise ValueError("No semantic candidate adviser is configured.")
+            self._agent = self._agent_factory()
+        return self._agent
+
+    def _clarification_agent(self) -> CandidateAdviserClarificationInterpreter:
+        if self._clarification_interpreter is None:
+            if self._clarification_interpreter_factory is None:
+                raise ValueError("No semantic clarification interpreter is configured.")
+            self._clarification_interpreter = self._clarification_interpreter_factory()
+        return self._clarification_interpreter
 
     def confirm_clarification(self, user_id: str, clarification_id: str) -> CandidateAdviserClarificationRead:
         record = self._current_clarification(user_id, clarification_id, allow_confirmed=True)

@@ -7,11 +7,11 @@ from sqlalchemy import select
 from app.agents.candidate_adviser import SemanticCandidateAdviser
 from app.api.deps import get_candidate_adviser_service
 from app.main import app
-from app.models.candidate_adviser import CandidateAdviserAssessmentRecord
+from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
-from app.providers.llm import SemanticOutputError
-from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserIntake, CandidateAdviserSemanticInput
+from app.providers.llm import SemanticOutputError, SemanticProviderConfigurationError
+from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserAssessmentStatus, CandidateAdviserClarificationStatus, CandidateAdviserIntake, CandidateAdviserSemanticInput
 from app.schemas.job import JobProfile, JobRequirement
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
@@ -304,6 +304,122 @@ def test_adviser_api_is_authenticated_and_user_scoped(client, db_session) -> Non
         assert generated.json()["status"] == "review_ready"
         assert client.post("/api/v1/candidate-adviser/assessment/confirm", headers=headers_a).json()["status"] == "confirmed"
         assert client.get("/api/v1/candidate-adviser/assessment", headers=headers_b).status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_candidate_adviser_service, None)
+
+
+def test_adviser_api_keeps_reads_and_prerequisite_failures_provider_free(client, db_session) -> None:
+    """Lazy provider factories must only be reached by valid semantic mutations."""
+    headers, email = _auth(client, "adviser-provider-boundary@example.com")
+    user_id = db_session.scalar(select(User.id).where(User.email == email))
+    assert user_id is not None
+    calls = {"adviser": 0, "clarification": 0}
+
+    def unavailable_adviser():
+        calls["adviser"] += 1
+        raise SemanticProviderConfigurationError("Synthetic semantic configuration is unavailable.")
+
+    def unavailable_clarification():
+        calls["clarification"] += 1
+        raise SemanticProviderConfigurationError("Synthetic semantic configuration is unavailable.")
+
+    service = CandidateAdviserService(
+        db_session,
+        agent_factory=unavailable_adviser,
+        clarification_interpreter_factory=unavailable_clarification,
+    )
+    app.dependency_overrides[get_candidate_adviser_service] = lambda: service
+    try:
+        # Missing intake wins over provider construction even with a CV.
+        headers_without_intake, email_without_intake = _auth(client, "adviser-missing-intake@example.com")
+        user_without_intake = db_session.scalar(select(User.id).where(User.email == email_without_intake))
+        assert user_without_intake is not None
+        _confirmed_cv(db_session, user_without_intake)
+        assert client.post("/api/v1/candidate-adviser/assessment", headers=headers_without_intake).status_code == 409
+        assert calls == {"adviser": 0, "clarification": 0}
+
+        # Database-only reads/writes cannot construct either semantic provider.
+        assert client.get("/api/v1/candidate-adviser/intake", headers=headers).status_code == 404
+        assert client.put("/api/v1/candidate-adviser/intake", headers=headers, json=_intake().model_dump(mode="json")).status_code == 200
+        assert client.get("/api/v1/candidate-adviser/intake", headers=headers).status_code == 200
+        assert client.get("/api/v1/candidate-adviser/assessment", headers=headers).status_code == 404
+        assert client.post("/api/v1/candidate-adviser/assessment/confirm", headers=headers).status_code == 409
+        assert client.get("/api/v1/candidate-adviser/clarifications", headers=headers).status_code == 409
+        assert calls == {"adviser": 0, "clarification": 0}
+
+        # Missing confirmed CV wins over provider construction.
+        assert client.post("/api/v1/candidate-adviser/assessment", headers=headers).status_code == 409
+        assert calls == {"adviser": 0, "clarification": 0}
+        # A missing clarification is resolved before its interpreter factory.
+        assert client.post(
+            "/api/v1/candidate-adviser/clarifications/not-current/answer",
+            headers=headers,
+            json={"answer_text": "Synthetic answer."},
+        ).status_code == 404
+        assert calls == {"adviser": 0, "clarification": 0}
+
+        _confirmed_cv(db_session, user_id)
+        # With all prerequisites valid, a configuration failure is a safe 503,
+        # never incorrectly presented as an adviser lifecycle conflict.
+        assert client.post("/api/v1/candidate-adviser/assessment", headers=headers).status_code == 503
+        assert calls == {"adviser": 1, "clarification": 0}
+    finally:
+        app.dependency_overrides.pop(get_candidate_adviser_service, None)
+
+
+def test_adviser_api_clarification_factory_is_lazy_for_currentness_and_confirm(client, db_session) -> None:
+    headers, email = _auth(client, "adviser-clarification-provider-boundary@example.com")
+    user_id = db_session.scalar(select(User.id).where(User.email == email))
+    assert user_id is not None
+    _confirmed_cv(db_session, user_id)
+    seeded = CandidateAdviserService(db_session, agent=_FakeAdviser())
+    seeded.save_intake(user_id, _intake())
+    seeded.assess(user_id)
+    confirmed = seeded.confirm_assessment(user_id)
+    record = CandidateAdviserClarificationRecord(
+        user_id=user_id,
+        clarification_id="a" * 64,
+        question_key="b" * 64,
+        origin_assessment_fingerprint=confirmed.input_fingerprint,
+        question_text="What positive synthetic delivery fact should be confirmed?",
+        question_source_references_json=json.dumps([{"source_type": "intake", "reference": "career_direction"}]),
+        priority_index=0,
+        status=CandidateAdviserClarificationStatus.REVIEW_READY,
+        answer_text="Synthetic answer.",
+        interpretation_json=json.dumps({"answer_kind": "preference_intent", "confirmed_context_summary": "Synthetic preference context.", "proposed_evidence": []}),
+    )
+    db_session.add(record)
+    db_session.commit()
+    calls = {"adviser": 0, "clarification": 0}
+
+    def unavailable_adviser():
+        calls["adviser"] += 1
+        raise SemanticProviderConfigurationError("Synthetic semantic configuration is unavailable.")
+
+    def unavailable_interpreter():
+        calls["clarification"] += 1
+        raise SemanticProviderConfigurationError("Synthetic semantic configuration is unavailable.")
+
+    service = CandidateAdviserService(
+        db_session,
+        agent_factory=unavailable_adviser,
+        clarification_interpreter_factory=unavailable_interpreter,
+    )
+    app.dependency_overrides[get_candidate_adviser_service] = lambda: service
+    try:
+        response = client.get("/api/v1/candidate-adviser/clarifications", headers=headers)
+        assert response.status_code == 200, response.json()
+        assert calls == {"adviser": 0, "clarification": 0}
+        # Bad currentness resolves before a provider client is built.
+        assert client.post("/api/v1/candidate-adviser/clarifications/not-current/answer", headers=headers, json={"answer_text": "Synthetic"}).status_code == 404
+        assert calls == {"adviser": 0, "clarification": 0}
+        # Valid current interpretation reaches the lazy factory and maps its
+        # configuration error to 503 rather than an adviser lifecycle 409.
+        assert client.post(f"/api/v1/candidate-adviser/clarifications/{'a' * 64}/answer", headers=headers, json={"answer_text": "Synthetic"}).status_code == 503
+        assert calls == {"adviser": 0, "clarification": 1}
+        # Confirm is deterministic and remains provider-free.
+        assert client.post(f"/api/v1/candidate-adviser/clarifications/{'a' * 64}/confirm", headers=headers).status_code == 200
+        assert calls == {"adviser": 0, "clarification": 1}
     finally:
         app.dependency_overrides.pop(get_candidate_adviser_service, None)
 
