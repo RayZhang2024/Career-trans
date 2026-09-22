@@ -45,3 +45,9 @@ def test_backend_container_runs_the_existing_application_without_codex() -> None
     assert "COPY prompts /prompts" in dockerfile
     assert "codex" not in dockerfile.lower()
     assert ".codex" not in compose
+
+
+def test_backend_package_is_copied_before_the_project_is_installed() -> None:
+    dockerfile = (ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert dockerfile.index("COPY backend/app ./app") < dockerfile.index("RUN pip install --no-cache-dir .")

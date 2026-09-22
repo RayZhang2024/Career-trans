@@ -55,6 +55,11 @@ the host CLI can reach this published API at `http://127.0.0.1:8000`.
 `docker compose down` keeps the volume. Use `docker compose down -v` only when
 you deliberately want to delete its local data.
 
+Compose accepts optional provider secrets only from the shell environment or a
+root-level Compose `.env`; `backend/.env` is not read automatically by
+Compose. No secret file is needed for credential-free startup, and those
+backend-only values are never made available to the frontend container.
+
 ## Tests
 
 ```powershell

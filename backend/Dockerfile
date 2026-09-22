@@ -6,8 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /backend
 COPY backend/pyproject.toml ./
-RUN pip install --no-cache-dir .
 COPY backend/app ./app
+RUN pip install --no-cache-dir .
 # Application prompt loaders resolve this repository-level directory.
 COPY prompts /prompts
 

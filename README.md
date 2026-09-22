@@ -461,9 +461,11 @@ Compose uses `sqlite:////data/career_agent.db` in the named
 down -v` permanently removes this local Compose data. It never reuses the
 native development database.
 
-The stack starts without `OPENAI_API_KEY`. Provider-backed actions require
-optional backend-only environment variables when you choose to use them; they
-are never passed to the frontend image. The host `career-trans jobs
+The stack starts without `OPENAI_API_KEY` or any secret file. Compose reads
+optional backend-only provider settings from the shell environment and/or a
+root-level Compose `.env` file; `backend/.env` is used by native backend runs
+but is not automatically a Compose environment source. Provider settings are
+never passed to the frontend image. The host `career-trans jobs
 discover-external` and `career-trans jobs hunt` commands continue to use the
 locally installed/authenticated Codex CLI and should target the published API
 URL (for example `--base-url http://127.0.0.1:8000`). Codex is intentionally
