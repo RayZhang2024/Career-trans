@@ -500,6 +500,11 @@ def get_user_job_discovery_service(
     return UserJobDiscoveryService(db, ranking_service=ranking_service)
 
 
+def get_user_job_discovery_read_service(db: DbSession) -> UserJobDiscoveryService:
+    """Provider-free dependency for persisted Jobs GET projections."""
+    return UserJobDiscoveryService(db)
+
+
 def get_application_preparation_service(
     db: DbSession,
     graph: Annotated[CareerAnalysisGraph, Depends(get_career_analysis_graph)],

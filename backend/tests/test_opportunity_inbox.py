@@ -9,6 +9,7 @@ from app.models.discovered_job import DiscoveredJob
 from app.models.user import User
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.job_ranking import JobRankingResponse
+from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.cv_ingestion_service import CVIngestionService
 
 
@@ -73,12 +74,12 @@ def test_inbox_returns_bounded_recent_external_jobs_with_actionable_provenance(c
     assert response.status_code == 200
     body = response.json()
     assert body["limit"] == 1
-    assert len(body["jobs"]) == 1
-    item = body["jobs"][0]
-    assert item["job"]["title"] == "Newer Engineer"
-    assert item["job"]["company"] == "Example Systems"
-    assert item["job"]["location"] == "London, UK"
-    assert item["job"]["url"] == "https://jobs.example.test/newer"
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["title"] == "Newer Engineer"
+    assert item["company"] == "Example Systems"
+    assert item["location"] == "London, UK"
+    assert item["url"] == "https://jobs.example.test/newer"
     assert item["provenance"] == [
         {"runtime": "codex", "source_ref": "public-search", "discovered_via": "web", "imported_at": item["provenance"][0]["imported_at"]}
     ]
@@ -105,8 +106,8 @@ def test_rank_me_can_rerank_inbox_job_with_confirmed_context(client, db_session)
 
     app.dependency_overrides[get_job_ranking_service] = FakeRankingService
     try:
-        inbox = client.get("/api/v1/jobs/inbox", headers=headers).json()
-        response = client.post("/api/v1/jobs/rank-me", headers=headers, json={"jobs": [item["job"] for item in inbox["jobs"]]})
+        record = db_session.scalar(select(DiscoveredJob).where(DiscoveredJob.title == "Engineer"))
+        response = client.post("/api/v1/jobs/rank-me", headers=headers, json={"jobs": [UserJobDiscoveryService._listing(record).model_dump(mode="json")]})
         assert response.status_code == 200
         assert [job.title for job in captured[0].jobs] == ["Engineer"]
         assert [evidence.title for evidence in captured[0].candidate_context.evidence] == ["Delivery"]

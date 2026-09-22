@@ -13,6 +13,7 @@ from app.schemas.opportunity_inbox import (
     OpportunityInboxResponse,
     PersistedJobProvenance,
 )
+from app.services.public_job_actionability import is_public_job_actionable
 
 
 class OpportunityInboxService:
@@ -35,8 +36,9 @@ class OpportunityInboxService:
                 )
             )
             .order_by(DiscoveredJob.last_seen_at.desc(), DiscoveredJob.id.asc())
-            .limit(limit)
+            .limit(limit + 1)
         ).all()
+        records, truncated = records[:limit], len(records) > limit
         record_ids = [record.id for record in records]
         provenance_by_job: dict[str, list[PersistedJobProvenance]] = defaultdict(list)
         if record_ids:
@@ -80,7 +82,7 @@ class OpportunityInboxService:
                     state=DiscoveredJobState(record.state),
                     first_seen_at=record.first_seen_at,
                     last_seen_at=record.last_seen_at,
-                    actionable=record.verification_status == JobVerificationStatus.VERIFIED,
+                    actionable=is_public_job_actionable(record),
                     verification_status=JobVerificationStatus(record.verification_status),
                     verification_reason=record.verification_reason,
                     provenance=provenance_by_job[record.id],
@@ -88,6 +90,20 @@ class OpportunityInboxService:
                 for record in records
             ],
         )
+
+    def list_recent_summary(self, *, limit: int):
+        """Lightweight dashboard projection that never returns descriptions."""
+        from app.schemas.opportunity_inbox import OpportunityInboxSummary, OpportunityInboxSummaryResponse
+        records = self._session.scalars(select(DiscoveredJob).where(or_(DiscoveredJob.source == "agent_runtime", DiscoveredJob.id.in_(select(DiscoveredJobProvenance.job_id).where(DiscoveredJobProvenance.runtime == "codex")))).order_by(DiscoveredJob.last_seen_at.desc(), DiscoveredJob.id.asc()).limit(limit + 1)).all()
+        records, truncated = records[:limit], len(records) > limit
+        ids = [record.id for record in records]
+        rows = self._session.scalars(select(DiscoveredJobProvenance).where(DiscoveredJobProvenance.job_id.in_(ids)).order_by(DiscoveredJobProvenance.imported_at.desc(), DiscoveredJobProvenance.id.asc())).all() if ids else []
+        grouped: dict[str, list[PersistedJobProvenance]] = defaultdict(list); counts: dict[str, int] = defaultdict(int)
+        for row in rows:
+            counts[row.job_id] += 1
+            if len(grouped[row.job_id]) < 3:
+                grouped[row.job_id].append(PersistedJobProvenance(runtime=row.runtime, source_ref=row.source_ref, discovered_via=row.discovered_via, imported_at=row.imported_at))
+        return OpportunityInboxSummaryResponse(items=[OpportunityInboxSummary(discovered_job_id=record.id, title=record.title, company=record.company, location=record.location, work_arrangement=record.work_arrangement, employment_type=record.employment_type, url=record.url, state=DiscoveredJobState(record.state), verification_status=JobVerificationStatus(record.verification_status), verification_reason=record.verification_reason, actionable=is_public_job_actionable(record), first_seen_at=record.first_seen_at, last_seen_at=record.last_seen_at, provenance=grouped[record.id], provenance_count=counts[record.id]) for record in records], limit=limit, truncated=truncated)
 
     @staticmethod
     def _ranking_provenance(provenance: list[PersistedJobProvenance]) -> JobProvenance | None:
