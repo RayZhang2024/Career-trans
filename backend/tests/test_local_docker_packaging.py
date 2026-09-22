@@ -20,6 +20,7 @@ def test_frontend_runtime_is_same_origin_proxy_with_spa_fallback_and_upload_limi
     frontend_dockerfile = (ROOT / "frontend" / "Dockerfile").read_text(encoding="utf-8")
 
     assert "proxy_pass http://backend:8000/api/;" in nginx
+    assert "root /usr/share/nginx/html;" in nginx
     assert "try_files $uri $uri/ /index.html;" in nginx
     assert "client_max_body_size 20m;" in nginx
     assert "proxy_read_timeout 600s;" in nginx
