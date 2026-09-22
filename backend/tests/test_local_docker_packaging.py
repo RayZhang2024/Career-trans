@@ -31,7 +31,7 @@ def test_docker_build_contexts_exclude_local_secrets_data_and_codex_state() -> N
     root_ignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     frontend_ignore = (ROOT / "frontend" / ".dockerignore").read_text(encoding="utf-8")
 
-    for required in (".env", ".codex", "**/.venv", "**/*.db", "**/.tmp"):
+    for required in (".env", "!.env.example", ".codex", "**/.venv", "**/*.db", "**/.tmp"):
         assert required in root_ignore
     for required in (".env", "node_modules", "dist", "*.db"):
         assert required in frontend_ignore
