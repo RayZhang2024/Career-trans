@@ -98,24 +98,28 @@ export function JobsPage() {
       if (alive.current && request === generations.current.onboarding) setOnboarding((previous) => ({ phase: previous.data ? "error" : "error", data: previous.data, error: "Candidate readiness is unavailable." }));
     }
   };
-  const loadOpportunities = async (limit = opportunityLimit) => {
+  const loadOpportunities = async (limit = opportunityLimit, clearExisting = false): Promise<boolean> => {
     const request = ++generations.current.opportunities;
-    setOpportunities((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
+    setOpportunities((previous) => ({ ...previous, phase: previous.data && !clearExisting ? "loaded" : "loading", data: clearExisting ? undefined : previous.data, error: undefined }));
     try {
       const data = await api.request<BoundedResponse<UserOpportunitySummary>>(`/api/v1/jobs/opportunities?limit=${limit}`);
-      if (alive.current && request === generations.current.opportunities) setOpportunities({ phase: "loaded", data });
+      if (alive.current && request === generations.current.opportunities) { setOpportunities({ phase: "loaded", data }); return true; }
+      return false;
     } catch {
       if (alive.current && request === generations.current.opportunities) setOpportunities((previous) => ({ phase: "error", data: previous.data, error: "Current opportunities are unavailable." }));
+      return false;
     }
   };
-  const loadRuns = async (limit = runLimit) => {
+  const loadRuns = async (limit = runLimit): Promise<boolean> => {
     const request = ++generations.current.runs;
     setRuns((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
     try {
       const data = await api.request<BoundedResponse<DiscoveryRunSummary>>(`/api/v1/jobs/discovery-runs?limit=${limit}`);
-      if (alive.current && request === generations.current.runs) setRuns({ phase: "loaded", data });
+      if (alive.current && request === generations.current.runs) { setRuns({ phase: "loaded", data }); return true; }
+      return false;
     } catch {
       if (alive.current && request === generations.current.runs) setRuns((previous) => ({ phase: "error", data: previous.data, error: "Discovery run history is unavailable." }));
+      return false;
     }
   };
   const loadInbox = async (limit = inboxLimit) => {
@@ -192,12 +196,15 @@ export function JobsPage() {
     submitLock.current = true; setSubmitting(true); setEvaluationSnapshot({ titles, query }); setEvaluationMessage(""); setEvaluationError("");
     try {
       await api.request<DiscoveryRunCreated>("/api/v1/jobs/discovery-runs", { method: "POST", body: JSON.stringify(payload) });
-      setEvaluationMessage("Evaluation completed. Recent runs and the current shortlist have been refreshed.");
+      setEvaluationMessage("Evaluation completed. Refreshing recent runs and the current shortlist…");
       setSelectedIds(new Set()); setOpportunityLimit(WINDOW);
-      await Promise.all([loadRuns(runLimit), loadOpportunities(WINDOW)]);
-    } catch {
-      await loadRuns(runLimit);
-      setEvaluationError("The evaluation request was interrupted. Career-trans cannot confirm from this response whether the run started. Recent run history has been refreshed.");
+      const [runsRefreshed, opportunitiesRefreshed] = await Promise.all([loadRuns(runLimit), loadOpportunities(WINDOW, true)]);
+      setEvaluationMessage(`Evaluation completed. Recent runs ${runsRefreshed ? "were refreshed" : "could not be confirmed as refreshed"}; the current shortlist ${opportunitiesRefreshed ? "was refreshed" : "could not be confirmed as refreshed"}.`);
+    } catch (error) {
+      const runsRefreshed = await loadRuns(runLimit);
+      setEvaluationError(error instanceof ApiError
+        ? `Career-trans returned an error while creating the evaluation. ${runsRefreshed ? "Recent run history has been refreshed." : "Recent run history could not be confirmed as refreshed."}`
+        : "The evaluation request was interrupted. Career-trans cannot confirm from this response whether the run started. Recent run history has been refreshed.");
     } finally { submitLock.current = false; if (alive.current) setSubmitting(false); }
   };
 

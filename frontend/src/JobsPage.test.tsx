@@ -311,6 +311,51 @@ describe("Issue #171 Jobs workspace", () => {
     expect(runRequests).toBeGreaterThan(1);
   });
 
+  it("reports an authoritative HTTP evaluation error separately from transport uncertainty", async () => {
+    let runRequests = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/discovery-runs": () => { runRequests += 1; return json(page([run(`run-${runRequests}`)])); },
+      "POST /api/v1/jobs/discovery-runs": () => json({ detail: "Conflict" }, 409),
+    });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Recent vacancies" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Search themes/ }), { target: { value: "AI" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    expect(await screen.findByText(/Career-trans returned an error while creating the evaluation/)).toBeInTheDocument();
+    expect(screen.getByText(/Recent run history has been refreshed/)).toBeInTheDocument();
+    expect(screen.queryByText(/cannot confirm from this response whether the run started/)).not.toBeInTheDocument();
+    expect(runRequests).toBeGreaterThan(1);
+  });
+
+  it("discards the pre-evaluation shortlist while the authoritative post-evaluation refresh is pending", async () => {
+    let opportunityRequests = 0;
+    const refreshedOpportunities = deferred<Response>();
+    const fetch = fakeFetch({
+      "/api/v1/jobs/opportunities": () => {
+        opportunityRequests += 1;
+        return opportunityRequests === 1 ? json(page([op("old", "Pre-evaluation shortlist")])) : refreshedOpportunities.promise;
+      },
+      "POST /api/v1/jobs/discovery-runs": () => json({ ...run("run-new"), jobs: [] }),
+    });
+    renderJobs(fetch); await screen.findByText("Pre-evaluation shortlist");
+    fireEvent.click(screen.getByRole("button", { name: "Recent vacancies" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Search themes/ }), { target: { value: "AI" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+
+    await waitFor(() => expect(opportunityRequests).toBe(2));
+    expect(await screen.findByText(/Evaluation completed\. Refreshing recent runs and the current shortlist/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Opportunities" }));
+    expect(screen.queryByText("Pre-evaluation shortlist")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=20");
+
+    refreshedOpportunities.resolve(json(page([op("new", "Post-evaluation shortlist")])));
+    expect(await screen.findByText("Post-evaluation shortlist")).toBeInTheDocument();
+    expect(screen.queryByText("Pre-evaluation shortlist")).not.toBeInTheDocument();
+    expect(await screen.findByText(/Evaluation completed\. Recent runs were refreshed; the current shortlist was refreshed\./)).toBeInTheDocument();
+  });
+
   it("uses different empty-opportunity messages for a new account and a historical-only account", async () => {
     const noItems = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([])), "/api/v1/jobs/discovery-runs": () => json(page([])) });
     renderJobs(noItems); expect(await screen.findByText("No jobs have been evaluated yet.")).toBeInTheDocument(); cleanup(); sessionStorage.clear();
