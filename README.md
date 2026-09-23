@@ -56,6 +56,7 @@ The authenticated browser workspace includes:
 - a recent shared imported-vacancy inbox and selection of actionable records for evaluation;
 - saved discovery configurations with daily/weekly recurrence setup, pause/resume, manual execution of persisted configurations, execution history, and historical configuration snapshots.
 - application preparation from current ranked opportunities, saved preparation history, evidence-grounded CV / cover-letter / question review, and authenticated DOCX/PDF downloads.
+- user-started application tracking from saved preparations, with six manually recorded statuses and append-only revision history.
 
 The current browser flow is:
 
@@ -67,6 +68,7 @@ Register
   -> Career Adviser
   -> Jobs
   -> Applications
+  -> Tracking
 ```
 
 
@@ -98,6 +100,7 @@ Current backend capabilities include:
 - application preparation with grounded CV/cover-letter drafting;
 - downloadable CV and cover-letter DOCX/PDF outputs;
 - provider-free, user-scoped reads of persisted application preparations;
+- preparation-owned application tracking with atomic status revisions and provider-free historical target reads;
 - multi-user ownership and isolation tests;
 - deterministic fake-provider tests with no live LLM/network dependency.
 
@@ -109,11 +112,12 @@ An enabled configuration means recurrence is configured, not that the scheduler 
 
 Broad external Codex discovery remains a separate host-side workflow outside the browser and containers. The browser does not invoke Codex and does not expose its credentials. The Jobs inbox reads persisted public vacancies; it does not run browser-side discovery.
 
-Application preparation includes a historical evidence-review workspace for newly created V2C2 preparations. Review shows persisted job requirements and matches, the bounded preparation-time evidence snapshot, per-reference drafting admission, and citations that remain in the final persisted materials. Older V2C1 preparations remain reviewable but explicitly report that complete drafting-context evidence was not stored. Review never substitutes current candidate data for missing historical evidence. Generated content remains immutable; editing/regeneration remains future work, and application tracking remains V2D.
+Application preparation includes a historical evidence-review workspace for newly created V2C2 preparations. Review shows persisted job requirements and matches, the bounded preparation-time evidence snapshot, per-reference drafting admission, and citations that remain in the final persisted materials. Older V2C1 preparations remain reviewable but explicitly report that complete drafting-context evidence was not stored. Review never substitutes current candidate data for missing historical evidence. Generated content remains immutable; editing/regeneration remains future work.
+
+Application tracking starts only when a user explicitly chooses to track a saved preparation. The initial recorded status is user-selected; Prepared is only the browser default. Supported statuses are prepared, applied, interview, rejected, offer, and withdrawn. The linked preparation's saved target snapshot is the tracking display authority, and status history is append-only. Event timestamps mean when Career-trans recorded the status, not necessarily the employer event date. Career-trans does not submit applications or infer external activity. Notes, reminders, real-world event dates, and automation remain future work.
 
 ### Still planned
 
-- application tracking/status history (V2D);
 - production database migration;
 - production identity/session hardening;
 - deployment, monitoring and production storage.

@@ -40,6 +40,7 @@ function fetcher(overrides: Record<string, Handler> = {}) {
     if (reviewMatch) return Promise.resolve(json(review(decodeURIComponent(reviewMatch[1]))));
     const detailMatch = path.match(/^\/api\/v1\/applications\/([^/]+)$/);
     if (detailMatch && method === "GET") return Promise.resolve(json(preparation(decodeURIComponent(detailMatch[1]))));
+    if (/^\/api\/v1\/application-tracking\/by-preparation\/[^/]+$/.test(path)) return Promise.resolve(json({ detail: "not found" }, 404));
     if (path.endsWith(".docx")) return Promise.resolve(new Response(new Blob(["doc"]), { status: 200, headers: { "Content-Disposition": 'attachment; filename="Historic_CV.docx"' } }));
     if (path.endsWith(".pdf")) return Promise.resolve(new Response(new Blob(["pdf"]), { status: 200, headers: { "Content-Disposition": "attachment; filename*=UTF-8''Historic_CV.pdf" } }));
     throw new Error(`Unexpected request ${method} ${path}`);
@@ -68,6 +69,7 @@ describe("Issue #180 Applications workspace", () => {
     expect(screen.getByText("Not included")).toBeInTheDocument();
     expect(requestPaths(fetch).filter((path) => path === "/api/v1/applications")).toHaveLength(1);
     expect(requestPaths(fetch).some((path) => path.endsWith("/review"))).toBe(false);
+    expect(requestPaths(fetch).some((path) => path.includes("application-tracking"))).toBe(false);
   });
 
   it("supports direct deep links and renders immutable target, identity, factual content and provenance", async () => {

@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, type ApplicationPreparation, type ApplicationPreparationReview, type ApplicationSourceRef } from "./api";
 import { useAuth } from "./auth";
 import { buildRequirementReview, collectFinalCitationUsage, evidenceIdentity, snapshotStatusLabel, type CitationUsage, type RequirementReviewRow } from "./applicationReview";
+import { PreparationTrackingPanel } from "./TrackingPage";
 
 type LoadState<T> = { phase: "loading" | "ready" | "error"; value?: T; message?: string };
 const sourceNames: Record<string, string> = {
@@ -200,6 +201,7 @@ export function ApplicationDetailPage() {
     {reviewState.phase === "error" && value && <p role="alert">{reviewState.message}</p>}
     {value && <>
       <p className="notice">This is the saved snapshot created {dateLabel(value.created_at)}. It is not replaced by your current profile, CV, or vacancy information.</p>
+      <PreparationTrackingPanel preparationId={value.id} />
       {review && <ReviewSummary value={value} review={review} rows={buildRequirementReview(value, review, citations).rows} />}
       {review && <RequirementReview value={value} review={review} />}
       <section className="card application-section"><h2>Target used</h2><dl className="detail-grid">{([["Title", value.target.title], ["Company", value.target.company], ["Location", value.target.location], ["Work arrangement", value.target.work_arrangement], ["Employment type", value.target.employment_type], ["Source", targetName(value.target.source_kind)]] as Array<[string, string | null | undefined]>).map(([label, item]) => item ? <div key={label}><dt>{label}</dt><dd>{item}</dd></div> : null)}</dl>{value.target.public_url && <p><a href={value.target.public_url} target="_blank" rel="noopener noreferrer">Open saved public vacancy</a></p>}</section>

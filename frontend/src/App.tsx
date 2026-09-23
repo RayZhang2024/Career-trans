@@ -7,11 +7,12 @@ import { AdviserPage } from "./AdviserPage";
 import { JobsPage } from "./JobsPage";
 import { JobsSearchesPage } from "./JobsSearchesPage";
 import { ApplicationsPage, ApplicationDetailPage } from "./ApplicationsPage";
+import { TrackingDetailPage, TrackingPage } from "./TrackingPage";
 import "./App.css";
 
 function AppShell({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
-  return <div className="app-shell"><header className="site-header"><Link className="brand" to="/">Career-trans</Link>{status === "authenticated" && <nav className="site-nav" aria-label="Workspace"><Link to="/">Profile</Link><Link to="/cv">CV</Link><Link to="/adviser">Career Adviser</Link><Link to="/jobs">Jobs</Link><Link to="/applications">Applications</Link><Link to="/jobs/searches">Saved searches</Link></nav>}</header>{children}</div>;
+  return <div className="app-shell"><header className="site-header"><Link className="brand" to="/">Career-trans</Link>{status === "authenticated" && <nav className="site-nav" aria-label="Workspace"><Link to="/">Profile</Link><Link to="/cv">CV</Link><Link to="/adviser">Career Adviser</Link><Link to="/jobs">Jobs</Link><Link to="/applications">Applications</Link><Link to="/tracking">Tracking</Link><Link to="/jobs/searches">Saved searches</Link></nav>}</header>{children}</div>;
 }
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -121,4 +122,4 @@ function Home() {
   return <AppShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Welcome {user?.email}</h1></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area">{profileError && <p role="alert">{profileError}</p>}{profile === undefined ? <p className="muted">Loading profile…</p> : <ProfileForm profile={profile} onSaved={load} />}</section></main></AppShell>;
 }
 
-export function App() { return <Routes><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/" element={<Protected><Home /></Protected>} /><Route path="/cv" element={<Protected><AppShell><CvPage /></AppShell></Protected>} /><Route path="/adviser" element={<Protected><AppShell><AdviserPage /></AppShell></Protected>} /><Route path="/jobs" element={<Protected><AppShell><JobsPage /></AppShell></Protected>} /><Route path="/jobs/searches" element={<Protected><AppShell><JobsSearchesPage /></AppShell></Protected>} /><Route path="/applications" element={<Protected><AppShell><ApplicationsPage /></AppShell></Protected>} /><Route path="/applications/:preparationId" element={<Protected><AppShell><ApplicationDetailPage /></AppShell></Protected>} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>; }
+export function App() { return <Routes><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/" element={<Protected><Home /></Protected>} /><Route path="/cv" element={<Protected><AppShell><CvPage /></AppShell></Protected>} /><Route path="/adviser" element={<Protected><AppShell><AdviserPage /></AppShell></Protected>} /><Route path="/jobs" element={<Protected><AppShell><JobsPage /></AppShell></Protected>} /><Route path="/jobs/searches" element={<Protected><AppShell><JobsSearchesPage /></AppShell></Protected>} /><Route path="/applications" element={<Protected><AppShell><ApplicationsPage /></AppShell></Protected>} /><Route path="/applications/:preparationId" element={<Protected><AppShell><ApplicationDetailPage /></AppShell></Protected>} /><Route path="/tracking" element={<Protected><AppShell><TrackingPage /></AppShell></Protected>} /><Route path="/tracking/:trackingId" element={<Protected><AppShell><TrackingDetailPage /></AppShell></Protected>} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>; }

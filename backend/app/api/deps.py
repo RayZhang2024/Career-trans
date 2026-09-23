@@ -44,6 +44,7 @@ from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
+from app.services.application_tracking_service import ApplicationTrackingService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.ashby import AshbyJobSource
@@ -526,6 +527,11 @@ def get_application_preparation_service(
 def get_application_preparation_read_service(db: DbSession) -> ApplicationPreparationReadService:
     """Provider-free dependency for immutable application-preparation reads."""
     return ApplicationPreparationReadService(db)
+
+
+def get_application_tracking_service(db: DbSession) -> ApplicationTrackingService:
+    """Provider-free service for persisted user-recorded application tracking."""
+    return ApplicationTrackingService(db)
 
 
 def get_discovery_schedule_service(db: DbSession) -> DiscoveryScheduleService:
