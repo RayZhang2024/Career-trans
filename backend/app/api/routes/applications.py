@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.api.deps import CurrentUser, get_application_preparation_read_service, get_application_preparation_service
 from app.schemas.application_preparation import (
-    ApplicationInsufficientDetailError, ApplicationPreparationRead, ApplicationPrepareRequest,
+    ApplicationInsufficientDetailError, ApplicationPreparationRead, ApplicationPreparationReviewRead,
+    ApplicationPrepareRequest,
 )
 from app.services.application_document_renderer import ApplicationDocumentRenderer
 from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
@@ -34,6 +35,14 @@ def list_preparations(current_user: CurrentUser, service: ApplicationPreparation
 @router.get("/{preparation_id}", response_model=ApplicationPreparationRead)
 def get_preparation(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationReadService = Depends(get_application_preparation_read_service)) -> ApplicationPreparationRead:
     return _get(service, current_user.id, preparation_id)
+
+
+@router.get("/{preparation_id}/review", response_model=ApplicationPreparationReviewRead)
+def review_preparation(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationReadService = Depends(get_application_preparation_read_service)) -> ApplicationPreparationReviewRead:
+    try:
+        return service.get_review(current_user.id, preparation_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Application preparation not found.") from exc
 
 
 @router.get("/{preparation_id}/cv.docx")

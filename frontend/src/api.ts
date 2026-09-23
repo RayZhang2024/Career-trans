@@ -39,7 +39,7 @@ export type RankedJobOpportunity = {
   legitimacy: PostingRecency;
   rank: number;
   job_profile?: JobProfile | null;
-  requirement_matches: Array<{ requirement_index: number; requirement: JobRequirement; match_type: string; score: number; evidence_ids: string[]; reasoning: string }>;
+  requirement_matches: Array<{ requirement_index: number; requirement: JobRequirement; match_type: string; score: number; evidence_ids: string[]; evidence_refs?: ApplicationSourceRef[]; reasoning: string }>;
 };
 export type UserOpportunitySummary = {
   evaluation_id: string; discovered_job_id: string; recommendation: "apply" | "consider" | "skip"; title: string;
@@ -110,14 +110,30 @@ export type ScheduledExecutionRead = {
 export type LLMConfigurationCheck = { ready: boolean };
 export type DiscoveryRunCreated = DiscoveryRunSummary & { search_input_fingerprint: string; candidate_evaluation_fingerprint: string; evaluation_contract_fingerprint: string; jobs: Array<DiscoveryRunJobSummary & { opportunity: RankedJobOpportunity | null }> };
 
-export type ApplicationSourceRef = { source_type: string; source_ref: string };
+export type ApplicationSourceRef = { source_type: string; source_ref: string; value?: string | null };
+export type ApplicationEvidenceSnapshotStatus = "available" | "legacy_unavailable";
+export type ApplicationEvidenceSource = ApplicationSourceRef & { text: string };
+export type ApplicationPreparationReview = {
+  preparation_id: string;
+  evidence_snapshot_status: ApplicationEvidenceSnapshotStatus;
+  evidence_sources: ApplicationEvidenceSource[];
+};
+export type ApplicationRequirementMatch = {
+  requirement_index: number;
+  requirement: JobRequirement;
+  match_type: string;
+  score: number;
+  evidence_ids: string[];
+  evidence_refs?: ApplicationSourceRef[];
+  reasoning: string;
+};
 export type ApplicationPreparation = {
   id: string;
   target: {
     source_kind: "discovered_job" | "job_text" | "job_url"; canonical_discovered_job_id?: string | null;
     public_url?: string | null; title: string; company?: string | null; location?: string | null;
     work_arrangement?: string | null; employment_type?: string | null;
-    job_profile: JobProfile; job_content_hash: string;
+    job_profile: JobProfile; requirement_matches: ApplicationRequirementMatch[]; job_content_hash: string;
   };
   identity: {
     display_name: string; email: string; phone?: string | null; location?: string | null;

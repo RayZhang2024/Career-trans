@@ -24,7 +24,7 @@ from app.api import deps as api_deps
 from app.providers.llm import SemanticProviderConfigurationError
 from app.main import app as fastapi_app
 from app.schemas.job import JobProfile, JobRequirement, RequirementCategory, RequirementImportance
-from app.schemas.matching import EvidenceSourceType, MatchType, RequirementMatch
+from app.schemas.matching import EvidenceRef, EvidenceSourceType, MatchType, RequirementMatch
 from app.services.application_document_renderer import ApplicationDocumentRenderer
 from app.services.application_preparation_service import ApplicationPreparationService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
@@ -32,9 +32,9 @@ from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 
 class _Drafting:
     def __init__(self, *, bad_skill=False, derived_number=False) -> None:
-        self.calls = 0; self.bad_skill = bad_skill; self.derived_number = derived_number
+        self.calls = 0; self.bad_skill = bad_skill; self.derived_number = derived_number; self.contexts = []
     def draft_cv(self, context):
-        self.calls += 1
+        self.calls += 1; self.contexts.append(context)
         text = "Led delivery from 2 hours to 20 minutes" if not self.derived_number else "Improved delivery by 83%"
         return CVWritingDraft(
             professional_summary=text,
@@ -56,7 +56,7 @@ class _Graph:
         self.calls += 1
         self.job_listings.append(job_listing)
         requirement = JobRequirement(text="Python delivery", category=RequirementCategory.TECHNICAL, importance=RequirementImportance.ESSENTIAL, source_text="Python delivery")
-        return {"job_profile": JobProfile(title="Engineer", requirements=[requirement]), "requirement_matches": [RequirementMatch(requirement_index=0, requirement=requirement, match_type=MatchType.DEMONSTRATED, score=1, evidence_ids=["e1"], reasoning="safe")]}
+        return {"job_profile": JobProfile(title="Engineer", requirements=[requirement]), "requirement_matches": [RequirementMatch(requirement_index=0, requirement=requirement, match_type=MatchType.DEMONSTRATED, score=1, evidence_ids=["e1"], evidence_refs=[EvidenceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref="e1", value="Historical value local to this requirement")], reasoning="safe")]}
 
 
 class _RawTextGraph(_Graph):
@@ -202,6 +202,91 @@ def test_historical_preparation_keeps_canonical_job_snapshot_after_live_job_chan
     cover_text = "\n".join(item.text for item in Document(__import__("io").BytesIO(cover)).paragraphs)
     assert historical.target.model_dump(mode="json") == original_target
     assert "Dear Company," in cover_text
+
+
+def test_v2c2_envelope_persists_exact_bounded_drafting_sources_without_changing_public_result(db_session, monkeypatch):
+    drafting = _Drafting()
+    service, _ = _service(db_session, monkeypatch, drafting=drafting)
+    request = ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False)
+    created = service.prepare("u1", request)
+    row = db_session.query(__import__("app.models.application_preparation", fromlist=["ApplicationPreparation"]).ApplicationPreparation).filter_by(id=created.id).one()
+    persisted = json.loads(row.preparation_result_json)
+
+    assert persisted["persistence_version"] == 2
+    assert persisted["evidence_snapshot_status"] == "available"
+    assert persisted["result"] == created.result.model_dump(mode="json")
+    expected_sources = drafting.contexts[0]["sources"]
+    assert persisted["evidence_sources"] == expected_sources
+    assert len(expected_sources) <= 18
+    assert created.result.model_dump(mode="json").keys() == {"cv", "cover_letter", "answers", "layout_status", "target_pages", "actual_pdf_pages"}
+
+
+def test_raw_v2c1_result_remains_readable_as_explicit_legacy_unavailable(db_session, monkeypatch):
+    from app.models.application_preparation import ApplicationPreparation
+    from app.schemas.application_preparation import ApplicationEvidenceSnapshotStatus
+
+    service, _ = _service(db_session, monkeypatch)
+    created = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False))
+    row = db_session.query(ApplicationPreparation).filter_by(id=created.id).one()
+    original_input_fingerprint = row.preparation_input_fingerprint
+    original_contract_fingerprint = row.preparation_contract_fingerprint
+    row.preparation_result_json = json.dumps(created.result.model_dump(mode="json"))
+    db_session.commit()
+
+    assert service.get("u1", created.id).result == created.result
+    assert row.preparation_input_fingerprint == original_input_fingerprint
+    assert row.preparation_contract_fingerprint == original_contract_fingerprint
+    review = service.get_review("u1", created.id)
+    assert review.preparation_id == created.id
+    assert review.evidence_snapshot_status == ApplicationEvidenceSnapshotStatus.LEGACY_UNAVAILABLE
+    assert review.evidence_sources == []
+
+
+def test_empty_available_snapshot_is_not_confused_with_legacy_absence(db_session, monkeypatch):
+    from app.models.application_preparation import ApplicationPreparation
+
+    service, _ = _service(db_session, monkeypatch)
+    created = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False))
+    row = db_session.query(ApplicationPreparation).filter_by(id=created.id).one()
+    persisted = json.loads(row.preparation_result_json)
+    persisted["evidence_sources"] = []
+    row.preparation_result_json = json.dumps(persisted)
+    db_session.commit()
+
+    review = service.get_review("u1", created.id)
+    assert review.evidence_snapshot_status.value == "available"
+    assert review.evidence_sources == []
+
+
+def test_preparation_input_fingerprint_keeps_v1_semantics_while_contract_bumps(db_session, monkeypatch):
+    import app.services.application_preparation_service as preparation_module
+
+    settings = Settings(default_llm_provider="openai", application_drafting_model="model-a")
+    service, _ = _service(db_session, monkeypatch, settings=settings)
+    request = ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False)
+    before = service._resolve_target("u1", request, _context())
+    structured = service._structured("u1")
+    catalog = service._bounded_sources(_context(), structured, before.requirement_matches)
+    from app.schemas.application_preparation import ApplicationIdentitySnapshot
+    identity = ApplicationIdentitySnapshot(display_name="Example Person", email="old@example.test", location="London")
+    old_input_payload = {
+        "target": before,
+        "identity": identity,
+        "sources": [
+            {"source_type": source_type, "source_ref": source_ref, "text": text}
+            for (source_type, source_ref), text in sorted(catalog.items())
+        ],
+        "structured": structured,
+        "options": {"target_pages": request.target_pages, "include_cover_letter": request.include_cover_letter, "application_questions": request.application_questions},
+    }
+    expected_v1_input = preparation_module._hash(preparation_module._dump(old_input_payload))
+    monkeypatch.setattr(preparation_module, "_CONTRACT_VERSION", "application-preparation-v1")
+    v1_contract = service._contract_fingerprint()
+    monkeypatch.setattr(preparation_module, "_CONTRACT_VERSION", "application-preparation-v2")
+    v2_contract = service._contract_fingerprint()
+
+    assert service._input_fingerprint(before, identity, catalog, structured, request) == expected_v1_input
+    assert v1_contract != v2_contract
 
 
 def test_unsupported_questions_are_not_fabricated(db_session, monkeypatch):
@@ -472,6 +557,21 @@ def test_authenticated_api_owner_and_cross_user_download_isolation(client, db_se
         assert created.status_code == 201
         preparation_id = created.json()["id"]
         assert client.get("/api/v1/applications", headers=owner).status_code == 200
+        review = client.get(f"/api/v1/applications/{preparation_id}/review", headers=owner)
+        assert review.status_code == 200
+        assert review.json()["preparation_id"] == preparation_id
+        assert review.json()["evidence_snapshot_status"] == "available"
+        assert review.json()["evidence_sources"]
+        assert client.get(f"/api/v1/applications/{preparation_id}/review", headers=other_headers).status_code == 404
+        assert client.get("/api/v1/applications/not-owned/review", headers=owner).status_code == 404
+        from app.models.application_preparation import ApplicationPreparation
+        persisted = db_session.query(ApplicationPreparation).filter_by(id=preparation_id).one()
+        persisted.preparation_result_json = json.dumps(created.json()["result"])
+        db_session.commit()
+        legacy_review = client.get(f"/api/v1/applications/{preparation_id}/review", headers=owner)
+        assert legacy_review.status_code == 200
+        assert legacy_review.json()["evidence_snapshot_status"] == "legacy_unavailable"
+        assert legacy_review.json()["evidence_sources"] == []
         for suffix, media_type in (("cv.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), ("cv.pdf", "application/pdf"), ("cover-letter.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), ("cover-letter.pdf", "application/pdf")):
             download = client.get(f"/api/v1/applications/{preparation_id}/{suffix}", headers=owner)
             assert download.status_code == 200
@@ -489,6 +589,8 @@ def test_authenticated_api_owner_and_cross_user_download_isolation(client, db_se
 def test_application_history_detail_and_downloads_are_provider_free(client, db_session, monkeypatch):
     """Persisted application reads do not construct ranking or semantic clients."""
     service, _ = _service(db_session, monkeypatch)
+    historical_context = _context().model_copy(update={"evidence": [CareerEvidence(evidence_id="e1", title="Private fixture", text="SNAPSHOT_ONLY_9281 Python delivery from 2 hours to 20 minutes", skills=["Python"], provenance=[CareerEvidenceProvenance(document_sha256="a" * 64, segment_ids=["s1"])])]})
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: historical_context)
     with_cover = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=True))
     without_cover = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False))
     db_session.add(User(id="u2", email="other@example.test", password_hash="safe")); db_session.commit()
@@ -509,9 +611,19 @@ def test_application_history_detail_and_downloads_are_provider_free(client, db_s
     try:
         listing = client.get("/api/v1/applications", headers=owner)
         assert listing.status_code == 200 and {row["id"] for row in listing.json()} == {with_cover.id, without_cover.id}
+        assert all("evidence_sources" not in row["result"] and "evidence_snapshot_status" not in row["result"] for row in listing.json())
+        assert "SNAPSHOT_ONLY_9281" not in listing.text
         detail = client.get(f"/api/v1/applications/{with_cover.id}", headers=owner)
         assert detail.status_code == 200 and detail.json()["identity"]["display_name"] == "Example Person"
+        assert "evidence_sources" not in detail.json()["result"]
+        assert "SNAPSHOT_ONLY_9281" not in detail.text
         assert client.get(f"/api/v1/applications/{with_cover.id}", headers=other).status_code == 404
+        review = client.get(f"/api/v1/applications/{with_cover.id}/review", headers=owner)
+        assert review.status_code == 200 and review.json()["evidence_snapshot_status"] == "available"
+        assert review.json()["preparation_id"] == with_cover.id
+        assert any("SNAPSHOT_ONLY_9281" in source["text"] for source in review.json()["evidence_sources"])
+        assert client.get(f"/api/v1/applications/{with_cover.id}/review", headers=other).status_code == 404
+        assert client.get("/api/v1/applications/missing/review", headers=owner).status_code == 404
 
         for preparation in (with_cover, without_cover):
             for suffix in ("cv.docx", "cv.pdf"):
