@@ -29,7 +29,7 @@ function passwordInput(): HTMLInputElement {
 
 function authenticatedFetch(overrides: Record<string, () => Response | Promise<Response>> = {}) {
   return vi.fn((url: string) => {
-    const path = new URL(url).pathname;
+    const path = new URL(url, window.location.origin).pathname;
     if (overrides[path]) return overrides[path]();
     if (path === "/api/v1/users/me") return Promise.resolve(response(user));
     if (path === "/api/v1/onboarding/status") return Promise.resolve(response(status));
@@ -136,7 +136,7 @@ describe("AuthProvider routed lifecycle", () => {
 
   it("registers without creating a session and reports safe registration errors", async () => {
     const fetch = vi.fn((url: string) => {
-      const path = new URL(url).pathname;
+      const path = new URL(url, window.location.origin).pathname;
       if (path === "/api/v1/auth/register") return Promise.resolve(response({}, 201));
       throw new Error(`Unexpected request: ${path}`);
     });
@@ -163,7 +163,7 @@ describe("AuthProvider routed lifecycle", () => {
 
   it("logs in, validates the returned token, and reaches the protected app", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => {
-      const path = new URL(url).pathname;
+      const path = new URL(url, window.location.origin).pathname;
       if (path === "/api/v1/auth/login") return Promise.resolve(response({ access_token: "new-token" }));
       if (path === "/api/v1/users/me") return Promise.resolve(response(user));
       if (path === "/api/v1/onboarding/status") return Promise.resolve(response(status));
@@ -301,7 +301,7 @@ describe("AuthProvider routed lifecycle", () => {
     let statusCalls = 0;
     let profileGets = 0;
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
-      const path = new URL(url).pathname;
+      const path = new URL(url, window.location.origin).pathname;
       if (path === "/api/v1/users/me") return Promise.resolve(response(user));
       if (path === "/api/v1/onboarding/status") {
         statusCalls += 1;
@@ -330,7 +330,7 @@ describe("AuthProvider routed lifecycle", () => {
     let statusCalls = 0;
     let profileGets = 0;
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
-      const path = new URL(url).pathname;
+      const path = new URL(url, window.location.origin).pathname;
       if (path === "/api/v1/users/me") return Promise.resolve(response(user));
       if (path === "/api/v1/onboarding/status") {
         statusCalls += 1;
@@ -356,7 +356,7 @@ describe("AuthProvider routed lifecycle", () => {
     let statusCalls = 0;
     let profileGets = 0;
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
-      const path = new URL(url).pathname;
+      const path = new URL(url, window.location.origin).pathname;
       if (path === "/api/v1/users/me") return Promise.resolve(response(user));
       if (path === "/api/v1/onboarding/status") {
         statusCalls += 1;
