@@ -214,7 +214,7 @@ export function JobsPage() {
   const confirmedWindow = opportunities.data?.items ?? [];
 
   return <main className="jobs-page">
-    <header className="workspace-header jobs-header"><div><p className="eyebrow">Career workspace</p><h1>Jobs</h1><p className="muted">Review current evaluations, run history, and recent imported public vacancies.</p></div></header>
+    <header className="workspace-header jobs-header"><div><p className="eyebrow">Career workspace</p><h1>Jobs</h1><p className="muted">Review current evaluations, run history, and recent imported public vacancies.</p><Link to="/jobs/searches">Manage saved discovery configurations</Link></div></header>
     <nav className="jobs-tabs" aria-label="Jobs sections">{(["opportunities", "runs", "inbox"] as Tab[]).map((item) => <button type="button" key={item} aria-pressed={tab === item} onClick={() => setTab(item)}>{item === "opportunities" ? "Opportunities" : item === "runs" ? "Discovery runs" : "Recent vacancies"}</button>)}</nav>
     <section className="jobs-prerequisite card" aria-label="Candidate readiness">
       {onboarding.phase === "loading" && !onboarding.data ? <p role="status">Checking candidate readiness…</p> : onboarding.data ? <>

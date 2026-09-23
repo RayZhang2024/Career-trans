@@ -53,7 +53,8 @@ The authenticated browser workspace includes:
 - Candidate Adviser intake, reviewable assessment, confirmation, and clarification answers.
 - current ranked opportunities with lazy current-detail views;
 - bounded discovery-run history with lazy run and historical job detail;
-- a recent shared imported-vacancy inbox and selection of actionable records for evaluation.
+- a recent shared imported-vacancy inbox and selection of actionable records for evaluation;
+- saved discovery configurations with daily/weekly recurrence setup and pause/resume.
 
 The current browser flow is:
 
@@ -97,9 +98,15 @@ Current backend capabilities include:
 - multi-user ownership and isolation tests;
 - deterministic fake-provider tests with no live LLM/network dependency.
 
-### Later browser work
+### Saved discovery and recurrence boundaries
 
-Application-preparation UI and broader application tracking are later milestones. Broad external Codex discovery remains a host-side workflow outside the browser. The Jobs inbox reads persisted public vacancies; it does not run Codex or web discovery.
+The browser can save discovery configurations, configure daily/weekly recurrence, and pause/resume future recurrence. Saving a configuration does not run it. Manual **Run now** and execution-history UI are not yet available in this V2B1 browser surface; they are the follow-up #176 milestone.
+
+An enabled configuration means recurrence is configured, not that the scheduler is running. Automatic due execution requires the server-side scheduled-discovery operator and the required provider configuration. The current local Compose stack does not continuously run that operator. Missed due slots are coalesced by backend semantics rather than replayed individually.
+
+Broad external Codex discovery remains a separate host-side workflow outside the browser and containers. The browser does not invoke Codex and does not expose its credentials. The Jobs inbox reads persisted public vacancies; it does not run browser-side discovery.
+
+Application-preparation UI and broader application tracking remain later milestones.
 
 ### Still planned
 
