@@ -673,8 +673,22 @@ describe("Issue #176 manual execution and history", () => {
     expect(within(history).queryByText("Themes: Current edited theme")).not.toBeInTheDocument();
     expect(screen.getByText("Cadence: weekly")).toBeInTheDocument();
     expect(screen.getByText("Timezone: Europe/London")).toBeInTheDocument();
+    expect(screen.getByText("Local time: 09:15:30")).toBeInTheDocument();
+    expect(screen.getByText("Weekdays: Monday, Friday")).toBeInTheDocument();
+    expect(screen.getByText("Locations: London")).toBeInTheDocument();
+    expect(screen.getByText("Excluded companies: Historical exclude")).toBeInTheDocument();
+    expect(screen.getByText("Excluded title terms: intern")).toBeInTheDocument();
+    expect(screen.getByText("Employment types: full-time")).toBeInTheDocument();
+    expect(screen.getByText("Query maximum results: 29")).toBeInTheDocument();
     expect(screen.getByText(/max sources 7/)).toBeInTheDocument();
+    expect(screen.getByText(/max results 18/)).toBeInTheDocument();
+    expect(screen.getByText(/max queries 3/)).toBeInTheDocument();
+    expect(screen.getByText(/results per query 4/)).toBeInTheDocument();
+    expect(screen.getByText(/max pages 5/)).toBeInTheDocument();
+    expect(screen.getByText(/max jobs 6/)).toBeInTheDocument();
+    expect(screen.getByText("Maximum semantic candidates: 9")).toBeInTheDocument();
     expect(screen.getByText("Maximum full analyses: 2")).toBeInTheDocument();
+    expect(screen.getByText("Minimum relevance score: 0.72")).toBeInTheDocument();
     expect(screen.queryByText(/Historical schedule name|enabled state|next_run_at|last_execution_at/i)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open Jobs workspace" })).toHaveAttribute("href", "/jobs");
     expect(screen.queryByRole("link", { name: /run-1|discovery run/i })).not.toBeInTheDocument();
@@ -683,6 +697,8 @@ describe("Issue #176 manual execution and history", () => {
     const patch = getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")[0].body as { query: { keywords: string[] } };
     expect(patch.query.keywords).toEqual(["Current edited theme"]);
     expect(within(screen.getByRole("region", { name: "Execution history for AI roles" })).getByText("Themes: Snapshot keyword")).toBeInTheDocument();
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-2/executions")).toHaveLength(0);
   });
 
   it("does not let a delayed history response for A replace the selected history for B", async () => {
