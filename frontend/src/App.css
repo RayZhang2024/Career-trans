@@ -100,6 +100,25 @@ h2 { font-size: 1.2rem; }
 .section-error { display: grid; gap: 0.6rem; justify-items: start; }
 .inbox-card { border-left: 0.25rem solid #aebbd0; }
 .inbox-card.is-selected { border-left-color: #2458d3; }
+.jobs-searches-page { display: grid; gap: 1rem; margin: 0 auto; max-width: 70rem; min-width: 0; padding: 0 1rem 2.5rem; }
+.searches-header { max-width: none; padding: 1rem 0 0; }
+.searches-header > div { display: grid; gap: 0.35rem; min-width: 0; }
+.schedule-list, .saved-schedule-list { display: grid; gap: 1rem; min-width: 0; }
+.saved-schedule-list { list-style: none; margin: 0; padding: 0; }
+.saved-schedule-card, .schedule-editor { display: grid; gap: 0.85rem; min-width: 0; overflow-wrap: anywhere; }
+.schedule-fieldset, .weekday-picker { border: 1px solid #d9e0ea; border-radius: 0.55rem; display: grid; gap: 0.65rem; min-width: 0; padding: 0.9rem; }
+.schedule-fieldset legend, .weekday-picker legend { font-weight: 700; padding: 0 0.25rem; }
+.check-line { align-items: flex-start; display: flex; gap: 0.6rem; min-width: 0; }
+.check-line input { flex: 0 0 auto; height: 1.1rem; margin: 0.25rem 0 0; width: 1.1rem; }
+.nested-controls { border-left: 0.2rem solid #d9e0ea; display: grid; gap: 0.65rem; min-width: 0; padding-left: 0.8rem; }
+.legacy-state { background: #fff8e6; border: 1px solid #e8c972; border-radius: 0.45rem; display: grid; gap: 0.6rem; min-width: 0; padding: 0.75rem; }
+.legacy-state button { justify-self: start; max-width: 100%; }
+@media (max-width: 640px) {
+  .jobs-searches-page { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .searches-header { align-items: stretch; flex-direction: column; }
+  .schedule-fieldset, .weekday-picker { padding: 0.7rem; }
+  .schedule-editor .card-actions button, .saved-schedule-card .card-actions button { max-width: 100%; }
+}
 @media (max-width: 640px) {
   .site-header { align-items: flex-start; flex-direction: column; padding-left: 1rem; padding-right: 1rem; }
   .site-nav { gap: 0.35rem 0.8rem; }

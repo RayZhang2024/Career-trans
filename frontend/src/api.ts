@@ -71,6 +71,24 @@ export type CreateDiscoveryRun = {
   query: { keywords: string[]; locations: string[]; remote_ok: boolean | null; companies: string[]; excluded_companies: string[]; excluded_title_terms: string[]; employment_types: string[]; max_results: number };
   discovered_job_ids: string[]; max_semantic_candidates: number; max_full_analyses: number; min_relevance_score: number;
 };
+export type DiscoveryScheduleSpec = { cadence: "daily" | "weekly"; timezone: string; local_time: string; weekdays: number[] };
+export type StructuredAtsScheduleConfig = {
+  enabled: boolean; companies: string[]; providers: string[]; all_resolved_sources: boolean; max_sources: number; max_results: number;
+};
+export type AgenticWebScheduleConfig = {
+  enabled: boolean; country: string; max_search_queries: number; max_search_results_per_query: number; max_pages_to_open: number; max_discovered_jobs: number;
+};
+export type DiscoveryScheduleAcquisition = { structured_ats: StructuredAtsScheduleConfig; agentic_web: AgenticWebScheduleConfig };
+export type DiscoveryScheduleEvaluation = { max_semantic_candidates: number; max_full_analyses: number; min_relevance_score: number };
+export type DiscoveryScheduleQuery = CreateDiscoveryRun["query"];
+export type DiscoveryScheduleRead = {
+  id: string; name: string; enabled: boolean; schedule: DiscoveryScheduleSpec; query: DiscoveryScheduleQuery;
+  acquisition: DiscoveryScheduleAcquisition; evaluation: DiscoveryScheduleEvaluation; next_run_at: string | null; last_execution_at: string | null;
+};
+export type DiscoveryScheduleCreate = Omit<DiscoveryScheduleRead, "id" | "next_run_at" | "last_execution_at">;
+export type DiscoverySchedulePatch = Partial<Omit<DiscoveryScheduleCreate, "schedule" | "query" | "acquisition" | "evaluation">> & {
+  schedule?: DiscoveryScheduleSpec; query?: DiscoveryScheduleQuery; acquisition?: DiscoveryScheduleAcquisition; evaluation?: DiscoveryScheduleEvaluation;
+};
 export type DiscoveryRunCreated = DiscoveryRunSummary & { search_input_fingerprint: string; candidate_evaluation_fingerprint: string; evaluation_contract_fingerprint: string; jobs: Array<DiscoveryRunJobSummary & { opportunity: RankedJobOpportunity | null }> };
 
 export class SessionApi {
