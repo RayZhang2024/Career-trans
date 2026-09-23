@@ -359,7 +359,11 @@ export function JobsSearchesPage() {
         setMessage("The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. Checking execution history…");
         if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
         const outcome = await refreshHistory(id);
-        if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale" || outcome.kind === "superseded") return;
+        if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale") return;
+        if (outcome.kind === "superseded") {
+          setMessage("The Run now request was interrupted. Career-trans cannot confirm which execution-history record, if any, corresponds to that request.");
+          return;
+        }
         setMessage(`The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. ${outcome.kind === "refreshed" ? "Execution history was refreshed." : "Execution history could not be confirmed as refreshed."}`);
         return;
       }
@@ -598,7 +602,7 @@ export function JobsSearchesPage() {
           </div>
           {running && <p role="status">Running saved discovery… this may take several minutes. Saved discovery: {schedule.name}.</p>}
           {running && <p className="muted">This local control does not cancel an execution already claimed by the server.</p>}
-          {reconciling && <p role="status">Checking saved-configuration and execution-history state for {schedule.name}…</p>}
+          {reconciling && <p role="status">Reconciling saved discovery state for {schedule.name}…</p>}
           {runResults[schedule.id] && <section className="execution-result" aria-label={`Latest Run now response for ${schedule.name}`}><h4>Latest Run-now response</h4>{renderExecution(runResults[schedule.id])}</section>}
           {selectedHistoryId === schedule.id && <section className="execution-history" aria-label={`Execution history for ${schedule.name}`}>
             <div className="section-heading"><h4>Execution history</h4><button type="button" className="button-secondary" onClick={() => void refreshHistory(schedule.id)}>Refresh history</button></div>
