@@ -48,7 +48,27 @@ _UUID_IDENTIFIER = re.compile(
 _KNOWN_TECHNOLOGY_TOKENS = frozenset({"aws", "azure", "gcp", "kubernetes", "docker", "terraform", "python", "java", "typescript", "javascript", "sql", "langchain", "langgraph", "openai"})
 
 
-class ApplicationPreparationService:
+class ApplicationPreparationReadService:
+    """Provider-free, user-scoped reads of immutable preparation snapshots."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def list_preparations(self, user_id: str) -> list[ApplicationPreparationRead]:
+        return [self._read(row) for row in self._session.scalars(select(ApplicationPreparation).where(ApplicationPreparation.user_id == user_id).order_by(ApplicationPreparation.created_at.desc())).all()]
+
+    def get(self, user_id: str, preparation_id: str) -> ApplicationPreparationRead:
+        row = self._session.scalar(select(ApplicationPreparation).where(ApplicationPreparation.id == preparation_id, ApplicationPreparation.user_id == user_id))
+        if row is None:
+            raise LookupError("Application preparation not found.")
+        return self._read(row)
+
+    @staticmethod
+    def _read(row: ApplicationPreparation) -> ApplicationPreparationRead:
+        return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=ApplicationPreparationResult.model_validate_json(row.preparation_result_json), created_at=row.created_at)
+
+
+class ApplicationPreparationService(ApplicationPreparationReadService):
     """Small coordinator; target resolution, drafting validation and rendering stay separate."""
 
     def __init__(
@@ -57,7 +77,7 @@ class ApplicationPreparationService:
         page_fetcher: PageFetcher | None = None, vacancy_extractor: PageVacancyExtractor | None = None,
         settings: Settings | None = None, renderer_template_version: str = "ats_standard-v1",
     ) -> None:
-        self._session = session
+        super().__init__(session)
         self._graph = graph
         self._drafting_agent = drafting_agent
         self._user_discovery = user_discovery
@@ -104,15 +124,6 @@ class ApplicationPreparationService:
         )
         self._session.add(record); self._session.commit(); self._session.refresh(record)
         return self._read(record)
-
-    def list_preparations(self, user_id: str) -> list[ApplicationPreparationRead]:
-        return [self._read(row) for row in self._session.scalars(select(ApplicationPreparation).where(ApplicationPreparation.user_id == user_id).order_by(ApplicationPreparation.created_at.desc())).all()]
-
-    def get(self, user_id: str, preparation_id: str) -> ApplicationPreparationRead:
-        row = self._session.scalar(select(ApplicationPreparation).where(ApplicationPreparation.id == preparation_id, ApplicationPreparation.user_id == user_id))
-        if row is None:
-            raise LookupError("Application preparation not found.")
-        return self._read(row)
 
     def _resolve_target(self, user_id: str, request: ApplicationPrepareRequest, context: CandidateContext) -> ApplicationTargetSnapshot:
         target = request.target
@@ -361,11 +372,6 @@ class ApplicationPreparationService:
 
     def _contract_fingerprint(self) -> str:
         return _hash(_dump({"contract": _CONTRACT_VERSION, "revision": _application_revision(), "renderer": self._renderer_template_version, "provider": self._settings.default_llm_provider.casefold().strip(), "models": {"cv": self._settings.application_drafting_model, "cover_letter": self._settings.application_drafting_model, "answer": self._settings.application_drafting_model}}))
-
-    @staticmethod
-    def _read(row: ApplicationPreparation) -> ApplicationPreparationRead:
-        return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=ApplicationPreparationResult.model_validate_json(row.preparation_result_json), created_at=row.created_at)
-
 
 def _dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=_json_default)

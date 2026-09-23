@@ -100,6 +100,27 @@ h2 { font-size: 1.2rem; }
 .section-error { display: grid; gap: 0.6rem; justify-items: start; }
 .inbox-card { border-left: 0.25rem solid #aebbd0; }
 .inbox-card.is-selected { border-left-color: #2458d3; }
+.preparation-panel, .preparation-form, .application-section, .application-detail-page, .applications-page, .application-list { display: grid; gap: 0.85rem; min-width: 0; }
+.preparation-form { margin-top: 0.75rem; }
+.preparation-form fieldset { border: 1px solid #d9e0ea; border-radius: 0.55rem; display: grid; gap: 0.65rem; min-width: 0; padding: 0.85rem; }
+.preparation-form legend { font-weight: 700; padding: 0 0.25rem; }
+.question-input { display: grid; gap: 0.4rem; min-width: 0; }
+.application-list { list-style: none; margin: 0; padding: 0; }
+.application-summary { display: grid; gap: 0.75rem; min-width: 0; overflow-wrap: anywhere; }
+.application-summary h2 a { color: inherit; }
+.applications-page { margin: 0 auto; max-width: 70rem; padding: 0 1rem 2.5rem; }
+.applications-page > section { display: grid; gap: 1rem; min-width: 0; }
+.application-section { overflow-wrap: anywhere; }
+.application-section h3 { margin: 0.8rem 0 0.35rem; }
+.application-section ul { display: grid; gap: 0.45rem; padding-left: 1.25rem; }
+.application-subsection { border-top: 1px solid #e0e5ef; display: grid; gap: 0.35rem; min-width: 0; padding: 0.75rem 0; }
+.application-subsection h4 { margin: 0; }
+.application-prose { white-space: pre-wrap; }
+.evidence-references { color: #546176; font-size: 0.9rem; margin: 0.35rem 0; }
+.evidence-references summary { cursor: pointer; font-weight: 650; }
+.evidence-references ul { margin-bottom: 0; }
+.evidence-references li { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; overflow-wrap: anywhere; }
+.evidence-references code { font-size: 0.8rem; }
 .jobs-searches-page { display: grid; gap: 1rem; margin: 0 auto; max-width: 70rem; min-width: 0; padding: 0 1rem 2.5rem; }
 .searches-header { max-width: none; padding: 1rem 0 0; }
 .searches-header > div { display: grid; gap: 0.35rem; min-width: 0; }
@@ -121,6 +142,9 @@ h2 { font-size: 1.2rem; }
 .legacy-state { background: #fff8e6; border: 1px solid #e8c972; border-radius: 0.45rem; display: grid; gap: 0.6rem; min-width: 0; padding: 0.75rem; }
 .legacy-state button { justify-self: start; max-width: 100%; }
 @media (max-width: 640px) {
+  .applications-page { padding-left: 0.75rem; padding-right: 0.75rem; }
+  .application-section .card-actions button { max-width: 100%; }
+  .application-detail-page > .workspace-header { align-items: stretch; }
   .jobs-searches-page { padding-left: 0.75rem; padding-right: 0.75rem; }
   .searches-header { align-items: stretch; flex-direction: column; }
   .schedule-fieldset, .weekday-picker { padding: 0.7rem; }

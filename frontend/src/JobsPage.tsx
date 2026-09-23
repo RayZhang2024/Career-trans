@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, RankedJobOpportunity, UserOpportunitySummary } from "./api";
+import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, UserOpportunitySummary } from "./api";
 import { ApiError, useAuth } from "./auth";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
@@ -58,6 +58,117 @@ function OpportunityDetail({ opportunity, historical = false }: { opportunity: R
   </article>;
 }
 
+function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadinessRefresh }: { opportunity: UserOpportunitySummary; ready: boolean | undefined; onUnavailable: () => Promise<boolean>; onReadinessRefresh: (status: OnboardingStatus | undefined) => void }) {
+  const { api } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [profileState, setProfileState] = useState<"unchecked" | "checking" | "ready" | "missing" | "error">("unchecked");
+  const [pages, setPages] = useState<1 | 2 | 3>(2);
+  const [includeLetter, setIncludeLetter] = useState(true);
+  const [questions, setQuestions] = useState<string[]>([""]);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<React.ReactNode>(null);
+  const [created, setCreated] = useState<ApplicationPreparation | null>(null);
+  const [reconciled, setReconciled] = useState<ApplicationPreparation[]>([]);
+  const [unavailable, setUnavailable] = useState(false);
+  const [prerequisitesUnconfirmed, setPrerequisitesUnconfirmed] = useState(false);
+  const alive = useRef(true);
+  const generation = useRef(0);
+  const lock = useRef(false);
+  const previousReady = useRef(ready);
+  const previousProfileState = useRef(profileState);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; generation.current += 1; }; }, []);
+  useEffect(() => {
+    const readinessRecovered = ready === true && previousReady.current !== true;
+    const profileRecovered = profileState === "ready" && previousProfileState.current !== "ready";
+    previousReady.current = ready;
+    previousProfileState.current = profileState;
+    if (ready === true && profileState === "ready" && (readinessRecovered || profileRecovered)) setPrerequisitesUnconfirmed(false);
+  }, [ready, profileState]);
+
+  const canSubmit = ready === true && profileState === "ready" && !unavailable && !prerequisitesUnconfirmed;
+
+  const checkDisplayName = async () => {
+    if (ready !== true) return;
+    setProfileState("checking"); setError(null);
+    try {
+      const profile = await api.request<Profile>("/api/v1/profile");
+      if (alive.current) setProfileState(profile.display_name?.trim() ? "ready" : "missing");
+    } catch (reason) {
+      if (!alive.current) return;
+      setProfileState(reason instanceof ApiError && reason.status === 404 ? "missing" : "error");
+    }
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (lock.current || pending || !canSubmit) return;
+    const cleanedQuestions = questions.map((question) => question.trim()).filter(Boolean);
+    if (cleanedQuestions.length > 8) return;
+    const requestGeneration = ++generation.current;
+    lock.current = true; setPending(true); setError(null); setCreated(null); setReconciled([]);
+    const payload: ApplicationPrepareRequest = { target: { discovered_job_id: opportunity.discovered_job_id }, target_pages: pages, include_cover_letter: includeLetter, application_questions: cleanedQuestions };
+    try {
+      const result = await api.request<ApplicationPreparation>("/api/v1/applications/prepare", { method: "POST", body: JSON.stringify(payload) });
+      if (alive.current && requestGeneration === generation.current) setCreated(result);
+    } catch (reason) {
+      if (!alive.current || requestGeneration !== generation.current || (reason as Error)?.name === "AbortError") return;
+      if (!(reason instanceof ApiError)) {
+        try {
+          const history = await api.request<ApplicationPreparation[]>("/api/v1/applications");
+          if (alive.current && requestGeneration === generation.current) {
+            setReconciled(history.filter((item) => item.target.canonical_discovered_job_id === opportunity.discovered_job_id));
+            setError("The preparation request was interrupted. Career-trans cannot confirm from this response whether a preparation was created. Saved application history was refreshed; any matching items are shown as history only.");
+          }
+        } catch (historyError) {
+          if (alive.current && requestGeneration === generation.current && (historyError as Error)?.name !== "AbortError") setError("The preparation request was interrupted. Career-trans cannot confirm from this response whether a preparation was created. Saved application history could not be confirmed as refreshed.");
+        }
+      } else if (reason.status === 404) {
+        setUnavailable(true);
+        const refreshed = await onUnavailable();
+        if (alive.current && requestGeneration === generation.current) setError(refreshed ? "This opportunity is no longer available. The current shortlist was refreshed." : "This opportunity is no longer available. The shortlist refresh could not be confirmed.");
+      } else if (reason.status === 409) {
+        setPrerequisitesUnconfirmed(true);
+        const [onboardingResult, profileResult] = await Promise.allSettled([api.request<OnboardingStatus>("/api/v1/onboarding/status"), api.request<Profile>("/api/v1/profile")]);
+        if (!alive.current || requestGeneration !== generation.current) return;
+        const refreshedReadiness = onboardingResult.status === "fulfilled" ? onboardingResult.value : undefined;
+        onReadinessRefresh(refreshedReadiness);
+        const candidateNotReady = refreshedReadiness?.candidate_context_ready === false;
+        const profileMissing = profileResult.status === "rejected" && profileResult.reason instanceof ApiError && profileResult.reason.status === 404 || profileResult.status === "fulfilled" && !profileResult.value.display_name?.trim();
+        const profileReady = profileResult.status === "fulfilled" && Boolean(profileResult.value.display_name?.trim());
+        setProfileState(profileMissing ? "missing" : profileReady ? "ready" : "error");
+        setPrerequisitesUnconfirmed(!refreshedReadiness?.candidate_context_ready || !profileReady);
+        if (candidateNotReady) setError(<>A confirmed candidate CV is required before preparing an application. <Link to="/cv">Continue CV onboarding</Link>.</>);
+        else if (profileMissing) setError(<>An application display name is required. <Link to="/">Update your profile</Link>.</>);
+        else if (onboardingResult.status !== "fulfilled" || profileResult.status !== "fulfilled") setError("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.");
+        else setError("Career-trans could not prepare this application because the current candidate or application data conflicts with the request.");
+      } else if (reason.status === 422) setError("Career-trans could not prepare this application because the target or request did not contain sufficient usable information.");
+      else if (reason.status === 503) setError("Application preparation is temporarily unavailable. Your saved application history remains available.");
+      else setError("Career-trans could not prepare this application. No preparation success was confirmed.");
+    } finally { lock.current = false; if (alive.current) setPending(false); }
+  };
+
+  return <section className="preparation-panel" aria-label={`Prepare application for ${opportunity.title}`}>
+    <button type="button" className="button-secondary" aria-expanded={open} disabled={!open && (ready !== true || unavailable)} onClick={() => { setOpen((value) => !value); if (!open && profileState === "unchecked") void checkDisplayName(); }}>{open ? "Close preparation options" : "Prepare application"}</button>
+    {ready !== true && <p className="muted">{ready === false ? <>Confirm a CV before preparing an application. <Link to="/cv">CV onboarding for application preparation</Link>.</> : "Candidate readiness is being confirmed. Preparation is unavailable until it can be verified."}</p>}
+    {open && <form className="card preparation-form" aria-label={`Prepare application for ${opportunity.title}`} onSubmit={(event) => void submit(event)}>
+      <h4>Prepare for {opportunity.title}</h4>
+      {ready !== true && !error && <p role="alert">{ready === false ? <>A confirmed candidate CV is required before preparing an application. <Link to="/cv">Continue CV onboarding</Link>.</> : "Candidate readiness could not be confirmed. New preparation is unavailable until it can be verified."}</p>}
+      {profileState === "checking" && <p role="status">Checking application identity…</p>}
+      {profileState === "missing" && !error && <p role="alert">An application display name is required. <Link to="/">Update your profile</Link>.</p>}
+      {profileState === "error" && <p role="alert">Profile readiness could not be confirmed. {ready === true && <button type="button" className="button-secondary" onClick={() => void checkDisplayName()}>Retry profile check</button>}</p>}
+      <label htmlFor={`pages-${opportunity.discovered_job_id}`}>Target CV pages</label><select id={`pages-${opportunity.discovered_job_id}`} value={pages} onChange={(event) => setPages(Number(event.target.value) as 1 | 2 | 3)} disabled={pending}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select>
+      <label><input type="checkbox" checked={includeLetter} onChange={(event) => setIncludeLetter(event.target.checked)} disabled={pending} /> Include a cover letter</label>
+      <fieldset disabled={pending}><legend>Application questions (up to 8)</legend>{questions.map((question, index) => <div className="question-input" key={index}><label htmlFor={`question-${opportunity.discovered_job_id}-${index}`}>Question {index + 1}</label><textarea id={`question-${opportunity.discovered_job_id}-${index}`} value={question} onChange={(event) => setQuestions((old) => old.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} />{questions.length > 1 && <button type="button" className="button-secondary" onClick={() => setQuestions((old) => old.filter((_, itemIndex) => itemIndex !== index))}>Remove question</button>}</div>)}{questions.length < 8 && <button type="button" className="button-secondary" onClick={() => setQuestions((old) => [...old, ""])}>Add question</button>}</fieldset>
+      {profileState === "ready" && <button type="submit" disabled={pending || !canSubmit}>{pending ? "Preparing…" : "Create preparation"}</button>}
+      {pending && <p role="status"><strong>{opportunity.title}:</strong> Preparing application… this may take several minutes.</p>}
+      {error && <p role="alert">{error}</p>}
+      {created && <p role="status">Preparation saved. <Link to={`/applications/${encodeURIComponent(created.id)}`}>Review this preparation</Link>.</p>}
+      {reconciled.length > 0 && <div className="notice"><p>Matching saved preparations are shown as history only; they cannot be attributed to the interrupted request.</p><ul>{reconciled.map((item) => <li key={item.id}><Link to={`/applications/${encodeURIComponent(item.id)}`}>{item.target.title} · {new Date(item.created_at).toLocaleString()}</Link></li>)}</ul></div>}
+    </form>}
+  </section>;
+}
+
+
 export function JobsPage() {
   const { api, user } = useAuth();
   const [onboarding, setOnboarding] = useState<SectionState<OnboardingStatus>>({ phase: "loading" });
@@ -97,6 +208,10 @@ export function JobsPage() {
     } catch {
       if (alive.current && request === generations.current.onboarding) setOnboarding((previous) => ({ phase: previous.data ? "error" : "error", data: previous.data, error: "Candidate readiness is unavailable." }));
     }
+  };
+  const acceptOnboardingAuthority = (data: OnboardingStatus | undefined) => {
+    generations.current.onboarding += 1;
+    setOnboarding(data ? { phase: "loaded", data } : { phase: "error", error: "Candidate readiness is unavailable." });
   };
   const loadOpportunities = async (limit = opportunityLimit, clearExisting = false): Promise<boolean> => {
     const request = ++generations.current.opportunities;
@@ -230,7 +345,7 @@ export function JobsPage() {
         <StateMessage state={opportunities} empty={false} onRetry={() => void loadOpportunities()}>
           {!confirmedWindow.length && noRuns && <p className="muted">No jobs have been evaluated yet.</p>}
           {!confirmedWindow.length && hasHistoricalRuns && opportunities.phase === "loaded" && <p className="muted">No current evaluated opportunities. Historical runs are available below.</p>}
-          {!!confirmedWindow.length && <ol className="opportunity-list">{confirmedWindow.map((item, index) => <li className="card opportunity-card" key={item.evaluation_id}><div className="opportunity-top"><div><p className="recommendation-label">{item.recommendation.toUpperCase()}</p><h3>{item.title}</h3><p>{[item.company, item.location, item.work_arrangement].filter(Boolean).join(" · ")}</p></div><span className="ordinal">{index + 1}</span></div><dl className="metric-grid"><div><dt>Fit</dt><dd>{numberLabel(item.fit_score)}</dd></div><div><dt>Career alignment</dt><dd>{numberLabel(item.career_alignment_score)} · {titleCase(item.career_alignment_confidence)}</dd></div><div><dt>Relevance</dt><dd>{numberLabel(item.relevance_score * 100)}%</dd></div><div><dt>Role archetype</dt><dd>{titleCase(item.archetype)}</dd></div></dl><p><strong>Posting recency signal:</strong> {titleCase(item.posting_recency.legitimacy)} — {item.posting_recency.reasoning}</p><div className="card-actions"><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a><button type="button" className="button-secondary" aria-expanded={selectedCurrent === item.evaluation_id} onClick={() => selectedCurrent === item.evaluation_id ? (generations.current.currentDetail += 1, setSelectedCurrent(null)) : void openCurrent(item.evaluation_id)}>{selectedCurrent === item.evaluation_id ? "Close detail" : "View detail"}</button></div>{selectedCurrent === item.evaluation_id && <StateMessage state={currentDetail} empty={false} onRetry={() => void openCurrent(item.evaluation_id)}>{currentDetail.data && <OpportunityDetail opportunity={currentDetail.data} />}</StateMessage>}</li>)}</ol>}
+          {!!confirmedWindow.length && <ol className="opportunity-list">{confirmedWindow.map((item, index) => <li className="card opportunity-card" key={item.discovered_job_id}><div className="opportunity-top"><div><p className="recommendation-label">{item.recommendation.toUpperCase()}</p><h3>{item.title}</h3><p>{[item.company, item.location, item.work_arrangement].filter(Boolean).join(" · ")}</p></div><span className="ordinal">{index + 1}</span></div><dl className="metric-grid"><div><dt>Fit</dt><dd>{numberLabel(item.fit_score)}</dd></div><div><dt>Career alignment</dt><dd>{numberLabel(item.career_alignment_score)} · {titleCase(item.career_alignment_confidence)}</dd></div><div><dt>Relevance</dt><dd>{numberLabel(item.relevance_score * 100)}%</dd></div><div><dt>Role archetype</dt><dd>{titleCase(item.archetype)}</dd></div></dl><p><strong>Posting recency signal:</strong> {titleCase(item.posting_recency.legitimacy)} — {item.posting_recency.reasoning}</p><div className="card-actions"><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a><button type="button" className="button-secondary" aria-expanded={selectedCurrent === item.evaluation_id} onClick={() => selectedCurrent === item.evaluation_id ? (generations.current.currentDetail += 1, setSelectedCurrent(null)) : void openCurrent(item.evaluation_id)}>{selectedCurrent === item.evaluation_id ? "Close detail" : "View detail"}</button></div><OpportunityPreparation opportunity={item} ready={onboarding.data?.candidate_context_ready} onUnavailable={async () => { const refreshed = await loadOpportunities(WINDOW); setOpportunityLimit(WINDOW); setStaleNotice(refreshed ? "This opportunity is no longer available. The current shortlist was refreshed." : "This opportunity is no longer available. The shortlist refresh could not be confirmed."); return refreshed; }} onReadinessRefresh={acceptOnboardingAuthority} />{selectedCurrent === item.evaluation_id && <StateMessage state={currentDetail} empty={false} onRetry={() => void openCurrent(item.evaluation_id)}>{currentDetail.data && <OpportunityDetail opportunity={currentDetail.data} />}</StateMessage>}</li>)}</ol>}
           {opportunities.data?.truncated && (opportunityLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(opportunityLimit); setOpportunityLimit(next); void loadOpportunities(next); }}>Show more current opportunities</button> : <p className="muted">Showing the first 100 current opportunities available through this view.</p>)}
         </StateMessage>
       </section>}

@@ -20,6 +20,7 @@ from app.schemas.discovery import DiscoveredJobState
 from app.core.config import Settings
 from app.core.security import create_access_token
 from app.api.deps import get_application_preparation_service, validate_semantic_configuration
+from app.api import deps as api_deps
 from app.providers.llm import SemanticProviderConfigurationError
 from app.main import app as fastapi_app
 from app.schemas.job import JobProfile, JobRequirement, RequirementCategory, RequirementImportance
@@ -483,3 +484,50 @@ def test_authenticated_api_owner_and_cross_user_download_isolation(client, db_se
         assert client.post("/api/v1/applications/prepare", json=injected, headers=owner).status_code == 422
     finally:
         fastapi_app.dependency_overrides.pop(get_application_preparation_service, None)
+
+
+def test_application_history_detail_and_downloads_are_provider_free(client, db_session, monkeypatch):
+    """Persisted application reads do not construct ranking or semantic clients."""
+    service, _ = _service(db_session, monkeypatch)
+    with_cover = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=True))
+    without_cover = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False))
+    db_session.add(User(id="u2", email="other@example.test", password_hash="safe")); db_session.commit()
+
+    constructed = []
+    def provider_construction_would_503(*args, **kwargs):
+        constructed.append((args, kwargs))
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="provider unavailable")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setattr(api_deps, "get_semantic_response_client", provider_construction_would_503)
+    # The cached analysis constructor must not mask whether this request would
+    # otherwise traverse the provider dependency chain.
+    api_deps.get_job_analysis_service.cache_clear()
+    owner = {"Authorization": f"Bearer {create_access_token('u1')}"}
+    other = {"Authorization": f"Bearer {create_access_token('u2')}"}
+    try:
+        listing = client.get("/api/v1/applications", headers=owner)
+        assert listing.status_code == 200 and {row["id"] for row in listing.json()} == {with_cover.id, without_cover.id}
+        detail = client.get(f"/api/v1/applications/{with_cover.id}", headers=owner)
+        assert detail.status_code == 200 and detail.json()["identity"]["display_name"] == "Example Person"
+        assert client.get(f"/api/v1/applications/{with_cover.id}", headers=other).status_code == 404
+
+        for preparation in (with_cover, without_cover):
+            for suffix in ("cv.docx", "cv.pdf"):
+                response = client.get(f"/api/v1/applications/{preparation.id}/{suffix}", headers=owner)
+                assert response.status_code == 200 and "attachment" in response.headers["content-disposition"]
+                assert client.get(f"/api/v1/applications/{preparation.id}/{suffix}", headers=other).status_code == 404
+        for suffix in ("cover-letter.docx", "cover-letter.pdf"):
+            assert client.get(f"/api/v1/applications/{with_cover.id}/{suffix}", headers=owner).status_code == 200
+            assert client.get(f"/api/v1/applications/{with_cover.id}/{suffix}", headers=other).status_code == 404
+            assert client.get(f"/api/v1/applications/{without_cover.id}/{suffix}", headers=owner).status_code == 404
+        assert constructed == []
+
+        # Creation remains intentionally attached to the semantic application
+        # service and therefore fails safely when semantic construction fails.
+        created = client.post("/api/v1/applications/prepare", headers=owner, json={"target": {"job_text": "Python delivery role " * 20}, "include_cover_letter": False})
+        assert created.status_code == 503
+        assert constructed
+    finally:
+        api_deps.get_job_analysis_service.cache_clear()

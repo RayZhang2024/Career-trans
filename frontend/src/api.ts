@@ -110,6 +110,41 @@ export type ScheduledExecutionRead = {
 export type LLMConfigurationCheck = { ready: boolean };
 export type DiscoveryRunCreated = DiscoveryRunSummary & { search_input_fingerprint: string; candidate_evaluation_fingerprint: string; evaluation_contract_fingerprint: string; jobs: Array<DiscoveryRunJobSummary & { opportunity: RankedJobOpportunity | null }> };
 
+export type ApplicationSourceRef = { source_type: string; source_ref: string };
+export type ApplicationPreparation = {
+  id: string;
+  target: {
+    source_kind: "discovered_job" | "job_text" | "job_url"; canonical_discovered_job_id?: string | null;
+    public_url?: string | null; title: string; company?: string | null; location?: string | null;
+    work_arrangement?: string | null; employment_type?: string | null;
+    job_profile: JobProfile; job_content_hash: string;
+  };
+  identity: {
+    display_name: string; email: string; phone?: string | null; location?: string | null;
+    linkedin_url?: string | null; github_url?: string | null; portfolio_url?: string | null;
+  };
+  preparation_input_fingerprint: string; preparation_contract_fingerprint: string;
+  result: {
+    cv: {
+      professional_summary: string; summary_source_refs: ApplicationSourceRef[]; key_skills: string[];
+      roles: Array<{ employer: string; title: string; start_date?: string | null; end_date?: string | null; location?: string | null; bullets: Array<{ text: string; source_refs: ApplicationSourceRef[]; priority: number }> }>;
+      selected_projects: Array<{ name: string; text: string; source_refs: ApplicationSourceRef[]; priority: number }>;
+      education: string[]; credentials: string[];
+    };
+    cover_letter: { body: string; source_refs: ApplicationSourceRef[] } | null;
+    answers: Array<{ question: string; status: "drafted" | "unsupported"; answer?: string | null; source_refs: ApplicationSourceRef[] }>;
+    layout_status: "fit" | "overflow"; target_pages: number; actual_pdf_pages: number;
+  };
+  created_at: string;
+};
+
+export type ApplicationPrepareRequest = {
+  target: { discovered_job_id: string };
+  target_pages: 1 | 2 | 3;
+  include_cover_letter: boolean;
+  application_questions: string[];
+};
+
 export class SessionApi {
   private epoch = 0;
   private controllers = new Set<AbortController>();
@@ -133,4 +168,26 @@ export class SessionApi {
       return value;
     } finally { this.controllers.delete(controller); }
   }
+
+  async requestBlob(path: string): Promise<{ blob: Blob; filename: string | null }> {
+    const epoch = this.epoch; const controller = new AbortController(); this.controllers.add(controller);
+    try {
+      const headers = new Headers();
+      if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
+      const response = await fetch(`${API_BASE_URL}${path}`, { headers, signal: controller.signal });
+      if (epoch !== this.epoch) throw new DOMException("Superseded auth session", "AbortError");
+      if (response.status === 401 && epoch === this.epoch) this.onAuthenticated401();
+      if (!response.ok) throw new ApiError(response.status, "Request could not be completed.");
+      const blob = await response.blob();
+      if (epoch !== this.epoch) throw new DOMException("Superseded auth session", "AbortError");
+      return { blob, filename: response.headers.get("Content-Disposition") ? dispositionFilename(response.headers.get("Content-Disposition")!) : null };
+    } finally { this.controllers.delete(controller); }
+  }
+}
+
+function dispositionFilename(value: string): string | null {
+  const extended = value.match(/filename\*\s*=\s*UTF-8''([^;]+)/i)?.[1]?.trim().replace(/^"|"$/g, "");
+  const ordinary = value.match(/filename\s*=\s*(?:"([^"]*)"|([^;]+))/i);
+  const candidate = extended ? (() => { try { return decodeURIComponent(extended); } catch { return extended; } })() : ordinary?.[1] ?? ordinary?.[2]?.trim();
+  return candidate || null;
 }

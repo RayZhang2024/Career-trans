@@ -43,7 +43,7 @@ from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
-from app.services.application_preparation_service import ApplicationPreparationService
+from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.ashby import AshbyJobSource
@@ -521,6 +521,11 @@ def get_application_preparation_service(
         db, graph=graph, drafting_agent=agent, user_discovery=discovery,
         page_fetcher=PublicHttpPageFetcher(),
     )
+
+
+def get_application_preparation_read_service(db: DbSession) -> ApplicationPreparationReadService:
+    """Provider-free dependency for immutable application-preparation reads."""
+    return ApplicationPreparationReadService(db)
 
 
 def get_discovery_schedule_service(db: DbSession) -> DiscoveryScheduleService:
