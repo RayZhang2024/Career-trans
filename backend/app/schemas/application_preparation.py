@@ -6,6 +6,7 @@ career structure and rejects anything outside the bounded preparation context.
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
@@ -27,6 +28,21 @@ class ApplicationLayoutStatus(StrEnum):
 class ApplicationAnswerStatus(StrEnum):
     DRAFTED = "drafted"
     UNSUPPORTED = "unsupported"
+
+
+class ApplicationEvidenceSnapshotStatus(StrEnum):
+    AVAILABLE = "available"
+    LEGACY_UNAVAILABLE = "legacy_unavailable"
+
+
+class ApplicationEvidenceSource(BaseModel):
+    """Immutable, bounded preparation-time source text admitted to drafting."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_type: EvidenceSourceType
+    source_ref: str = Field(min_length=1)
+    text: str
 
 
 class ApplicationSourceRef(BaseModel):
@@ -196,6 +212,17 @@ class ApplicationPreparationResult(BaseModel):
     actual_pdf_pages: int = Field(default=0, ge=0)
 
 
+class PersistedApplicationPreparationEnvelope(BaseModel):
+    """Internal V2C2 persistence shape; not exposed by V2C1 read responses."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    persistence_version: Literal[2]
+    result: ApplicationPreparationResult
+    evidence_snapshot_status: Literal["available"]
+    evidence_sources: tuple[ApplicationEvidenceSource, ...]
+
+
 class ApplicationPreparationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -205,6 +232,14 @@ class ApplicationPreparationRead(BaseModel):
     preparation_contract_fingerprint: str
     result: ApplicationPreparationResult
     created_at: datetime
+
+
+class ApplicationPreparationReviewRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preparation_id: str
+    evidence_snapshot_status: ApplicationEvidenceSnapshotStatus
+    evidence_sources: list[ApplicationEvidenceSource]
 
 
 class ApplicationInsufficientDetailError(RuntimeError):

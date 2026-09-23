@@ -109,11 +109,10 @@ An enabled configuration means recurrence is configured, not that the scheduler 
 
 Broad external Codex discovery remains a separate host-side workflow outside the browser and containers. The browser does not invoke Codex and does not expose its credentials. The Jobs inbox reads persisted public vacancies; it does not run browser-side discovery.
 
-Application-preparation review and authenticated document downloads are available in the browser. Editing generated content, selective regeneration, and broader application tracking remain future milestones.
+Application preparation includes a historical evidence-review workspace for newly created V2C2 preparations. Review shows persisted job requirements and matches, the bounded preparation-time evidence snapshot, per-reference drafting admission, and citations that remain in the final persisted materials. Older V2C1 preparations remain reviewable but explicitly report that complete drafting-context evidence was not stored. Review never substitutes current candidate data for missing historical evidence. Generated content remains immutable; editing/regeneration remains future work, and application tracking remains V2D.
 
 ### Still planned
 
-- application review/iteration enhancements (V2C2);
 - application tracking/status history (V2D);
 - production database migration;
 - production identity/session hardening;
@@ -532,7 +531,7 @@ They exist to exercise the system and must not be treated as globally applicable
 
 ## Later product work
 
-Application-preparation UI supports new preparations from current ranked opportunities and historical review/downloads; editing or regenerating drafts remains future V2C2 work. Application status tracking remains future V2D work. Broad external Codex discovery continues through the host-side workflow; the browser evaluates only persisted public vacancies selected from the Jobs inbox. Saved-discovery configuration, manual execution, and execution-history controls are available in the Jobs workspace; automated recurrence still requires an operated server-side scheduler and required providers.
+Application-preparation UI supports current-ranked-opportunity preparation, historical downloads, requirement review, preparation-time evidence inspection, and deterministic traceability through final persisted citations. Legacy preparations can lack the V2C2 source snapshot; that absence is explicit, and current CV/profile/Adviser state is never used to fill it in. Generated content remains immutable; editing/regeneration remains future work. Application status tracking remains future V2D work. Broad external Codex discovery continues through the host-side workflow; the browser evaluates only persisted public vacancies selected from the Jobs inbox. Saved-discovery configuration, manual execution, and execution-history controls are available in the Jobs workspace; automated recurrence still requires an operated server-side scheduler and required providers.
 
 ---
 

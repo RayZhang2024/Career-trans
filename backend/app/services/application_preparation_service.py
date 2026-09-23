@@ -18,10 +18,12 @@ from app.models.discovered_job import DiscoveredJob
 from app.models.user import User
 from app.providers.page_fetch import PageFetcher
 from app.schemas.application_preparation import (
-    ApplicationAnswerStatus, ApplicationIdentitySnapshot, ApplicationInsufficientDetailError,
-    ApplicationPreparationRead, ApplicationPreparationResult, ApplicationPrepareRequest,
+    ApplicationAnswerStatus, ApplicationEvidenceSnapshotStatus, ApplicationEvidenceSource,
+    ApplicationIdentitySnapshot, ApplicationInsufficientDetailError, ApplicationPreparationRead,
+    ApplicationPreparationResult, ApplicationPreparationReviewRead, ApplicationPrepareRequest,
     ApplicationSourceRef, ApplicationTargetKind, ApplicationTargetSnapshot, CoverLetterContent,
     CVWritingDraft, TailoredBullet, TailoredCVContent, TailoredRole,
+    PersistedApplicationPreparationEnvelope,
 )
 from app.schemas.candidate import CandidateContext, CareerEvidence
 from app.schemas.cv_ingestion import CandidateCVData
@@ -34,7 +36,7 @@ from app.services.agentic_job_discovery_service import AgenticJobDiscoveryServic
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
 
 
-_CONTRACT_VERSION = "application-preparation-v1"
+_CONTRACT_VERSION = "application-preparation-v2"
 _MAX_CONTEXT_SOURCES = 18
 # Match support has priority over structural attribution anchors.  The latter
 # are separately bounded and only exposed when they can be cited canonically.
@@ -63,9 +65,43 @@ class ApplicationPreparationReadService:
             raise LookupError("Application preparation not found.")
         return self._read(row)
 
+    def get_review(self, user_id: str, preparation_id: str) -> ApplicationPreparationReviewRead:
+        row = self._session.scalar(select(ApplicationPreparation).where(ApplicationPreparation.id == preparation_id, ApplicationPreparation.user_id == user_id))
+        if row is None:
+            raise LookupError("Application preparation not found.")
+        _, snapshot_status, evidence_sources = _decode_persisted_result(row.preparation_result_json)
+        return ApplicationPreparationReviewRead(
+            preparation_id=row.id,
+            evidence_snapshot_status=snapshot_status,
+            evidence_sources=evidence_sources,
+        )
+
     @staticmethod
     def _read(row: ApplicationPreparation) -> ApplicationPreparationRead:
-        return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=ApplicationPreparationResult.model_validate_json(row.preparation_result_json), created_at=row.created_at)
+        result, _, _ = _decode_persisted_result(row.preparation_result_json)
+        return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=result, created_at=row.created_at)
+
+
+def _decode_persisted_result(raw: str) -> tuple[ApplicationPreparationResult, ApplicationEvidenceSnapshotStatus, list[ApplicationEvidenceSource]]:
+    """Project either the explicit V2C2 envelope or a raw legacy V2C1 result.
+
+    Public V2C1 reads always receive only the core result. Raw pre-envelope
+    records are parsed through the strict legacy model and explicitly retain
+    the fact that no preparation-time evidence snapshot was persisted.
+    """
+    payload = json.loads(raw)
+    if isinstance(payload, dict) and payload.get("persistence_version") == 2:
+        envelope = PersistedApplicationPreparationEnvelope.model_validate(payload)
+        return (
+            envelope.result,
+            ApplicationEvidenceSnapshotStatus.AVAILABLE,
+            envelope.evidence_sources,
+        )
+    return (
+        ApplicationPreparationResult.model_validate(payload),
+        ApplicationEvidenceSnapshotStatus.LEGACY_UNAVAILABLE,
+        [],
+    )
 
 
 class ApplicationPreparationService(ApplicationPreparationReadService):
@@ -116,11 +152,20 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
         # its safe layout result; document bytes are rendered again on download.
         result, pages, layout_status = ApplicationDocumentRenderer().compact_cv_to_target(identity, target, result)
         result = result.model_copy(update={"actual_pdf_pages": pages, "layout_status": layout_status})
+        persisted = PersistedApplicationPreparationEnvelope(
+            persistence_version=2,
+            result=result,
+            evidence_snapshot_status=ApplicationEvidenceSnapshotStatus.AVAILABLE.value,
+            evidence_sources=[
+                ApplicationEvidenceSource(source_type=source_type, source_ref=source_ref, text=text)
+                for (source_type, source_ref), text in source_catalog.items()
+            ],
+        )
         record = ApplicationPreparation(
             user_id=user_id,
             target_snapshot_json=_dump(target), identity_snapshot_json=_dump(identity),
             preparation_input_fingerprint=self._input_fingerprint(target, identity, source_catalog, structured, request),
-            preparation_contract_fingerprint=self._contract_fingerprint(), preparation_result_json=_dump(result),
+            preparation_contract_fingerprint=self._contract_fingerprint(), preparation_result_json=_dump(persisted),
         )
         self._session.add(record); self._session.commit(); self._session.refresh(record)
         return self._read(record)
