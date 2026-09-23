@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { DiscoveryScheduleRead, User } from "./api";
@@ -81,6 +81,11 @@ describe("Issue #175 saved discovery configurations", () => {
     const headings = screen.getAllByRole("heading", { level: 3 }).map((item) => item.textContent);
     expect(headings).toEqual(["First", "Second"]);
     expect(screen.getByText(/Recurrence configured/)).toBeInTheDocument(); expect(screen.getByText(/^Paused ·/)).toBeInTheDocument();
+    const cards = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.closest("li")!);
+    expect(within(cards[0]).getByText(/Recurrence is configured for this saved discovery/)).toBeInTheDocument();
+    expect(within(cards[0]).queryByText(/Automatic recurrence is paused/)).not.toBeInTheDocument();
+    expect(within(cards[1]).getByText(/Automatic recurrence is paused for this saved discovery/)).toBeInTheDocument();
+    expect(within(cards[1]).queryByText(/Recurrence is configured for this saved discovery/)).not.toBeInTheDocument();
     expect(screen.getAllByText(/Last recorded execution completion/)).toHaveLength(2);
     expect(screen.queryByText(/Last successful run/)).not.toBeInTheDocument();
     expect(screen.getByText(/complete list; this view does not paginate it/)).toBeInTheDocument();
@@ -148,6 +153,9 @@ describe("Issue #175 saved discovery configurations", () => {
   it("normalizes create line inputs, maps daily payload, uses query defaults and never executes discovery", async () => {
     const { requests } = renderPage("/jobs/searches", {}, []); await screen.findByText("No saved discovery configurations yet.");
     fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
+    expect(screen.getByText(/Saving is configuration-only and does not check readiness/)).toBeInTheDocument();
+    expect(screen.getByText(/Running a saved discovery requires confirmed candidate context and the required server-side providers/)).toBeInTheDocument();
+    expect(screen.queryByText(/Saving requires a confirmed candidate profile/i)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "  AI hunt  " } });
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "  AI, ML platform  \n\n FDE " } });
     fireEvent.change(screen.getByLabelText("Eligibility locations (one complete location per line)"), { target: { value: " London, United Kingdom \n\nOxford, United Kingdom" } });
@@ -368,7 +376,7 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(screen.getByRole("button", { name: "Pause recurrence" })).toBeDisabled(); fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
     expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled(); fireEvent.submit(screen.getByLabelText("Name").closest("form")!);
     expect(getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")).toHaveLength(1);
-    pending.resolve(response(schedule({ name: "Dirty" }))); await screen.findByText("Saved discovery updated.");
+    pending.resolve(response(schedule({ name: "Dirty" }))); await screen.findByText("Saved discovery Dirty updated.");
   });
 
   it("blocks duplicate pause requests while one same-schedule mutation is pending", async () => {
@@ -387,6 +395,52 @@ describe("Issue #175 saved discovery configurations", () => {
     createdConfirmed = true; pending.resolve(response(created, 201)); await screen.findByText("Saved discovery created. The saved-configuration list is current.");
     expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules").length).toBeGreaterThan(1);
     expect(screen.getAllByRole("heading").filter((heading) => ["Earlier backend item", "Created"].includes(heading.textContent ?? "")).map((heading) => heading.textContent)).toEqual(["Earlier backend item", "Created"]);
+  });
+
+  it("keeps a newer editor when an earlier schedule save resolves late", async () => {
+    const pendingPatch = deferred<Response>();
+    const first = schedule({ id: "first", name: "Schedule A" });
+    const second = schedule({ id: "second", name: "Schedule B" });
+    const { requests } = renderPage("/jobs/searches", {
+      "PATCH /api/v1/jobs/discovery-schedules/first": () => pendingPatch.promise,
+    }, [first, second]);
+    await loaded();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    await screen.findByDisplayValue("Schedule A");
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Schedule A saved" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => expect(getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/first")).toHaveLength(1));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[1]);
+    await screen.findByDisplayValue("Schedule B");
+    pendingPatch.resolve(response(schedule({ id: "first", name: "Schedule A saved" })));
+
+    expect(await screen.findByDisplayValue("Schedule B")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Edit saved discovery" })).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Schedule A saved")).not.toBeInTheDocument();
+  });
+
+  it("does not let a delayed create close a newer editor", async () => {
+    const pendingPost = deferred<Response>();
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules": () => pendingPost.promise,
+    });
+    await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Pending create" } });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Structured ATS/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules")).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await screen.findByDisplayValue("AI roles");
+    pendingPost.resolve(response(schedule({ id: "created", name: "Pending create" }), 201));
+
+    expect(await screen.findByDisplayValue("AI roles")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Edit saved discovery" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "New saved discovery" })).not.toBeInTheDocument();
   });
 
   it("reports creation success separately when authoritative list refresh fails and preserves prior list", async () => {

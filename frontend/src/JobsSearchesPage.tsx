@@ -261,15 +261,18 @@ export function JobsSearchesPage() {
     if (problem) { setEditor({ ...current, error: problem }); return; }
     const lock = current.id ? `save:${current.id}` : "create";
     if (mutationLocks.current.has(lock)) return;
+    const ownerGeneration = editorGeneration.current;
+    const ownsEditor = () => alive.current && ownerGeneration === editorGeneration.current;
     mutationLocks.current.add(lock); setError(""); setMessage("");
     if (current.id === null) {
       setCreatePending(true);
       try {
         await api.request<DiscoveryScheduleRead>("/api/v1/jobs/discovery-schedules", { method: "POST", body: JSON.stringify(buildCreate(current.draft)) });
-        setEditor(null); setMessage("Saved discovery created. Refreshing the saved-configuration list…");
+        if (ownsEditor()) setEditor(null);
+        setMessage("Saved discovery created. Refreshing the saved-configuration list…");
         const refreshed = await refreshList();
         setMessage(refreshed ? "Saved discovery created. The saved-configuration list is current." : "Saved discovery was created, but the list refresh could not be confirmed. Previously loaded configurations remain shown.");
-      } catch { setError("Saved discovery could not be created."); }
+      } catch { if (ownsEditor()) setError("Saved discovery could not be created."); }
       finally { mutationLocks.current.delete(lock); setCreatePending(false); }
       return;
     }
@@ -281,19 +284,22 @@ export function JobsSearchesPage() {
       if (requiresFreshRead) fresh = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}`);
       const patch = buildPatch(fresh, current.draft, current.dirty);
       if (Object.keys(patch).length === 0) {
-        setEditor({ id, loading: false, baseline: fresh, draft: toDraft(fresh), dirty: new Set() });
+        if (ownsEditor()) setEditor({ id, loading: false, baseline: fresh, draft: toDraft(fresh), dirty: new Set() });
         setMessage("There are no saved changes to apply."); return;
       }
       const updated = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) });
-      setEditor({ id, loading: false, baseline: updated, draft: toDraft(updated), dirty: new Set() });
+      if (ownsEditor()) setEditor({ id, loading: false, baseline: updated, draft: toDraft(updated), dirty: new Set() });
       setMessage("Saved discovery updated. Refreshing the saved-configuration list…");
       const refreshed = await refreshList();
-      if (!refreshed) setMessage("Saved discovery was updated, but the list refresh could not be confirmed. The editor shows the saved response.");
-      else setMessage("Saved discovery updated.");
+      if (!refreshed) setMessage(ownsEditor()
+        ? "Saved discovery was updated, but the list refresh could not be confirmed. The editor shows the saved response."
+        : `Saved discovery ${updated.name} was updated, but the list refresh could not be confirmed.`);
+      else setMessage(`Saved discovery ${updated.name} updated.`);
     } catch (cause) {
+      if (!ownsEditor()) return;
       if (cause instanceof ApiError && cause.status === 404) { await clearStaleSchedule(id); return; }
       setEditor((old) => old?.id === id ? { ...old, pending: false, error: "Changes could not be saved. The persisted configuration was not changed by this form." } : old);
-    } finally { mutationLocks.current.delete(lock); setEditor((old) => old?.id === id ? { ...old, pending: false } : old); }
+    } finally { mutationLocks.current.delete(lock); if (ownsEditor()) setEditor((old) => old?.id === id ? { ...old, pending: false } : old); }
   };
 
   const setScheduleEnabled = async (schedule: DiscoveryScheduleRead, enabled: boolean) => {
@@ -339,7 +345,7 @@ export function JobsSearchesPage() {
           <label htmlFor="schedule-employment-types">Employment types (one per line)</label><textarea id="schedule-employment-types" value={draft.employmentTypes} onChange={(event) => change("employmentTypes", event.target.value)} disabled={value.pending || createPending} />
           <p className="muted">New configurations keep positive query companies empty and use query max results 50. These are separate from channel-specific result limits.</p>
         </fieldset>
-        <fieldset className="schedule-fieldset"><legend>Acquisition channels</legend><p className="muted">Choose at least one channel explicitly. Saving requires a confirmed candidate profile and the required server-side providers, but this configuration page does not check readiness.</p>
+        <fieldset className="schedule-fieldset"><legend>Acquisition channels</legend><p className="muted">Choose at least one channel explicitly. Saving is configuration-only and does not check readiness. Running a saved discovery requires confirmed candidate context and the required server-side providers.</p>
           <label className="check-line"><input type="checkbox" checked={draft.atsEnabled} onChange={(event) => change("atsEnabled", event.target.checked)} disabled={value.pending || createPending} /> Structured ATS — already-resolved career sources</label>
           <p className="muted">This channel reads the resolved career-source registry. A company filter does not resolve a source; no matching resolved source can yield zero jobs without proving the employer has no open roles.</p>
           {!draft.atsEnabled && (legacyProviders.length > 0 || draft.atsScopeMode === "legacy-mixed") && <div className="legacy-state"><strong>Legacy Structured ATS configuration is stored but disabled</strong>{draft.atsScopeMode === "legacy-mixed" && <p>Legacy/mixed persisted source scope is preserved until Structured ATS is enabled and you explicitly choose a new mode.</p>}{legacyProviders.length > 0 && <p>Legacy persisted provider filters: {legacyProviders.join(", ")}. They remain stored while this channel is disabled.</p>}</div>}
@@ -378,7 +384,7 @@ export function JobsSearchesPage() {
   return <main className="jobs-searches-page">
     <header className="workspace-header searches-header"><div><p className="eyebrow">Jobs workspace</p><h1>Saved discovery configurations</h1><p className="muted">Configure saved search criteria and recurrence. This page does not execute discovery.</p><Link to="/jobs">Back to Jobs workspace</Link></div><button type="button" onClick={openCreate}>New saved discovery</button></header>
     {message && <p className="notice" role="status">{message}</p>}{error && <p role="alert">{error}</p>}
-    <p className="muted">The saved-configuration endpoint returns the complete list; this view does not paginate it. Recurrence is configured, not proof that the scheduler operator is running. Automatic due execution requires the server-side operator and required providers; missed slots are coalesced. Broad host Codex discovery remains a separate host-side workflow.</p>
+    <p className="muted">The saved-configuration endpoint returns the complete list; this view does not paginate it. A saved recurrence setting is not proof that the scheduler operator is running. Automatic due execution requires the server-side operator and required providers; missed slots are coalesced. Broad host Codex discovery remains a separate host-side workflow.</p>
     <section className="schedule-list" aria-labelledby="saved-list-heading"><div className="section-heading"><div><h2 id="saved-list-heading">Your saved discoveries</h2><p className="muted">Configurations are shown in backend order.</p></div><button type="button" className="button-secondary" onClick={() => void refreshList()}>Refresh list</button></div>
       {list.phase === "loading" && !list.items && <p className="muted" role="status">Loading saved discoveries…</p>}
       {list.phase === "error" && !list.items && <div className="section-error"><p role="alert">{list.error}</p><button type="button" className="button-secondary" onClick={() => void refreshList()}>Retry list</button></div>}
@@ -393,7 +399,9 @@ export function JobsSearchesPage() {
           {schedule.last_execution_at && <p>Last recorded execution completion: {new Date(schedule.last_execution_at).toLocaleString()}</p>}
           <p>Prioritisation themes: {schedule.query.keywords.join(" · ")}</p><p>Eligibility locations: {schedule.query.locations.length ? schedule.query.locations.join(" · ") : "Any"} · Remote policy: {schedule.query.remote_ok === false ? "Exclude remote" : schedule.query.remote_ok === true ? "No remote restriction — legacy stored value preserved" : "No remote restriction"}</p>
           <p>Acquisition: {channelSummary(schedule)}</p><p>Evaluation budgets: {schedule.evaluation.max_semantic_candidates} semantic candidates · {schedule.evaluation.max_full_analyses} full analyses · minimum relevance {schedule.evaluation.min_relevance_score}</p>
-          <p className="muted">Recurrence is configured for this saved discovery. Automatic due execution requires the Career-trans scheduler operator and required server-side providers to be available in the deployment. Pausing stops future recurrence only; it does not cancel an already-running execution.</p>
+          {schedule.enabled
+            ? <p className="muted">Recurrence is configured for this saved discovery. Automatic due execution requires the Career-trans scheduler operator and required server-side providers to be available in the deployment.</p>
+            : <p className="muted">Automatic recurrence is paused for this saved discovery. Pausing affects future automatic recurrence only and does not cancel an already-running execution.</p>}
           {dirty && <p className="notice">Save or discard changes before pausing or resuming this configuration.</p>}
           <div className="card-actions"><button type="button" className="button-secondary" onClick={() => void setScheduleEnabled(schedule, !schedule.enabled)} disabled={dirty || pending || mutationLocks.current.has(`toggle:${schedule.id}`)}>{pending ? "Updating…" : schedule.enabled ? "Pause recurrence" : "Resume recurrence"}</button></div>
         </li>;
