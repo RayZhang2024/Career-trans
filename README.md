@@ -54,7 +54,7 @@ The authenticated browser workspace includes:
 - current ranked opportunities with lazy current-detail views;
 - bounded discovery-run history with lazy run and historical job detail;
 - a recent shared imported-vacancy inbox and selection of actionable records for evaluation;
-- saved discovery configurations with daily/weekly recurrence setup and pause/resume.
+- saved discovery configurations with daily/weekly recurrence setup, pause/resume, manual execution of persisted configurations, execution history, and historical configuration snapshots.
 
 The current browser flow is:
 
@@ -100,9 +100,9 @@ Current backend capabilities include:
 
 ### Saved discovery and recurrence boundaries
 
-The browser can save discovery configurations, configure daily/weekly recurrence, and pause/resume future recurrence. Saving a configuration does not run it. Manual **Run now** and execution-history UI are not yet available in this V2B1 browser surface; they are the follow-up #176 milestone.
+The browser can save discovery configurations, configure daily/weekly recurrence, pause/resume future recurrence, manually execute a persisted saved configuration, browse execution history, and inspect the historical configuration snapshot used by an execution. Saving a configuration does not run it. Manual Run now executes only the persisted schedule ID and its saved configuration; unsaved edits must be saved or discarded first. Confirmed candidate context is required before the browser enables Run now. The semantic configuration check is advisory only, and the run-now API response is authoritative.
 
-An enabled configuration means recurrence is configured, not that the scheduler is running. Automatic due execution requires the server-side scheduled-discovery operator and the required provider configuration. The current local Compose stack does not continuously run that operator. Missed due slots are coalesced by backend semantics rather than replayed individually.
+An enabled configuration means recurrence is configured, not that the scheduler is running. Automatic due execution requires the server-side scheduled-discovery operator and the required provider configuration. The current local Compose stack does not continuously run that operator. Missed due slots are coalesced by backend semantics rather than replayed individually. Pausing affects future recurrence only and does not cancel an already-running execution; the browser has no execution-cancel control. History snapshots represent the configuration used at claim time and do not imply a historical name, enabled state, or scheduler health.
 
 Broad external Codex discovery remains a separate host-side workflow outside the browser and containers. The browser does not invoke Codex and does not expose its credentials. The Jobs inbox reads persisted public vacancies; it does not run browser-side discovery.
 
@@ -528,7 +528,7 @@ They exist to exercise the system and must not be treated as globally applicable
 
 ## Later product work
 
-Application-preparation UI and application tracking remain later product work. Broad external Codex discovery continues through the host-side workflow; the browser evaluates only persisted public vacancies selected from the Jobs inbox. Recurring-discovery controls are also outside the current Jobs workspace.
+Application-preparation UI and application tracking remain later product work. Broad external Codex discovery continues through the host-side workflow; the browser evaluates only persisted public vacancies selected from the Jobs inbox. Saved-discovery configuration, manual execution, and execution-history controls are available in the Jobs workspace; automated recurrence still requires an operated server-side scheduler and required providers.
 
 ---
 

@@ -89,6 +89,25 @@ export type DiscoveryScheduleCreate = Omit<DiscoveryScheduleRead, "id" | "next_r
 export type DiscoverySchedulePatch = Partial<Omit<DiscoveryScheduleCreate, "schedule" | "query" | "acquisition" | "evaluation">> & {
   schedule?: DiscoveryScheduleSpec; query?: DiscoveryScheduleQuery; acquisition?: DiscoveryScheduleAcquisition; evaluation?: DiscoveryScheduleEvaluation;
 };
+export type ScheduledExecutionStatus = "running" | "completed" | "partial_failed" | "failed" | "skipped";
+export type ScheduledExecutionRead = {
+  id: string;
+  trigger_kind: "manual" | "scheduled";
+  scheduled_for: string | null;
+  status: ScheduledExecutionStatus;
+  config_snapshot: {
+    schedule: DiscoveryScheduleSpec;
+    query: DiscoveryScheduleQuery;
+    acquisition: DiscoveryScheduleAcquisition;
+    evaluation: DiscoveryScheduleEvaluation;
+  };
+  discovery_run_id: string | null;
+  acquisition_summary: Record<string, number>;
+  failure_summary: Record<string, number>;
+  started_at: string;
+  completed_at: string | null;
+};
+export type LLMConfigurationCheck = { ready: boolean };
 export type DiscoveryRunCreated = DiscoveryRunSummary & { search_input_fingerprint: string; candidate_evaluation_fingerprint: string; evaluation_contract_fingerprint: string; jobs: Array<DiscoveryRunJobSummary & { opportunity: RankedJobOpportunity | null }> };
 
 export class SessionApi {

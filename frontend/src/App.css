@@ -106,6 +106,13 @@ h2 { font-size: 1.2rem; }
 .schedule-list, .saved-schedule-list { display: grid; gap: 1rem; min-width: 0; }
 .saved-schedule-list { list-style: none; margin: 0; padding: 0; }
 .saved-schedule-card, .schedule-editor { display: grid; gap: 0.85rem; min-width: 0; overflow-wrap: anywhere; }
+.execution-history, .execution-result, .execution-record, .execution-snapshot { display: grid; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; }
+.execution-history, .execution-result { border-top: 1px solid var(--border, #d6dce5); margin-top: 0.75rem; padding-top: 0.75rem; }
+.execution-record { border: 1px solid var(--border, #d6dce5); border-radius: 0.5rem; padding: 0.75rem; }
+.execution-snapshot { padding: 0.5rem 0; }
+.execution-snapshot h5 { margin: 0.5rem 0 0; }
+.execution-record p, .execution-snapshot p { margin: 0; }
+.execution-record ul { margin: 0.25rem 0 0; }
 .schedule-fieldset, .weekday-picker { border: 1px solid #d9e0ea; border-radius: 0.55rem; display: grid; gap: 0.65rem; min-width: 0; padding: 0.9rem; }
 .schedule-fieldset legend, .weekday-picker legend { font-weight: 700; padding: 0 0.25rem; }
 .check-line { align-items: flex-start; display: flex; gap: 0.6rem; min-width: 0; }

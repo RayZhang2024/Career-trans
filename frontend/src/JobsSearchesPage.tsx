@@ -8,6 +8,9 @@ import type {
   DiscoveryScheduleQuery,
   DiscoveryScheduleRead,
   DiscoveryScheduleSpec,
+  LLMConfigurationCheck,
+  OnboardingStatus,
+  ScheduledExecutionRead,
   StructuredAtsScheduleConfig,
 } from "./api";
 import { ApiError, useAuth } from "./auth";
@@ -24,6 +27,11 @@ type Draft = {
 };
 type Editor = { id: string | null; loading: boolean; baseline?: DiscoveryScheduleRead; draft: Draft; dirty: Set<keyof Draft>; error?: string; pending?: boolean };
 type DraftKey = keyof Draft;
+type CandidateReadiness = "loading" | "ready" | "not_ready" | "unknown";
+type SemanticAdvisory = "loading" | "ready" | "problem" | "unknown";
+type HistoryState = { phase: "loading" | "loaded" | "error"; items?: ScheduledExecutionRead[]; error?: string };
+type ListRefreshOutcome = { kind: "refreshed" } | { kind: "failed" } | { kind: "superseded" } | { kind: "session_stale" };
+type HistoryRefreshOutcome = { kind: "refreshed" } | { kind: "failed" } | { kind: "stale" } | { kind: "superseded" } | { kind: "session_stale" };
 
 const providers = ["greenhouse", "ashby", "lever", "smartrecruiters", "recruitee"] as const;
 const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
@@ -32,6 +40,10 @@ const trimLines = (value: string) => value.split(/\r?\n/).map((line) => line.tri
 const sameArray = (left: string[] | number[], right: string[] | number[]) => left.length === right.length && left.every((value, index) => value === right[index]);
 const numeric = (value: string) => Number(value);
 const browserTimezone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } };
+const isStaleSessionWork = (cause: unknown) => cause instanceof DOMException && cause.name === "AbortError" || cause instanceof ApiError && cause.status === 401;
+const readableKey = (key: string) => key.replaceAll("_", " ");
+const readableStatus = (status: ScheduledExecutionRead["status"]) => ({ running: "Running", completed: "Completed", partial_failed: "Partially failed", failed: "Failed", skipped: "Skipped" })[status];
+const displayTime = (value: string | null) => value ? new Date(value).toLocaleString() : "Not recorded";
 
 function blankDraft(): Draft {
   return {
@@ -188,52 +200,203 @@ export function JobsSearchesPage() {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [createPending, setCreatePending] = useState(false);
   const [pendingSchedules, setPendingSchedules] = useState<Set<string>>(new Set());
-  const [message, setMessage] = useState("");
+  const [runningScheduleIds, setRunningScheduleIds] = useState<Set<string>>(new Set());
+  const [reconcilingScheduleIds, setReconcilingScheduleIds] = useState<Set<string>>(new Set());
+  const [staleScheduleIds, setStaleScheduleIds] = useState<Set<string>>(new Set());
+  const [runResults, setRunResults] = useState<Record<string, ScheduledExecutionRead>>({});
+  const [candidateReadiness, setCandidateReadiness] = useState<CandidateReadiness>("loading");
+  const [semanticAdvisory, setSemanticAdvisory] = useState<SemanticAdvisory>("loading");
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [historyBySchedule, setHistoryBySchedule] = useState<Record<string, HistoryState>>({});
+  const [message, setMessageState] = useState("");
+  const messageAuthority = useRef(0);
+  const setMessage = (value: string) => {
+    messageAuthority.current += 1;
+    setMessageState(value);
+  };
   const [error, setError] = useState("");
   const alive = useRef(false);
+  const viewGeneration = useRef(0);
   const listGeneration = useRef(0);
   const editorGeneration = useRef(0);
   const mutationLocks = useRef(new Set<string>());
+  const runLocks = useRef(new Set<string>());
+  const runGeneration = useRef(new Map<string, number>());
+  const historyGeneration = useRef(new Map<string, number>());
+  const editorSelection = useRef<string | null>(null);
+  const historySelection = useRef<string | null>(null);
 
-  const refreshList = async (): Promise<boolean> => {
+  const refreshListOutcome = async (): Promise<ListRefreshOutcome> => {
+    const sessionGeneration = viewGeneration.current;
     const generation = ++listGeneration.current;
     setList((old) => ({ ...old, phase: old.items ? "loaded" : "loading", error: undefined }));
     try {
       const items = await api.request<DiscoveryScheduleRead[]>("/api/v1/jobs/discovery-schedules");
-      if (!alive.current || generation !== listGeneration.current) return false;
-      setList({ phase: "loaded", items }); return true;
-    } catch {
-      if (alive.current && generation === listGeneration.current) setList((old) => ({ phase: "error", items: old.items, error: "Saved discovery configurations are unavailable." }));
-      return false;
+      if (!alive.current || sessionGeneration !== viewGeneration.current) return { kind: "session_stale" };
+      if (generation !== listGeneration.current) return { kind: "superseded" };
+      setList({ phase: "loaded", items });
+      setStaleScheduleIds((old) => new Set([...old].filter((id) => !items.some((item) => item.id === id))));
+      return { kind: "refreshed" };
+    } catch (cause) {
+      if (!alive.current || sessionGeneration !== viewGeneration.current || isStaleSessionWork(cause)) return { kind: "session_stale" };
+      if (generation !== listGeneration.current) return { kind: "superseded" };
+      setList((old) => ({ phase: "error", items: old.items, error: "Saved discovery configurations are unavailable." }));
+      return { kind: "failed" };
+    }
+  };
+  const refreshList = async (): Promise<boolean> => (await refreshListOutcome()).kind === "refreshed";
+
+  const clearStaleSchedule = async (scheduleId: string, sessionGeneration = viewGeneration.current) => {
+    if (!alive.current || sessionGeneration !== viewGeneration.current) return false;
+    setStaleScheduleIds((old) => new Set(old).add(scheduleId));
+    if (editorSelection.current === scheduleId) { editorGeneration.current += 1; editorSelection.current = null; setEditor(null); }
+    if (historySelection.current === scheduleId) { historySelection.current = null; setSelectedHistoryId(null); }
+    setMessage(""); setError("");
+    const outcome = await refreshListOutcome();
+    if (!alive.current || sessionGeneration !== viewGeneration.current || outcome.kind === "session_stale") return outcome;
+    setMessage(outcome.kind === "refreshed"
+      ? "This saved discovery is no longer available. The saved-configuration list has been refreshed."
+      : outcome.kind === "failed"
+        ? "This saved discovery is no longer available. The saved-configuration list refresh could not be confirmed."
+        : "This saved discovery is no longer available. A newer saved-configuration list refresh superseded this refresh.");
+    return outcome;
+  };
+
+  const refreshHistory = async (scheduleId: string): Promise<HistoryRefreshOutcome> => {
+    const sessionGeneration = viewGeneration.current;
+    const requestGeneration = (historyGeneration.current.get(scheduleId) ?? 0) + 1;
+    historyGeneration.current.set(scheduleId, requestGeneration);
+    setHistoryBySchedule((old) => ({ ...old, [scheduleId]: { ...old[scheduleId], phase: old[scheduleId]?.items ? "loaded" : "loading", error: undefined } }));
+    try {
+      const items = await api.request<ScheduledExecutionRead[]>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(scheduleId)}/executions`);
+      if (!alive.current || sessionGeneration !== viewGeneration.current) return { kind: "session_stale" };
+      if (historyGeneration.current.get(scheduleId) !== requestGeneration) return { kind: "superseded" };
+      setHistoryBySchedule((old) => ({ ...old, [scheduleId]: { phase: "loaded", items } }));
+      return { kind: "refreshed" };
+    } catch (cause) {
+      if (!alive.current || sessionGeneration !== viewGeneration.current || isStaleSessionWork(cause)) return { kind: "session_stale" };
+      if (historyGeneration.current.get(scheduleId) !== requestGeneration) return { kind: "superseded" };
+      if (cause instanceof ApiError && cause.status === 404) { await clearStaleSchedule(scheduleId, sessionGeneration); return { kind: "stale" }; }
+      if (historyGeneration.current.get(scheduleId) === requestGeneration) {
+        setHistoryBySchedule((old) => ({ ...old, [scheduleId]: { phase: "error", items: old[scheduleId]?.items, error: "Execution history could not be loaded." } }));
+      }
+      return { kind: "failed" };
+    }
+  };
+
+  const loadReadiness = async (sessionGeneration: number) => {
+    try {
+      const status = await api.request<OnboardingStatus>("/api/v1/onboarding/status");
+      if (alive.current && sessionGeneration === viewGeneration.current) setCandidateReadiness(status.candidate_context_ready === true ? "ready" : status.candidate_context_ready === false ? "not_ready" : "unknown");
+    } catch (cause) {
+      if (alive.current && sessionGeneration === viewGeneration.current && !isStaleSessionWork(cause)) setCandidateReadiness("unknown");
+    }
+  };
+
+  const loadSemanticAdvisory = async (sessionGeneration: number) => {
+    try {
+      const check = await api.request<LLMConfigurationCheck>("/api/v1/config/llm/check");
+      if (alive.current && sessionGeneration === viewGeneration.current) setSemanticAdvisory(check.ready ? "ready" : "unknown");
+    } catch (cause) {
+      if (!alive.current || sessionGeneration !== viewGeneration.current || isStaleSessionWork(cause)) return;
+      setSemanticAdvisory(cause instanceof ApiError && cause.status === 503 ? "problem" : "unknown");
     }
   };
 
   useEffect(() => {
-    alive.current = true; void refreshList();
-    return () => { alive.current = false; listGeneration.current += 1; editorGeneration.current += 1; };
+    const sessionGeneration = ++viewGeneration.current;
+    alive.current = true;
+    void refreshList(); void loadReadiness(sessionGeneration); void loadSemanticAdvisory(sessionGeneration);
+    return () => { alive.current = false; viewGeneration.current += 1; listGeneration.current += 1; editorGeneration.current += 1; };
   }, [api]);
 
-  const openCreate = () => { editorGeneration.current += 1; setError(""); setMessage(""); setEditor({ id: null, loading: false, draft: blankDraft(), dirty: new Set() }); };
-  const clearStaleSchedule = async (scheduleId: string) => {
-    setEditor((current) => current?.id === scheduleId ? null : current);
-    setMessage("This saved discovery is no longer available. The saved-configuration list has been refreshed.");
-    setError(""); await refreshList();
-  };
+  const openCreate = () => { editorGeneration.current += 1; editorSelection.current = null; setError(""); setMessage(""); setEditor({ id: null, loading: false, draft: blankDraft(), dirty: new Set() }); };
   const openEdit = async (scheduleId: string) => {
     const generation = ++editorGeneration.current;
+    editorSelection.current = scheduleId;
     setEditor({ id: scheduleId, loading: true, draft: blankDraft(), dirty: new Set() }); setError(""); setMessage("");
     try {
       const baseline = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(scheduleId)}`);
       if (alive.current && generation === editorGeneration.current) setEditor({ id: scheduleId, loading: false, baseline, draft: toDraft(baseline), dirty: new Set() });
     } catch (cause) {
       if (!alive.current || generation !== editorGeneration.current) return;
+      if (isStaleSessionWork(cause)) return;
       if (cause instanceof ApiError && cause.status === 404) { await clearStaleSchedule(scheduleId); return; }
       setEditor((current) => current?.id === scheduleId ? { ...current, loading: false, error: "This saved configuration could not be loaded." } : current);
     }
   };
+  const toggleHistory = (scheduleId: string) => {
+    if (historySelection.current === scheduleId) { historySelection.current = null; setSelectedHistoryId(null); return; }
+    historySelection.current = scheduleId; setSelectedHistoryId(scheduleId); void refreshHistory(scheduleId);
+  };
+  const runNow = async (schedule: DiscoveryScheduleRead) => {
+    const id = schedule.id;
+    if (candidateReadiness !== "ready" || staleScheduleIds.has(id) || editor?.id === id && editor.dirty.size > 0 || runLocks.current.has(id) || mutationLocks.current.has(`save:${id}`) || mutationLocks.current.has(`toggle:${id}`)) return;
+    const sessionGeneration = viewGeneration.current;
+    const requestGeneration = (runGeneration.current.get(id) ?? 0) + 1;
+    runGeneration.current.set(id, requestGeneration); runLocks.current.add(id);
+    setRunningScheduleIds((old) => new Set(old).add(id)); setMessage(""); setError("");
+    const settleRunRequest = () => setRunningScheduleIds((old) => { const next = new Set(old); next.delete(id); return next; });
+    const beginReconciliation = () => setReconcilingScheduleIds((old) => new Set(old).add(id));
+    try {
+      let execution: ScheduledExecutionRead;
+      try {
+        execution = await api.request<ScheduledExecutionRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}/run-now`, { method: "POST" });
+      } catch (cause) {
+        if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || isStaleSessionWork(cause)) return;
+        settleRunRequest();
+        if (cause instanceof ApiError && cause.status === 404) {
+          beginReconciliation(); await clearStaleSchedule(id, sessionGeneration); return;
+        }
+        if (cause instanceof ApiError && cause.status === 409) {
+          beginReconciliation(); setMessage(`An execution is already running for ${schedule.name}.`);
+          if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
+          const outcome = await refreshHistory(id);
+          if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale" || outcome.kind === "superseded") return;
+          setMessage(`An execution is already running for ${schedule.name}. ${outcome.kind === "refreshed" ? "Execution history refreshed." : "Execution history refresh could not be confirmed."}`);
+          return;
+        }
+        if (cause instanceof ApiError) {
+          setError(`Run now was rejected by the server (HTTP ${cause.status}). No execution was confirmed by this response.`);
+          return;
+        }
+        beginReconciliation();
+        const transportCheckingMessage = "The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. Checking execution history…";
+        setMessage(transportCheckingMessage);
+        const transportMessageAuthority = messageAuthority.current;
+        if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
+        const outcome = await refreshHistory(id);
+        if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale") return;
+        if (outcome.kind === "superseded") {
+          if (messageAuthority.current === transportMessageAuthority) {
+            setMessage("The Run now request was interrupted. Career-trans cannot confirm which execution-history record, if any, corresponds to that request.");
+          }
+          return;
+        }
+        setMessage(`The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. ${outcome.kind === "refreshed" ? "Execution history was refreshed." : "Execution history could not be confirmed as refreshed."}`);
+        return;
+      }
+      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
+      settleRunRequest();
+      beginReconciliation();
+      setRunResults((old) => ({ ...old, [id]: execution }));
+      const [listOutcome, historyOutcome] = await Promise.all([refreshListOutcome(), refreshHistory(id)]);
+      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
+      if (historyOutcome.kind === "stale" || historyOutcome.kind === "session_stale" || historyOutcome.kind === "superseded" || listOutcome.kind === "session_stale") return;
+      const listMessage = listOutcome.kind === "refreshed" ? "Saved-configuration list refreshed." : listOutcome.kind === "failed" ? "Saved-configuration list refresh could not be confirmed." : "";
+      const historyMessage = historyOutcome.kind === "refreshed" ? "Execution history refreshed." : "Execution history refresh could not be confirmed.";
+      setMessage([`Run now returned ${readableStatus(execution.status).toLowerCase()} for ${schedule.name}.`, listMessage, historyMessage].filter(Boolean).join(" "));
+    } finally {
+      runLocks.current.delete(id);
+      if (alive.current && sessionGeneration === viewGeneration.current && runGeneration.current.get(id) === requestGeneration) {
+        settleRunRequest();
+        setReconcilingScheduleIds((old) => { const next = new Set(old); next.delete(id); return next; });
+      }
+    }
+  };
   const discard = async () => {
     if (!editor) return;
-    if (editor.id === null) { editorGeneration.current += 1; setEditor(null); setError(""); return; }
+    if (editor.id === null) { editorGeneration.current += 1; editorSelection.current = null; setEditor(null); setError(""); return; }
     await openEdit(editor.id);
   };
   const change = <K extends DraftKey>(key: K, value: Draft[K]) => {
@@ -317,6 +480,27 @@ export function JobsSearchesPage() {
     } finally { mutationLocks.current.delete(lock); setPendingSchedules((old) => { const next = new Set(old); next.delete(id); return next; }); }
   };
 
+  const renderExecution = (execution: ScheduledExecutionRead) => {
+    const snapshot = execution.config_snapshot;
+    const counters = (label: string, values: Record<string, number>) => <div><strong>{label}</strong>{Object.keys(values).length ? <ul>{Object.entries(values).map(([key, value]) => <li key={key}>{readableKey(key)}: {value}</li>)}</ul> : <p>None recorded</p>}</div>;
+    return <article className="execution-record" key={execution.id}>
+      <h4>{readableStatus(execution.status)} · {execution.trigger_kind === "manual" ? "Manual" : "Scheduled"} · {execution.id}</h4>
+      <p>Status: {execution.status}</p><p>Trigger: {execution.trigger_kind}</p>
+      {execution.scheduled_for && <p>Scheduled for: {displayTime(execution.scheduled_for)}</p>}
+      <p>Started: {displayTime(execution.started_at)}</p><p>Completed: {displayTime(execution.completed_at)}</p>
+      {counters("Acquisition summary", execution.acquisition_summary)}{counters("Failure summary", execution.failure_summary)}
+      <p>{execution.discovery_run_id ? <>A linked discovery run exists. <Link to="/jobs">Open Jobs workspace</Link></> : "No linked discovery run is recorded."}</p>
+      <details><summary>Configuration used for this execution</summary>
+        <div className="execution-snapshot">
+          <h5>Recurrence timing</h5><p>Cadence: {snapshot.schedule.cadence}</p><p>Timezone: {snapshot.schedule.timezone}</p><p>Local time: {snapshot.schedule.local_time}</p><p>Weekdays: {snapshot.schedule.weekdays.length ? snapshot.schedule.weekdays.map((day) => weekdays[day] ?? `Day ${day}`).join(", ") : "Not applicable"}</p>
+          <h5>Query and prioritisation</h5><p>Themes: {snapshot.query.keywords.join(" · ") || "None"}</p><p>Locations: {snapshot.query.locations.join(" · ") || "Any"}</p><p>Remote policy: {snapshot.query.remote_ok === false ? "Exclude remote" : snapshot.query.remote_ok === true ? "No remote restriction (legacy true)" : "No remote restriction"}</p><p>Companies: {snapshot.query.companies.join(" · ") || "None"}</p><p>Excluded companies: {snapshot.query.excluded_companies.join(" · ") || "None"}</p><p>Excluded title terms: {snapshot.query.excluded_title_terms.join(" · ") || "None"}</p><p>Employment types: {snapshot.query.employment_types.join(" · ") || "Any"}</p><p>Query maximum results: {snapshot.query.max_results}</p>
+          <h5>Acquisition configuration</h5><p>Structured ATS: {snapshot.acquisition.structured_ats.enabled ? "enabled" : "disabled"}; companies {snapshot.acquisition.structured_ats.companies.join(" · ") || "none"}; providers {snapshot.acquisition.structured_ats.providers.join(" · ") || "none"}; all resolved sources {snapshot.acquisition.structured_ats.all_resolved_sources ? "yes" : "no"}; max sources {snapshot.acquisition.structured_ats.max_sources}; max results {snapshot.acquisition.structured_ats.max_results}</p><p>Profile-driven web discovery: {snapshot.acquisition.agentic_web.enabled ? "enabled" : "disabled"}; max queries {snapshot.acquisition.agentic_web.max_search_queries}; results per query {snapshot.acquisition.agentic_web.max_search_results_per_query}; max pages {snapshot.acquisition.agentic_web.max_pages_to_open}; max jobs {snapshot.acquisition.agentic_web.max_discovered_jobs}</p>
+          <h5>Evaluation bounds</h5><p>Maximum semantic candidates: {snapshot.evaluation.max_semantic_candidates}</p><p>Maximum full analyses: {snapshot.evaluation.max_full_analyses}</p><p>Minimum relevance score: {snapshot.evaluation.min_relevance_score}</p>
+        </div>
+      </details>
+    </article>;
+  };
+
   const renderEditor = (value: Editor) => {
     if (value.loading) return <section className="card schedule-editor" aria-label="Saved discovery editor"><p role="status">Loading saved configuration…</p></section>;
     const draft = value.draft;
@@ -376,14 +560,25 @@ export function JobsSearchesPage() {
           <label htmlFor="min-relevance">Minimum relevance score (0–1)</label><input id="min-relevance" type="number" min={0} max={1} step="0.01" value={draft.minRelevanceScore} onChange={(event) => change("minRelevanceScore", event.target.value)} disabled={value.pending || createPending} />
         </fieldset>
         <div className="card-actions"><button type="submit" disabled={value.pending || createPending}>{value.pending || createPending ? "Saving…" : "Save configuration"}</button><button type="button" className="button-secondary" onClick={() => void discard()} disabled={value.pending || createPending}>Discard changes</button></div>
-        <p className="muted">Manual Run now and execution history are not available here yet; they belong to the follow-up V2B2 milestone.</p>
+        <p className="muted">Save this configuration before using Run now or execution history from its saved-discovery card.</p>
       </form>
     </section>;
   };
 
   return <main className="jobs-searches-page">
-    <header className="workspace-header searches-header"><div><p className="eyebrow">Jobs workspace</p><h1>Saved discovery configurations</h1><p className="muted">Configure saved search criteria and recurrence. This page does not execute discovery.</p><Link to="/jobs">Back to Jobs workspace</Link></div><button type="button" onClick={openCreate}>New saved discovery</button></header>
+    <header className="workspace-header searches-header"><div><p className="eyebrow">Jobs workspace</p><h1>Saved discovery configurations</h1><p className="muted">Configure saved searches, manually run persisted configurations, and review execution history.</p><Link to="/jobs">Back to Jobs workspace</Link></div><button type="button" onClick={openCreate}>New saved discovery</button></header>
     {message && <p className="notice" role="status">{message}</p>}{error && <p role="alert">{error}</p>}
+    <section className="readiness-notices" aria-label="Execution readiness">
+      {candidateReadiness === "loading" && <p className="muted" role="status">Checking confirmed candidate context…</p>}
+      {candidateReadiness === "ready" && <p className="muted">Confirmed candidate context is available for execution.</p>}
+      {candidateReadiness === "not_ready" && <p className="notice">Run now requires confirmed candidate context. Complete or confirm your CV first: <Link to="/cv">Go to CV</Link>. Saved configuration and execution history remain available.</p>}
+      {candidateReadiness === "unknown" && <p className="notice">Candidate readiness could not be confirmed. Run now is unavailable until confirmed candidate context can be verified. Saved configuration and execution history remain available.</p>}
+      {semanticAdvisory === "loading" && <p className="muted">Checking semantic configuration (advisory only)…</p>}
+      {semanticAdvisory === "ready" && <p className="muted">Semantic configuration check reports a configured semantic setup. This does not guarantee this saved discovery will execute successfully.</p>}
+      {semanticAdvisory === "problem" && <p className="notice">The semantic configuration check reported a problem. This advisory does not establish whether a selected saved discovery can execute and does not determine Run now availability.</p>}
+      {semanticAdvisory === "unknown" && <p className="muted">Semantic configuration status is unknown. This advisory does not determine Run now availability or Agentic web provider readiness.</p>}
+      <p className="muted">Run now uses the persisted saved configuration. Pausing affects future recurrence only. Editing or pausing does not cancel an execution already claimed by the server; there is no execution-cancel control.</p>
+    </section>
     <p className="muted">The saved-configuration endpoint returns the complete list; this view does not paginate it. A saved recurrence setting is not proof that the scheduler operator is running. Automatic due execution requires the server-side operator and required providers; missed slots are coalesced. Broad host Codex discovery remains a separate host-side workflow.</p>
     <section className="schedule-list" aria-labelledby="saved-list-heading"><div className="section-heading"><div><h2 id="saved-list-heading">Your saved discoveries</h2><p className="muted">Configurations are shown in backend order.</p></div><button type="button" className="button-secondary" onClick={() => void refreshList()}>Refresh list</button></div>
       {list.phase === "loading" && !list.items && <p className="muted" role="status">Loading saved discoveries…</p>}
@@ -393,8 +588,13 @@ export function JobsSearchesPage() {
       {!!list.items?.length && <ul className="saved-schedule-list">{list.items.map((schedule) => {
         const dirty = editor?.id === schedule.id && editor.dirty.size > 0;
         const pending = pendingSchedules.has(schedule.id) || editor?.id === schedule.id && !!editor.pending;
+        const running = runningScheduleIds.has(schedule.id);
+        const reconciling = reconcilingScheduleIds.has(schedule.id);
+        const stale = staleScheduleIds.has(schedule.id);
+        const history = historyBySchedule[schedule.id];
         return <li className="card saved-schedule-card" key={schedule.id}>
-          <div className="section-heading"><div><h3>{schedule.name}</h3><p>{schedule.enabled ? "Recurrence configured" : "Paused"} · {schedule.schedule.cadence === "daily" ? "Daily" : `Weekly · ${schedule.schedule.weekdays.map((day) => weekdays[day] ?? `Day ${day}`).join(", ")}`} · {schedule.schedule.local_time} ({schedule.schedule.timezone})</p></div><button type="button" className="button-secondary" onClick={() => void openEdit(schedule.id)} disabled={pending}>Edit</button></div>
+          <div className="section-heading"><div><h3>{schedule.name}</h3><p>{schedule.enabled ? "Recurrence configured" : "Paused"} · {schedule.schedule.cadence === "daily" ? "Daily" : `Weekly · ${schedule.schedule.weekdays.map((day) => weekdays[day] ?? `Day ${day}`).join(", ")}`} · {schedule.schedule.local_time} ({schedule.schedule.timezone})</p></div><button type="button" className="button-secondary" onClick={() => void openEdit(schedule.id)} disabled={pending || stale}>Edit</button></div>
+          {stale && <p className="notice">This saved discovery is no longer available. Refresh the list to resolve its current state.</p>}
           {schedule.enabled && <p>Next due: {schedule.next_run_at ? formatNextRun(schedule.next_run_at, schedule.schedule.timezone) : "Next due time is unavailable."}</p>}
           {schedule.last_execution_at && <p>Last recorded execution completion: {new Date(schedule.last_execution_at).toLocaleString()}</p>}
           <p>Prioritisation themes: {schedule.query.keywords.join(" · ")}</p><p>Eligibility locations: {schedule.query.locations.length ? schedule.query.locations.join(" · ") : "Any"} · Remote policy: {schedule.query.remote_ok === false ? "Exclude remote" : schedule.query.remote_ok === true ? "No remote restriction — legacy stored value preserved" : "No remote restriction"}</p>
@@ -403,7 +603,23 @@ export function JobsSearchesPage() {
             ? <p className="muted">Recurrence is configured for this saved discovery. Automatic due execution requires the Career-trans scheduler operator and required server-side providers to be available in the deployment.</p>
             : <p className="muted">Automatic recurrence is paused for this saved discovery. Pausing affects future automatic recurrence only and does not cancel an already-running execution.</p>}
           {dirty && <p className="notice">Save or discard changes before pausing or resuming this configuration.</p>}
-          <div className="card-actions"><button type="button" className="button-secondary" onClick={() => void setScheduleEnabled(schedule, !schedule.enabled)} disabled={dirty || pending || mutationLocks.current.has(`toggle:${schedule.id}`)}>{pending ? "Updating…" : schedule.enabled ? "Pause recurrence" : "Resume recurrence"}</button></div>
+          {dirty && <p className="notice">Save or discard changes before running. Run now uses the persisted saved configuration.</p>}
+          <div className="card-actions">
+            <button type="button" onClick={() => void runNow(schedule)} disabled={stale || candidateReadiness !== "ready" || dirty || running || reconciling || pending || mutationLocks.current.has(`save:${schedule.id}`) || mutationLocks.current.has(`toggle:${schedule.id}`)}>{running ? "Running…" : reconciling ? "Reconciling…" : "Run now"}</button>
+            <button type="button" className="button-secondary" onClick={() => toggleHistory(schedule.id)} disabled={stale}>{selectedHistoryId === schedule.id ? "Hide execution history" : "View execution history"}</button>
+            <button type="button" className="button-secondary" onClick={() => void setScheduleEnabled(schedule, !schedule.enabled)} disabled={stale || dirty || pending || mutationLocks.current.has(`toggle:${schedule.id}`)}>{pending ? "Updating…" : schedule.enabled ? "Pause recurrence" : "Resume recurrence"}</button>
+          </div>
+          {running && <p role="status">Running saved discovery… this may take several minutes. Saved discovery: {schedule.name}.</p>}
+          {running && <p className="muted">This local control does not cancel an execution already claimed by the server.</p>}
+          {reconciling && <p role="status">Reconciling saved discovery state for {schedule.name}…</p>}
+          {runResults[schedule.id] && <section className="execution-result" aria-label={`Latest Run now response for ${schedule.name}`}><h4>Latest Run-now response</h4>{renderExecution(runResults[schedule.id])}</section>}
+          {selectedHistoryId === schedule.id && <section className="execution-history" aria-label={`Execution history for ${schedule.name}`}>
+            <div className="section-heading"><h4>Execution history</h4><button type="button" className="button-secondary" onClick={() => void refreshHistory(schedule.id)}>Refresh history</button></div>
+            {history?.phase === "loading" && !history.items && <p role="status">Loading execution history…</p>}
+            {history?.phase === "error" && <p role="alert">{history.error}</p>}
+            {history?.phase === "loaded" && history.items?.length === 0 && <p>No execution history is recorded for this saved discovery.</p>}
+            {!!history?.items?.length && <ul className="execution-list">{history.items.map((execution) => <li key={execution.id}>{renderExecution(execution)}</li>)}</ul>}
+          </section>}
         </li>;
       })}</ul>}
     </section>
