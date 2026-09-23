@@ -114,14 +114,20 @@ describe("Issue #171 Jobs workspace", () => {
   });
 
   it("reports an unavailable target truthfully when the shortlist refresh fails", async () => {
-    let opportunityCalls = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "/api/v1/jobs/opportunities": () => { opportunityCalls += 1; return opportunityCalls === 1 ? json(page([op("alpha", "Alpha")] )) : Promise.reject(new TypeError("offline")); }, "POST /api/v1/applications/prepare": () => json({ detail: "not found" }, 404) });
+    let opportunityCalls = 0; let posts = 0;
+    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "/api/v1/jobs/opportunities": () => { opportunityCalls += 1; return opportunityCalls === 1 ? json(page([op("alpha", "Alpha")] )) : Promise.reject(new TypeError("offline")); }, "POST /api/v1/applications/prepare": () => { posts += 1; return json({ detail: "not found" }, 404); } });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("button", { name: "Prepare application" }));
     const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
     await within(form).findByRole("button", { name: "Create preparation" });
     fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
     expect(await within(form).findByRole("alert")).toHaveTextContent("shortlist refresh could not be confirmed");
     expect(within(form).queryByText(/created/)).not.toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close preparation options" })).toBeEnabled();
+    fireEvent.submit(form);
+    expect(posts).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Close preparation options" }));
+    expect(screen.queryByRole("form", { name: "Prepare application for Alpha" })).not.toBeInTheDocument();
     expect(opportunityCalls).toBe(2);
   });
 
@@ -137,19 +143,23 @@ describe("Issue #171 Jobs workspace", () => {
   });
 
   it("routes a refreshed candidate-not-ready 409 to CV onboarding", async () => {
-    let readinessCalls = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "/api/v1/onboarding/status": () => json(++readinessCalls === 1 ? ready : { ...ready, candidate_context_ready: false }), "POST /api/v1/applications/prepare": () => json({ detail: "profile invalid" }, 409) });
+    let readinessCalls = 0; let posts = 0;
+    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "/api/v1/onboarding/status": () => json(++readinessCalls === 1 ? ready : { ...ready, candidate_context_ready: false }), "POST /api/v1/applications/prepare": () => { posts += 1; return json({ detail: "profile invalid" }, 409); } });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: "Prepare application" })[0]);
     const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
     await within(form).findByRole("button", { name: "Create preparation" });
     fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
     expect(await within(form).findByRole("alert")).toHaveTextContent("confirmed candidate CV is required");
     expect(within(form).getByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/cv");
+    expect(screen.getByRole("button", { name: "Close preparation options" })).toBeEnabled();
+    expect(within(form).getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    fireEvent.submit(form);
+    expect(posts).toBe(1);
   });
 
   it("routes a refreshed missing-display-name 409 to Profile", async () => {
-    let profileCalls = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json(++profileCalls === 1 ? { display_name: "Current Person" } : { display_name: "   " }), "POST /api/v1/applications/prepare": () => json({ detail: "profile invalid" }, 409) });
+    let profileCalls = 0; let posts = 0;
+    const fetch = fakeFetch({ "/api/v1/profile": () => json(++profileCalls === 1 ? { display_name: "Current Person" } : { display_name: "   " }), "POST /api/v1/applications/prepare": () => { posts += 1; return json({ detail: "profile invalid" }, 409); } });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: "Prepare application" })[0]);
     const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
     await within(form).findByRole("button", { name: "Create preparation" });
@@ -157,6 +167,86 @@ describe("Issue #171 Jobs workspace", () => {
     expect(await within(form).findByRole("alert")).toHaveTextContent("application display name is required");
     expect(within(form).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/");
     expect(within(form).queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
+    fireEvent.submit(form);
+    expect(posts).toBe(1);
+  });
+
+  it.each(["onboarding", "profile", "both"] as const)("fails closed after 409 when %s prerequisite refresh fails", async (failedRefreshes) => {
+    const onboardingRefreshSucceeds = failedRefreshes === "profile";
+    const profileRefreshSucceeds = failedRefreshes === "onboarding";
+    let readinessCalls = 0; let profileCalls = 0; let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/onboarding/status": () => {
+        readinessCalls += 1;
+        if (readinessCalls === 1 || onboardingRefreshSucceeds) return json(ready);
+        return Promise.reject(new TypeError("offline"));
+      },
+      "/api/v1/profile": () => {
+        profileCalls += 1;
+        if (profileCalls === 1 || profileRefreshSucceeds) return json({ display_name: "Current Person" });
+        return Promise.reject(new TypeError("offline"));
+      },
+      "POST /api/v1/applications/prepare": () => { posts += 1; return json({ detail: "conflict" }, posts === 1 ? 409 : 201); },
+    });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: "Prepare application" })[0]);
+    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
+    await within(form).findByRole("button", { name: "Create preparation" });
+    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
+    expect(await within(form).findByText("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.")).toBeInTheDocument();
+    const create = within(form).queryByRole("button", { name: "Create preparation" });
+    if (create) expect(create).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Close preparation options" })).toBeEnabled();
+    fireEvent.submit(form);
+    expect(posts).toBe(1);
+  });
+
+  it("restores preparation after readiness is authoritatively confirmed again", async () => {
+    let readinessCalls = 0; let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/onboarding/status": () => {
+        readinessCalls += 1;
+        if (readinessCalls === 2) return Promise.reject(new TypeError("offline"));
+        return json(ready);
+      },
+      "/api/v1/profile": () => json({ display_name: "Current Person" }),
+      "POST /api/v1/applications/prepare": () => { posts += 1; return json(posts === 1 ? { detail: "conflict" } : { id: "prep-alpha" }, posts === 1 ? 409 : 201); },
+    });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: "Prepare application" })[0]);
+    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
+    await within(form).findByRole("button", { name: "Create preparation" });
+    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
+    expect(await within(form).findByText("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.")).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry readiness" }));
+    await waitFor(() => expect(within(form).getByRole("button", { name: "Create preparation" })).toBeEnabled());
+    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
+    expect(await within(form).findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/prep-alpha");
+    expect(posts).toBe(2);
+  });
+
+  it("keeps opportunity B usable when A becomes unavailable after a failed shortlist refresh", async () => {
+    let opportunityCalls = 0; let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/opportunities": () => ++opportunityCalls === 1 ? json(page([op("alpha", "Alpha"), op("beta", "Beta")])) : Promise.reject(new TypeError("offline")),
+      "POST /api/v1/applications/prepare": (_url, init) => {
+        posts += 1;
+        const body = JSON.parse(String(init?.body)) as { target: { discovered_job_id: string } };
+        return body.target.discovered_job_id === "job-alpha" ? json({ detail: "gone" }, 404) : json({ id: "prep-beta" }, 201);
+      },
+    });
+    renderJobs(fetch); await loaded();
+    const panels = screen.getAllByRole("button", { name: "Prepare application" });
+    fireEvent.click(panels[0]); fireEvent.click(panels[1]);
+    const forms = screen.getAllByRole("form", { name: /Prepare application for/ });
+    await within(forms[0]).findByRole("button", { name: "Create preparation" });
+    await within(forms[1]).findByRole("button", { name: "Create preparation" });
+    fireEvent.click(within(forms[0]).getByRole("button", { name: "Create preparation" }));
+    expect(await within(forms[0]).findByRole("alert")).toHaveTextContent("shortlist refresh could not be confirmed");
+    expect(within(forms[0]).getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    expect(within(forms[1]).getByRole("button", { name: "Create preparation" })).toBeEnabled();
+    fireEvent.click(within(forms[1]).getByRole("button", { name: "Create preparation" }));
+    expect(await within(forms[1]).findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/prep-beta");
+    expect(posts).toBe(2);
   });
 
   it("keeps preparation pending/results independent for two opportunity cards", async () => {
