@@ -208,7 +208,12 @@ export function JobsSearchesPage() {
   const [semanticAdvisory, setSemanticAdvisory] = useState<SemanticAdvisory>("loading");
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyBySchedule, setHistoryBySchedule] = useState<Record<string, HistoryState>>({});
-  const [message, setMessage] = useState("");
+  const [message, setMessageState] = useState("");
+  const messageAuthority = useRef(0);
+  const setMessage = (value: string) => {
+    messageAuthority.current += 1;
+    setMessageState(value);
+  };
   const [error, setError] = useState("");
   const alive = useRef(false);
   const viewGeneration = useRef(0);
@@ -356,12 +361,16 @@ export function JobsSearchesPage() {
           return;
         }
         beginReconciliation();
-        setMessage("The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. Checking execution history…");
+        const transportCheckingMessage = "The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. Checking execution history…";
+        setMessage(transportCheckingMessage);
+        const transportMessageAuthority = messageAuthority.current;
         if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
         const outcome = await refreshHistory(id);
         if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale") return;
         if (outcome.kind === "superseded") {
-          setMessage("The Run now request was interrupted. Career-trans cannot confirm which execution-history record, if any, corresponds to that request.");
+          if (messageAuthority.current === transportMessageAuthority) {
+            setMessage("The Run now request was interrupted. Career-trans cannot confirm which execution-history record, if any, corresponds to that request.");
+          }
           return;
         }
         setMessage(`The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. ${outcome.kind === "refreshed" ? "Execution history was refreshed." : "Execution history could not be confirmed as refreshed."}`);
