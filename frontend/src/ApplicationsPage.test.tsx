@@ -87,8 +87,15 @@ describe("Issue #180 Applications workspace", () => {
     expect(screen.getByRole("heading", { name: "Preparation review summary" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Requirement review" })).toBeInTheDocument();
     expect(screen.getByText("At least one matched evidence source is cited in prepared materials")).toBeInTheDocument();
+    expect(screen.getByText("essential · technical")).toBeInTheDocument();
+    expect(screen.getByText("desirable · education")).toBeInTheDocument();
     expect(screen.getAllByText(/CV professional summary/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Cover letter/).length).toBeGreaterThan(0);
+    const evidenceDetails = Array.from(document.querySelectorAll<HTMLDetailsElement>("details.evidence-references"));
+    expect(evidenceDetails).toHaveLength(6);
+    evidenceDetails.forEach((details) => { if (!details.open) fireEvent.click(details.querySelector("summary")!); });
+    expect(screen.getAllByText("Historical delivery evidence from preparation time.").length).toBeGreaterThan(0);
+    expect(screen.getByText("Historical project evidence.")).toBeInTheDocument();
     expect(screen.queryByText(/ready to submit|quality score/i)).not.toBeInTheDocument();
     expect(requestPaths(fetch)).not.toContain("/api/v1/profile");
     expect(requestPaths(fetch).filter((path) => path === "/api/v1/applications/p-1/review")).toHaveLength(1);
@@ -298,6 +305,14 @@ describe("Issue #182 deterministic review projection", () => {
     expect(result.invalidIndexCount).toBe(1);
   });
 
+  it("reports missing matches and empty matched evidence factually", () => {
+    const value = preparation("missing-match");
+    value.target.requirement_matches = [];
+    const result = buildRequirementReview(value, review(value.id));
+    expect(result.rows).toHaveLength(2);
+    expect(result.rows.every((row) => row.match === null && row.aggregate === "No matched evidence recorded")).toBe(true);
+  });
+
   it("applies aggregate precedence while retaining per-reference admission and citation states", () => {
     const value = preparation("mixed");
     value.target.requirement_matches.find((item) => item.requirement_index === 0)!.evidence_refs = [
@@ -319,5 +334,12 @@ describe("Issue #182 deterministic review projection", () => {
     value.result.answers[0].source_refs = [];
     const noCitations = buildRequirementReview(value, projection).rows[0];
     expect(noCitations.aggregate).toBe("Matched evidence was available to drafting, but none of the admitted sources is cited in prepared materials");
+
+    value.target.requirement_matches.find((item) => item.requirement_index === 0)!.evidence_refs = [
+      { source_type: "credential", source_ref: "not-admitted" },
+    ];
+    const noneAdmitted = buildRequirementReview(value, projection).rows[0];
+    expect(noneAdmitted.evidence[0].state).toBe("not_admitted");
+    expect(noneAdmitted.aggregate).toBe("Matched evidence was not included in the bounded preparation context");
   });
 });
