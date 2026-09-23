@@ -3,12 +3,12 @@ import re
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
-from app.api.deps import CurrentUser, get_application_preparation_service
+from app.api.deps import CurrentUser, get_application_preparation_read_service, get_application_preparation_service
 from app.schemas.application_preparation import (
     ApplicationInsufficientDetailError, ApplicationPreparationRead, ApplicationPrepareRequest,
 )
 from app.services.application_document_renderer import ApplicationDocumentRenderer
-from app.services.application_preparation_service import ApplicationPreparationService
+from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
 
 
 router = APIRouter(prefix="/applications", tags=["applications"])
@@ -27,43 +27,43 @@ def prepare(payload: ApplicationPrepareRequest, current_user: CurrentUser, servi
 
 
 @router.get("", response_model=list[ApplicationPreparationRead])
-def list_preparations(current_user: CurrentUser, service: ApplicationPreparationService = Depends(get_application_preparation_service)) -> list[ApplicationPreparationRead]:
+def list_preparations(current_user: CurrentUser, service: ApplicationPreparationReadService = Depends(get_application_preparation_read_service)) -> list[ApplicationPreparationRead]:
     return service.list_preparations(current_user.id)
 
 
 @router.get("/{preparation_id}", response_model=ApplicationPreparationRead)
-def get_preparation(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationService = Depends(get_application_preparation_service)) -> ApplicationPreparationRead:
+def get_preparation(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationReadService = Depends(get_application_preparation_read_service)) -> ApplicationPreparationRead:
     return _get(service, current_user.id, preparation_id)
 
 
 @router.get("/{preparation_id}/cv.docx")
-def cv_docx(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationService = Depends(get_application_preparation_service)) -> Response:
+def cv_docx(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationReadService = Depends(get_application_preparation_read_service)) -> Response:
     value = _get(service, current_user.id, preparation_id); payload = ApplicationDocumentRenderer().render_cv_docx(value.identity, value.target, value.result)
     return _download(payload, _filename(value, "CV.docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
 @router.get("/{preparation_id}/cv.pdf")
-def cv_pdf(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationService = Depends(get_application_preparation_service)) -> Response:
+def cv_pdf(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationReadService = Depends(get_application_preparation_read_service)) -> Response:
     value = _get(service, current_user.id, preparation_id); payload, _, _ = ApplicationDocumentRenderer().render_cv_pdf(value.identity, value.target, value.result)
     return _download(payload, _filename(value, "CV.pdf"), "application/pdf")
 
 
 @router.get("/{preparation_id}/cover-letter.docx")
-def cover_docx(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationService = Depends(get_application_preparation_service)) -> Response:
+def cover_docx(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationReadService = Depends(get_application_preparation_read_service)) -> Response:
     value = _get(service, current_user.id, preparation_id)
     if value.result.cover_letter is None: raise HTTPException(status_code=404, detail="Application preparation not found.")
     return _download(ApplicationDocumentRenderer().render_cover_letter_docx(value.identity, value.target, value.result), _filename(value, "Cover_Letter.docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 
 @router.get("/{preparation_id}/cover-letter.pdf")
-def cover_pdf(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationService = Depends(get_application_preparation_service)) -> Response:
+def cover_pdf(preparation_id: str, current_user: CurrentUser, service: ApplicationPreparationReadService = Depends(get_application_preparation_read_service)) -> Response:
     value = _get(service, current_user.id, preparation_id)
     if value.result.cover_letter is None: raise HTTPException(status_code=404, detail="Application preparation not found.")
     payload, _, _ = ApplicationDocumentRenderer().render_cover_letter_pdf(value.identity, value.target, value.result)
     return _download(payload, _filename(value, "Cover_Letter.pdf"), "application/pdf")
 
 
-def _get(service: ApplicationPreparationService, user_id: str, preparation_id: str) -> ApplicationPreparationRead:
+def _get(service: ApplicationPreparationReadService, user_id: str, preparation_id: str) -> ApplicationPreparationRead:
     try: return service.get(user_id, preparation_id)
     except LookupError as exc: raise HTTPException(status_code=404, detail="Application preparation not found.") from exc
 

@@ -62,4 +62,41 @@ describe("SessionApi", () => {
     resolveBody({ owner: "a" });
     await expect(request).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  it("downloads authenticated binary content and exposes its safe response filename", async () => {
+    let options: RequestInit | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => { options = init; return new Response("pdf", { status: 200, headers: { "Content-Disposition": 'attachment; filename="Example_CV.pdf"' } }); }));
+    const result = await new SessionApi("token", vi.fn()).requestBlob("/api/v1/applications/p/cv.pdf");
+    expect(new Headers(options?.headers).get("Authorization")).toBe("Bearer token");
+    expect(await result.blob.text()).toBe("pdf");
+    expect(result.filename).toBe("Example_CV.pdf");
+  });
+
+  it("aborts an in-flight binary body on session replacement without triggering stale 401 side effects", async () => {
+    let resolveBlob!: (blob: Blob) => void;
+    const body = new Promise<Blob>((resolve) => { resolveBlob = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 200, ok: true, headers: new Headers(), blob: () => body })));
+    const on401 = vi.fn();
+    const api = new SessionApi("old", on401);
+    const pending = api.requestBlob("/api/v1/applications/p/cv.pdf");
+    await Promise.resolve();
+    api.replaceToken("new");
+    resolveBlob(new Blob(["old-session"]));
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(on401).not.toHaveBeenCalled();
+  });
+
+  it("uses the authenticated 401 session-expiry boundary for binary requests", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 401 })));
+    const expired = vi.fn();
+    await expect(new SessionApi("token", expired).requestBlob("/api/v1/applications/p/cv.pdf")).rejects.toMatchObject({ status: 401 });
+    expect(expired).toHaveBeenCalledOnce();
+  });
+
+  it("rejects binary HTTP failures as safe ApiErrors without parsing their body", async () => {
+    const blob = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => ({ status: 503, ok: false, headers: new Headers(), blob })));
+    await expect(new SessionApi("token", vi.fn()).requestBlob("/api/v1/applications/p/cv.pdf")).rejects.toMatchObject({ status: 503, message: "Request could not be completed." });
+    expect(blob).not.toHaveBeenCalled();
+  });
 });

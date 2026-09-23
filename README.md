@@ -55,6 +55,7 @@ The authenticated browser workspace includes:
 - bounded discovery-run history with lazy run and historical job detail;
 - a recent shared imported-vacancy inbox and selection of actionable records for evaluation;
 - saved discovery configurations with daily/weekly recurrence setup, pause/resume, manual execution of persisted configurations, execution history, and historical configuration snapshots.
+- application preparation from current ranked opportunities, saved preparation history, evidence-grounded CV / cover-letter / question review, and authenticated DOCX/PDF downloads.
 
 The current browser flow is:
 
@@ -65,6 +66,7 @@ Register
   -> CV
   -> Career Adviser
   -> Jobs
+  -> Applications
 ```
 
 
@@ -95,6 +97,7 @@ Current backend capabilities include:
 - recurring discovery schedules and execution history;
 - application preparation with grounded CV/cover-letter drafting;
 - downloadable CV and cover-letter DOCX/PDF outputs;
+- provider-free, user-scoped reads of persisted application preparations;
 - multi-user ownership and isolation tests;
 - deterministic fake-provider tests with no live LLM/network dependency.
 
@@ -106,11 +109,12 @@ An enabled configuration means recurrence is configured, not that the scheduler 
 
 Broad external Codex discovery remains a separate host-side workflow outside the browser and containers. The browser does not invoke Codex and does not expose its credentials. The Jobs inbox reads persisted public vacancies; it does not run browser-side discovery.
 
-Application-preparation UI and broader application tracking remain later milestones.
+Application-preparation review and authenticated document downloads are available in the browser. Editing generated content, selective regeneration, and broader application tracking remain future milestones.
 
 ### Still planned
 
-- application tracking/status history;
+- application review/iteration enhancements (V2C2);
+- application tracking/status history (V2D);
 - production database migration;
 - production identity/session hardening;
 - deployment, monitoring and production storage.
@@ -528,7 +532,7 @@ They exist to exercise the system and must not be treated as globally applicable
 
 ## Later product work
 
-Application-preparation UI and application tracking remain later product work. Broad external Codex discovery continues through the host-side workflow; the browser evaluates only persisted public vacancies selected from the Jobs inbox. Saved-discovery configuration, manual execution, and execution-history controls are available in the Jobs workspace; automated recurrence still requires an operated server-side scheduler and required providers.
+Application-preparation UI supports new preparations from current ranked opportunities and historical review/downloads; editing or regenerating drafts remains future V2C2 work. Application status tracking remains future V2D work. Broad external Codex discovery continues through the host-side workflow; the browser evaluates only persisted public vacancies selected from the Jobs inbox. Saved-discovery configuration, manual execution, and execution-history controls are available in the Jobs workspace; automated recurrence still requires an operated server-side scheduler and required providers.
 
 ---
 
