@@ -134,10 +134,12 @@ describe("Issue #175 saved discovery configurations", () => {
 
   it("exposes and enforces bounded acquisition and evaluation controls", async () => {
     const { requests } = renderPage("/jobs/searches", {}, []); await screen.findByText("No saved discovery configurations yet."); fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Bounds" } }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI" } }); fireEvent.click(screen.getByRole("checkbox", { name: /Structured ATS/ }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Bounds" } }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI" } }); fireEvent.click(screen.getByRole("checkbox", { name: /Structured ATS/ })); fireEvent.click(screen.getByRole("checkbox", { name: /Profile-driven bounded server-side web discovery/ }));
     for (const label of ["Maximum resolved sources (1–100)", "Maximum ATS results (1–100)", "Maximum semantic candidates (1–100)"]) expect(screen.getByLabelText(label)).toHaveAttribute("min", "1");
     expect(screen.getByLabelText("Maximum resolved sources (1–100)")).toHaveAttribute("max", "100"); expect(screen.getByLabelText("Maximum ATS results (1–100)")).toHaveAttribute("max", "100");
     expect(screen.getByLabelText("Maximum semantic candidates (1–100)")).toHaveAttribute("max", "100"); expect(screen.getByLabelText("Maximum full analyses (1–30)")).toHaveAttribute("max", "30");
+    expect(screen.getByLabelText("Maximum search queries (1–100)")).toHaveAttribute("max", "100"); expect(screen.getByLabelText("Maximum search results per query (1–50)")).toHaveAttribute("max", "50");
+    expect(screen.getByLabelText("Maximum pages to open (1–100)")).toHaveAttribute("max", "100"); expect(screen.getByLabelText("Maximum discovered jobs (1–100)")).toHaveAttribute("max", "100");
     expect(screen.getByLabelText("Minimum relevance score (0–1)")).toHaveAttribute("min", "0"); expect(screen.getByLabelText("Minimum relevance score (0–1)")).toHaveAttribute("max", "1");
     fireEvent.change(screen.getByLabelText("Maximum resolved sources (1–100)"), { target: { value: "101" } }); fireEvent.submit(screen.getByRole("button", { name: "Save configuration" }).closest("form")!);
     expect(await screen.findByRole("alert")).toHaveTextContent("Structured ATS maximum sources must be between 1 and 100."); expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules")).toHaveLength(0);
@@ -377,13 +379,14 @@ describe("Issue #175 saved discovery configurations", () => {
   });
 
   it("blocks duplicate create submissions and refreshes the authoritative backend list after POST", async () => {
-    const pending = deferred<Response>(); let createdConfirmed = false; const created = schedule({ id: "created", name: "Created", enabled: false });
-    const { requests } = renderPage("/jobs/searches", { "GET /api/v1/jobs/discovery-schedules": () => response(createdConfirmed ? [created] : []), "POST /api/v1/jobs/discovery-schedules": () => pending.promise }, []); await screen.findByText("No saved discovery configurations yet.");
+    const pending = deferred<Response>(); let createdConfirmed = false; const existing = schedule({ id: "earlier", name: "Earlier backend item" }); const created = schedule({ id: "created", name: "Created", enabled: false });
+    const { requests } = renderPage("/jobs/searches", { "GET /api/v1/jobs/discovery-schedules": () => response(createdConfirmed ? [existing, created] : []), "POST /api/v1/jobs/discovery-schedules": () => pending.promise }, []); await screen.findByText("No saved discovery configurations yet.");
     fireEvent.click(screen.getByRole("button", { name: "New saved discovery" })); fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Created" } }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI" } }); fireEvent.click(screen.getByRole("checkbox", { name: /Structured ATS/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save configuration" })); expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled(); fireEvent.submit(screen.getByLabelText("Name").closest("form")!);
     expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules")).toHaveLength(1);
     createdConfirmed = true; pending.resolve(response(created, 201)); await screen.findByText("Saved discovery created. The saved-configuration list is current.");
     expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules").length).toBeGreaterThan(1);
+    expect(screen.getAllByRole("heading").filter((heading) => ["Earlier backend item", "Created"].includes(heading.textContent ?? "")).map((heading) => heading.textContent)).toEqual(["Earlier backend item", "Created"]);
   });
 
   it("reports creation success separately when authoritative list refresh fails and preserves prior list", async () => {
@@ -410,6 +413,12 @@ describe("Issue #175 saved discovery configurations", () => {
   it("clears stale pause selection and refreshes after pause/resume 404", async () => {
     const { requests } = renderPage("/jobs/searches", { "PATCH /api/v1/jobs/discovery-schedules/s-1": () => response({ detail: "Not found" }, 404) }); await loaded();
     fireEvent.click(screen.getByRole("button", { name: "Pause recurrence" })); expect(await screen.findByText(/no longer available/)).toBeInTheDocument(); expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules").length).toBeGreaterThan(1);
+  });
+
+  it("clears a stale editor when resuming a deleted schedule returns 404", async () => {
+    const { requests } = renderPage("/jobs/searches", { "PATCH /api/v1/jobs/discovery-schedules/s-1": () => response({ detail: "Not found" }, 404) }, [schedule({ enabled: false, next_run_at: null })]); await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "Resume recurrence" })); expect(await screen.findByText(/no longer available/)).toBeInTheDocument();
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules").length).toBeGreaterThan(1);
   });
 
   it("ignores older delayed list responses after a newer refresh", async () => {
