@@ -30,6 +30,8 @@ type DraftKey = keyof Draft;
 type CandidateReadiness = "loading" | "ready" | "not_ready" | "unknown";
 type SemanticAdvisory = "loading" | "ready" | "problem" | "unknown";
 type HistoryState = { phase: "loading" | "loaded" | "error"; items?: ScheduledExecutionRead[]; error?: string };
+type ListRefreshOutcome = { kind: "refreshed" } | { kind: "failed" } | { kind: "superseded" } | { kind: "session_stale" };
+type HistoryRefreshOutcome = { kind: "refreshed" } | { kind: "failed" } | { kind: "stale" } | { kind: "superseded" } | { kind: "session_stale" };
 
 const providers = ["greenhouse", "ashby", "lever", "smartrecruiters", "recruitee"] as const;
 const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
@@ -199,6 +201,7 @@ export function JobsSearchesPage() {
   const [createPending, setCreatePending] = useState(false);
   const [pendingSchedules, setPendingSchedules] = useState<Set<string>>(new Set());
   const [runningScheduleIds, setRunningScheduleIds] = useState<Set<string>>(new Set());
+  const [reconcilingScheduleIds, setReconcilingScheduleIds] = useState<Set<string>>(new Set());
   const [staleScheduleIds, setStaleScheduleIds] = useState<Set<string>>(new Set());
   const [runResults, setRunResults] = useState<Record<string, ScheduledExecutionRead>>({});
   const [candidateReadiness, setCandidateReadiness] = useState<CandidateReadiness>("loading");
@@ -218,21 +221,25 @@ export function JobsSearchesPage() {
   const editorSelection = useRef<string | null>(null);
   const historySelection = useRef<string | null>(null);
 
-  const refreshList = async (): Promise<boolean> => {
+  const refreshListOutcome = async (): Promise<ListRefreshOutcome> => {
     const sessionGeneration = viewGeneration.current;
     const generation = ++listGeneration.current;
     setList((old) => ({ ...old, phase: old.items ? "loaded" : "loading", error: undefined }));
     try {
       const items = await api.request<DiscoveryScheduleRead[]>("/api/v1/jobs/discovery-schedules");
-      if (!alive.current || sessionGeneration !== viewGeneration.current || generation !== listGeneration.current) return false;
+      if (!alive.current || sessionGeneration !== viewGeneration.current) return { kind: "session_stale" };
+      if (generation !== listGeneration.current) return { kind: "superseded" };
       setList({ phase: "loaded", items });
       setStaleScheduleIds((old) => new Set([...old].filter((id) => !items.some((item) => item.id === id))));
-      return true;
+      return { kind: "refreshed" };
     } catch (cause) {
-      if (alive.current && sessionGeneration === viewGeneration.current && generation === listGeneration.current && !isStaleSessionWork(cause)) setList((old) => ({ phase: "error", items: old.items, error: "Saved discovery configurations are unavailable." }));
-      return false;
+      if (!alive.current || sessionGeneration !== viewGeneration.current || isStaleSessionWork(cause)) return { kind: "session_stale" };
+      if (generation !== listGeneration.current) return { kind: "superseded" };
+      setList((old) => ({ phase: "error", items: old.items, error: "Saved discovery configurations are unavailable." }));
+      return { kind: "failed" };
     }
   };
+  const refreshList = async (): Promise<boolean> => (await refreshListOutcome()).kind === "refreshed";
 
   const clearStaleSchedule = async (scheduleId: string, sessionGeneration = viewGeneration.current) => {
     if (!alive.current || sessionGeneration !== viewGeneration.current) return false;
@@ -240,31 +247,35 @@ export function JobsSearchesPage() {
     if (editorSelection.current === scheduleId) { editorGeneration.current += 1; editorSelection.current = null; setEditor(null); }
     if (historySelection.current === scheduleId) { historySelection.current = null; setSelectedHistoryId(null); }
     setMessage(""); setError("");
-    const refreshed = await refreshList();
-    if (!alive.current || sessionGeneration !== viewGeneration.current) return false;
-    setMessage(refreshed
+    const outcome = await refreshListOutcome();
+    if (!alive.current || sessionGeneration !== viewGeneration.current || outcome.kind === "session_stale") return outcome;
+    setMessage(outcome.kind === "refreshed"
       ? "This saved discovery is no longer available. The saved-configuration list has been refreshed."
-      : "This saved discovery is no longer available. The saved-configuration list refresh could not be confirmed.");
-    return refreshed;
+      : outcome.kind === "failed"
+        ? "This saved discovery is no longer available. The saved-configuration list refresh could not be confirmed."
+        : "This saved discovery is no longer available. A newer saved-configuration list refresh superseded this refresh.");
+    return outcome;
   };
 
-  const refreshHistory = async (scheduleId: string): Promise<boolean> => {
+  const refreshHistory = async (scheduleId: string): Promise<HistoryRefreshOutcome> => {
     const sessionGeneration = viewGeneration.current;
     const requestGeneration = (historyGeneration.current.get(scheduleId) ?? 0) + 1;
     historyGeneration.current.set(scheduleId, requestGeneration);
     setHistoryBySchedule((old) => ({ ...old, [scheduleId]: { ...old[scheduleId], phase: old[scheduleId]?.items ? "loaded" : "loading", error: undefined } }));
     try {
       const items = await api.request<ScheduledExecutionRead[]>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(scheduleId)}/executions`);
-      if (!alive.current || sessionGeneration !== viewGeneration.current || historyGeneration.current.get(scheduleId) !== requestGeneration) return false;
+      if (!alive.current || sessionGeneration !== viewGeneration.current) return { kind: "session_stale" };
+      if (historyGeneration.current.get(scheduleId) !== requestGeneration) return { kind: "superseded" };
       setHistoryBySchedule((old) => ({ ...old, [scheduleId]: { phase: "loaded", items } }));
-      return true;
+      return { kind: "refreshed" };
     } catch (cause) {
-      if (!alive.current || sessionGeneration !== viewGeneration.current || historyGeneration.current.get(scheduleId) !== requestGeneration || isStaleSessionWork(cause)) return false;
-      if (cause instanceof ApiError && cause.status === 404) { await clearStaleSchedule(scheduleId, sessionGeneration); return false; }
+      if (!alive.current || sessionGeneration !== viewGeneration.current || isStaleSessionWork(cause)) return { kind: "session_stale" };
+      if (historyGeneration.current.get(scheduleId) !== requestGeneration) return { kind: "superseded" };
+      if (cause instanceof ApiError && cause.status === 404) { await clearStaleSchedule(scheduleId, sessionGeneration); return { kind: "stale" }; }
       if (historyGeneration.current.get(scheduleId) === requestGeneration) {
         setHistoryBySchedule((old) => ({ ...old, [scheduleId]: { phase: "error", items: old[scheduleId]?.items, error: "Execution history could not be loaded." } }));
       }
-      return false;
+      return { kind: "failed" };
     }
   };
 
@@ -320,34 +331,54 @@ export function JobsSearchesPage() {
     const requestGeneration = (runGeneration.current.get(id) ?? 0) + 1;
     runGeneration.current.set(id, requestGeneration); runLocks.current.add(id);
     setRunningScheduleIds((old) => new Set(old).add(id)); setMessage(""); setError("");
+    const settleRunRequest = () => setRunningScheduleIds((old) => { const next = new Set(old); next.delete(id); return next; });
+    const beginReconciliation = () => setReconcilingScheduleIds((old) => new Set(old).add(id));
     try {
-      const execution = await api.request<ScheduledExecutionRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}/run-now`, { method: "POST" });
-      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
-      setRunResults((old) => ({ ...old, [id]: execution }));
-      const [listRefreshed, historyRefreshed] = await Promise.all([refreshList(), refreshHistory(id)]);
-      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
-      setMessage(`Run now returned ${readableStatus(execution.status).toLowerCase()} for ${schedule.name}. ${listRefreshed ? "Saved-configuration list refreshed." : "Saved-configuration list refresh could not be confirmed."} ${historyRefreshed ? "Execution history refreshed." : "Execution history refresh could not be confirmed."}`);
-    } catch (cause) {
-      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || isStaleSessionWork(cause)) return;
-      if (cause instanceof ApiError && cause.status === 404) { await clearStaleSchedule(id, sessionGeneration); return; }
-      if (cause instanceof ApiError && cause.status === 409) {
-        setMessage(`An execution is already running for ${schedule.name}.`);
+      let execution: ScheduledExecutionRead;
+      try {
+        execution = await api.request<ScheduledExecutionRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}/run-now`, { method: "POST" });
+      } catch (cause) {
+        if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || isStaleSessionWork(cause)) return;
+        settleRunRequest();
+        if (cause instanceof ApiError && cause.status === 404) {
+          beginReconciliation(); await clearStaleSchedule(id, sessionGeneration); return;
+        }
+        if (cause instanceof ApiError && cause.status === 409) {
+          beginReconciliation(); setMessage(`An execution is already running for ${schedule.name}.`);
+          if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
+          const outcome = await refreshHistory(id);
+          if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale" || outcome.kind === "superseded") return;
+          setMessage(`An execution is already running for ${schedule.name}. ${outcome.kind === "refreshed" ? "Execution history refreshed." : "Execution history refresh could not be confirmed."}`);
+          return;
+        }
+        if (cause instanceof ApiError) {
+          setError(`Run now was rejected by the server (HTTP ${cause.status}). No execution was confirmed by this response.`);
+          return;
+        }
+        beginReconciliation();
+        setMessage("The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. Checking execution history…");
         if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
-        const refreshed = await refreshHistory(id);
-        if (alive.current && sessionGeneration === viewGeneration.current && runGeneration.current.get(id) === requestGeneration && historySelection.current !== id) setMessage(`An execution is already running for ${schedule.name}. ${refreshed ? "Execution history refreshed." : "Execution history refresh could not be confirmed."}`);
+        const outcome = await refreshHistory(id);
+        if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale" || outcome.kind === "superseded") return;
+        setMessage(`The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. ${outcome.kind === "refreshed" ? "Execution history was refreshed." : "Execution history could not be confirmed as refreshed."}`);
         return;
       }
-      if (cause instanceof ApiError) {
-        setError(`Run now was rejected by the server (HTTP ${cause.status}). No execution was confirmed by this response.`);
-        return;
-      }
-      setMessage("The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. Checking execution history…");
-      if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
-      const refreshed = await refreshHistory(id);
-      if (alive.current && sessionGeneration === viewGeneration.current && runGeneration.current.get(id) === requestGeneration) setMessage(`The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. ${refreshed ? "Execution history was refreshed." : "Execution history could not be confirmed as refreshed."}`);
+      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
+      settleRunRequest();
+      beginReconciliation();
+      setRunResults((old) => ({ ...old, [id]: execution }));
+      const [listOutcome, historyOutcome] = await Promise.all([refreshListOutcome(), refreshHistory(id)]);
+      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
+      if (historyOutcome.kind === "stale" || historyOutcome.kind === "session_stale" || historyOutcome.kind === "superseded" || listOutcome.kind === "session_stale") return;
+      const listMessage = listOutcome.kind === "refreshed" ? "Saved-configuration list refreshed." : listOutcome.kind === "failed" ? "Saved-configuration list refresh could not be confirmed." : "";
+      const historyMessage = historyOutcome.kind === "refreshed" ? "Execution history refreshed." : "Execution history refresh could not be confirmed.";
+      setMessage([`Run now returned ${readableStatus(execution.status).toLowerCase()} for ${schedule.name}.`, listMessage, historyMessage].filter(Boolean).join(" "));
     } finally {
       runLocks.current.delete(id);
-      if (alive.current && sessionGeneration === viewGeneration.current && runGeneration.current.get(id) === requestGeneration) setRunningScheduleIds((old) => { const next = new Set(old); next.delete(id); return next; });
+      if (alive.current && sessionGeneration === viewGeneration.current && runGeneration.current.get(id) === requestGeneration) {
+        settleRunRequest();
+        setReconcilingScheduleIds((old) => { const next = new Set(old); next.delete(id); return next; });
+      }
     }
   };
   const discard = async () => {
@@ -545,6 +576,7 @@ export function JobsSearchesPage() {
         const dirty = editor?.id === schedule.id && editor.dirty.size > 0;
         const pending = pendingSchedules.has(schedule.id) || editor?.id === schedule.id && !!editor.pending;
         const running = runningScheduleIds.has(schedule.id);
+        const reconciling = reconcilingScheduleIds.has(schedule.id);
         const stale = staleScheduleIds.has(schedule.id);
         const history = historyBySchedule[schedule.id];
         return <li className="card saved-schedule-card" key={schedule.id}>
@@ -560,12 +592,13 @@ export function JobsSearchesPage() {
           {dirty && <p className="notice">Save or discard changes before pausing or resuming this configuration.</p>}
           {dirty && <p className="notice">Save or discard changes before running. Run now uses the persisted saved configuration.</p>}
           <div className="card-actions">
-            <button type="button" onClick={() => void runNow(schedule)} disabled={stale || candidateReadiness !== "ready" || dirty || running || pending || mutationLocks.current.has(`save:${schedule.id}`) || mutationLocks.current.has(`toggle:${schedule.id}`)}>{running ? "Running…" : "Run now"}</button>
+            <button type="button" onClick={() => void runNow(schedule)} disabled={stale || candidateReadiness !== "ready" || dirty || running || reconciling || pending || mutationLocks.current.has(`save:${schedule.id}`) || mutationLocks.current.has(`toggle:${schedule.id}`)}>{running ? "Running…" : reconciling ? "Reconciling…" : "Run now"}</button>
             <button type="button" className="button-secondary" onClick={() => toggleHistory(schedule.id)} disabled={stale}>{selectedHistoryId === schedule.id ? "Hide execution history" : "View execution history"}</button>
             <button type="button" className="button-secondary" onClick={() => void setScheduleEnabled(schedule, !schedule.enabled)} disabled={stale || dirty || pending || mutationLocks.current.has(`toggle:${schedule.id}`)}>{pending ? "Updating…" : schedule.enabled ? "Pause recurrence" : "Resume recurrence"}</button>
           </div>
           {running && <p role="status">Running saved discovery… this may take several minutes. Saved discovery: {schedule.name}.</p>}
           {running && <p className="muted">This local control does not cancel an execution already claimed by the server.</p>}
+          {reconciling && <p role="status">Checking saved-configuration and execution-history state for {schedule.name}…</p>}
           {runResults[schedule.id] && <section className="execution-result" aria-label={`Latest Run now response for ${schedule.name}`}><h4>Latest Run-now response</h4>{renderExecution(runResults[schedule.id])}</section>}
           {selectedHistoryId === schedule.id && <section className="execution-history" aria-label={`Execution history for ${schedule.name}`}>
             <div className="section-heading"><h4>Execution history</h4><button type="button" className="button-secondary" onClick={() => void refreshHistory(schedule.id)}>Refresh history</button></div>

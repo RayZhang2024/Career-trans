@@ -617,6 +617,38 @@ describe("Issue #176 manual execution and history", () => {
     await screen.findByText("Status: completed");
   });
 
+  it("clears Run-now pending as soon as terminal 200 arrives, while history reconciliation is still pending", async () => {
+    const pendingHistory = deferred<Response>();
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response(execution({ id: "terminal-before-history", status: "completed" })),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => pendingHistory.promise,
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText("Status: completed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reconciling…" })).toBeDisabled();
+    expect(screen.getByText(/Checking saved-configuration and execution-history state/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Running…" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Running saved discovery… this may take several minutes/)).not.toBeInTheDocument();
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+    pendingHistory.resolve(response([execution({ id: "terminal-before-history", status: "completed" })]));
+    await screen.findByRole("button", { name: "Run now" });
+  });
+
+  it("clears Run-now pending after transport interruption while history reconciliation remains pending", async () => {
+    const pendingHistory = deferred<Response>();
+    renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => Promise.reject(new TypeError("offline")),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => pendingHistory.promise,
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(/cannot confirm from this response what execution state resulted/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reconciling…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Running…" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Running saved discovery… this may take several minutes/)).not.toBeInTheDocument();
+    pendingHistory.resolve(response([]));
+    await screen.findByRole("button", { name: "Run now" });
+  });
+
   it.each(["completed", "partial_failed", "failed", "skipped"] as const)("renders HTTP 200 status %s factually and reconciles the completed schedule", async (status) => {
     const { requests } = renderPage("/jobs/searches", { "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response(execution({ status, discovery_run_id: status === "skipped" ? null : "run-1" })) });
     await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
@@ -794,6 +826,71 @@ describe("Issue #176 manual execution and history", () => {
     expect(await screen.findByText(/cannot confirm from this response what execution state resulted/)).toBeInTheDocument();
     expect(screen.getByText(/Execution history could not be confirmed as refreshed/)).toBeInTheDocument();
     expect(screen.queryByText(/Execution history was refreshed\./)).not.toBeInTheDocument();
+  });
+
+  it("lets transport reconciliation 404 stale state override transport uncertainty", async () => {
+    let listCalls = 0;
+    renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules": () => ++listCalls === 1 ? response([schedule()]) : Promise.reject(new TypeError("offline")),
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => Promise.reject(new TypeError("offline")),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response({ detail: "missing" }, 404),
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(/no longer available\. The saved-configuration list refresh could not be confirmed/)).toBeInTheDocument();
+    expect(screen.queryByText(/cannot confirm from this response what execution state resulted/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Execution history could not be confirmed as refreshed/)).not.toBeInTheDocument();
+  });
+
+  it("lets 409 reconciliation 404 stale state override already-running wording", async () => {
+    let listCalls = 0;
+    renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules": () => ++listCalls === 1 ? response([schedule()]) : Promise.reject(new TypeError("offline")),
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response({ detail: "running" }, 409),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response({ detail: "missing" }, 404),
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(/no longer available\. The saved-configuration list refresh could not be confirmed/)).toBeInTheDocument();
+    expect(screen.queryByText(/An execution is already running for AI roles/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Execution history refresh could not be confirmed/)).not.toBeInTheDocument();
+  });
+
+  it("preserves a factual terminal result when history 404 marks its schedule stale", async () => {
+    let listCalls = 0;
+    renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules": () => ++listCalls === 1 ? response([schedule()]) : Promise.reject(new TypeError("offline")),
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response(execution({ id: "completed-before-delete", status: "completed" })),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response({ detail: "deleted" }, 404),
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText("Status: completed")).toBeInTheDocument();
+    expect(await screen.findByText(/no longer available\. The saved-configuration list refresh could not be confirmed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Execution history refresh could not be confirmed/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+  });
+
+  it("does not report failure when automatic run-history reconciliation is superseded by a newer successful request", async () => {
+    const automaticHistory = deferred<Response>(); let historyCalls = 0;
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response(execution({ id: "terminal-run", status: "completed" })),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => {
+        historyCalls += 1;
+        if (historyCalls === 1) return response([]);
+        if (historyCalls === 2) return automaticHistory.promise;
+        return response([execution({ id: "newer-authoritative-history" })]);
+      },
+    });
+    await loaded(); fireEvent.click(screen.getByRole("button", { name: "View execution history" }));
+    await screen.findByText("No execution history is recorded for this saved discovery.");
+    await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    await screen.findByText("Status: completed");
+    await waitFor(() => expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(2));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh history" }));
+    expect(await screen.findByText(/newer-authoritative-history/)).toBeInTheDocument();
+    automaticHistory.resolve(response([execution({ id: "superseded-automatic-history" })]));
+    await waitFor(() => expect(screen.queryByText(/superseded-automatic-history/)).not.toBeInTheDocument());
+    expect(screen.getByRole("region", { name: "Execution history for AI roles" })).toHaveTextContent("newer-authoritative-history");
+    expect(screen.queryByText(/Execution history refresh could not be confirmed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Execution history could not be confirmed as refreshed/)).not.toBeInTheDocument();
   });
 
   it("reports list and history reconciliation failures truthfully after a terminal HTTP 200", async () => {
