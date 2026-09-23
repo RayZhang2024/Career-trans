@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import type { DiscoveryScheduleRead, User } from "./api";
+import type { DiscoveryScheduleRead, ScheduledExecutionRead, User } from "./api";
 import { App } from "./App";
 import { AuthProvider } from "./auth";
 
@@ -17,6 +17,16 @@ const schedule = (patch: Partial<DiscoveryScheduleRead> = {}): DiscoverySchedule
   },
   evaluation: { max_semantic_candidates: 17, max_full_analyses: 8, min_relevance_score: 0.63 }, next_run_at: "2026-10-01T08:30:00Z", last_execution_at: "2026-09-20T08:00:00Z", ...patch,
 });
+const execution = (patch: Partial<ScheduledExecutionRead> = {}): ScheduledExecutionRead => ({
+  id: "e-1", trigger_kind: "manual", scheduled_for: null, status: "completed",
+  config_snapshot: {
+    schedule: { cadence: "weekly", timezone: "Europe/London", local_time: "09:15:30", weekdays: [0, 4] },
+    query: { keywords: ["Historical AI"], locations: ["London"], remote_ok: false, companies: [], excluded_companies: ["Historical exclude"], excluded_title_terms: ["intern"], employment_types: ["full-time"], max_results: 29 },
+    acquisition: { structured_ats: { enabled: true, companies: ["History Co"], providers: ["greenhouse"], all_resolved_sources: false, max_sources: 7, max_results: 18 }, agentic_web: { enabled: false, country: "gb", max_search_queries: 3, max_search_results_per_query: 4, max_pages_to_open: 5, max_discovered_jobs: 6 } },
+    evaluation: { max_semantic_candidates: 9, max_full_analyses: 2, min_relevance_score: 0.72 },
+  },
+  discovery_run_id: "run-1", acquisition_summary: { ats_sources_succeeded: 2, jobs_new: 4 }, failure_summary: { provider_failure: 1 }, started_at: "2026-09-01T09:00:00Z", completed_at: "2026-09-01T09:02:00Z", ...patch,
+});
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 type Handler = (url: URL, init?: RequestInit) => Response | Promise<Response>;
 const key = (method: string, path: string) => `${method} ${path}`;
@@ -29,10 +39,13 @@ function fakeFetch(overrides: Record<string, Handler> = {}, initial: DiscoverySc
     const handler = overrides[key(method, path)] ?? overrides[path];
     if (handler) return handler(url, init);
     if (path === "/api/v1/users/me") return response(user);
+    if (path === "/api/v1/onboarding/status") return response({ profile_exists: true, candidate_context_ready: true, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 } });
+    if (path === "/api/v1/config/llm/check") return response({ ready: true });
     if (path === "/api/v1/jobs/discovery-schedules" && method === "GET") return response(list);
     if (path === "/api/v1/jobs/discovery-schedules" && method === "POST") {
       const created = schedule({ id: "created", ...(JSON.parse(String(init?.body)) as object) }); list = [...list, created]; return response(created, 201);
     }
+    if (method === "GET" && /^\/api\/v1\/jobs\/discovery-schedules\/[^/]+\/executions$/.test(path)) return response([]);
     const match = path.match(/^\/api\/v1\/jobs\/discovery-schedules\/([^/]+)$/);
     if (match && method === "GET") return response(list.find((item) => item.id === decodeURIComponent(match[1])) ?? schedule({ id: match[1] }), list.some((item) => item.id === match[1]) ? 200 : 404);
     if (match && method === "PATCH") {
@@ -51,6 +64,7 @@ function renderPage(path = "/jobs/searches", setup: Record<string, Handler> = {}
   return { ...view, ...mocked };
 }
 async function loaded() { await screen.findByRole("heading", { name: "Your saved discoveries" }); await waitFor(() => expect(screen.queryByText("Loading saved discoveries…")).not.toBeInTheDocument()); }
+async function candidateReady() { await screen.findByText("Confirmed candidate context is available for execution."); }
 function getCalls(requests: ReturnType<typeof fakeFetch>["requests"], method: string, path: string) { return requests.filter((item) => item.method === method && item.path === path); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
@@ -115,7 +129,7 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(screen.queryByText("No saved discovery configurations yet.")).not.toBeInTheDocument();
   });
 
-  it("opens a safe paused new form without silently enabling channels or readiness checks", async () => {
+  it("opens a safe paused new form without silently enabling channels or eager history", async () => {
     const { requests } = renderPage("/jobs/searches", {}, []); await screen.findByText("No saved discovery configurations yet.");
     fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
     expect(screen.getByRole("checkbox", { name: "Recurrence enabled" })).not.toBeChecked();
@@ -124,7 +138,8 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(screen.getByLabelText("Configured local time")).toHaveValue("09:00:00");
     expect(screen.getByLabelText("IANA timezone")).toHaveValue(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
     expect(screen.getByText(/Choose at least one channel explicitly/)).toBeInTheDocument();
-    expect(getCalls(requests, "GET", "/api/v1/onboarding/status")).toHaveLength(0);
+    expect(getCalls(requests, "GET", "/api/v1/onboarding/status")).toHaveLength(1);
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(0);
   });
 
   it("falls back to UTC for a new-form browser timezone default when Intl cannot resolve one", async () => {
@@ -174,7 +189,7 @@ describe("Issue #175 saved discovery configurations", () => {
     await screen.findByText(/The saved-configuration list is current/);
   });
 
-  it("explains soft themes, comma preservation, server-side profile-driven web, DST, and manual-run boundary", async () => {
+  it("explains soft themes, comma preservation, server-side profile-driven web, DST, and save-before-run boundary", async () => {
     renderPage(); await loaded();
     fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
     expect(screen.getByText(/Themes prioritise structured ATS candidates softly/)).toBeInTheDocument();
@@ -182,7 +197,7 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(screen.getByText(/This is not Codex/)).toBeInTheDocument();
     expect(screen.getByText(/search strategy comes from confirmed candidate context/i)).toBeInTheDocument();
     expect(screen.getByText(/Daylight-saving gaps are skipped; repeated local times use the first occurrence/)).toBeInTheDocument();
-    expect(screen.getByText(/Manual Run now and execution history are not available here yet/)).toBeInTheDocument();
+    expect(screen.getByText("Save this configuration before using Run now or execution history from its saved-discovery card.")).toBeInTheDocument();
     expect(screen.queryByLabelText(/Agentic country/i)).not.toBeInTheDocument();
   });
 
@@ -494,9 +509,332 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument(); expect(sessionStorage.getItem(TOKEN)).toBeNull();
   });
 
-  it("requires no readiness fetch and exposes no run-now, execution-history, or deletion controls", async () => {
-    const { requests } = renderPage(); await loaded();
-    expect(requests.some((item) => item.path.includes("onboarding") || item.path.endsWith("/executions") || item.path.endsWith("/run-now"))).toBe(false);
-    expect(screen.queryByRole("button", { name: /Run now|Execution history|Delete|Archive/i })).not.toBeInTheDocument();
+  it("checks readiness and advisory configuration without eagerly loading execution history", async () => {
+    const { requests } = renderPage(); await loaded(); await candidateReady();
+    expect(getCalls(requests, "GET", "/api/v1/onboarding/status")).toHaveLength(1);
+    expect(getCalls(requests, "GET", "/api/v1/config/llm/check")).toHaveLength(1);
+    expect(requests.some((item) => item.path.endsWith("/executions"))).toBe(false);
+    expect(requests.some((item) => item.path.endsWith("/run-now"))).toBe(false);
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "View execution history" })).toBeEnabled();
+    expect(screen.getByText(/does not guarantee this saved discovery will execute successfully/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Delete|Archive/i })).not.toBeInTheDocument();
   });
 });
+
+describe("Issue #176 manual execution and history", () => {
+  it("keeps candidate false fail-closed while configuration and explicit history browsing stay available", async () => {
+    const { requests } = renderPage("/jobs/searches", {
+      "GET /api/v1/onboarding/status": () => response({ profile_exists: true, candidate_context_ready: false, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 } }),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response([execution()]),
+    });
+    await loaded();
+    expect(await screen.findByText(/Run now requires confirmed candidate context/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Go to CV" })).toHaveAttribute("href", "/cv");
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "View execution history" }));
+    expect(await screen.findByText("Execution history")).toBeInTheDocument();
+    expect(screen.getByText(/Completed · Manual/)).toBeInTheDocument();
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+    expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules/s-1/run-now")).toHaveLength(0);
+  });
+
+  it("fails closed on unknown candidate readiness but treats advisory LLM failures as unknown and non-blocking", async () => {
+    const { requests } = renderPage("/jobs/searches", {
+      "GET /api/v1/onboarding/status": () => response({ detail: "unavailable" }, 503),
+      "GET /api/v1/config/llm/check": () => Promise.reject(new TypeError("offline")),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response([]),
+    });
+    await loaded();
+    expect(await screen.findByText(/Candidate readiness could not be confirmed/)).toBeInTheDocument();
+    expect(await screen.findByText(/Semantic configuration status is unknown/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "View execution history" }));
+    expect(await screen.findByText("No execution history is recorded for this saved discovery.")).toBeInTheDocument();
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+  });
+
+  it("keeps Run now available and advisory unknown after an unexpected semantic-check HTTP error", async () => {
+    renderPage("/jobs/searches", { "GET /api/v1/config/llm/check": () => response({ detail: "private response" }, 500) });
+    await loaded(); await candidateReady();
+    expect(await screen.findByText(/Semantic configuration status is unknown/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(screen.queryByText(/private response|Agentic web provider is ready/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps Run now enabled when the semantic advisory returns 503 and exposes no provider details", async () => {
+    const { requests } = renderPage("/jobs/searches", {
+      "GET /api/v1/config/llm/check": () => response({ detail: "secret-provider-key and internal configuration" }, 503),
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response(execution({ status: "skipped", discovery_run_id: null })),
+    });
+    await loaded(); await candidateReady();
+    expect(await screen.findByText(/semantic configuration check reported a problem/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+    expect(screen.queryByText(/secret-provider-key|internal configuration/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Agentic web provider.*ready/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText("Status: skipped")).toBeInTheDocument();
+    expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules/s-1/run-now")).toHaveLength(1);
+  });
+
+  it("keeps dirty state schedule-local and submits only the persisted ID for a paused schedule", async () => {
+    const second = schedule({ id: "s-2", name: "Paused AI", enabled: false, next_run_at: null });
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-2/run-now": () => response(execution({ id: "e-paused", status: "completed" })),
+    }, [schedule(), second]);
+    await loaded(); await candidateReady();
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]); await screen.findByDisplayValue("AI roles");
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Unsaved A" } });
+    const runButtons = screen.getAllByRole("button", { name: "Run now" });
+    expect(runButtons[0]).toBeDisabled(); expect(runButtons[1]).toBeEnabled();
+    expect(screen.getByText("Save or discard changes before running. Run now uses the persisted saved configuration.")).toBeInTheDocument();
+    fireEvent.click(runButtons[1]);
+    expect(await screen.findByText("Status: completed")).toBeInTheDocument();
+    const post = getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules/s-2/run-now")[0];
+    expect(post.body).toBeUndefined();
+    expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules/s-1/run-now")).toHaveLength(0);
+  });
+
+  it("keys pending Run now by schedule, blocks duplicates only there, and keeps unrelated schedules usable", async () => {
+    const pendingA = deferred<Response>();
+    const second = schedule({ id: "s-2", name: "Other discovery" });
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => pendingA.promise,
+      "POST /api/v1/jobs/discovery-schedules/s-2/run-now": () => response(execution({ id: "e-b", status: "partial_failed" })),
+    }, [schedule(), second]);
+    await loaded(); await candidateReady();
+    fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]);
+    expect(await screen.findByText("Running saved discovery… this may take several minutes. Saved discovery: AI roles.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Running…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Running…" }));
+    expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules/s-1/run-now")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText("Status: partial_failed")).toBeInTheDocument();
+    expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules/s-2/run-now")).toHaveLength(1);
+    pendingA.resolve(response(execution({ id: "e-a", status: "completed" })));
+    await screen.findByText("Status: completed");
+  });
+
+  it.each(["completed", "partial_failed", "failed", "skipped"] as const)("renders HTTP 200 status %s factually and reconciles the completed schedule", async (status) => {
+    const { requests } = renderPage("/jobs/searches", { "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response(execution({ status, discovery_run_id: status === "skipped" ? null : "run-1" })) });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(`Status: ${status}`)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: new RegExp(`${readableExecutionStatus(status)} · Manual`) })).toBeInTheDocument();
+    await waitFor(() => expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules")).toHaveLength(2));
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+    expect(screen.getByText(status === "skipped" ? "No linked discovery run is recorded." : "A linked discovery run exists.")).toBeInTheDocument();
+    expect(screen.queryByText(/linked discovery run status/i)).not.toBeInTheDocument();
+  });
+
+  it("renders scheduled trigger, scheduled-for time, timestamps, and safe counters factually", async () => {
+    renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response([execution({ trigger_kind: "scheduled", scheduled_for: "2026-09-01T08:55:00Z" })]),
+    });
+    await loaded(); fireEvent.click(screen.getByRole("button", { name: "View execution history" }));
+    const history = await screen.findByRole("region", { name: "Execution history for AI roles" });
+    expect(within(history).getByRole("heading", { name: /Completed · Scheduled/ })).toBeInTheDocument();
+    expect(within(history).getByText("Trigger: scheduled")).toBeInTheDocument();
+    expect(within(history).getByText(/Scheduled for:/)).toBeInTheDocument();
+    expect(within(history).getByText(/Started:/)).toBeInTheDocument();
+    expect(within(history).getByText(/Completed:/)).toBeInTheDocument();
+    expect(within(history).getByText("jobs new: 4")).toBeInTheDocument();
+    expect(within(history).getByText("provider failure: 1")).toBeInTheDocument();
+  });
+
+  it("renders a running history record as running", async () => {
+    renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response([execution({ status: "running", completed_at: null })]),
+    });
+    await loaded(); fireEvent.click(screen.getByRole("button", { name: "View execution history" }));
+    const history = await screen.findByRole("region", { name: "Execution history for AI roles" });
+    expect(within(history).getByRole("heading", { name: /Running · Manual/ })).toBeInTheDocument();
+    expect(within(history).getByText("Status: running")).toBeInTheDocument();
+  });
+
+  it("loads history only by request, keeps selection independent from Edit, and renders the historical snapshot without invented fields", async () => {
+    const second = schedule({ id: "s-2", name: "Second" });
+    const historical = execution({ id: "history-e", config_snapshot: { ...execution().config_snapshot, query: { ...execution().config_snapshot.query, keywords: ["Snapshot keyword"], max_results: 29 } } });
+    const { requests } = renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response([historical]),
+    }, [schedule(), second]);
+    await loaded();
+    expect(requests.some((item) => item.path.endsWith("/executions"))).toBe(false);
+    fireEvent.click(screen.getAllByRole("button", { name: "View execution history" })[0]);
+    await screen.findByText(/Completed · Manual/);
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]); await screen.findByDisplayValue("AI roles");
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Current edited theme" } });
+    expect(screen.getByRole("region", { name: "Execution history for AI roles" })).toBeInTheDocument();
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-2/executions")).toHaveLength(0);
+    fireEvent.click(screen.getByText("Configuration used for this execution"));
+    const history = screen.getByRole("region", { name: "Execution history for AI roles" });
+    expect(within(history).getByText("Themes: Snapshot keyword")).toBeInTheDocument();
+    expect(within(history).queryByText("Themes: Current edited theme")).not.toBeInTheDocument();
+    expect(screen.getByText("Cadence: weekly")).toBeInTheDocument();
+    expect(screen.getByText("Timezone: Europe/London")).toBeInTheDocument();
+    expect(screen.getByText(/max sources 7/)).toBeInTheDocument();
+    expect(screen.getByText("Maximum full analyses: 2")).toBeInTheDocument();
+    expect(screen.queryByText(/Historical schedule name|enabled state|next_run_at|last_execution_at/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open Jobs workspace" })).toHaveAttribute("href", "/jobs");
+    expect(screen.queryByRole("link", { name: /run-1|discovery run/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    expect(await screen.findByText("Saved discovery AI roles updated.")).toBeInTheDocument();
+    const patch = getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")[0].body as { query: { keywords: string[] } };
+    expect(patch.query.keywords).toEqual(["Current edited theme"]);
+    expect(within(screen.getByRole("region", { name: "Execution history for AI roles" })).getByText("Themes: Snapshot keyword")).toBeInTheDocument();
+  });
+
+  it("does not let a delayed history response for A replace the selected history for B", async () => {
+    const oldA = deferred<Response>(); const second = schedule({ id: "s-2", name: "Second" });
+    const { requests } = renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => oldA.promise,
+      "GET /api/v1/jobs/discovery-schedules/s-2/executions": () => response([execution({ id: "history-B" })]),
+    }, [schedule(), second]);
+    await loaded(); fireEvent.click(screen.getAllByRole("button", { name: "View execution history" })[0]);
+    fireEvent.click(screen.getByRole("button", { name: "View execution history" }));
+    expect(await screen.findByText(/Completed · Manual · history-B/)).toBeInTheDocument();
+    oldA.resolve(response([execution({ id: "history-A" })]));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Execution history for Second" })).toBeInTheDocument());
+    expect(screen.getByRole("region", { name: "Execution history for Second" })).toHaveTextContent("history-B");
+    expect(screen.getByRole("region", { name: "Execution history for Second" })).not.toHaveTextContent("history-A");
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+  });
+
+  it("lets the newest same-schedule history request win", async () => {
+    const older = deferred<Response>(); let calls = 0;
+    renderPage("/jobs/searches", { "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => ++calls === 1 ? older.promise : response([execution({ id: "new-history" })]) });
+    await loaded(); fireEvent.click(screen.getByRole("button", { name: "View execution history" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh history" }));
+    expect(await screen.findByText(/new-history/)).toBeInTheDocument();
+    older.resolve(response([execution({ id: "old-history" })]));
+    await waitFor(() => expect(screen.queryByText(/old-history/)).not.toBeInTheDocument());
+    expect(screen.getByRole("region", { name: "Execution history for AI roles" })).toHaveTextContent("new-history");
+  });
+
+  it("reconciles Run A without replacing B history and without replacing a newer editor", async () => {
+    const pendingA = deferred<Response>(); const second = schedule({ id: "s-2", name: "Second" });
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => pendingA.promise,
+      "GET /api/v1/jobs/discovery-schedules/s-2/executions": () => response([execution({ id: "history-B" })]),
+    }, [schedule(), second]);
+    await loaded(); await candidateReady();
+    fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]);
+    fireEvent.click(screen.getAllByRole("button", { name: "View execution history" })[1]);
+    expect(await screen.findByText(/history-B/)).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[1]); await screen.findByDisplayValue("Second");
+    pendingA.resolve(response(execution({ id: "run-A", status: "completed" })));
+    expect(await screen.findByDisplayValue("Second")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Execution history for Second" })).toHaveTextContent("history-B");
+    expect(screen.getByRole("region", { name: "Execution history for Second" })).not.toHaveTextContent("run-A");
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+  });
+
+  it("treats 409 as already-running and reconciles only that schedule", async () => {
+    const second = schedule({ id: "s-2", name: "Second" });
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response({ detail: "running" }, 409),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response([execution({ id: "running-history", status: "running" })]),
+      "GET /api/v1/jobs/discovery-schedules/s-2/executions": () => response([execution({ id: "history-B" })]),
+    }, [schedule(), second]);
+    await loaded(); await candidateReady(); fireEvent.click(screen.getAllByRole("button", { name: "View execution history" })[1]); await screen.findByText(/history-B/);
+    fireEvent.click(screen.getAllByRole("button", { name: "Run now" })[0]);
+    expect(await screen.findByText(/An execution is already running for AI roles/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Execution history for Second" })).toHaveTextContent("history-B");
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+    expect(screen.queryByText(/request was interrupted/i)).not.toBeInTheDocument();
+  });
+
+  it("distinguishes authoritative HTTP 503 from transport uncertainty", async () => {
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response({ detail: "private provider text" }, 503),
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Run now was rejected by the server (HTTP 503).");
+    expect(screen.getByRole("alert")).toHaveTextContent("No execution was confirmed by this response.");
+    expect(screen.queryByText(/request was interrupted/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/private provider text/i)).not.toBeInTheDocument();
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(0);
+  });
+
+  it("reports transport uncertainty and recovery history without claiming the item is the exact interrupted request", async () => {
+    const { requests } = renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => Promise.reject(new TypeError("offline")),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => response([execution({ id: "authoritative-history" })]),
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(/cannot confirm from this response what execution state resulted/)).toBeInTheDocument();
+    expect(screen.getByText(/Execution history was refreshed/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Execution history for AI roles" })).toHaveTextContent("authoritative-history");
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(1);
+  });
+
+  it("truthfully reports when history refresh after a transport interruption fails", async () => {
+    renderPage("/jobs/searches", {
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => Promise.reject(new TypeError("offline")),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => Promise.reject(new TypeError("offline")),
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(/cannot confirm from this response what execution state resulted/)).toBeInTheDocument();
+    expect(screen.getByText(/Execution history could not be confirmed as refreshed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Execution history was refreshed\./)).not.toBeInTheDocument();
+  });
+
+  it("reports list and history reconciliation failures truthfully after a terminal HTTP 200", async () => {
+    let listCalls = 0;
+    renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules": () => ++listCalls === 1 ? response([schedule()]) : Promise.reject(new TypeError("offline")),
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response(execution({ status: "completed" })),
+      "GET /api/v1/jobs/discovery-schedules/s-1/executions": () => Promise.reject(new TypeError("offline")),
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText("Status: completed")).toBeInTheDocument();
+    expect(await screen.findByText(/Saved-configuration list refresh could not be confirmed/)).toBeInTheDocument();
+    expect(screen.getByText(/Execution history refresh could not be confirmed/)).toBeInTheDocument();
+    expect(screen.queryByText(/Saved-configuration list refreshed\./)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Execution history refreshed\./)).not.toBeInTheDocument();
+  });
+
+  it("handles stale Run-now 404 with truthful failed-list-refresh wording and disables the stale card", async () => {
+    let listCalls = 0;
+    renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules": () => ++listCalls === 1 ? response([schedule()]) : Promise.reject(new TypeError("offline")),
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => response({ detail: "missing" }, 404),
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(/no longer available\. The saved-configuration list refresh could not be confirmed/)).toBeInTheDocument();
+    expect(screen.queryByText(/list has been refreshed/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/This saved discovery is no longer available\. Refresh the list/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+  });
+
+  it("ignores a run response aborted by shared auth-generation replacement", async () => {
+    const pending = deferred<Response>(); let listCalls = 0;
+    const { requests } = renderPage("/jobs/searches", {
+      "GET /api/v1/jobs/discovery-schedules": () => ++listCalls === 1 ? response([schedule()]) : response({ detail: "Unauthorized" }, 401),
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => pending.promise,
+    });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh list" }));
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    pending.resolve(response(execution({ id: "old-session-run" })));
+    await waitFor(() => expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1/executions")).toHaveLength(0));
+    expect(screen.queryByText(/request was interrupted/i)).not.toBeInTheDocument();
+  });
+
+  it("does not invent a browser timeout for a long-running request", async () => {
+    const pending = deferred<Response>();
+    renderPage("/jobs/searches", { "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => pending.promise });
+    await loaded(); await candidateReady(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByRole("button", { name: "Running…" })).toBeDisabled();
+    expect(screen.queryByText(/timed out|marked failed/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /cancel/i })).not.toBeInTheDocument();
+    pending.resolve(response(execution()));
+    await screen.findByText("Status: completed");
+  });
+});
+
+function readableExecutionStatus(status: ScheduledExecutionRead["status"]) {
+  return ({ running: "Running", completed: "Completed", partial_failed: "Partially failed", failed: "Failed", skipped: "Skipped" })[status];
+}
