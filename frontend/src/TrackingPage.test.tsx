@@ -47,7 +47,7 @@ function renderApp(fetch = fetcher(), path = "/tracking") {
 }
 function paths(fetch: ReturnType<typeof fetcher>) { return fetch.mock.calls.map(([input]) => new URL(String(input), window.location.origin).pathname); }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((yes) => { resolve = yes; }); return { promise, resolve }; }
-function Navigation() { const { api } = useAuth(); return <nav><Link to="/tracking/track-A">A</Link><Link to="/tracking/track-B">B</Link><Link to="/applications/prep-1">Preparation</Link><button onClick={() => void api.request("/api/v1/expire").catch(() => {})}>Expire session</button></nav>; }
+function Navigation() { const { api } = useAuth(); return <nav><Link to="/tracking/track-A">A</Link><Link to="/tracking/track-B">B</Link><Link to="/applications/prep-1">Preparation</Link><Link to="/applications/prep-A">Preparation A</Link><Link to="/applications/prep-B">Preparation B</Link><button onClick={() => void api.request("/api/v1/expire").catch(() => {})}>Expire session</button></nav>; }
 
 beforeEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 afterEach(cleanup);
@@ -268,6 +268,99 @@ describe("Issue #184 application tracking workspace", () => {
     expect(save).toBeDisabled();
     pending.resolve(json(tracking("track-1", "applied", 2)));
     expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).toHaveTextContent("Applied");
+  });
+
+  it("guards refresh during a pending status write and unlocks for the next update", async () => {
+    const firstPost = deferred<Response>(); let posts = 0; let gets = 0;
+    const fetch = fetcher({
+      "/api/v1/application-tracking/track-1": () => { gets += 1; return json(tracking("track-1", gets === 1 ? "applied" : "interview", gets === 1 ? 1 : 2)); },
+      "POST /api/v1/application-tracking/track-1/status-events": () => {
+        posts += 1;
+        return posts === 1 ? firstPost.promise : json(tracking("track-1", "offer", 3));
+      },
+    });
+    renderApp(fetch, "/tracking/track-1");
+    fireEvent.change(await screen.findByLabelText("Record another status"), { target: { value: "interview" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save status" }));
+    await waitFor(() => expect(posts).toBe(1));
+
+    const refresh = screen.getByRole("button", { name: "Refresh tracking" });
+    expect(refresh).toBeDisabled();
+    fireEvent.click(refresh);
+    expect(gets).toBe(1);
+    expect(screen.getByRole("button", { name: "Saving status…" })).toBeDisabled();
+
+    firstPost.resolve(json(tracking("track-1", "interview", 2)));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh tracking" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Saving status…" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Record another status"), { target: { value: "offer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save status" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).toHaveTextContent("Offer · Revision 3"));
+    expect(posts).toBe(2);
+  });
+
+  it("resets tracking write state on A-to-B navigation and ignores A's delayed update", async () => {
+    const delayedUpdate = deferred<Response>(); let postsA = 0; let postsB = 0;
+    const fetch = fetcher({
+      "/api/v1/application-tracking/track-A": () => json(tracking("track-A", "applied", 1)),
+      "/api/v1/application-tracking/track-B": () => json({ ...tracking("track-B", "offer", 4), preparation_id: "prep-B", target: { ...tracking().target, preparation_id: "prep-B", title: "Role B" } }),
+      "POST /api/v1/application-tracking/track-A/status-events": () => { postsA += 1; return delayedUpdate.promise; },
+      "POST /api/v1/application-tracking/track-B/status-events": () => { postsB += 1; return json({ ...tracking("track-B", "interview", 5), preparation_id: "prep-B", target: { ...tracking().target, preparation_id: "prep-B", title: "Role B" } }); },
+    });
+    sessionStorage.setItem(TOKEN, "test-token"); vi.stubGlobal("fetch", fetch);
+    render(<MemoryRouter initialEntries={["/tracking/track-A"]}><AuthProvider><Navigation /><App /></AuthProvider></MemoryRouter>);
+    fireEvent.change(await screen.findByLabelText("Record another status"), { target: { value: "interview" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save status" }));
+    await waitFor(() => expect(postsA).toBe(1));
+    expect(screen.getByRole("button", { name: "Saving status…" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("link", { name: "B" }));
+    expect(await screen.findByRole("heading", { name: "Role B" })).toBeInTheDocument();
+    const selectB = screen.getByLabelText("Record another status");
+    expect(selectB).toHaveValue("");
+    expect(selectB).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save status" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Saving status…" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh tracking" })).toBeEnabled();
+
+    delayedUpdate.resolve(json(tracking("track-A", "interview", 2)));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Role B" })).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).toHaveTextContent("Offer · Revision 4");
+    expect(screen.queryByText("Interview · Revision 2")).not.toBeInTheDocument();
+
+    fireEvent.change(selectB, { target: { value: "applied" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save status" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).toHaveTextContent("Interview · Revision 5"));
+    expect(postsA).toBe(1); expect(postsB).toBe(1);
+  });
+
+  it("resets the selected initial status and pending start state when preparation changes", async () => {
+    const delayedStart = deferred<Response>(); let startBody: unknown;
+    const fetch = fetcher({
+      "/api/v1/applications/prep-A": () => json(preparation("prep-A")),
+      "/api/v1/applications/prep-B": () => json(preparation("prep-B")),
+      "/api/v1/application-tracking/by-preparation/prep-A": () => json({ detail: "not found" }, 404),
+      "/api/v1/application-tracking/by-preparation/prep-B": () => json({ detail: "not found" }, 404),
+      "POST /api/v1/application-tracking": (_url, init) => { startBody = JSON.parse(String(init?.body)); return delayedStart.promise; },
+    });
+    sessionStorage.setItem(TOKEN, "test-token"); vi.stubGlobal("fetch", fetch);
+    render(<MemoryRouter initialEntries={["/applications/prep-A"]}><AuthProvider><Navigation /><App /></AuthProvider></MemoryRouter>);
+    const selectA = await screen.findByLabelText("Initial recorded status");
+    fireEvent.change(selectA, { target: { value: "offer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start tracking" }));
+    await waitFor(() => expect(startBody).toEqual({ preparation_id: "prep-A", status: "offer" }));
+    expect(screen.getByRole("button", { name: "Starting tracking…" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("link", { name: "Preparation B" }));
+    const selectB = await screen.findByLabelText("Initial recorded status");
+    expect(selectB).toHaveValue("prepared");
+    expect(selectB).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Start tracking" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Starting tracking…" })).not.toBeInTheDocument();
+
+    delayedStart.resolve(json({ ...tracking("track-A", "offer"), preparation_id: "prep-A" }));
+    await waitFor(() => expect(screen.getByLabelText("Initial recorded status")).toHaveValue("prepared"));
+    expect(screen.queryByText(/Current recorded status:/)).not.toBeInTheDocument();
   });
 
   it("does not allow an older accepted revision or delayed detail to replace newer selected state", async () => {

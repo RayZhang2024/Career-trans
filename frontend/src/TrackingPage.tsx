@@ -48,7 +48,7 @@ export function PreparationTrackingPanel({ preparationId }: { preparationId: str
     const current = ++generation.current;
     const ownerId = user?.id;
     accepted.current = undefined;
-    setState({ phase: "loading" }); setNotice("");
+    setState({ phase: "loading" }); setInitialStatus("prepared"); setPending(false); setNotice("");
     if (ownerId) void lookup(current, ownerId);
     return () => { generation.current += 1; };
   }, [api, preparationId, user?.id]);
@@ -146,7 +146,9 @@ export function TrackingDetailPage() {
   useEffect(() => {
     const current = ++generation.current;
     const ownerId = user?.id;
-    accepted.current = undefined; setState({ phase: "loading" }); setError(""); setNotice("");
+    accepted.current = undefined;
+    pendingRef.current = false;
+    setState({ phase: "loading" }); setSelectedStatus(""); setPending(false); setError(""); setNotice("");
     if (ownerId) void load(current, ownerId);
     return () => { generation.current += 1; };
   }, [api, trackingId, user?.id]);
@@ -162,6 +164,7 @@ export function TrackingDetailPage() {
   }
 
   function refresh() {
+    if (pendingRef.current) return;
     const current = ++generation.current;
     setError("");
     void load(current, user?.id);
@@ -200,5 +203,5 @@ export function TrackingDetailPage() {
   if (state.phase === "loading") return <main className="applications-page"><p role="status">Loading tracking details…</p></main>;
   if (state.phase === "error") return <main className="applications-page"><p role="alert">{state.message}</p><Link to="/tracking">Back to Tracking</Link></main>;
   const value = state.value;
-  return <main className="applications-page tracking-detail-page"><header className="workspace-header"><div><p className="eyebrow">Recorded application history</p><h1>{value.target.title}</h1><p className="muted"><Link to="/tracking">Back to Tracking</Link></p></div><button type="button" className="button-secondary" onClick={refresh}>Refresh tracking</button></header><section className="card application-section"><h2>Historical target</h2><p>{[value.target.company, value.target.location].filter(Boolean).join(" · ") || "Company and location not recorded"}</p>{value.target.public_url && <p><a href={value.target.public_url} target="_blank" rel="noopener noreferrer">Open saved public vacancy</a></p>}<p><Link to={`/applications/${encodeURIComponent(value.preparation_id)}`}>Open saved preparation</Link></p></section><section className="card application-section"><h2>Current recorded status</h2><p><strong>{statusLabel(value.current_status)}</strong> · Revision {value.revision}</p><label htmlFor="tracking-next-status">Record another status</label><select id="tracking-next-status" value={selectedStatus} onChange={(event) => setSelectedStatus(event.target.value as ApplicationTrackingStatus | "")}><option value="">Choose a different status</option>{statuses.filter((item) => item !== value.current_status).map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select><button type="button" disabled={!selectedStatus || pending} onClick={() => void submitStatus()}>{pending ? "Saving status…" : "Save status"}</button>{notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}</section><section className="card application-section"><h2>Status history</h2><p className="muted">Recorded time is when this status was saved in Career-trans; it may differ from the employer event date.</p><ol>{[...value.events].sort((a, b) => a.revision - b.revision).map((event) => <li key={event.revision}><strong>{statusLabel(event.to_status)}</strong><p>Recorded {recordedTime(event.recorded_at)} · Revision {event.revision}</p></li>)}</ol></section></main>;
+  return <main className="applications-page tracking-detail-page"><header className="workspace-header"><div><p className="eyebrow">Recorded application history</p><h1>{value.target.title}</h1><p className="muted"><Link to="/tracking">Back to Tracking</Link></p></div><button type="button" className="button-secondary" disabled={pending} onClick={refresh}>Refresh tracking</button></header><section className="card application-section"><h2>Historical target</h2><p>{[value.target.company, value.target.location].filter(Boolean).join(" · ") || "Company and location not recorded"}</p>{value.target.public_url && <p><a href={value.target.public_url} target="_blank" rel="noopener noreferrer">Open saved public vacancy</a></p>}<p><Link to={`/applications/${encodeURIComponent(value.preparation_id)}`}>Open saved preparation</Link></p></section><section className="card application-section"><h2>Current recorded status</h2><p><strong>{statusLabel(value.current_status)}</strong> · Revision {value.revision}</p><label htmlFor="tracking-next-status">Record another status</label><select id="tracking-next-status" value={selectedStatus} onChange={(event) => setSelectedStatus(event.target.value as ApplicationTrackingStatus | "")}><option value="">Choose a different status</option>{statuses.filter((item) => item !== value.current_status).map((item) => <option key={item} value={item}>{statusLabel(item)}</option>)}</select><button type="button" disabled={!selectedStatus || pending} onClick={() => void submitStatus()}>{pending ? "Saving status…" : "Save status"}</button>{notice && <p role="status">{notice}</p>}{error && <p role="alert">{error}</p>}</section><section className="card application-section"><h2>Status history</h2><p className="muted">Recorded time is when this status was saved in Career-trans; it may differ from the employer event date.</p><ol>{[...value.events].sort((a, b) => a.revision - b.revision).map((event) => <li key={event.revision}><strong>{statusLabel(event.to_status)}</strong><p>Recorded {recordedTime(event.recorded_at)} · Revision {event.revision}</p></li>)}</ol></section></main>;
 }
