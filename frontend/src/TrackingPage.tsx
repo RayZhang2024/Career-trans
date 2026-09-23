@@ -156,6 +156,11 @@ export function TrackingDetailPage() {
     await load(current, ownerId);
   }
 
+  function releasePendingUpdate() {
+    pendingRef.current = false;
+    setPending(false);
+  }
+
   function refresh() {
     const current = ++generation.current;
     setError("");
@@ -178,8 +183,13 @@ export function TrackingDetailPage() {
       if (reason instanceof ApiError && reason.status === 404) {
         accepted.current = undefined; setState({ phase: "error", message: "This tracking record is not available to this account." });
       } else if (reason instanceof ApiError && reason.status === 409) {
+        // The write has completed; only its read-only reconciliation is pending.
+        // A newer explicit refresh may supersede that read without leaving the
+        // record permanently locked when the older generation settles.
+        releasePendingUpdate();
         await reconcile(current, ownerId, "This tracking record changed before your update could be applied. The latest saved state is shown.");
       } else if (!(reason instanceof ApiError)) {
+        releasePendingUpdate();
         await reconcile(current, ownerId, "The update request was interrupted. The currently saved state is shown; its cause cannot be confirmed.");
       } else setError("The status update could not be completed.");
     } finally {

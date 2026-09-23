@@ -203,7 +203,7 @@ describe("Issue #184 application tracking workspace", () => {
   });
 
   it("does not let an older conflict reconciliation overwrite a newer detail refresh", async () => {
-    const olderReconciliation = deferred<Response>(); let gets = 0;
+    const olderReconciliation = deferred<Response>(); let gets = 0; let posts = 0;
     const fetch = fetcher({
       "/api/v1/application-tracking/track-1": () => {
         gets += 1;
@@ -211,7 +211,10 @@ describe("Issue #184 application tracking workspace", () => {
         if (gets === 2) return olderReconciliation.promise;
         return json(tracking("track-1", "offer", 3));
       },
-      "POST /api/v1/application-tracking/track-1/status-events": () => json({ detail: "conflict" }, 409),
+      "POST /api/v1/application-tracking/track-1/status-events": () => {
+        posts += 1;
+        return posts === 1 ? json({ detail: "conflict" }, 409) : json(tracking("track-1", "interview", 4));
+      },
     });
     renderApp(fetch, "/tracking/track-1");
     fireEvent.change(await screen.findByLabelText("Record another status"), { target: { value: "interview" } });
@@ -219,9 +222,12 @@ describe("Issue #184 application tracking workspace", () => {
     await waitFor(() => expect(gets).toBe(2));
     fireEvent.click(screen.getByRole("button", { name: "Refresh tracking" }));
     await waitFor(() => expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).toHaveTextContent("Offer · Revision 3"));
+    fireEvent.click(screen.getByRole("button", { name: "Save status" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).toHaveTextContent("Interview · Revision 4"));
     olderReconciliation.resolve(json(tracking("track-1", "rejected", 2)));
-    await waitFor(() => expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).toHaveTextContent("Offer · Revision 3"));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).toHaveTextContent("Interview · Revision 4"));
     expect(screen.getByRole("heading", { name: "Current recorded status" }).parentElement).not.toHaveTextContent("Rejected · Revision 2");
+    expect(posts).toBe(2);
   });
 
   it("keeps the accepted detail when an update response carries a lower revision", async () => {
