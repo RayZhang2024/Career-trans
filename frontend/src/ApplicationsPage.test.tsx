@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Link, MemoryRouter } from "react-router-dom";
 import type { ApplicationPreparation, ApplicationPreparationReview, User } from "./api";
@@ -108,6 +108,21 @@ describe("Issue #180 Applications workspace", () => {
     expect(screen.queryByText("Historical evidence sources")).not.toBeInTheDocument();
     fireEvent.click(screen.getAllByText("Evidence used")[0]);
     expect(screen.getAllByText(/Human-readable historical preparation evidence was not stored/).length).toBeGreaterThan(0);
+  });
+
+  it("keeps legacy match-local evidence values out of unrelated generated citations", async () => {
+    const value = preparation("p-1");
+    value.target.requirement_matches[0].evidence_refs = [{ ...ref, value: "Requirement-only historical value" }];
+    const fetch = fetcher({
+      "/api/v1/applications/p-1": () => json(value),
+      "/api/v1/applications/p-1/review": () => json(review("p-1", "legacy_unavailable", [])),
+    });
+    renderApp(fetch, "/applications/p-1");
+    expect(await screen.findByRole("heading", { name: "Requirement review" })).toBeInTheDocument();
+    expect(screen.getByText("Requirement-only historical value")).toBeInTheDocument();
+    const genericCitation = screen.getAllByText("Evidence used")[0].closest("details");
+    expect(genericCitation).not.toBeNull();
+    expect(within(genericCitation as HTMLElement).queryByText("Requirement-only historical value")).not.toBeInTheDocument();
   });
 
   it("shows an empty available snapshot as available with a factual count of zero", async () => {
