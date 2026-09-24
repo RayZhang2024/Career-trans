@@ -33,9 +33,9 @@ const friendlyError = (operation: "upload" | "interpret" | "save" | "confirm", e
   return status === 404 || status === 409 ? "This CV draft is no longer ready to confirm. Refresh and try again." : "CV confirmation could not be completed.";
 };
 
-function EvidenceCards({ data, onExclude }: { data: CVData; onExclude: (index: number) => void }) {
+function EvidenceCards({ data, onExclude, disabled }: { data: CVData; onExclude: (index: number) => void; disabled: boolean }) {
   return <section className="cv-section"><h2>Career Evidence</h2><p className="muted">Evidence from your uploaded CV is read-only. You can exclude an item before confirming.</p>
-    {data.evidence.length === 0 ? <p className="muted">No extracted Career Evidence.</p> : data.evidence.map((item, index) => <article className="evidence-card" key={`${item.title}-${index}`}><p><strong>{item.evidence_type}</strong> · From uploaded CV</p><h3>{item.title}</h3><p>{item.text}</p>{item.skills.length > 0 && <p className="muted">Skills: {item.skills.join(", ")}</p>}<button className="button-secondary" type="button" onClick={() => onExclude(index)}>Exclude</button></article>)}</section>;
+    {data.evidence.length === 0 ? <p className="muted">No extracted Career Evidence.</p> : data.evidence.map((item, index) => <article className="evidence-card" key={`${item.title}-${index}`}><p><strong>{item.evidence_type}</strong> · From uploaded CV</p><h3>{item.title}</h3><p>{item.text}</p>{item.skills.length > 0 && <p className="muted">Skills: {item.skills.join(", ")}</p>}<button className="button-secondary" type="button" disabled={disabled} onClick={() => onExclude(index)}>Exclude</button></article>)}</section>;
 }
 
 const fields: Record<string, string[]> = {
@@ -51,16 +51,16 @@ const emptyItem = (section: string): Record<string, unknown> => Object.fromEntri
   field === "skills" ? [] : field === "credential_type" ? "certification" : "",
 ]));
 
-function StructuredSection({ section, data, onChange }: { section: string; data: CVData; onChange: (next: CVData) => void }) {
+function StructuredSection({ section, data, onChange, disabled }: { section: string; data: CVData; onChange: (next: CVData) => void; disabled: boolean }) {
   const values = data[section as keyof CVData] as Array<Record<string, unknown>>;
   const update = (index: number, field: string, value: string) => {
     const next = values.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: field === "skills" ? value.split(",").map((part) => part.trim()).filter(Boolean) : value } : item);
     onChange({ ...data, [section]: next });
   };
-  return <section className="cv-section"><div className="section-heading"><h2>{labels[section]}</h2><button type="button" className="button-secondary" onClick={() => onChange({ ...data, [section]: [...values, emptyItem(section)] })}>Add {singularLabels[section]}</button></div>
+  return <section className="cv-section"><div className="section-heading"><h2>{labels[section]}</h2><button type="button" className="button-secondary" disabled={disabled} onClick={() => onChange({ ...data, [section]: [...values, emptyItem(section)] })}>Add {singularLabels[section]}</button></div>
     {values.map((item, index) => <fieldset className="structured-item" key={index}><legend>{singularLabels[section]} {index + 1}</legend><div className="profile-fields">{fields[section].map((field) => <div className={field === "description" ? "field field-wide" : "field"} key={field}><label>{field.replaceAll("_", " ")}{field === "credential_type"
-      ? <select value={String(item[field] ?? "certification")} onChange={(event) => update(index, field, event.target.value)}>{credentialTypes.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>
-      : <input value={Array.isArray(item[field]) ? (item[field] as string[]).join(", ") : String(item[field] ?? "")} onChange={(event) => update(index, field, event.target.value)} />}</label></div>)}</div><button className="button-danger" type="button" onClick={() => onChange({ ...data, [section]: values.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button></fieldset>)}
+      ? <select disabled={disabled} value={String(item[field] ?? "certification")} onChange={(event) => update(index, field, event.target.value)}>{credentialTypes.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select>
+      : <input disabled={disabled} value={Array.isArray(item[field]) ? (item[field] as string[]).join(", ") : String(item[field] ?? "")} onChange={(event) => update(index, field, event.target.value)} />}</label></div>)}</div><button className="button-danger" type="button" disabled={disabled} onClick={() => onChange({ ...data, [section]: values.filter((_, itemIndex) => itemIndex !== index) })}>Remove</button></fieldset>)}
   </section>;
 }
 
@@ -117,7 +117,7 @@ export function CvPage() {
   const interpret = async () => { if (!draft || pending) return; setPending("interpret"); setError(""); setNotice(""); try { await api.request<Draft>(`/api/v1/cv-ingestion/${draft.id}/interpret`, { method: "POST" }); await loadStatus(); } catch (caught) { setError(friendlyError("interpret", caught)); } finally { setPending(""); } };
   const save = async () => { if (!draft || pending) return; setPending("save"); setError(""); setNotice(""); try { const found = await api.request<Draft>(`/api/v1/cv-ingestion/${draft.id}`, { method: "PATCH", body: JSON.stringify(review) }); setDraft(found); setReview(found.merged ?? emptyData()); setDirty(false); setNotice("CV changes saved."); } catch (caught) { setError(friendlyError("save", caught)); } finally { setPending(""); } };
   const confirm = async () => { if (!draft || pending || dirty) return; setPending("confirm"); setError(""); setNotice(""); try { await api.request(`/api/v1/cv-ingestion/${draft.id}/confirm`, { method: "POST" }); await loadStatus(); } catch (caught) { setError(friendlyError("confirm", caught)); } finally { setPending(""); } };
-  const changeReview = (next: CVData) => { setNotice(""); setReview(next); setDirty(true); };
+  const changeReview = (next: CVData) => { if (pending) return; setNotice(""); setReview(next); setDirty(true); };
   const beginNewUpload = () => { generation.current += 1; setDraft(null); setFiles([]); setReview(emptyData()); setDirty(false); setError(""); setNotice(""); setSupersedePrompt(false); };
   const requestNewUpload = () => {
     if (draft?.state === "uploaded" || draft?.state === "review_ready") setSupersedePrompt(true);
@@ -135,7 +135,7 @@ export function CvPage() {
     <RuntimeAttributionPanel attribution={draft.runtime_attribution} boundary="cv" />
     {supersedePrompt && <section className="card supersede-warning" aria-label="Replace unfinished CV draft"><h2>Start a newer CV upload?</h2><p>This unfinished draft will remain stored, but the newer upload will become the draft resumed by onboarding.</p><div className="cv-actions"><button type="button" onClick={beginNewUpload}>Continue with new upload</button><button type="button" className="button-secondary" onClick={() => setSupersedePrompt(false)}>Keep current draft</button></div></section>}
     {draft.state === "uploaded" && <section className="card"><h1>CV uploaded</h1><p>Files: {draft.documents.map((item) => item.provenance.filename).join(", ")}</p><div className="cv-actions"><button disabled={Boolean(pending) || supersedePrompt} onClick={() => void interpret()}>{pending === "interpret" ? "Interpreting…" : "Interpret CV"}</button><button className="button-secondary" disabled={Boolean(pending) || supersedePrompt} onClick={requestNewUpload}>Start new CV upload</button></div></section>}
-    {draft.state === "review_ready" && <section className="card cv-review"><div><h1>Review your CV</h1><p className="muted">Save changes before confirming. Confirming makes the backend-saved review your active candidate context.</p><button className="button-secondary" disabled={Boolean(pending) || supersedePrompt} onClick={requestNewUpload}>Start new CV upload</button></div>{Object.keys(fields).map((section) => <StructuredSection section={section} data={review} onChange={changeReview} key={section} />)}<EvidenceCards data={review} onExclude={(index) => changeReview({ ...review, evidence: review.evidence.filter((_, itemIndex) => itemIndex !== index) })} />{dirty && <p className="notice">You have unsaved review changes. Save them before confirming this CV.</p>}<div className="cv-actions"><button disabled={Boolean(pending) || !dirty} onClick={() => void save()}>{pending === "save" ? "Saving…" : "Save changes"}</button><button disabled={Boolean(pending) || dirty} onClick={() => void confirm()}>{pending === "confirm" ? "Confirming…" : "Confirm reviewed CV"}</button></div></section>}
+    {draft.state === "review_ready" && <section className="card cv-review"><div><h1>Review your CV</h1><p className="muted">Save changes before confirming. Confirming makes the backend-saved review your active candidate context.</p><button className="button-secondary" disabled={Boolean(pending) || supersedePrompt} onClick={requestNewUpload}>Start new CV upload</button></div>{Object.keys(fields).map((section) => <StructuredSection section={section} data={review} onChange={changeReview} disabled={Boolean(pending)} key={section} />)}<EvidenceCards data={review} disabled={Boolean(pending)} onExclude={(index) => changeReview({ ...review, evidence: review.evidence.filter((_, itemIndex) => itemIndex !== index) })} />{dirty && <p className="notice">You have unsaved review changes. Save them before confirming this CV.</p>}<div className="cv-actions"><button disabled={Boolean(pending) || !dirty} onClick={() => void save()}>{pending === "save" ? "Saving…" : "Save changes"}</button><button disabled={Boolean(pending) || dirty} onClick={() => void confirm()}>{pending === "confirm" ? "Confirming…" : "Confirm reviewed CV"}</button></div></section>}
     {draft.state === "confirmed" && <section className="card"><h1>CV confirmed</h1><p>Your reviewed CV is active in your candidate context.</p><button onClick={requestNewUpload}>Update CV / Upload newer CV</button></section>}
   </main>;
 }

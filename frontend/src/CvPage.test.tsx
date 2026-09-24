@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError } from "./auth";
 import { CvPage } from "./CvPage";
@@ -194,6 +194,52 @@ it("shows CV review save pending state and success only after the PATCH resolves
   expect(screen.queryByText(/unsaved review changes/i)).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled();
   expect(request.mock.calls.filter(([path, init]) => path === "/api/v1/cv-ingestion/draft-save" && init?.method === "PATCH")).toHaveLength(1);
+});
+
+it("locks every CV review mutation while save owns the snapshot and restores edits after failure", async () => {
+  const merged: TestCVData = {
+    ...mergedEmpty,
+    employment: [{ employer: "Synthetic", title: "Engineer", start_date: "", end_date: "", location: "", description: "Original description" }],
+    credentials: [{ name: "Synthetic credential", credential_type: "certification", issuer: "", issued_date: "", expiry_date: "", status: "", description: "" }],
+    evidence: [{ evidence_type: "project", title: "Synthetic evidence", text: "Retained fact", skills: ["Python"], provenance: [] }],
+  };
+  const draft = draftWith("draft-locked", "review_ready", merged);
+  let rejectSave!: (error: Error) => void;
+  request
+    .mockResolvedValueOnce(statusWith("draft-locked", "review_ready"))
+    .mockResolvedValueOnce(draft)
+    .mockImplementationOnce(() => new Promise((_, reject) => { rejectSave = reject; }));
+  render(<CvPage />);
+  await screen.findByRole("heading", { name: "Review your CV" });
+  const employment = screen.getByRole("group", { name: "Employment 1" });
+  const description = within(employment).getByLabelText("description");
+  fireEvent.change(description, { target: { value: "Submitted description" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
+
+  expect(within(employment).getByLabelText("description")).toBeDisabled();
+  expect(screen.getByLabelText("credential type")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Add Employment" })).toBeDisabled();
+  expect(within(employment).getByRole("button", { name: "Remove" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Exclude" })).toBeDisabled();
+  fireEvent.change(within(employment).getByLabelText("description"), { target: { value: "Later edit that must not stick" } });
+  fireEvent.change(screen.getByLabelText("credential type"), { target: { value: "formal_training" } });
+  expect(within(employment).getByLabelText("description")).toHaveValue("Submitted description");
+  expect(screen.getByLabelText("credential type")).toHaveValue("certification");
+  const patches = request.mock.calls.filter(([path, init]) => path === "/api/v1/cv-ingestion/draft-locked" && init?.method === "PATCH");
+  expect(patches).toHaveLength(1);
+  expect(JSON.parse(String(patches[0][1]?.body)).employment[0].description).toBe("Submitted description");
+
+  await act(async () => { rejectSave(new Error("offline")); });
+  expect(await screen.findByRole("alert")).toHaveTextContent("CV review changes could not be saved.");
+  expect(screen.getByText(/unsaved review changes/i)).toBeInTheDocument();
+  expect(within(employment).getByLabelText("description")).toHaveValue("Submitted description");
+  expect(within(employment).getByLabelText("description")).toBeEnabled();
+  expect(screen.getByLabelText("credential type")).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Add Employment" })).toBeEnabled();
+  expect(within(employment).getByRole("button", { name: "Remove" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Exclude" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
 });
 
 it("keeps a failed CV save dirty, accessible, and explicitly retryable", async () => {
