@@ -311,6 +311,36 @@ describe("Issue #189 Settings → AI Models", () => {
     expect(screen.getByRole("button", { name: "Save AI settings" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reset to deployment defaults" })).toBeEnabled();
     expect(screen.getByText(/Unsupported values remain visible/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Default model")).toHaveAttribute("aria-invalid", "true");
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "Save AI settings" })).toBeEnabled();
+  });
+
+  it("preserves an unsupported per-operation model and blocks Save until that override is explicitly corrected", async () => {
+    const preferences: AiPreferences = { ...emptyAiPreferences(), operation_overrides: { job_relevance: { model: "retired-model" } } };
+    renderSettings(fetcher({}, catalog(), settings({ revision: 5, preference_activity: "inactive_invalid", preferences, overrides_active: false })).mock);
+    await waitForSettings();
+    openAdvanced();
+    const model = operationControl("Job relevance", "Model override");
+    expect(within(model).getByRole("option", { name: "Unsupported saved model: retired-model" })).toBeDisabled();
+    expect(model).toHaveValue("retired-model");
+    expect(model).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("button", { name: "Save AI settings" })).toBeDisabled();
+    fireEvent.change(model, { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "Save AI settings" })).toBeEnabled();
+  });
+
+  it("preserves a locally incompatible persisted default effort until explicitly corrected", async () => {
+    const preferences: AiPreferences = { ...emptyAiPreferences(), default_model: "model-b", default_reasoning_effort: "high" };
+    renderSettings(fetcher({}, catalog(), settings({ revision: 5, preference_activity: "inactive_invalid", preferences, overrides_active: false })).mock);
+    await waitForSettings();
+    const effort = screen.getByLabelText("Default reasoning effort");
+    expect(effort).toHaveValue("high");
+    expect(within(effort).getByRole("option", { name: "High — not supported by selected model" })).toBeDisabled();
+    expect(effort).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("button", { name: "Save AI settings" })).toBeDisabled();
+    fireEvent.change(effort, { target: { value: "low" } });
+    expect(screen.getByRole("button", { name: "Save AI settings" })).toBeEnabled();
   });
 
   it("handles structurally invalid empty settings without fabricating values and allows an explicit reset", async () => {
@@ -373,6 +403,34 @@ describe("Issue #189 Settings → AI Models", () => {
     expect(screen.getByRole("button", { name: "Save AI settings" })).toBeDisabled();
   });
 
+  it("removes stale writable authority after a 409 reconciliation fails, then restores only a fresh baseline", async () => {
+    let catalogReads = 0;
+    let settingsReads = 0;
+    const persisted = { ...emptyAiPreferences(), default_model: "model-a" };
+    const api = fetcher({
+      "GET /api/v1/ai/models": () => ++catalogReads === 2 ? Promise.reject(new TypeError("offline")) : json(catalog()),
+      "GET /api/v1/ai/settings": () => ++settingsReads === 2 ? Promise.reject(new TypeError("offline")) : json(settings({ revision: settingsReads === 1 ? 2 : 4, preference_activity: settingsReads === 1 ? "active" : "inherited", preferences: settingsReads === 1 ? persisted : emptyAiPreferences() })),
+      "PUT /api/v1/ai/settings": () => json({ detail: "private backend text" }, 409),
+    });
+    renderSettings(api.mock);
+    await waitForSettings();
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "model-b" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save AI settings" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Current AI settings could not be reloaded");
+    expect(screen.queryByRole("button", { name: "Save AI settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset to deployment defaults" })).not.toBeInTheDocument();
+    expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload current AI settings" }));
+    await waitForSettings();
+    expect(catalogReads).toBe(3);
+    expect(settingsReads).toBe(3);
+    expect(screen.getByLabelText("Default model")).toHaveValue("");
+    expect(screen.getByLabelText("Default model")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save AI settings" })).toBeDisabled();
+    expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+  });
+
   it("reconciles an interrupted PUT without retry and uses neutral saved-state wording", async () => {
     let settingsReads = 0;
     const api = fetcher({
@@ -387,6 +445,30 @@ describe("Issue #189 Settings → AI Models", () => {
     expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
     expect(api.calls.filter((call) => call.method === "GET" && call.path === "/api/v1/ai/models")).toHaveLength(2);
     expect(api.calls.filter((call) => call.method === "GET" && call.path === "/api/v1/ai/settings")).toHaveLength(2);
+  });
+
+  it("keeps an ambiguous PUT non-writable when reconciliation also fails and never retries the mutation", async () => {
+    let catalogReads = 0;
+    let settingsReads = 0;
+    const persisted = { ...emptyAiPreferences(), default_model: "model-a" };
+    const api = fetcher({
+      "GET /api/v1/ai/models": () => ++catalogReads === 2 ? Promise.reject(new TypeError("offline")) : json(catalog()),
+      "GET /api/v1/ai/settings": () => ++settingsReads === 2 ? Promise.reject(new TypeError("offline")) : json(settings({ revision: settingsReads === 1 ? 2 : 4, preference_activity: settingsReads === 1 ? "active" : "inherited", preferences: settingsReads === 1 ? persisted : emptyAiPreferences() })),
+      "PUT /api/v1/ai/settings": () => Promise.reject(new TypeError("offline")),
+    });
+    renderSettings(api.mock);
+    await waitForSettings();
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "model-b" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save AI settings" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Current AI settings could not be reloaded");
+    expect(screen.queryByRole("button", { name: "Save AI settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset to deployment defaults" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reload current AI settings" }));
+    await waitForSettings();
+    expect(catalogReads).toBe(3);
+    expect(settingsReads).toBe(3);
+    expect(screen.getByLabelText("Default model")).toHaveValue("");
+    expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
 
   it("preserves a dirty draft after a bounded 422 message without exposing backend detail", async () => {
@@ -433,6 +515,29 @@ describe("Issue #189 Settings → AI Models", () => {
     expect(catalogReads).toBe(2);
     expect(settingsReads).toBe(2);
     expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+  });
+
+  it("does not restore pre-PUT authority when the successful response is incoherent and both recovery reads fail", async () => {
+    let catalogReads = 0;
+    let settingsReads = 0;
+    const api = fetcher({
+      "GET /api/v1/ai/models": () => ++catalogReads === 1 ? json(catalog()) : Promise.reject(new TypeError("offline")),
+      "GET /api/v1/ai/settings": () => ++settingsReads === 1 ? json(settings()) : Promise.reject(new TypeError("offline")),
+      "PUT /api/v1/ai/settings": (_url, init) => {
+        const payload = JSON.parse(String(init?.body)) as AiPreferences & { expected_revision: number };
+        return json(settings({ revision: payload.expected_revision + 1, provider: "ollama", user_overrides_supported: false, preference_activity: "unsupported", preferences: payload }));
+      },
+    });
+    renderSettings(api.mock);
+    await waitForSettings();
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "model-b" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save AI settings" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Current AI settings could not be reloaded");
+    expect(screen.queryByRole("button", { name: "Save AI settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset to deployment defaults" })).not.toBeInTheDocument();
+    expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+    expect(catalogReads).toBe(2);
+    expect(settingsReads).toBe(2);
   });
 
   it("fails closed on catalog/settings provider or support mismatches and retries only as an explicit coherent pair", async () => {
@@ -483,7 +588,7 @@ describe("Issue #189 Settings → AI Models", () => {
     renderSettings(api.mock);
     await waitForSettings();
     fireEvent.click(screen.getByRole("button", { name: "Reload current settings" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Reloading the authoritative model catalog and saved settings");
+    expect(await screen.findByText("Reloading the authoritative model catalog and saved settings…")).toBeInTheDocument();
     expect(screen.queryByLabelText("Default model")).not.toBeInTheDocument();
     pendingCatalog.resolve(json(catalog("ollama", false)));
     expect(await screen.findByRole("alert")).toHaveTextContent("AI configuration changed while this page was loading");
@@ -513,7 +618,7 @@ describe("Issue #189 Settings → AI Models", () => {
     const firstReloadStart = api.calls.filter((call) => call.method === "GET" && call.path.includes("/ai/")).length;
     fireEvent.click(screen.getByRole("button", { name: "Reload current settings" }));
     expect(screen.queryByRole("button", { name: "Reload current settings" })).not.toBeInTheDocument();
-    expect(await screen.findByRole("status")).toHaveTextContent("Reloading the authoritative model catalog and saved settings");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Reloading the authoritative model catalog and saved settings"));
     oldCatalog.resolve(json(catalog()));
     oldSettings.resolve(json(settings({ revision: 1, effective: effective("model-b", "low") })));
     await waitFor(() => expect(document.body).toHaveTextContent(/Revision 1/));
@@ -541,6 +646,41 @@ describe("Issue #189 Settings → AI Models", () => {
     await waitFor(() => expect(screen.getByText(/Revision 11/)).toBeInTheDocument());
     expect(document.body).toHaveTextContent(/Currently effective: Backend Label B/);
     expect(api.calls.filter((call) => call.path === "/api/v1/ai/settings" && call.method === "PUT")).toHaveLength(0);
+  });
+
+  it("discards a delayed 409 reconciliation pair after a newer authenticated session establishes authority", async () => {
+    const oldCatalog = deferred<Response>();
+    const oldSettings = deferred<Response>();
+    let catalogReadsA = 0;
+    let settingsReadsA = 0;
+    const api = fetcher({
+      "GET /api/v1/ai/models": (_url, init) => {
+        if (new Headers(init?.headers).get("Authorization") === "Bearer token-b") return json(catalog());
+        return ++catalogReadsA === 1 ? json(catalog()) : oldCatalog.promise;
+      },
+      "GET /api/v1/ai/settings": (_url, init) => {
+        if (new Headers(init?.headers).get("Authorization") === "Bearer token-b") return json(settings({ revision: 11, effective: effective("model-b", "low") }));
+        return ++settingsReadsA === 1 ? json(settings({ revision: 2, preference_activity: "active", preferences: { ...emptyAiPreferences(), default_model: "model-a" } })) : oldSettings.promise;
+      },
+      "PUT /api/v1/ai/settings": () => json({ detail: "private conflict payload" }, 409),
+    });
+    sessionStorage.setItem(TOKEN, "token-a"); vi.stubGlobal("fetch", api.mock);
+    render(<MemoryRouter initialEntries={["/settings/ai"]}><AuthProvider><SwitchAccount /><App /></AuthProvider></MemoryRouter>);
+    await waitForSettings();
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "model-b" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save AI settings" }));
+    await waitFor(() => expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Reloading the authoritative model catalog and saved settings"));
+    expect(screen.queryByLabelText("Default model")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch account" }));
+    await waitFor(() => expect(document.body).toHaveTextContent(/Revision 11/));
+    oldCatalog.resolve(json(catalog("ollama", false)));
+    oldSettings.resolve(json(settings({ provider: "ollama", user_overrides_supported: false, revision: 99 })));
+    await waitFor(() => expect(document.body).toHaveTextContent(/Revision 11/));
+    expect(document.body).toHaveTextContent(/Currently effective: Backend Label B/);
+    expect(screen.getByLabelText("Default model")).toHaveValue("");
+    expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
   });
 
   it("keeps loading non-writable until the initial paired response settles", async () => {
