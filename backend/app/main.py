@@ -2,10 +2,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.core.config import configure_langsmith_environment, get_settings
 from app.core.database import Base, engine
+from app.services.semantic_runtime_attribution import RuntimeAttributionIntegrityError
 import app.models  # noqa: F401  # Ensures SQLAlchemy models are registered.
 
 settings = get_settings()
@@ -20,6 +22,11 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+
+@app.exception_handler(RuntimeAttributionIntegrityError)
+async def invalid_runtime_attribution_handler(_, __: RuntimeAttributionIntegrityError) -> JSONResponse:
+    return JSONResponse(status_code=500, content={"detail": "Persisted runtime attribution is invalid."})
 
 app.add_middleware(
     CORSMiddleware,

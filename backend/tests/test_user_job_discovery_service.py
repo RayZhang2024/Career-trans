@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 from app.models.discovered_job import DiscoveredJob
 from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob, UserJobEvaluation
@@ -12,6 +13,9 @@ from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.user_job_discovery_service import UserJobDiscoveryService
+from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
+from app.schemas.ai_settings import SemanticOperation
+from app.services.llm_runtime import JOB_EVALUATION_OPERATIONS
 from app.api.deps import get_user_job_discovery_service, get_user_job_discovery_read_service
 from app.core.security import create_access_token
 from app.core.config import Settings
@@ -55,17 +59,41 @@ def _user(user_id: str) -> User:
     return User(id=user_id, email=f"{user_id}@example.test", password_hash="safe-password-hash")
 
 
-def test_unchanged_job_is_new_to_user_then_reused_without_ranking(db_session, monkeypatch) -> None:
+def test_unchanged_job_is_new_to_user_then_reused_without_ranking(db_session, monkeypatch, runtime_snapshot_a) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
     monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
     monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user: _context())
-    ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
+    ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking, runtime_snapshot=runtime_snapshot_a)
     first = service.start("user-a", _request(job.id))
     second = service.start("user-a", _request(job.id))
     assert ranking.calls == 1
     assert first.jobs[0].outcome == "newly_evaluated"
     assert second.jobs[0].outcome == "reused_evaluation"
     assert len(db_session.query(UserJobEvaluation).all()) == 1
+    persisted = db_session.query(UserJobEvaluation).one()
+    attribution = json.loads(persisted.runtime_attribution_json)
+    assert set(attribution["operations"]) == {operation.value for operation in (
+        SemanticOperation.JOB_RELEVANCE, SemanticOperation.JOB_ARCHETYPE,
+        SemanticOperation.JOB_EXTRACTION, SemanticOperation.REQUIREMENT_MATCHING,
+        SemanticOperation.CAREER_ALIGNMENT,
+    )}
+    assert attribution["provider"] == runtime_snapshot_a.provider
+    for operation in JOB_EVALUATION_OPERATIONS:
+        actual = attribution["operations"][operation.value]
+        assert actual == {
+            "model": runtime_snapshot_a.operation(operation).model,
+            "reasoning_effort": runtime_snapshot_a.operation(operation).reasoning_effort.value if runtime_snapshot_a.operation(operation).reasoning_effort else None,
+        }
+    original_attribution = persisted.runtime_attribution_json
+    assert UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", first.id, job.id).runtime_attribution.status == "available"
+    assert UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", second.id, job.id).runtime_attribution.model_dump_json() == UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", first.id, job.id).runtime_attribution.model_dump_json()
+    assert db_session.query(UserJobEvaluation).one().runtime_attribution_json == original_attribution
+    persisted.runtime_attribution_json = None
+    db_session.commit()
+    third = service.start("user-a", _request(job.id))
+    assert third.jobs[0].outcome == "reused_evaluation"
+    assert persisted.runtime_attribution_json is None
+    assert UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", third.id, job.id).runtime_attribution.status == "legacy_unavailable"
 
 
 def test_candidate_change_and_inactive_job_do_not_reuse(db_session, monkeypatch) -> None:
@@ -177,6 +205,11 @@ def test_authenticated_run_and_opportunity_routes_enforce_user_scope(client, db_
         run_id = created.json()["id"]
         assert client.get("/api/v1/jobs/discovery-runs", headers=headers_a).status_code == 200
         assert client.get(f"/api/v1/jobs/discovery-runs/{run_id}", headers=headers_b).status_code == 404
+        historical_path = f"/api/v1/jobs/discovery-runs/{run_id}/jobs/{job.id}"
+        owner_history = client.get(historical_path, headers=headers_a)
+        assert owner_history.status_code == 200
+        assert owner_history.json()["runtime_attribution"]["status"] == "available"
+        assert client.get(historical_path, headers=headers_b).status_code == 404
         assert client.get("/api/v1/jobs/opportunities", headers=headers_a).json()["items"]
         assert client.get("/api/v1/jobs/opportunities", headers=headers_b).json()["items"] == []
     finally:
@@ -316,6 +349,7 @@ def test_duplicate_evaluation_materialisation_reconciles_to_existing_version(db_
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     first = service.start("user-a", _request(job.id))
     existing_id = first.jobs[0].evaluation_id
+    existing_attribution = db_session.get(UserJobEvaluation, existing_id).runtime_attribution_json
     run = DiscoveryRun(user_id="user-a", search_input_json="{}", search_input_fingerprint="s" * 64, candidate_evaluation_fingerprint=service.candidate_evaluation_fingerprint(context), evaluation_contract_fingerprint=service.evaluation_contract_fingerprint())
     db_session.add(run); db_session.commit()
     row = DiscoveryRunJob(discovery_run_id=run.id, discovered_job_id=job.id, outcome="analysis_failed")
@@ -325,3 +359,61 @@ def test_duplicate_evaluation_materialisation_reconciles_to_existing_version(db_
     db_session.commit()
     assert db_session.query(UserJobEvaluation).count() == 1
     assert row.evaluation_id == existing_id
+    assert db_session.get(UserJobEvaluation, existing_id).runtime_attribution_json == existing_attribution
+
+
+def test_historical_evaluation_attribution_is_immutable_across_runtime_change_and_legacy_null(db_session, monkeypatch, runtime_snapshot_a):
+    from app.services.llm_runtime import resolve_runtime_snapshot
+    from app.schemas.user_job_discovery import DiscoveryRunDetailRead, DiscoveryRunSummaryRead
+
+    job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    service = UserJobDiscoveryService(db_session, ranking_service=_Ranking(), runtime_snapshot=runtime_snapshot_a)
+    run = service.start("user-a", _request(job.id))
+    evaluation = db_session.get(UserJobEvaluation, run.jobs[0].evaluation_id)
+    original = evaluation.runtime_attribution_json
+    service._runtime_snapshot = resolve_runtime_snapshot(Settings(default_llm_provider="openai", job_relevance_model="gpt-5.6-sol"))
+    historical = UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", run.id, job.id).runtime_attribution
+    assert historical.model_dump(mode="json") == json.loads(original)
+
+    evaluation.runtime_attribution_json = None
+    db_session.commit()
+    assert UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", run.id, job.id).runtime_attribution.status == "legacy_unavailable"
+
+    row = db_session.query(DiscoveryRunJob).filter_by(discovery_run_id=run.id, discovered_job_id=job.id).one()
+    row.evaluation_id = None
+    db_session.commit()
+    detail = UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", run.id, job.id)
+    assert detail.runtime_attribution is None
+    assert "runtime_attribution" not in DiscoveryRunSummaryRead.model_fields
+    assert "runtime_attribution" not in DiscoveryRunDetailRead.model_fields
+
+
+def test_historical_discovery_http_gets_are_provider_and_runtime_free(client, db_session, monkeypatch):
+    from app.api import deps
+
+    job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
+    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    run = UserJobDiscoveryService(db_session, ranking_service=_Ranking()).start("user-a", _request(job.id))
+    headers = {"Authorization": f"Bearer {create_access_token('user-a')}"}
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("historical discovery GET resolved current runtime/provider")
+
+    monkeypatch.setattr(deps, "get_user_runtime_snapshot", forbidden)
+    monkeypatch.setattr(deps, "get_semantic_response_client", forbidden)
+    assert client.get("/api/v1/jobs/discovery-runs", headers=headers).status_code == 200
+    assert client.get(f"/api/v1/jobs/discovery-runs/{run.id}", headers=headers).status_code == 200
+    detail = client.get(f"/api/v1/jobs/discovery-runs/{run.id}/jobs/{job.id}", headers=headers)
+    assert detail.status_code == 200 and detail.json()["runtime_attribution"]["status"] == "available"
+
+
+def test_current_opportunity_routes_remain_runtime_aware():
+    from app.api.deps import get_user_runtime_snapshot, get_user_job_discovery_read_service
+    from app.api.routes.jobs import router as jobs_router
+
+    routes = [item for item in jobs_router.routes if getattr(item, "path", None) in {"/jobs/opportunities", "/jobs/opportunities/{evaluation_id}"}]
+    assert len(routes) == 2
+    for route in routes:
+        dependency = next(item for item in route.dependant.dependencies if item.call is get_user_job_discovery_read_service)
+        assert any(item.call is get_user_runtime_snapshot for item in dependency.dependencies)

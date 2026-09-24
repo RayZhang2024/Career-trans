@@ -16,10 +16,13 @@ from app.models.candidate_profile import CandidateProfile
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.schemas.candidate import CandidateContext, CandidateContextSummary, CandidateEligibility, CareerEvidence
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, EvidenceProvenance, ExtractedCVDocument
+from app.schemas.ai_settings import SemanticOperation
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_interpretation_service import CVSemanticInterpreter
 from app.services.cv_merge_service import CVMergeService
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
+from app.services.llm_runtime import ResolvedRuntimeSnapshot
+from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, not_used_attribution, read_attribution
 
 
 class CVIngestionService:
@@ -31,12 +34,14 @@ class CVIngestionService:
         interpreter_factory: Callable[[], CVSemanticInterpreter] | None = None,
         extractor: CVFileExtractionService | None = None,
         merger: CVMergeService | None = None,
+        runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
     ) -> None:
         self._session = session
         self._interpreter = interpreter
         self._interpreter_factory = interpreter_factory
         self._extractor = extractor or CVFileExtractionService()
         self._merger = merger or CVMergeService()
+        self._runtime_snapshot = runtime_snapshot
 
     def upload(self, user_id: str, files: list[tuple[str, str | None, bytes]]) -> CVIngestionDraftRead:
         self._extractor.validate_batch(files)
@@ -67,6 +72,8 @@ class CVIngestionService:
                 )
                 imported.append(imported_data)
         if unstructured:
+            if self._runtime_snapshot is None:
+                raise ValueError("A resolved runtime snapshot is required for semantic CV interpretation.")
             semantic_data = self._semantic_interpreter().interpret(unstructured)
             self._enrich_provenance(
                 semantic_data,
@@ -75,10 +82,26 @@ class CVIngestionService:
             )
             imported.append(semantic_data)
         merged = self._merger.merge(imported)
-        draft.merged_json = json.dumps(merged.model_dump(mode="json"))
-        draft.state = CVIngestionState.REVIEW_READY
-        self._create_baseline_once(draft, merged.evidence)
-        self._session.commit()
+        attribution = (
+            available_attribution(self._runtime_snapshot, (SemanticOperation.CV_SEMANTIC_EXTRACTION,))
+            if unstructured and self._runtime_snapshot is not None
+            else not_used_attribution()
+        )
+        try:
+            # Flush the draft transition first so SQLite has opened the outer
+            # transaction before _create_baseline_once() creates its SAVEPOINT.
+            # Otherwise that SAVEPOINT can be the first physical transaction;
+            # releasing it would commit the baseline independently, making a
+            # later failure impossible to roll back atomically.
+            draft.merged_json = json.dumps(merged.model_dump(mode="json"))
+            draft.runtime_attribution_json = canonical_attribution_json(attribution)
+            draft.state = CVIngestionState.REVIEW_READY
+            self._session.flush()
+            self._create_baseline_once(draft, merged.evidence)
+            self._session.commit()
+        except Exception:
+            self._session.rollback()
+            raise
         self._session.refresh(draft)
         return self._read(draft)
 
@@ -134,7 +157,7 @@ class CVIngestionService:
         return self._interpreter
 
     def _read(self, draft: CandidateCVIngestionDraft) -> CVIngestionDraftRead:
-        return CVIngestionDraftRead(id=draft.id, state=draft.state, documents=self._documents(draft), merged=CandidateCVData.model_validate(json.loads(draft.merged_json)) if draft.merged_json else None, created_at=draft.created_at, updated_at=draft.updated_at)
+        return _project_draft(draft)
 
     @staticmethod
     def _documents(draft: CandidateCVIngestionDraft) -> list[ExtractedCVDocument]:
@@ -246,6 +269,39 @@ class CVIngestionService:
                         "CV evidence provenance must reference supplied source segments."
                     )
         return data
+
+
+class CVIngestionReadService:
+    """Settings/provider-independent ownership-scoped historical CV reads."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def read(self, user_id: str, draft_id: str) -> CVIngestionDraftRead:
+        draft = self._session.scalar(select(CandidateCVIngestionDraft).where(
+            CandidateCVIngestionDraft.id == draft_id,
+            CandidateCVIngestionDraft.user_id == user_id,
+        ))
+        if draft is None:
+            raise LookupError("CV ingestion draft not found.")
+        return _project_draft(draft)
+
+
+def _project_draft(draft: CandidateCVIngestionDraft) -> CVIngestionDraftRead:
+    attribution = (
+        read_attribution(draft.runtime_attribution_json, null_value=None)
+        if draft.state == CVIngestionState.UPLOADED
+        else read_attribution(draft.runtime_attribution_json)
+    )
+    return CVIngestionDraftRead(
+        id=draft.id,
+        state=draft.state,
+        documents=[ExtractedCVDocument.model_validate(value) for value in json.loads(draft.documents_json)],
+        merged=CandidateCVData.model_validate(json.loads(draft.merged_json)) if draft.merged_json else None,
+        created_at=draft.created_at,
+        updated_at=draft.updated_at,
+        runtime_attribution=attribution,
+    )
 
 class PersistedCandidateContextLoader:
     """Build existing CandidateContext only from confirmed records owned by one user."""

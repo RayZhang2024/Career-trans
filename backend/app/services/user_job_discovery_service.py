@@ -32,9 +32,80 @@ from app.services.job_ranking_service import JobRankingService
 from app.services.posting_legitimacy_service import PostingLegitimacyService
 from app.services.public_job_actionability import is_public_job_actionable
 from app.services.llm_runtime import JOB_EVALUATION_OPERATIONS, ResolvedRuntimeSnapshot, resolve_runtime_snapshot
+from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, read_attribution
 
 
 _CONTRACT_VERSION = "user-discovery-run-v1"
+
+
+class UserJobDiscoveryHistoryReadService:
+    """Settings-independent projections for persisted discovery history."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def list_run_summaries(self, user_id: str, *, limit: int) -> DiscoveryRunSummaryResponse:
+        runs = self._session.scalars(
+            select(DiscoveryRun).where(DiscoveryRun.user_id == user_id)
+            .order_by(DiscoveryRun.started_at.desc(), DiscoveryRun.id.asc()).limit(limit + 1)
+        ).all()
+        return DiscoveryRunSummaryResponse(
+            items=[self._run_summary(run) for run in runs[:limit]],
+            limit=limit,
+            truncated=len(runs) > limit,
+        )
+
+    def get_run_detail(self, user_id: str, run_id: str) -> DiscoveryRunDetailRead:
+        run = self._owned_run(user_id, run_id)
+        rows = self._session.scalars(
+            select(DiscoveryRunJob).where(DiscoveryRunJob.discovery_run_id == run.id)
+            .order_by(DiscoveryRunJob.created_at, DiscoveryRunJob.id)
+        ).all()
+        return DiscoveryRunDetailRead(
+            **self._run_summary(run).model_dump(),
+            jobs=[self._run_row_summary(row) for row in rows],
+        )
+
+    def get_historical_run_job_detail(self, user_id: str, run_id: str, discovered_job_id: str) -> DiscoveryRunJobDetailRead:
+        run = self._owned_run(user_id, run_id)
+        row = self._session.scalar(select(DiscoveryRunJob).where(
+            DiscoveryRunJob.discovery_run_id == run.id,
+            DiscoveryRunJob.discovered_job_id == discovered_job_id,
+        ))
+        if row is None:
+            raise LookupError("Discovery run job not found.")
+        evaluation = self._session.get(UserJobEvaluation, row.evaluation_id) if row.evaluation_id else None
+        return DiscoveryRunJobDetailRead(
+            discovered_job_id=row.discovered_job_id,
+            evaluation_id=row.evaluation_id,
+            outcome=row.outcome,
+            failure_stage=row.failure_stage,
+            failure_kind=row.failure_kind,
+            opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json) if evaluation else None,
+            runtime_attribution=read_attribution(evaluation.runtime_attribution_json) if evaluation else None,
+        )
+
+    def _owned_run(self, user_id: str, run_id: str) -> DiscoveryRun:
+        run = self._session.scalar(select(DiscoveryRun).where(DiscoveryRun.id == run_id, DiscoveryRun.user_id == user_id))
+        if run is None:
+            raise LookupError("Discovery run not found.")
+        return run
+
+    @staticmethod
+    def _run_summary(run: DiscoveryRun) -> DiscoveryRunSummaryRead:
+        return DiscoveryRunSummaryRead(
+            id=run.id, status=run.status, run_input=json.loads(run.search_input_json),
+            funnel=json.loads(run.funnel_json), failure_summary=json.loads(run.failure_summary_json),
+            started_at=run.started_at, completed_at=run.completed_at,
+        )
+
+    @staticmethod
+    def _run_row_summary(row: DiscoveryRunJob) -> DiscoveryRunJobSummaryRead:
+        return DiscoveryRunJobSummaryRead(
+            discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id,
+            outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind,
+            opportunity=None,
+        )
 
 
 class UserJobDiscoveryService:
@@ -196,7 +267,7 @@ class UserJobDiscoveryService:
         if row is None:
             raise LookupError("Discovery run job not found.")
         evaluation = self._session.get(UserJobEvaluation, row.evaluation_id) if row.evaluation_id else None
-        return DiscoveryRunJobDetailRead(discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id, outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json) if evaluation else None)
+        return DiscoveryRunJobDetailRead(discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id, outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json) if evaluation else None, runtime_attribution=read_attribution(evaluation.runtime_attribution_json) if evaluation else None)
 
     def current_evaluation_for_job(
         self, user_id: str, job: DiscoveredJob
@@ -306,7 +377,8 @@ class UserJobDiscoveryService:
             job_id = job_ids[key]; job = self._session.get(DiscoveredJob, job_id)
             evaluation = UserJobEvaluation(user_id=user_id, discovered_job_id=job_id, job_content_hash=job.content_hash,
                 candidate_evaluation_fingerprint=candidate, evaluation_contract_fingerprint=contract,
-                job_snapshot_json=_canonical_json(self._job_snapshot(job)), evaluation_json=opportunity.model_dump_json())
+                job_snapshot_json=_canonical_json(self._job_snapshot(job)), evaluation_json=opportunity.model_dump_json(),
+                runtime_attribution_json=canonical_attribution_json(available_attribution(self._runtime_snapshot, JOB_EVALUATION_OPERATIONS)))
             try:
                 with self._session.begin_nested():
                     self._session.add(evaluation); self._session.flush()

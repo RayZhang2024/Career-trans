@@ -441,6 +441,20 @@ Adviser assessments, application preparations, and other persisted historical
 outputs are not rewritten. Codex external discovery remains a separate
 host-side runtime.
 
+V1C historical runtime attribution is available for newly interpreted CV
+drafts, successful immutable job evaluations, and application preparations.
+It stores only the provider, logical operation, resolved model, and reasoning
+effort actually used; structured-only CV interpretation explicitly records
+that no semantic model was used. Uploaded, not-yet-interpreted CV drafts have
+no established attribution, while older terminal records may report
+attribution unavailable. This metadata is immutable and does not follow later
+AI Settings changes. A preparation that reuses a saved job evaluation records
+only the operations executed for that preparation, not the upstream
+evaluation's operations. No provider credentials or preference documents are
+stored. Candidate Adviser historical attribution is not claimed because its
+current assessment is mutable, and this is not a complete generic LLM-call
+audit trail.
+
 ### 2. Frontend
 
 Open a second PowerShell terminal:

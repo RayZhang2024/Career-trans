@@ -22,7 +22,7 @@ const ranked = (title: string): RankedJobOpportunity => ({
 const run = (id = "run-1", status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunSummary => ({ id, status, run_input: { query: { keywords: ["AI Engineer"], locations: ["London"], remote_ok: false } }, funnel: { submitted: 3, reused: 1, relevance_screened: 2, full_analysis_attempts: 1, analysed: 1 }, failure_summary: { provider_failure: 1 }, started_at: "2026-02-01T12:00:00Z", completed_at: status === "running" ? null : "2026-02-01T12:05:00Z" });
 const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
 const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1 });
-const historyDetail: HistoricalRunJobDetail = { discovered_job_id: "job-0", evaluation_id: "historical-eval", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Historical role") };
+const historyDetail: HistoricalRunJobDetail = { discovered_job_id: "job-0", evaluation_id: "historical-eval", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Historical role"), runtime_attribution: { status: "available", provider: "openai", operations: { job_relevance: { model: "old-job-relevance", reasoning_effort: null }, job_archetype: { model: "old-archetype", reasoning_effort: "low" }, job_extraction: { model: "old-extraction", reasoning_effort: "medium" }, requirement_matching: { model: "old-matching", reasoning_effort: "high" }, career_alignment: { model: "old-alignment", reasoning_effort: "max" } } } };
 const json = (body: unknown, status = 200) => new Response(body === undefined ? "" : JSON.stringify(body), { status });
 type Handler = (url: URL, init?: RequestInit) => Response | Promise<Response>;
 const page = (items: unknown[], truncated = false) => ({ items, limit: 20, truncated });
@@ -422,7 +422,10 @@ describe("Issue #171 Jobs workspace", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Historical detail" })[0]);
     expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
     expect(screen.getByText(/does not describe the vacancy or recommendation as current/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "AI runtime used" })).toBeInTheDocument();
+    expect(screen.getByText("old-job-relevance · Provider default reasoning")).toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-1/jobs/job-0");
+    expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/ai/settings") || path.startsWith("/api/v1/ai/models"))).toBe(false);
   });
 
   it("shows only the factual historical outcome when the historical snapshot is null", async () => {

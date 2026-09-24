@@ -4,6 +4,7 @@ import { ApiError, type ApplicationPreparation, type ApplicationPreparationRevie
 import { useAuth } from "./auth";
 import { buildRequirementReview, collectFinalCitationUsage, evidenceIdentity, snapshotStatusLabel, type CitationUsage, type RequirementReviewRow } from "./applicationReview";
 import { PreparationTrackingPanel } from "./TrackingPage";
+import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
 
 type LoadState<T> = { phase: "loading" | "ready" | "error"; value?: T; message?: string };
 const sourceNames: Record<string, string> = {
@@ -201,6 +202,7 @@ export function ApplicationDetailPage() {
     {reviewState.phase === "error" && value && <p role="alert">{reviewState.message}</p>}
     {value && <>
       <p className="notice">This is the saved snapshot created {dateLabel(value.created_at)}. It is not replaced by your current profile, CV, or vacancy information.</p>
+      <RuntimeAttributionPanel attribution={value.runtime_attribution} boundary="preparation" />
       <PreparationTrackingPanel preparationId={value.id} />
       {review && <ReviewSummary value={value} review={review} rows={buildRequirementReview(value, review, citations).rows} />}
       {review && <RequirementReview value={value} review={review} />}

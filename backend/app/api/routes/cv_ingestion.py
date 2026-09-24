@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
-from app.api.deps import CurrentUser, DbSession, get_user_cv_ingestion_service
+from app.api.deps import CurrentUser, DbSession, get_user_cv_ingestion_read_service, get_user_cv_ingestion_service
 from app.schemas.cv_ingestion import CandidateCVData, CVIngestionConfirmResponse, CVIngestionDraftRead
 from app.providers.llm import (
     SemanticOutputError,
@@ -8,7 +8,7 @@ from app.providers.llm import (
     SemanticProviderRequestError,
     SemanticProviderUnavailableError,
 )
-from app.services.cv_ingestion_service import CVIngestionService
+from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService
 
 router = APIRouter(prefix="/cv-ingestion", tags=["cv-ingestion"])
 
@@ -55,7 +55,7 @@ def interpret_cv_draft(draft_id: str, current_user: CurrentUser, service: CVInge
 
 
 @router.get("/{draft_id}", response_model=CVIngestionDraftRead)
-def read_cv_draft(draft_id: str, current_user: CurrentUser, service: CVIngestionService = Depends(get_user_cv_ingestion_service)) -> CVIngestionDraftRead:
+def read_cv_draft(draft_id: str, current_user: CurrentUser, service: CVIngestionReadService = Depends(get_user_cv_ingestion_read_service)) -> CVIngestionDraftRead:
     try:
         return service.read(current_user.id, draft_id)
     except LookupError as exc:

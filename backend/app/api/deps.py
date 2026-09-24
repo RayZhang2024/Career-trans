@@ -34,7 +34,7 @@ from app.services.external_job_verification_service import ExternalJobVerificati
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
-from app.services.cv_ingestion_service import CVIngestionService
+from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.schemas.candidate import CandidateContext
@@ -42,6 +42,7 @@ from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
+from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
 from app.services.application_tracking_service import ApplicationTrackingService
@@ -205,21 +206,24 @@ def _build_cv_ingestion_service(
     db: Session,
     runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
 ) -> CVIngestionService:
+    current_settings = get_settings()
+    owner_snapshot = runtime_snapshot or resolve_runtime_snapshot(current_settings)
+
     def build_interpreter() -> SemanticCVInterpreter:
-        current_settings = get_settings()
         return SemanticCVInterpreter(
             get_semantic_response_client(
                 current_settings,
                 model=current_settings.cv_semantic_extraction_model,
                 operation="cv_evidence_extraction",
-                runtime_snapshot=runtime_snapshot,
+                runtime_snapshot=owner_snapshot,
             ),
-            runtime_snapshot.operation(RUNTIME_OPERATION_TO_SETTING["cv_evidence_extraction"]).model if runtime_snapshot else current_settings.cv_semantic_extraction_model,
+            owner_snapshot.operation(RUNTIME_OPERATION_TO_SETTING["cv_evidence_extraction"]).model,
         )
 
     return CVIngestionService(
         db,
         interpreter_factory=build_interpreter,
+        runtime_snapshot=owner_snapshot,
     )
 
 
@@ -233,6 +237,11 @@ def get_user_cv_ingestion_service(
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
 ) -> CVIngestionService:
     return _build_cv_ingestion_service(db, runtime_snapshot)
+
+
+def get_user_cv_ingestion_read_service(db: DbSession) -> CVIngestionReadService:
+    """Historical CV reads must not resolve AI settings or provider runtime."""
+    return CVIngestionReadService(db)
 
 
 def get_persisted_candidate_context_loader(db: DbSession) -> PersistedCandidateContextLoader:
@@ -659,6 +668,11 @@ def get_user_job_discovery_read_service(
 ) -> UserJobDiscoveryService:
     """Provider-free dependency for persisted Jobs GET projections."""
     return UserJobDiscoveryService(db, runtime_snapshot=runtime_snapshot)
+
+
+def get_user_job_discovery_history_read_service(db: DbSession) -> UserJobDiscoveryHistoryReadService:
+    """Historical run reads are independent of current runtime configuration."""
+    return UserJobDiscoveryHistoryReadService(db)
 
 
 def get_application_preparation_service(

@@ -2,6 +2,7 @@
 
 import hashlib
 from collections.abc import Callable
+from dataclasses import dataclass
 import json
 import re
 from datetime import datetime, timezone
@@ -36,6 +37,8 @@ from app.services.application_document_renderer import ApplicationDocumentRender
 from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
 from app.services.llm_runtime import PREPARATION_OPERATIONS, ResolvedRuntimeSnapshot, resolve_runtime_snapshot
+from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, read_attribution
+from app.schemas.ai_settings import SemanticOperation
 
 
 _CONTRACT_VERSION = "application-preparation-v2"
@@ -50,6 +53,12 @@ _UUID_IDENTIFIER = re.compile(
     re.IGNORECASE,
 )
 _KNOWN_TECHNOLOGY_TOKENS = frozenset({"aws", "azure", "gcp", "kubernetes", "docker", "terraform", "python", "java", "typescript", "javascript", "sql", "langchain", "langgraph", "openai"})
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedApplicationTarget:
+    target: ApplicationTargetSnapshot
+    fresh_analysis_used: bool
 
 
 class ApplicationPreparationReadService:
@@ -81,7 +90,7 @@ class ApplicationPreparationReadService:
     @staticmethod
     def _read(row: ApplicationPreparation) -> ApplicationPreparationRead:
         result, _, _ = _decode_persisted_result(row.preparation_result_json)
-        return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=result, created_at=row.created_at)
+        return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=result, created_at=row.created_at, runtime_attribution=read_attribution(row.runtime_attribution_json))
 
 
 def _decode_persisted_result(raw: str) -> tuple[ApplicationPreparationResult, ApplicationEvidenceSnapshotStatus, list[ApplicationEvidenceSource]]:
@@ -145,7 +154,8 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
             phone=profile.phone, location=profile.location, linkedin_url=profile.linkedin_url,
             github_url=profile.github_url, portfolio_url=profile.portfolio_url,
         )
-        target = self._resolve_target(user_id, request, context)
+        resolution = self._resolve_target(user_id, request, context)
+        target = resolution.target
         source_catalog = self._bounded_sources(context, structured, target.requirement_matches)
         draft_context = self._draft_context(target, source_catalog, structured)
         drafting_agent = self._get_drafting_agent()
@@ -175,11 +185,15 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
             target_snapshot_json=_dump(target), identity_snapshot_json=_dump(identity),
             preparation_input_fingerprint=self._input_fingerprint(target, identity, source_catalog, structured, request),
             preparation_contract_fingerprint=self._contract_fingerprint(), preparation_result_json=_dump(persisted),
+            runtime_attribution_json=canonical_attribution_json(available_attribution(
+                self._runtime_snapshot,
+                ({SemanticOperation.APPLICATION_DRAFTING} | ({SemanticOperation.JOB_EXTRACTION, SemanticOperation.REQUIREMENT_MATCHING, SemanticOperation.CAREER_ALIGNMENT} if resolution.fresh_analysis_used else set())),
+            )),
         )
         self._session.add(record); self._session.commit(); self._session.refresh(record)
         return self._read(record)
 
-    def _resolve_target(self, user_id: str, request: ApplicationPrepareRequest, context: CandidateContext) -> ApplicationTargetSnapshot:
+    def _resolve_target(self, user_id: str, request: ApplicationPrepareRequest, context: CandidateContext) -> _ResolvedApplicationTarget:
         target = request.target
         if target.kind == ApplicationTargetKind.DISCOVERED_JOB:
             job = self._session.get(DiscoveredJob, target.discovered_job_id)
@@ -188,11 +202,11 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
             listing = JobListing(source=job.source, source_token=job.source_token, external_id=job.external_id, title=job.title, company=job.company, location=job.location, url=job.url, description=job.description, posted_at=job.posted_at, work_arrangement=job.work_arrangement, employment_type=job.employment_type, detail_authority=job.detail_authority, verification_status=job.verification_status, verification_reason=job.verification_reason)
             reusable = self._user_discovery.current_evaluation_for_job(user_id, job)
             if reusable is not None:
-                return ApplicationTargetSnapshot(source_kind=target.kind, canonical_discovered_job_id=job.id, public_url=job.url, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, employment_type=job.employment_type, job_profile=reusable.job_profile, requirement_matches=reusable.requirement_matches, job_content_hash=job.content_hash)
-            return self._analysis_snapshot(target.kind, listing, context, canonical_id=job.id, content_hash=job.content_hash)
+                return _ResolvedApplicationTarget(ApplicationTargetSnapshot(source_kind=target.kind, canonical_discovered_job_id=job.id, public_url=job.url, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, employment_type=job.employment_type, job_profile=reusable.job_profile, requirement_matches=reusable.requirement_matches, job_content_hash=job.content_hash), False)
+            return _ResolvedApplicationTarget(self._analysis_snapshot(target.kind, listing, context, canonical_id=job.id, content_hash=job.content_hash), True)
         if target.kind == ApplicationTargetKind.JOB_TEXT:
             listing = JobListing(source="application_text", title="Application target", url="application://local", description=target.job_text)
-            return self._analysis_snapshot(target.kind, listing, context, content_hash=_hash(target.job_text or ""))
+            return _ResolvedApplicationTarget(self._analysis_snapshot(target.kind, listing, context, content_hash=_hash(target.job_text or "")), True)
         url = str(target.job_url)
         existing = self._session.scalar(select(DiscoveredJob).where(DiscoveredJob.url == url))
         if existing is not None and self._user_discovery.is_currently_actionable(existing):
@@ -211,7 +225,7 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
             raise ApplicationInsufficientDetailError("Job URL detail is insufficient; provide job text.")
         detail = " ".join(extracted.description.split())
         listing = JobListing(source="application_url", title=extracted.title.strip(), company=extracted.company, location=extracted.location, url=page.final_url, description=detail, employment_type=extracted.employment_type, work_arrangement=extracted.work_arrangement)
-        return self._analysis_snapshot(target.kind, listing, context, content_hash=_hash(detail))
+        return _ResolvedApplicationTarget(self._analysis_snapshot(target.kind, listing, context, content_hash=_hash(detail)), True)
 
     def _analysis_snapshot(self, kind: ApplicationTargetKind, listing: JobListing, context: CandidateContext, *, canonical_id: str | None = None, content_hash: str) -> ApplicationTargetSnapshot:
         if not listing.description:

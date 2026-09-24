@@ -90,8 +90,8 @@ def test_reasoning_effort_env_blank_means_unset_and_invalid_nonblank_fails(tmp_p
         (SemanticOutputError("CV interpretation returned invalid structured data."), 502, "invalid structured data"),
     ],
 )
-def test_cv_interpret_maps_expected_semantic_failures_to_safe_http_errors(client, db_session, error, expected_status, expected_detail) -> None:
-    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: CVIngestionService(db_session, interpreter=FailingInterpreter(error))
+def test_cv_interpret_maps_expected_semantic_failures_to_safe_http_errors(client, db_session, error, expected_status, expected_detail, runtime_snapshot_a) -> None:
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: CVIngestionService(db_session, interpreter=FailingInterpreter(error), runtime_snapshot=runtime_snapshot_a)
     try:
         headers = _auth(client)
         draft_id = _uploaded_markdown_draft(client, headers)
@@ -104,7 +104,7 @@ def test_cv_interpret_maps_expected_semantic_failures_to_safe_http_errors(client
         app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
-def test_cv_interpret_missing_openai_key_returns_503_at_api_boundary(client, db_session) -> None:
+def test_cv_interpret_missing_openai_key_returns_503_at_api_boundary(client, db_session, runtime_snapshot_a) -> None:
     def missing_key_service() -> CVIngestionService:
         return CVIngestionService(
             db_session,
@@ -113,9 +113,11 @@ def test_cv_interpret_missing_openai_key_returns_503_at_api_boundary(client, db_
                     Settings(openai_api_key=None),
                     model="gpt-5.6-luna",
                     operation="cv_evidence_extraction",
+                    runtime_snapshot=runtime_snapshot_a,
                 ),
                 "gpt-5.6-luna",
             ),
+            runtime_snapshot=runtime_snapshot_a,
         )
 
     app.dependency_overrides[get_user_cv_ingestion_service] = missing_key_service
@@ -130,12 +132,12 @@ def test_cv_interpret_missing_openai_key_returns_503_at_api_boundary(client, db_
         app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
-def test_unexpected_cv_interpret_programming_error_remains_500(db_session) -> None:
+def test_unexpected_cv_interpret_programming_error_remains_500(db_session, runtime_snapshot_a) -> None:
     def override_db():
         yield db_session
 
     app.dependency_overrides[get_db] = override_db
-    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: CVIngestionService(db_session, interpreter=FailingInterpreter(RuntimeError("programming defect")))
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: CVIngestionService(db_session, interpreter=FailingInterpreter(RuntimeError("programming defect")), runtime_snapshot=runtime_snapshot_a)
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
             headers = _auth(client, "unexpected-error@example.com")
