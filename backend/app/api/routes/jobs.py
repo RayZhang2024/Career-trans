@@ -20,6 +20,7 @@ from app.api.deps import (
     get_opportunity_inbox_service,
     get_job_detail_enrichment_service,
     get_requirement_matching_service,
+    get_user_requirement_matching_service,
     get_user_job_discovery_service,
     get_user_job_discovery_read_service,
     get_discovery_schedule_service,
@@ -434,7 +435,7 @@ def match_job(
 def match_job_for_current_user(
     payload: JobMatchMeRequest,
     candidate_context: PersistedCandidateContext,
-    service: RequirementMatchingService = Depends(get_requirement_matching_service),
+    service: RequirementMatchingService = Depends(get_user_requirement_matching_service),
 ) -> JobMatchResponse:
     """Match a job using confirmed persisted evidence for the authenticated user."""
     try:

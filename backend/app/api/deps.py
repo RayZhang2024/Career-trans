@@ -327,6 +327,13 @@ def get_requirement_matching_service() -> RequirementMatchingService:
     return _build_requirement_matching_service(settings)
 
 
+def get_user_requirement_matching_service(
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> RequirementMatchingService:
+    """Build matching with the authenticated user's immutable workflow snapshot."""
+    return _build_requirement_matching_service(get_settings(), runtime_snapshot)
+
+
 def _build_requirement_matching_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> RequirementMatchingService:
     model = runtime_snapshot.operation("requirement_matching").model if runtime_snapshot else settings.requirement_matching_model
     matcher = OpenAIRequirementMatcher(

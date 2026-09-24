@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
@@ -205,6 +206,29 @@ def test_fingerprint_projections_ignore_preference_revision_and_unrelated_operat
     relevance_changed = UserAiPreferences(operation_overrides={"job_relevance": {"model": "gpt-5.6-sol"}})
     relevance = resolve_runtime_snapshot(settings, relevance_changed, preference_revision=4, persisted_override_provider="openai")
     assert base.fingerprint_projection(JOB_EVALUATION_OPERATIONS) != relevance.fingerprint_projection(JOB_EVALUATION_OPERATIONS)
+
+    relevance_effort_changed = UserAiPreferences(operation_overrides={"job_relevance": {"reasoning_effort": "high"}})
+    relevance_effort = resolve_runtime_snapshot(settings, relevance_effort_changed, preference_revision=4, persisted_override_provider="openai")
+    assert base.fingerprint_projection(JOB_EVALUATION_OPERATIONS) != relevance_effort.fingerprint_projection(JOB_EVALUATION_OPERATIONS)
+
+    drafting_model_changed = UserAiPreferences(operation_overrides={"application_drafting": {"model": "gpt-5.6-sol"}})
+    drafting_model = resolve_runtime_snapshot(settings, drafting_model_changed, preference_revision=5, persisted_override_provider="openai")
+    assert base.fingerprint_projection(JOB_EVALUATION_OPERATIONS) == drafting_model.fingerprint_projection(JOB_EVALUATION_OPERATIONS)
+    assert base.fingerprint_projection(PREPARATION_OPERATIONS) != drafting_model.fingerprint_projection(PREPARATION_OPERATIONS)
+
+
+def test_fingerprint_projection_ignores_non_material_capability_metadata() -> None:
+    snapshot = resolve_runtime_snapshot(_base_settings())
+    capability_changed = replace(
+        snapshot,
+        operations=tuple(
+            (operation, replace(value, capability_id=f"changed-catalog-entry:{value.capability_id}"))
+            for operation, value in snapshot.operations
+        ),
+    )
+
+    assert snapshot.fingerprint_projection(JOB_EVALUATION_OPERATIONS) == capability_changed.fingerprint_projection(JOB_EVALUATION_OPERATIONS)
+    assert snapshot.fingerprint_projection(PREPARATION_OPERATIONS) == capability_changed.fingerprint_projection(PREPARATION_OPERATIONS)
 
 
 def test_user_effective_semantic_builders_are_not_shared_and_use_snapshot_models(monkeypatch) -> None:

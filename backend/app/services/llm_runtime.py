@@ -133,7 +133,6 @@ class ResolvedRuntimeSnapshot:
                 operation.value: {
                     "model": self.operation(operation).model,
                     "reasoning_effort": self.operation(operation).reasoning_effort.value if self.operation(operation).reasoning_effort else None,
-                    "capability": self.operation(operation).capability_id,
                 }
                 for operation in operations
             },

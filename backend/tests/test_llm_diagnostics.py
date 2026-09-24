@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.api import deps
 from app.api.deps import get_user_cv_ingestion_service
@@ -42,6 +43,43 @@ def _uploaded_markdown_draft(client: TestClient, headers: dict[str, str]) -> str
     )
     assert response.status_code == 201
     return response.json()["id"]
+
+
+def test_reasoning_effort_env_blank_means_unset_and_invalid_nonblank_fails(tmp_path) -> None:
+    env_file = tmp_path / "compose-style.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "CV_SEMANTIC_EXTRACTION_REASONING_EFFORT=",
+                "CANDIDATE_ADVISER_REASONING_EFFORT=",
+                "JOB_EXTRACTION_REASONING_EFFORT=",
+                "REQUIREMENT_MATCHING_REASONING_EFFORT=",
+                "CAREER_ALIGNMENT_REASONING_EFFORT=",
+                "JOB_RELEVANCE_REASONING_EFFORT=",
+                "JOB_ARCHETYPE_REASONING_EFFORT=",
+                "AGENTIC_DISCOVERY_REASONING_EFFORT=",
+                "APPLICATION_DRAFTING_REASONING_EFFORT=",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+    effort_fields = [name for name in Settings.model_fields if name.endswith("_reasoning_effort")]
+    assert len(effort_fields) == 9
+    assert all(getattr(settings, name) is None for name in effort_fields)
+
+    env_file.write_text(
+        "JOB_RELEVANCE_REASONING_EFFORT= high \nAPPLICATION_DRAFTING_REASONING_EFFORT=\n",
+        encoding="utf-8",
+    )
+    explicit = Settings(_env_file=env_file)
+    assert explicit.job_relevance_reasoning_effort.value == "high"
+    assert explicit.application_drafting_reasoning_effort is None
+
+    env_file.write_text("JOB_RELEVANCE_REASONING_EFFORT=unbounded\n", encoding="utf-8")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=env_file)
 
 
 @pytest.mark.parametrize(
