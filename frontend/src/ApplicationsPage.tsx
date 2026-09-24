@@ -5,6 +5,7 @@ import { useAuth } from "./auth";
 import { buildRequirementReview, collectFinalCitationUsage, evidenceIdentity, snapshotStatusLabel, type CitationUsage, type RequirementReviewRow } from "./applicationReview";
 import { PreparationTrackingPanel } from "./TrackingPage";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
+import { ExternalPreparationForm } from "./ExternalPreparationForm";
 
 type LoadState<T> = { phase: "loading" | "ready" | "error"; value?: T; message?: string };
 const sourceNames: Record<string, string> = {
@@ -116,29 +117,36 @@ function RequirementRow({ row, review, citations }: { row: RequirementReviewRow;
 }
 
 export function ApplicationsPage() {
-  const { api } = useAuth();
-  const [state, setState] = useState<LoadState<ApplicationPreparation[]>>({ phase: "loading" });
+  const { api, user } = useAuth();
+  const [state, setState] = useState<LoadState<ApplicationPreparation[]> & { ownerId?: string }>({ phase: "loading" });
   const generation = useRef(0);
   const alive = useRef(false);
-  const load = async () => {
+  const ownerRef = useRef(user?.id);
+  ownerRef.current = user?.id;
+  const load = async (): Promise<boolean> => {
     const current = ++generation.current;
-    setState((old) => ({ phase: old.value ? "ready" : "loading", value: old.value }));
+    const ownerId = user?.id;
+    setState((old) => ({ phase: old.ownerId === ownerId && old.value ? "ready" : "loading", value: old.ownerId === ownerId ? old.value : undefined, ownerId }));
     try {
       const value = await api.request<ApplicationPreparation[]>("/api/v1/applications");
-      if (alive.current && current === generation.current) setState({ phase: "ready", value });
+      if (alive.current && current === generation.current && ownerRef.current === ownerId) { setState({ phase: "ready", value, ownerId }); return true; }
+      return false;
     } catch {
-      if (alive.current && current === generation.current) setState((old) => ({ phase: "error", value: old.value, message: "Application history is unavailable." }));
+      if (alive.current && current === generation.current && ownerRef.current === ownerId) setState((old) => ({ phase: "error", value: old.ownerId === ownerId ? old.value : undefined, ownerId, message: "Application history is unavailable." }));
+      return false;
     }
   };
-  useEffect(() => { alive.current = true; void load(); return () => { alive.current = false; generation.current += 1; }; }, [api]);
+  useEffect(() => { alive.current = true; void load(); return () => { alive.current = false; generation.current += 1; }; }, [api, user?.id]);
+  const visibleState = state.ownerId === user?.id ? state : { phase: "loading" as const };
   return <main className="applications-page">
     <header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Applications</h1><p className="muted">Review saved application-preparation snapshots and download their documents.</p></div><Link to="/jobs">Back to Jobs</Link></header>
+    <ExternalPreparationForm onHistoryRefresh={load} />
     <section aria-label="Application preparation history">
       <div className="section-heading"><h2>Preparation history</h2><button type="button" className="button-secondary" onClick={() => void load()}>Refresh history</button></div>
-      {state.phase === "loading" && !state.value && <p role="status">Loading application history…</p>}
-      {state.phase === "error" && <p role="alert">{state.message}</p>}
-      {state.value?.length === 0 && <p className="muted">No application preparations yet. Prepare one from a current ranked opportunity in Jobs.</p>}
-      {!!state.value?.length && <div className="application-list">{state.value.map((value) => <PreparationSummary key={value.id} value={value} />)}</div>}
+      {visibleState.phase === "loading" && !visibleState.value && <p role="status">Loading application history…</p>}
+      {visibleState.phase === "error" && <p role="alert">{visibleState.message}</p>}
+      {visibleState.value?.length === 0 && <p className="muted">No application preparations yet. Prepare a ranked opportunity from <Link to="/jobs">Jobs</Link>, or prepare another vacancy directly here.</p>}
+      {!!visibleState.value?.length && <div className="application-list">{visibleState.value.map((value) => <PreparationSummary key={value.id} value={value} />)}</div>}
     </section>
   </main>;
 }

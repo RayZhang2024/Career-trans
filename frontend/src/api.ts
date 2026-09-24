@@ -209,8 +209,13 @@ export type ApplicationPreparation = {
   created_at: string;
 };
 
+export type ApplicationPrepareTarget =
+  | { discovered_job_id: string; job_text?: never; job_url?: never }
+  | { job_text: string; discovered_job_id?: never; job_url?: never }
+  | { job_url: string; discovered_job_id?: never; job_text?: never };
+
 export type ApplicationPrepareRequest = {
-  target: { discovered_job_id: string };
+  target: ApplicationPrepareTarget;
   target_pages: 1 | 2 | 3;
   include_cover_letter: boolean;
   application_questions: string[];

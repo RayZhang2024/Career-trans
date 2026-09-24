@@ -55,6 +55,13 @@ function requestPaths(fetch: ReturnType<typeof fetcher>) { return fetch.mock.cal
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((yes) => { resolve = yes; }); return { promise, resolve }; }
 function TestNavigation() { return <nav><Link to="/applications/p-A">Open A</Link><Link to="/applications/p-B">Open B</Link></nav>; }
 function ExpireSession() { const { api } = useAuth(); return <button type="button" onClick={() => void api.request("/api/v1/expire-session").catch(() => {})}>Expire session</button>; }
+const readyForPreparation = { profile_exists: true, candidate_context_ready: true, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 } };
+const namedProfile = { id: "owner", user_id: "owner", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", display_name: "Synthetic Candidate" };
+function externalFetcher(overrides: Record<string, Handler> = {}) {
+  return fetcher({ "/api/v1/onboarding/status": () => json(readyForPreparation), "/api/v1/profile": () => json(namedProfile), ...overrides });
+}
+function preparationPosts(fetch: ReturnType<typeof fetcher>) { return fetch.mock.calls.filter(([input, init]) => new URL(String(input), window.location.origin).pathname === "/api/v1/applications/prepare" && init?.method === "POST"); }
+async function waitForExternalPreparationReady() { await waitFor(() => expect(screen.getByRole("button", { name: "Create preparation" })).toBeEnabled()); }
 
 beforeEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 afterEach(cleanup);
@@ -346,5 +353,307 @@ describe("Issue #182 deterministic review projection", () => {
     const noneAdmitted = buildRequirementReview(value, projection).rows[0];
     expect(noneAdmitted.evidence[0].state).toBe("not_admitted");
     expect(noneAdmitted.aggregate).toBe("Matched evidence was not included in the bounded preparation context");
+  });
+});
+
+describe("Issue #198 direct vacancy preparation", () => {
+  it("keeps history independent and exposes paste-text as the default external preparation path", async () => {
+    const fetch = externalFetcher();
+    renderApp(fetch);
+    expect(await screen.findByRole("heading", { name: "Applied AI Engineer" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Prepare for another vacancy" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Paste job description/ })).toBeChecked();
+    expect(screen.getByLabelText("Job description")).toBeInTheDocument();
+    expect(screen.getByLabelText("Target CV pages")).toHaveValue("2");
+    expect(screen.getByLabelText("Include a cover letter")).toBeChecked();
+    expect(requestPaths(fetch)).toContain("/api/v1/applications");
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
+  });
+
+  it("blocks short text and accepts exactly 100 Unicode code points without rewriting the textarea value", async () => {
+    const text = `\n${"😀".repeat(99)}`;
+    const fetch = externalFetcher({ "POST /api/v1/applications/prepare": (_url, init) => json(preparation("unicode-min"), 201) });
+    renderApp(fetch);
+    const textarea = await screen.findByLabelText("Job description");
+    fireEvent.change(textarea, { target: { value: "😀".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.change(textarea, { target: { value: "   \n" } });
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    fireEvent.change(textarea, { target: { value: "😀".repeat(99) } });
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    expect(preparationPosts(fetch)).toHaveLength(0);
+    fireEvent.change(textarea, { target: { value: text } });
+    expect(screen.getByText(/Current length: 100\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByText(/Preparation saved\./)).toBeInTheDocument();
+    const body = JSON.parse(String(preparationPosts(fetch)[0][1]?.body));
+    expect(body.target).toEqual({ job_text: text });
+    expect(Array.from(body.target.job_text)).toHaveLength(100);
+    expect(body.target.job_text).toBe(text);
+  });
+
+  it("allows exactly 200,000 code points and rejects 200,001 astral characters", async () => {
+    const fetch = externalFetcher({ "POST /api/v1/applications/prepare": () => json(preparation("unicode-max"), 201) });
+    renderApp(fetch);
+    const textarea = await screen.findByLabelText("Job description");
+    fireEvent.change(textarea, { target: { value: "😀".repeat(200_000) } });
+    expect(screen.getByText(/Current length: 200,000\./)).toBeInTheDocument();
+    await waitForExternalPreparationReady();
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    await screen.findByRole("link", { name: "Review this preparation" });
+    expect(preparationPosts(fetch)).toHaveLength(1);
+    expect(Array.from(JSON.parse(String(preparationPosts(fetch)[0][1]?.body)).target.job_text)).toHaveLength(200_000);
+    fireEvent.change(textarea, { target: { value: "😀".repeat(200_001) } });
+    expect(screen.getByText(/Current length: 200,001\./)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    expect(preparationPosts(fetch)).toHaveLength(1);
+  });
+
+  it("sends only the active URL target, trims surrounding URL whitespace, and never fetches the URL in-browser", async () => {
+    const fetch = externalFetcher({ "POST /api/v1/applications/prepare": () => json(preparation("url-prep"), 201) });
+    renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "text should remain locally but not leak ".padEnd(100, "x") } });
+    fireEvent.click(screen.getByRole("radio", { name: "Job URL" }));
+    fireEvent.change(screen.getByLabelText("Public job URL"), { target: { value: "  https://jobs.example.test/role  " } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    await screen.findByRole("link", { name: "Review this preparation" });
+    const body = JSON.parse(String(preparationPosts(fetch)[0][1]?.body));
+    expect(body.target).toEqual({ job_url: "https://jobs.example.test/role" });
+    expect(fetch.mock.calls.some(([input]) => String(input).startsWith("https://jobs.example.test"))).toBe(false);
+  });
+
+  it("does not leak URL data when switching back to pasted-text mode", async () => {
+    const fetch = externalFetcher({ "POST /api/v1/applications/prepare": () => json(preparation("text-only"), 201) }); renderApp(fetch);
+    const mode = await screen.findByRole("radio", { name: "Job URL" }); fireEvent.click(mode);
+    fireEvent.change(screen.getByLabelText("Public job URL"), { target: { value: "https://jobs.example.test/stale" } });
+    fireEvent.click(screen.getByRole("radio", { name: /Paste job description/ }));
+    const exactText = "  Full supplied vacancy text\n".padEnd(100, "x");
+    fireEvent.change(screen.getByLabelText("Job description"), { target: { value: exactText } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    await screen.findByRole("link", { name: "Review this preparation" });
+    expect(JSON.parse(String(preparationPosts(fetch)[0][1]?.body)).target).toEqual({ job_text: exactText });
+  });
+
+  it.each(["not a URL", "ftp://jobs.example.test/role", "//jobs.example.test/role"]) ("blocks invalid or non-HTTP URL %s", async (value) => {
+    const fetch = externalFetcher(); renderApp(fetch);
+    fireEvent.click(await screen.findByRole("radio", { name: "Job URL" }));
+    fireEvent.change(screen.getByLabelText("Public job URL"), { target: { value } });
+    await waitFor(() => expect(requestPaths(fetch).filter((path) => path === "/api/v1/profile")).toHaveLength(1));
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    expect(preparationPosts(fetch)).toHaveLength(0);
+  });
+
+  it("serializes preparation options, omits blank questions, and caps questions at eight", async () => {
+    const fetch = externalFetcher({ "POST /api/v1/applications/prepare": () => json(preparation("options"), 201) }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "A".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.change(screen.getByLabelText("Target CV pages"), { target: { value: "3" } });
+    fireEvent.click(screen.getByLabelText("Include a cover letter"));
+    fireEvent.change(screen.getByLabelText("Question 1"), { target: { value: "   " } });
+    for (let index = 1; index < 8; index += 1) fireEvent.click(screen.getByRole("button", { name: "Add question" }));
+    expect(screen.queryByRole("button", { name: "Add question" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove question" })[0]);
+    expect(screen.getByRole("button", { name: "Add question" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add question" }));
+    expect(screen.queryByRole("button", { name: "Add question" })).not.toBeInTheDocument();
+    for (let index = 2; index <= 8; index += 1) fireEvent.change(screen.getByLabelText(`Question ${index}`), { target: { value: index === 8 ? "Last question?" : `Question ${index}?` } });
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    await screen.findByRole("link", { name: "Review this preparation" });
+    const body = JSON.parse(String(preparationPosts(fetch)[0][1]?.body));
+    expect(body).toEqual({ target: { job_text: "A".repeat(100) }, target_pages: 3, include_cover_letter: false, application_questions: ["Question 2?", "Question 3?", "Question 4?", "Question 5?", "Question 6?", "Question 7?", "Last question?"] });
+  });
+
+  it("fails closed for missing CV or display name and links to the appropriate remediation", async () => {
+    const cvFetch = externalFetcher({ "/api/v1/onboarding/status": () => json({ ...readyForPreparation, candidate_context_ready: false }) });
+    renderApp(cvFetch);
+    expect(await screen.findByRole("alert")).toHaveTextContent("A confirmed CV is required");
+    expect(screen.getByRole("link", { name: "Review or confirm your CV" })).toHaveAttribute("href", "/cv");
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    cleanup();
+    const profileFetch = externalFetcher({ "/api/v1/profile": () => json({ detail: "missing" }, 404) }); renderApp(profileFetch);
+    expect(await screen.findByRole("alert")).toHaveTextContent("application display name is required");
+    expect(screen.getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/");
+    expect(preparationPosts(profileFetch)).toHaveLength(0);
+  });
+
+  it("fails closed when prerequisites are unavailable and retries successfully without hiding history", async () => {
+    let checks = 0;
+    const fetch = externalFetcher({ "/api/v1/onboarding/status": () => ++checks === 1 ? json({}, 503) : json(readyForPreparation) });
+    renderApp(fetch);
+    expect(await screen.findByRole("heading", { name: "Applied AI Engineer" })).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not confirm the current preparation prerequisites");
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry prerequisites" }));
+    expect(await screen.findByRole("button", { name: "Create preparation" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Job description"), { target: { value: "B".repeat(100) } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create preparation" })).toBeEnabled());
+    expect(screen.getByRole("heading", { name: "Applied AI Engineer" })).toBeInTheDocument();
+  });
+
+  it("checks prerequisites even when the independent initial history request fails", async () => {
+    const fetch = externalFetcher({ "GET /api/v1/applications": () => json({}, 503), "POST /api/v1/applications/prepare": () => json(preparation("after-history-failure"), 201) }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "ready despite history issue".padEnd(100, "z") } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/after-history-failure");
+    expect(screen.getAllByRole("alert").some((item) => item.textContent?.includes("Application history is unavailable"))).toBe(true);
+  });
+
+  it("ignores a stale prerequisite failure that resolves after a newer ready retry", async () => {
+    const oldStatus = deferred<Response>(); const oldProfile = deferred<Response>(); let statusCalls = 0; let profileCalls = 0;
+    const fetch = externalFetcher({
+      "/api/v1/onboarding/status": () => ++statusCalls === 1 ? oldStatus.promise : json(readyForPreparation),
+      "/api/v1/profile": () => ++profileCalls === 1 ? oldProfile.promise : json(namedProfile),
+    });
+    renderApp(fetch);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry prerequisite check" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled());
+    fireEvent.change(screen.getByLabelText("Job description"), { target: { value: "C".repeat(100) } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create preparation" })).toBeEnabled());
+    oldStatus.resolve(json(readyForPreparation)); oldProfile.resolve(json({ detail: "offline" }, 503));
+    await waitFor(() => expect(profileCalls).toBe(2));
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeEnabled();
+    expect(screen.queryByText(/readiness could not be confirmed/)).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale successful but not-ready prerequisite response after a newer ready retry", async () => {
+    const oldStatus = deferred<Response>(); const oldProfile = deferred<Response>(); let statusCalls = 0; let profileCalls = 0;
+    const fetch = externalFetcher({
+      "/api/v1/onboarding/status": () => ++statusCalls === 1 ? oldStatus.promise : json(readyForPreparation),
+      "/api/v1/profile": () => ++profileCalls === 1 ? oldProfile.promise : json(namedProfile),
+    }); renderApp(fetch);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry prerequisite check" }));
+    fireEvent.change(screen.getByLabelText("Job description"), { target: { value: "newest readiness".padEnd(100, "z") } });
+    await waitForExternalPreparationReady();
+    oldStatus.resolve(json({ ...readyForPreparation, candidate_context_ready: false })); oldProfile.resolve(json(namedProfile));
+    await waitFor(() => expect(statusCalls).toBe(2));
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeEnabled();
+    expect(screen.queryByText(/A confirmed CV is required/)).not.toBeInTheDocument();
+  });
+
+  it("shows pending, disables mutable controls, and prevents duplicate preparation POSTs", async () => {
+    const post = deferred<Response>(); const fetch = externalFetcher({ "POST /api/v1/applications/prepare": () => post.promise }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "D".repeat(100) } });
+    await waitForExternalPreparationReady();
+    const form = screen.getByRole("form", { name: "Prepare another vacancy" });
+    fireEvent.submit(form); fireEvent.submit(form);
+    expect(await screen.findByRole("status")).toHaveTextContent("may take several minutes");
+    expect(screen.getByRole("button", { name: "Preparing…" })).toBeDisabled();
+    expect(screen.getByLabelText("Job description")).toBeDisabled();
+    expect(screen.getByRole("radio", { name: "Job URL" })).toBeDisabled();
+    expect(screen.getByLabelText("Target CV pages")).toBeDisabled();
+    expect(screen.getByLabelText("Include a cover letter")).toBeDisabled();
+    expect(screen.getByLabelText("Question 1")).toBeDisabled();
+    expect(preparationPosts(fetch)).toHaveLength(1);
+    post.resolve(json(preparation("pending-result"), 201));
+    expect(await screen.findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/pending-result");
+  });
+
+  it("keeps a confirmed 201 success and detail link when history refresh fails", async () => {
+    let historyCalls = 0;
+    const fetch = externalFetcher({
+      "GET /api/v1/applications": () => ++historyCalls === 1 ? json([preparation("old")]) : json({ detail: "offline" }, 503),
+      "POST /api/v1/applications/prepare": () => json(preparation("saved-new"), 201),
+    }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "E".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/saved-new");
+    expect(screen.getByRole("status")).toHaveTextContent("Preparation saved.");
+    expect((await screen.findAllByRole("alert")).some((item) => item.textContent?.includes("Application history could not be refreshed"))).toBe(true);
+    expect(screen.getByRole("heading", { name: "Applied AI Engineer" })).toBeInTheDocument();
+  });
+
+  it("refreshes successful preparation into the ordinary history list", async () => {
+    let historyCalls = 0;
+    const saved = preparation("created-visible", "Created through external form");
+    const fetch = externalFetcher({
+      "GET /api/v1/applications": () => ++historyCalls === 1 ? json([]) : json([saved]),
+      "POST /api/v1/applications/prepare": () => json(saved, 201),
+    }); renderApp(fetch);
+    expect(await screen.findByText(/No application preparations yet/)).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "new role".padEnd(100, "z") } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("heading", { name: "Created through external form" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/created-visible");
+    expect(historyCalls).toBe(2);
+  });
+
+  it("maps only the exact application-specific 422 detail to source-specific vacancy guidance", async () => {
+    const fetch = externalFetcher({ "POST /api/v1/applications/prepare": () => json({ detail: "Job detail is insufficient; provide job text." }, 422) }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "F".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not extract enough usable job requirements");
+    expect(screen.getByLabelText("Job description")).toHaveValue("F".repeat(100));
+    fireEvent.click(screen.getByRole("radio", { name: "Job URL" }));
+    fireEvent.change(screen.getByLabelText("Public job URL"), { target: { value: "https://jobs.example.test/role" } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Try switching to Paste job description");
+  });
+
+  it("uses generic safe copy for structured 422 validation and preserves history for 503", async () => {
+    let status = 422;
+    const fetch = externalFetcher({ "POST /api/v1/applications/prepare": () => json({ detail: [{ msg: "private validation internals" }] }, status) }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "G".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not validate this preparation request");
+    expect(screen.queryByText(/private validation internals/)).not.toBeInTheDocument();
+    status = 503; fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("temporarily unavailable");
+    expect(screen.getByRole("heading", { name: "Applied AI Engineer" })).toBeInTheDocument();
+    expect(preparationPosts(fetch)).toHaveLength(2);
+  });
+
+  it("rechecks 409 prerequisites and uses generic safe copy if both remain ready", async () => {
+    let checks = 0;
+    const fetch = externalFetcher({ "/api/v1/onboarding/status": () => { checks += 1; return json(readyForPreparation); }, "POST /api/v1/applications/prepare": () => json({ detail: "private conflict detail" }, 409) }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "H".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not complete this preparation with the current application data");
+    expect(screen.queryByText(/private conflict detail/)).not.toBeInTheDocument();
+    expect(checks).toBe(2);
+    expect(requestPaths(fetch).filter((path) => path === "/api/v1/profile")).toHaveLength(2);
+  });
+
+  it("maps 409 prerequisite refresh to CV/Profile remediation and fails closed if refresh is unavailable", async () => {
+    let statusCalls = 0;
+    const cvFetch = externalFetcher({ "/api/v1/onboarding/status": () => ++statusCalls === 1 ? json(readyForPreparation) : json({ ...readyForPreparation, candidate_context_ready: false }), "POST /api/v1/applications/prepare": () => json({}, 409) }); renderApp(cvFetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "I".repeat(100) } }); await waitForExternalPreparationReady(); fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("confirmed CV is required"); expect(screen.getByRole("link", { name: "Review or confirm your CV" })).toHaveAttribute("href", "/cv");
+    cleanup();
+    let profileCalls = 0;
+    const profileFetch = externalFetcher({ "/api/v1/profile": () => ++profileCalls === 1 ? json(namedProfile) : json({ detail: "missing" }, 404), "POST /api/v1/applications/prepare": () => json({}, 409) }); renderApp(profileFetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "J".repeat(100) } }); await waitForExternalPreparationReady(); fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("application display name is required"); expect(screen.getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/");
+    cleanup();
+    let profileChecks = 0;
+    const unavailableFetch = externalFetcher({ "/api/v1/profile": () => ++profileChecks === 1 ? json(namedProfile) : json({}, 503), "POST /api/v1/applications/prepare": () => json({}, 409) }); renderApp(unavailableFetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "K".repeat(100) } }); await waitForExternalPreparationReady(); fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not confirm the current preparation prerequisites");
+    expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
+  });
+
+  it("does not retry an interrupted POST and refreshes ordinary history without attributing entries", async () => {
+    let historyCalls = 0; const fetch = externalFetcher({
+      "GET /api/v1/applications": () => ++historyCalls === 1 ? json([preparation("existing", "Existing history")]) : json([preparation("existing", "Existing history"), preparation("new-history", "New saved history")]),
+      "POST /api/v1/applications/prepare": () => Promise.reject(new TypeError("offline")),
+    }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "L".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("cannot confirm from this response whether a preparation was created");
+    expect(screen.getByRole("alert")).toHaveTextContent("entries remain ordinary saved history");
+    expect(screen.getByRole("heading", { name: "New saved history" })).toBeInTheDocument();
+    expect(preparationPosts(fetch)).toHaveLength(1);
+    expect(historyCalls).toBe(2);
+    expect(screen.queryByText(/probably created by|attributed to this request/i)).not.toBeInTheDocument();
   });
 });
