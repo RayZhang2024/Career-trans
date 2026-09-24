@@ -107,7 +107,7 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
       const result = await api.request<ApplicationPreparation>("/api/v1/applications/prepare", { method: "POST", body: JSON.stringify(payload) });
       if (!alive.current || identityRef.current !== submitOwner) return;
       setCreated(result);
-      await onHistoryRefresh();
+      void onHistoryRefresh();
     } catch (reason) {
       if (!alive.current || identityRef.current !== submitOwner || (reason as Error)?.name === "AbortError") return;
       if (!(reason instanceof ApiError)) {

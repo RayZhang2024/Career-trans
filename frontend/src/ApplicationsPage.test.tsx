@@ -552,6 +552,36 @@ describe("Issue #198 direct vacancy preparation", () => {
     expect(await screen.findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/pending-result");
   });
 
+  it("unlocks preparation immediately after 201 while parent history refresh remains pending", async () => {
+    const historyRefresh = deferred<Response>();
+    const post = deferred<Response>();
+    let historyCalls = 0;
+    const fetch = externalFetcher({
+      "GET /api/v1/applications": () => ++historyCalls === 1 ? json([preparation("existing")]) : historyRefresh.promise,
+      "POST /api/v1/applications/prepare": () => post.promise,
+    }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "P".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+
+    expect(await screen.findByRole("button", { name: "Preparing…" })).toBeDisabled();
+    expect(screen.getByLabelText("Job description")).toBeDisabled();
+    expect(preparationPosts(fetch)).toHaveLength(1);
+
+    post.resolve(json(preparation("saved-before-history"), 201));
+    const reviewLink = await screen.findByRole("link", { name: "Review this preparation" });
+    expect(reviewLink).toHaveAttribute("href", "/applications/saved-before-history");
+    expect(reviewLink.closest('[role="status"]')).toHaveTextContent("Preparation saved.");
+    expect(await screen.findByRole("button", { name: "Create preparation" })).toBeEnabled();
+    expect(screen.getByLabelText("Job description")).toBeEnabled();
+    expect(screen.getByLabelText("Target CV pages")).toBeEnabled();
+    expect(screen.queryByText(/Preparing application… this may take several minutes/)).not.toBeInTheDocument();
+    expect(historyCalls).toBe(2);
+
+    historyRefresh.resolve(json([preparation("saved-before-history", "Refreshed history")]));
+    expect(await screen.findByRole("heading", { name: "Refreshed history" })).toBeInTheDocument();
+  });
+
   it("keeps confirmed preparation success while parent history fails and later refreshes", async () => {
     let historyCalls = 0;
     const fresh = preparation("fresh-history", "Fresh application history");
