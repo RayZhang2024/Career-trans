@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from app.schemas.job import JobProfile
 from app.schemas.matching import EvidenceRef, EvidenceSourceType, RequirementMatch
+from app.schemas.semantic_runtime_attribution import SemanticRuntimeAttribution
 
 
 class ApplicationTargetKind(StrEnum):
@@ -232,6 +233,7 @@ class ApplicationPreparationRead(BaseModel):
     preparation_contract_fingerprint: str
     result: ApplicationPreparationResult
     created_at: datetime
+    runtime_attribution: SemanticRuntimeAttribution
 
 
 class ApplicationPreparationReviewRead(BaseModel):

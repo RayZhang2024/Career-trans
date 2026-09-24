@@ -94,12 +94,12 @@ def _context():
     return CandidateContext(skills_text="Python", evidence=[CareerEvidence(evidence_id="e1", title="Delivery", text="Led delivery from 2 hours to 20 minutes", skills=["Python"], provenance=[CareerEvidenceProvenance(document_sha256="a" * 64, segment_ids=["s1"])])])
 
 
-def _service(db_session, monkeypatch, drafting=None, discovery=None, pages=None, settings=None):
+def _service(db_session, monkeypatch, drafting=None, discovery=None, pages=None, settings=None, runtime_snapshot=None):
     user = User(id="u1", email="account@example.test", password_hash="safe")
     profile = CandidateProfile(user_id="u1", display_name="Example Person", preferred_email="old@example.test", location="London")
     db_session.add_all([user, profile, CandidateStructuredProfile(user_id="u1", structured_json=_data().model_dump_json())]); db_session.commit()
     context = _context(); monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: context)
-    return ApplicationPreparationService(db_session, graph=_Graph(), drafting_agent=drafting or _Drafting(), user_discovery=discovery or _Discovery(), page_fetcher=pages, settings=settings), context
+    return ApplicationPreparationService(db_session, graph=_Graph(), drafting_agent=drafting or _Drafting(), user_discovery=discovery or _Discovery(), page_fetcher=pages, settings=settings, runtime_snapshot=runtime_snapshot), context
 
 
 def test_raw_text_creates_immutable_preparation_and_documents(db_session, monkeypatch):
@@ -124,6 +124,57 @@ def test_raw_text_creates_immutable_preparation_and_documents(db_session, monkey
     assert service.get("u1", result.id).identity.email == "old@example.test"
 
 
+def test_preparation_attribution_distinguishes_fresh_from_reused_analysis_and_is_immutable(db_session, monkeypatch, runtime_snapshot_a):
+    from app.schemas.ai_settings import SemanticOperation
+    from app.services.llm_runtime import resolve_runtime_snapshot
+
+    fresh_service, _ = _service(db_session, monkeypatch, runtime_snapshot=runtime_snapshot_a)
+    fresh = fresh_service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False))
+    expected_fresh = {
+        SemanticOperation.JOB_EXTRACTION.value,
+        SemanticOperation.REQUIREMENT_MATCHING.value,
+        SemanticOperation.CAREER_ALIGNMENT.value,
+        SemanticOperation.APPLICATION_DRAFTING.value,
+    }
+    assert set(fresh.runtime_attribution.operations) == expected_fresh
+    assert fresh.runtime_attribution.provider == runtime_snapshot_a.provider
+    for operation in expected_fresh:
+        resolved = runtime_snapshot_a.operation(operation)
+        assert fresh.runtime_attribution.operations[operation].model == resolved.model
+        assert fresh.runtime_attribution.operations[operation].reasoning_effort == resolved.reasoning_effort
+    from app.models.application_preparation import ApplicationPreparation
+    original_json = db_session.get(ApplicationPreparation, fresh.id).runtime_attribution_json
+
+    graph = _Graph()
+    graph_state = graph.invoke(job_text="synthetic", candidate_context=_context())
+    reusable = type("Reusable", (), {"job_profile": graph_state["job_profile"], "requirement_matches": graph_state["requirement_matches"]})()
+    reused_service = fresh_service
+    reused_service._user_discovery = _Discovery(reusable)
+    reused_service._graph.calls = 0
+    reusable_job = _job(); db_session.add(reusable_job); db_session.commit()
+    reused = reused_service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(discovered_job_id=reusable_job.id), include_cover_letter=False))
+    assert set(reused.runtime_attribution.operations) == {SemanticOperation.APPLICATION_DRAFTING.value}
+    assert reused_service._graph.calls == 0
+
+    current_runtime_b = resolve_runtime_snapshot(Settings(default_llm_provider="openai", application_drafting_model="gpt-5.6-sol"))
+    fresh_service._runtime_snapshot = current_runtime_b
+    assert fresh_service.get("u1", fresh.id).runtime_attribution.model_dump(mode="json") == fresh.runtime_attribution.model_dump(mode="json")
+    assert db_session.get(ApplicationPreparation, fresh.id).runtime_attribution_json == original_json
+    with pytest.raises(LookupError):
+        fresh_service.get("another-user", fresh.id)
+
+
+def test_legacy_preparation_attribution_projects_unavailable(db_session, monkeypatch):
+    from app.models.application_preparation import ApplicationPreparation
+
+    service, _ = _service(db_session, monkeypatch)
+    prepared = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False))
+    row = db_session.get(ApplicationPreparation, prepared.id)
+    row.runtime_attribution_json = None
+    db_session.commit()
+    assert service.get("u1", prepared.id).runtime_attribution.status == "legacy_unavailable"
+
+
 def test_raw_job_text_uses_semantic_metadata_without_synthetic_listing_authority(db_session, monkeypatch):
     service, _ = _service(db_session, monkeypatch)
     graph = _RawTextGraph()
@@ -141,9 +192,12 @@ def test_raw_job_text_uses_semantic_metadata_without_synthetic_listing_authority
 
 
 def test_unknown_skill_and_derived_number_fail_closed(db_session, monkeypatch):
+    from app.models.application_preparation import ApplicationPreparation
+
     service, _ = _service(db_session, monkeypatch, _Drafting(bad_skill=True))
     with pytest.raises(ValueError, match="skill"):
         service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20), include_cover_letter=False))
+    assert db_session.query(ApplicationPreparation).count() == 0
     service._drafting_agent = _Drafting(derived_number=True)
     with pytest.raises(ValueError, match="numerical"):
         service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20), include_cover_letter=False))
@@ -265,7 +319,7 @@ def test_preparation_input_fingerprint_keeps_v1_semantics_while_contract_bumps(d
     settings = Settings(default_llm_provider="openai", application_drafting_model="gpt-5.6-luna")
     service, _ = _service(db_session, monkeypatch, settings=settings)
     request = ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False)
-    before = service._resolve_target("u1", request, _context())
+    before = service._resolve_target("u1", request, _context()).target
     structured = service._structured("u1")
     catalog = service._bounded_sources(_context(), structured, before.requirement_matches)
     from app.schemas.application_preparation import ApplicationIdentitySnapshot
@@ -362,7 +416,7 @@ def test_reusable_target_resolution_does_not_construct_semantic_clients(db_sessi
         "u1",
         ApplicationPrepareRequest(target=ApplicationTargetInput(discovered_job_id=job.id)),
         context,
-    )
+    ).target
 
     assert target.canonical_discovered_job_id == job.id
     assert prepared_service._graph is None and prepared_service._drafting_agent is None
@@ -399,7 +453,7 @@ def test_essential_requirement_evidence_precedes_structural_anchor_budget(db_ses
     catalog = service._bounded_sources(context, data, [match])
     assert (EvidenceSourceType.CAREER_EVIDENCE.value, "essential-evidence") in catalog
     assert len(catalog) <= 18
-    target = service._resolve_target("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20)), context)
+    target = service._resolve_target("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20)), context).target
     draft_context = service._draft_context(target, catalog, data)
     assert draft_context["employment"]
     assert all((EvidenceSourceType.EMPLOYMENT.value, item["required_anchor_ref"]["source_ref"]) in catalog for item in draft_context["employment"])
@@ -555,7 +609,7 @@ def test_actual_contract_and_input_fingerprints_change_only_for_contract_or_opti
     assert first != provider_changed and first != model_changed
     service._settings = settings
     service._runtime_snapshot = resolve_runtime_snapshot(settings)
-    target = service._resolve_target("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20)), _context())
+    target = service._resolve_target("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20)), _context()).target
     # Request options are part of the preparation input identity, not evaluation reuse.
     source = service._bounded_sources(_context(), _data(), target.requirement_matches)
     from app.schemas.application_preparation import ApplicationIdentitySnapshot

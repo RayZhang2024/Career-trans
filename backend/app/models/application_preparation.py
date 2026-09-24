@@ -19,4 +19,5 @@ class ApplicationPreparation(Base):
     preparation_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     preparation_contract_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     preparation_result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    runtime_attribution_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

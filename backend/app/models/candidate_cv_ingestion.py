@@ -15,6 +15,7 @@ class CandidateCVIngestionDraft(Base):
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="uploaded")
     documents_json: Mapped[str] = mapped_column(Text, nullable=False)
     merged_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    runtime_attribution_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

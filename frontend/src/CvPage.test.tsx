@@ -28,6 +28,7 @@ const statusWith = (id: string, state: "uploaded" | "review_ready" | "confirmed"
 });
 const draftWith = (id: string, state: "uploaded" | "review_ready" | "confirmed", merged: TestCVData | null = null) => ({
   id, state, documents: [{ provenance: { filename: "cv.md" } }], merged, created_at: "", updated_at: "",
+  runtime_attribution: state === "uploaded" ? null : { status: "legacy_unavailable", provider: null, operations: {} },
 });
 const sizedFile = (name: string, size: number) => {
   const file = new File(["x"], name, { type: "text/markdown" });

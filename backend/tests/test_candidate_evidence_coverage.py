@@ -113,8 +113,9 @@ Delivered a GCP Vertex AI service with IAM and cost monitoring.
 
 def test_detailed_source_grounded_evidence_survives_confirmation_and_bounded_retrieval(
     db_session,
+    runtime_snapshot_a,
 ) -> None:
-    service = CVIngestionService(db_session, interpreter=_DetailedInterpreter())
+    service = CVIngestionService(db_session, interpreter=_DetailedInterpreter(), runtime_snapshot=runtime_snapshot_a)
     draft = service.upload("user-1", [("cv.md", "text/markdown", _DETAILED_CV)])
 
     reviewed = service.interpret("user-1", draft.id)
@@ -157,8 +158,8 @@ def test_detailed_source_grounded_evidence_survives_confirmation_and_bounded_ret
     }
 
 
-def test_broad_source_wording_does_not_gain_unsupported_implementation_facts(db_session) -> None:
-    service = CVIngestionService(db_session, interpreter=_BroadOnlyInterpreter())
+def test_broad_source_wording_does_not_gain_unsupported_implementation_facts(db_session, runtime_snapshot_a) -> None:
+    service = CVIngestionService(db_session, interpreter=_BroadOnlyInterpreter(), runtime_snapshot=runtime_snapshot_a)
     draft = service.upload(
         "user-1",
         [
@@ -184,7 +185,7 @@ def test_broad_source_wording_does_not_gain_unsupported_implementation_facts(db_
     assert "iam" not in rendered
 
 
-def test_invalid_evidence_segment_provenance_is_rejected(db_session) -> None:
+def test_invalid_evidence_segment_provenance_is_rejected(db_session, runtime_snapshot_a) -> None:
     class _InvalidProvenanceInterpreter:
         def interpret(self, documents):
             document = documents[0]
@@ -204,14 +205,14 @@ def test_invalid_evidence_segment_provenance_is_rejected(db_session) -> None:
                 ]
             )
 
-    service = CVIngestionService(db_session, interpreter=_InvalidProvenanceInterpreter())
+    service = CVIngestionService(db_session, interpreter=_InvalidProvenanceInterpreter(), runtime_snapshot=runtime_snapshot_a)
     draft = service.upload("user-1", [("cv.md", "text/markdown", b"# Project\nBuilt a service.")])
 
     with pytest.raises(ValueError, match="supplied source segments"):
         service.interpret("user-1", draft.id)
 
 
-def test_semantic_evidence_without_provenance_is_rejected_without_fallback(db_session) -> None:
+def test_semantic_evidence_without_provenance_is_rejected_without_fallback(db_session, runtime_snapshot_a) -> None:
     class _MissingProvenanceInterpreter:
         def interpret(self, _documents):
             return CandidateCVData(
@@ -226,7 +227,7 @@ def test_semantic_evidence_without_provenance_is_rejected_without_fallback(db_se
                 ]
             )
 
-    service = CVIngestionService(db_session, interpreter=_MissingProvenanceInterpreter())
+    service = CVIngestionService(db_session, interpreter=_MissingProvenanceInterpreter(), runtime_snapshot=runtime_snapshot_a)
     draft = service.upload(
         "user-1",
         [("cv.md", "text/markdown", b"# Project\nImplemented an API service.")],
@@ -239,7 +240,7 @@ def test_semantic_evidence_without_provenance_is_rejected_without_fallback(db_se
     assert db_session.scalars(select(CandidateEvidenceRecord)).all() == []
 
 
-def test_semantic_evidence_can_preserve_multiple_valid_source_segments(db_session) -> None:
+def test_semantic_evidence_can_preserve_multiple_valid_source_segments(db_session, runtime_snapshot_a) -> None:
     class _MultiSegmentInterpreter:
         def interpret(self, documents):
             document = documents[0]
@@ -263,7 +264,7 @@ def test_semantic_evidence_can_preserve_multiple_valid_source_segments(db_sessio
                 ]
             )
 
-    service = CVIngestionService(db_session, interpreter=_MultiSegmentInterpreter())
+    service = CVIngestionService(db_session, interpreter=_MultiSegmentInterpreter(), runtime_snapshot=runtime_snapshot_a)
     draft = service.upload(
         "user-1",
         [

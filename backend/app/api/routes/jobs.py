@@ -23,6 +23,7 @@ from app.api.deps import (
     get_user_requirement_matching_service,
     get_user_job_discovery_service,
     get_user_job_discovery_read_service,
+    get_user_job_discovery_history_read_service,
     get_discovery_schedule_service,
     get_scheduled_discovery_execution_service,
 )
@@ -65,6 +66,7 @@ from app.schemas.discovery_schedule import DiscoveryScheduleCreate, DiscoverySch
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
+from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
 from app.services.employer_universe_service import EmployerUniverseService
@@ -147,7 +149,7 @@ def create_discovery_run(
 def list_discovery_runs(
     current_user: CurrentUser,
     limit: int = Query(default=20, ge=1, le=100),
-    service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
+    service: UserJobDiscoveryHistoryReadService = Depends(get_user_job_discovery_history_read_service),
 ) -> DiscoveryRunSummaryResponse:
     return service.list_run_summaries(current_user.id, limit=limit)
 
@@ -155,7 +157,7 @@ def list_discovery_runs(
 @router.get("/discovery-runs/{run_id}/jobs/{discovered_job_id}", response_model=DiscoveryRunJobDetailRead)
 def get_historical_discovery_run_job(
     run_id: str, discovered_job_id: str, current_user: CurrentUser,
-    service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
+    service: UserJobDiscoveryHistoryReadService = Depends(get_user_job_discovery_history_read_service),
 ) -> DiscoveryRunJobDetailRead:
     try:
         return service.get_historical_run_job_detail(current_user.id, run_id, discovered_job_id)
@@ -167,7 +169,7 @@ def get_historical_discovery_run_job(
 def get_discovery_run(
     run_id: str,
     current_user: CurrentUser,
-    service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
+    service: UserJobDiscoveryHistoryReadService = Depends(get_user_job_discovery_history_read_service),
 ) -> DiscoveryRunDetailRead:
     try:
         return service.get_run_detail(current_user.id, run_id)

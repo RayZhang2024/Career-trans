@@ -95,7 +95,21 @@ export type DiscoveryRunJobSummary = {
   failure_stage: string | null; failure_kind: string | null; opportunity: UserOpportunitySummary | null;
 };
 export type DiscoveryRunDetail = DiscoveryRunSummary & { jobs: DiscoveryRunJobSummary[] };
-export type HistoricalRunJobDetail = { discovered_job_id: string; evaluation_id: string | null; outcome: DiscoveryRunJobSummary["outcome"]; failure_stage: string | null; failure_kind: string | null; opportunity: RankedJobOpportunity | null };
+export type SemanticRuntimeOperation =
+  | "cv_semantic_extraction" | "candidate_adviser" | "job_extraction" | "requirement_matching"
+  | "career_alignment" | "job_relevance" | "job_archetype" | "agentic_discovery" | "application_drafting";
+export type SemanticRuntimeReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type SemanticRuntimeOperationAttribution = { model: string; reasoning_effort: SemanticRuntimeReasoningEffort | null };
+export type SemanticRuntimeAttribution =
+  | { status: "available"; provider: string; operations: Partial<Record<SemanticRuntimeOperation, SemanticRuntimeOperationAttribution>> }
+  | { status: "not_used" | "legacy_unavailable"; provider: null; operations: Record<string, never> };
+export type CVIngestionDraft = {
+  id: string; state: "uploaded" | "review_ready" | "confirmed";
+  documents: Array<{ provenance: { filename: string } }>;
+  merged: Record<string, unknown> | null; created_at: string; updated_at: string;
+  runtime_attribution: SemanticRuntimeAttribution | null;
+};
+export type HistoricalRunJobDetail = { discovered_job_id: string; evaluation_id: string | null; outcome: DiscoveryRunJobSummary["outcome"]; failure_stage: string | null; failure_kind: string | null; opportunity: RankedJobOpportunity | null; runtime_attribution: SemanticRuntimeAttribution | null };
 export type InboxProvenance = { runtime: string; source_ref: string | null; discovered_via: string | null; imported_at: string };
 export type InboxSummary = {
   discovered_job_id: string; title: string; company: string | null; location: string | null;
@@ -176,6 +190,7 @@ export type ApplicationPreparation = {
     linkedin_url?: string | null; github_url?: string | null; portfolio_url?: string | null;
   };
   preparation_input_fingerprint: string; preparation_contract_fingerprint: string;
+  runtime_attribution: SemanticRuntimeAttribution;
   result: {
     cv: {
       professional_summary: string; summary_source_refs: ApplicationSourceRef[]; key_skills: string[];

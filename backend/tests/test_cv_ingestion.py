@@ -163,9 +163,9 @@ def test_confirmed_evidence_and_context_are_isolated_per_user(client, db_session
         app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
-def test_markdown_uses_semantic_interpreter_and_context_uses_confirmed_data(db_session) -> None:
+def test_markdown_uses_semantic_interpreter_and_context_uses_confirmed_data(db_session, runtime_snapshot_a) -> None:
     interpreter = FakeInterpreter()
-    service = CVIngestionService(db_session, interpreter=interpreter)
+    service = CVIngestionService(db_session, interpreter=interpreter, runtime_snapshot=runtime_snapshot_a)
     draft = service.upload("user-1", [("cv.md", "text/markdown", b"Python engineer")])
     service.interpret("user-1", draft.id)
     assert interpreter.calls == 1
@@ -221,9 +221,9 @@ def test_pdf_extraction_preserves_page_provenance() -> None:
     assert extracted.provenance.segment_ids == [segment.segment_id for segment in extracted.segments]
 
 
-def test_invalid_semantic_output_is_rejected_without_persistence(db_session) -> None:
+def test_invalid_semantic_output_is_rejected_without_persistence(db_session, runtime_snapshot_a) -> None:
     interpreter = SemanticCVInterpreter(InvalidResponseClient(), "test-model")
-    service = CVIngestionService(db_session, interpreter=interpreter)
+    service = CVIngestionService(db_session, interpreter=interpreter, runtime_snapshot=runtime_snapshot_a)
     draft = service.upload("user-1", [("cv.md", "text/markdown", b"# Experience\nPython engineer")])
     with pytest.raises(RuntimeError, match="invalid structured data"):
         service.interpret("user-1", draft.id)
@@ -275,8 +275,8 @@ def test_semantic_cv_interpreter_uses_provider_strict_schema_and_keeps_pydantic_
         )
 
 
-def test_interpret_state_machine_rejects_repeat_and_preserves_confirmed_data(db_session) -> None:
-    service = CVIngestionService(db_session, interpreter=FakeInterpreter())
+def test_interpret_state_machine_rejects_repeat_and_preserves_confirmed_data(db_session, runtime_snapshot_a) -> None:
+    service = CVIngestionService(db_session, interpreter=FakeInterpreter(), runtime_snapshot=runtime_snapshot_a)
     draft = service.upload("user-1", [("cv.md", "text/markdown", b"# Experience\nPython engineer")])
     reviewed = service.interpret("user-1", draft.id)
     with pytest.raises(ValueError, match="Only an uploaded"):

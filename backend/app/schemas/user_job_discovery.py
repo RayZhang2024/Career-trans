@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.discovery import JobSearchQuery
 from app.schemas.job_ranking import RankedJobOpportunity
 from app.schemas.job_ranking import PostingLegitimacyAssessment
+from app.schemas.semantic_runtime_attribution import SemanticRuntimeAttribution
 
 
 class DiscoveryRunStatus(StrEnum):
@@ -138,3 +139,4 @@ class DiscoveryRunJobDetailRead(BaseModel):
     failure_stage: str | None = None
     failure_kind: str | None = None
     opportunity: RankedJobOpportunity | None = None
+    runtime_attribution: SemanticRuntimeAttribution | None = None

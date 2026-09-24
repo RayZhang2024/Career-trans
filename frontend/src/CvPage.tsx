@@ -1,6 +1,7 @@
 import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { ApiError, useAuth } from "./auth";
-import type { OnboardingStatus } from "./api";
+import type { OnboardingStatus, SemanticRuntimeAttribution } from "./api";
+import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
 
 type Provenance = { document_sha256: string; segment_ids: string[]; source_kind: "cv" };
 type Evidence = { evidence_type: string; title: string; text: string; skills: string[]; provenance: Provenance[] };
@@ -10,7 +11,7 @@ type CVData = {
   projects: Array<Record<string, unknown>>; achievements: Array<Record<string, unknown>>;
   evidence: Evidence[];
 };
-type Draft = { id: string; state: "uploaded" | "review_ready" | "confirmed"; documents: Array<{ provenance: { filename: string } }>; merged: CVData | null; created_at: string; updated_at: string };
+type Draft = { id: string; state: "uploaded" | "review_ready" | "confirmed"; documents: Array<{ provenance: { filename: string } }>; merged: CVData | null; created_at: string; updated_at: string; runtime_attribution: SemanticRuntimeAttribution | null };
 
 const extensions = [".pdf", ".docx", ".md", ".markdown", ".json"];
 const maxFile = 5 * 1024 * 1024;
@@ -129,6 +130,7 @@ export function CvPage() {
   if (draft === undefined) return <main className="workspace cv-page"><section className="card"><h1>Loading your latest CV</h1><p className="muted">Resuming the CV draft saved to your account…</p></section></main>;
 
   return <main className="workspace cv-page">{error && <p role="alert">{error}</p>}{activePendingUpdate && <p className="notice">Your currently confirmed candidate profile remains active until this newer CV is confirmed.</p>}
+    <RuntimeAttributionPanel attribution={draft.runtime_attribution} boundary="cv" />
     {supersedePrompt && <section className="card supersede-warning" aria-label="Replace unfinished CV draft"><h2>Start a newer CV upload?</h2><p>This unfinished draft will remain stored, but the newer upload will become the draft resumed by onboarding.</p><div className="cv-actions"><button type="button" onClick={beginNewUpload}>Continue with new upload</button><button type="button" className="button-secondary" onClick={() => setSupersedePrompt(false)}>Keep current draft</button></div></section>}
     {draft.state === "uploaded" && <section className="card"><h1>CV uploaded</h1><p>Files: {draft.documents.map((item) => item.provenance.filename).join(", ")}</p><div className="cv-actions"><button disabled={Boolean(pending) || supersedePrompt} onClick={() => void interpret()}>Interpret CV</button><button className="button-secondary" disabled={Boolean(pending) || supersedePrompt} onClick={requestNewUpload}>Start new CV upload</button></div></section>}
     {draft.state === "review_ready" && <section className="card cv-review"><div><h1>Review your CV</h1><p className="muted">Save changes before confirming. Confirming makes the backend-saved review your active candidate context.</p><button className="button-secondary" disabled={Boolean(pending) || supersedePrompt} onClick={requestNewUpload}>Start new CV upload</button></div>{Object.keys(fields).map((section) => <StructuredSection section={section} data={review} onChange={changeReview} key={section} />)}<EvidenceCards data={review} onExclude={(index) => changeReview({ ...review, evidence: review.evidence.filter((_, itemIndex) => itemIndex !== index) })} />{dirty && <p className="notice">You have unsaved review changes. Save them before confirming this CV.</p>}<div className="cv-actions"><button disabled={Boolean(pending) || !dirty} onClick={() => void save()}>Save changes</button><button disabled={Boolean(pending) || dirty} onClick={() => void confirm()}>Confirm reviewed CV</button></div></section>}

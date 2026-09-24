@@ -3,6 +3,7 @@ from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.schemas.semantic_runtime_attribution import SemanticRuntimeAttribution
 
 
 class CVDocumentProvenance(BaseModel):
@@ -131,6 +132,7 @@ class CVIngestionDraftRead(BaseModel):
     merged: CandidateCVData | None = None
     created_at: datetime
     updated_at: datetime
+    runtime_attribution: SemanticRuntimeAttribution | None = None
 
 
 class CVIngestionConfirmResponse(BaseModel):

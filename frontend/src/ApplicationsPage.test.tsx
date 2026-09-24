@@ -22,6 +22,7 @@ const preparation = (id: string, title = "Applied AI Engineer", cover = true): A
   identity: { display_name: "Historic Name", email: "historic@example.test", phone: "020 0000", location: "London", linkedin_url: "https://linkedin.example.test/person", github_url: null, portfolio_url: null },
   preparation_input_fingerprint: "input", preparation_contract_fingerprint: "contract",
   result: { cv: { professional_summary: "Evidence-grounded summary.", summary_source_refs: [ref], key_skills: ["Python"], roles: [{ employer: "Example Ltd", title: "Engineer", start_date: "2020", end_date: "2024", location: "London", bullets: [{ text: "Delivered a useful system.", source_refs: [ref], priority: 80 }] }], selected_projects: [{ name: "Project A", text: "Built a system.", source_refs: [{ source_type: "project", source_ref: "project:0" }], priority: 60 }], education: ["MSc, Example University"], credentials: ["Cloud certification"] }, cover_letter: cover ? { body: "Dear team,\n\nI am interested in the role.", source_refs: [ref] } : null, answers: [{ question: "Describe your experience.", status: "drafted", answer: "I delivered a useful system.", source_refs: [ref] }, { question: "Do you have a clearance?", status: "unsupported", answer: null, source_refs: [] }], layout_status: "fit", target_pages: 2, actual_pdf_pages: 2 },
+  runtime_attribution: { status: "available", provider: "openai", operations: { application_drafting: { model: "historical-model", reasoning_effort: null } } },
   created_at: "2026-03-01T12:00:00Z",
 });
 const review = (preparationId: string, status: "available" | "legacy_unavailable" = "available", sources = [{ ...ref, text: "Historical delivery evidence from preparation time." }, { source_type: "project", source_ref: "project:0", text: "Historical project evidence." }]): ApplicationPreparationReview => ({ preparation_id: preparationId, evidence_snapshot_status: status, evidence_sources: sources });
@@ -170,6 +171,8 @@ describe("Issue #180 Applications workspace", () => {
   it("keeps saved preparation detail visible after a document 404", async () => {
     renderApp(fetcher({ "/api/v1/applications/p-1/cv.pdf": () => json({ detail: "not found" }, 404) }), "/applications/p-1");
     expect(await screen.findByRole("heading", { name: "Applied AI Engineer" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "AI runtime used" })).toBeInTheDocument();
+    expect(screen.getByText("historical-model · Provider default reasoning")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Download CV PDF" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("document could not be downloaded");
     expect(screen.getByRole("heading", { name: "Applied AI Engineer" })).toBeInTheDocument();
