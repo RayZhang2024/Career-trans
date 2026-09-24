@@ -425,6 +425,7 @@ describe("Issue #189 Settings → AI Models", () => {
     await waitForSettings();
     expect(catalogReads).toBe(3);
     expect(settingsReads).toBe(3);
+    expect(document.body).toHaveTextContent(/Revision 4/);
     expect(screen.getByLabelText("Default model")).toHaveValue("");
     expect(screen.getByLabelText("Default model")).toBeEnabled();
     expect(screen.getByRole("button", { name: "Save AI settings" })).toBeDisabled();
@@ -555,6 +556,24 @@ describe("Issue #189 Settings → AI Models", () => {
     expect(catalogReads).toBe(2);
     expect(settingsReads).toBe(2);
     expect(screen.getByLabelText("Default model")).toBeInTheDocument();
+  });
+
+  it("rejects an override-support mismatch even when the provider identity matches", async () => {
+    let catalogReads = 0;
+    let settingsReads = 0;
+    const api = fetcher({
+      "GET /api/v1/ai/models": () => json(++catalogReads === 1 ? catalog("openai", true) : catalog("openai", true)),
+      "GET /api/v1/ai/settings": () => json(++settingsReads === 1 ? settings({ provider: "openai", user_overrides_supported: false, preference_activity: "unsupported" }) : settings()),
+    });
+    renderSettings(api.mock);
+    expect(await screen.findByRole("alert")).toHaveTextContent("AI configuration changed while this page was loading");
+    expect(screen.queryByLabelText("Default model")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reload current AI settings" }));
+    await waitForSettings();
+    expect(catalogReads).toBe(2);
+    expect(settingsReads).toBe(2);
+    expect(screen.getByLabelText("Default model")).toBeInTheDocument();
+    expect(api.calls.filter((call) => call.method === "PUT")).toHaveLength(0);
   });
 
   it("keeps initial load errors non-writable and retries both resources only after an explicit action", async () => {
