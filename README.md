@@ -427,16 +427,19 @@ BRAVE_SEARCH_API_KEY
 Provider-backed semantic operations require the corresponding provider configuration. Deterministic automated tests do not require live provider calls.
 
 Semantic model defaults are deployment-owned through the nine `*_MODEL`
-settings documented in `backend/.env.example`. Authenticated users can store
-provider-scoped model and reasoning-effort preferences through the backend
-`/api/v1/ai/settings` API. V1B adds an authenticated Settings → AI Models
-page for editing deployment-supported model and reasoning-effort preferences;
-the page never displays per-user credentials or changes the deployment-owned provider.
-OpenAI exposes the locally supported GPT-5.6
+settings documented in `backend/.env.example`. Authenticated users can choose
+a default semantic model and reasoning effort, with optional per-operation
+overrides where supported, through Settings → AI Models and the backend
+`/api/v1/ai/settings` API. The deployment/server continues to own the provider
+and credentials; the page never displays per-user credentials or changes the
+deployment-owned provider. OpenAI exposes the locally supported GPT-5.6
 capability catalog, while Ollama deployment defaults remain available and
 user model/effort overrides are not offered. A null/unset reasoning effort
 preserves provider-default behavior by omitting the OpenAI reasoning parameter.
-Codex external discovery remains a separate host-side runtime.
+Preference changes affect future semantic work only: saved rankings, Career
+Adviser assessments, application preparations, and other persisted historical
+outputs are not rewritten. Codex external discovery remains a separate
+host-side runtime.
 
 ### 2. Frontend
 
