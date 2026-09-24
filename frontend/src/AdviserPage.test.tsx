@@ -32,6 +32,24 @@ it("treats authoritative intake 404 as first-time editable intake and strips upd
   expect(String((options as { body: string }).body)).not.toContain("updated_at");
 });
 
+it("shows pending and confirmed feedback for the Adviser intake save", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  let finishSave!: (value: unknown) => void;
+  const delayedSave = new Promise<unknown>((resolve) => { finishSave = resolve; });
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const direction = await screen.findByRole("textbox", { name: "Career direction" });
+  fireEvent.change(direction, { target: { value: "Updated synthetic direction" } });
+  request.mockReturnValueOnce(delayedSave).mockResolvedValueOnce(status()).mockRejectedValueOnce(new ApiError(404, ""));
+  fireEvent.click(screen.getByRole("button", { name: "Save intake" }));
+  expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
+  expect(screen.getByRole("status")).toHaveTextContent("Saving adviser intake…");
+  expect(screen.queryByText("Adviser intake saved.")).not.toBeInTheDocument();
+  finishSave({ ...intake, career_direction: "Updated synthetic direction" });
+  expect(await screen.findByText("Adviser intake saved.")).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Career direction" })).toHaveValue("Updated synthetic direction");
+});
+
 it("requires first intake Save before Generate and retains PUT authority without another intake GET", async () => {
   const ApiError = (await import("./auth")).ApiError;
   request.mockResolvedValueOnce(status()).mockRejectedValueOnce(new ApiError(404, "")).mockRejectedValueOnce(new ApiError(404, ""));
@@ -79,7 +97,7 @@ it("keeps an authoritative recovery notice after an assessment conflict refresh"
   await screen.findByRole("button", { name: "Generate assessment" });
   request.mockRejectedValueOnce(new ApiError(409, "")).mockResolvedValueOnce(status()).mockRejectedValueOnce(new ApiError(404, ""));
   fireEvent.click(screen.getByRole("button", { name: "Generate assessment" }));
-  expect(await screen.findByRole("status")).toHaveTextContent("Adviser state changed. The current state has been refreshed.");
+  expect(await screen.findByText("Adviser state changed. The current state has been refreshed.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Generate assessment" })).toBeEnabled();
 });
 
