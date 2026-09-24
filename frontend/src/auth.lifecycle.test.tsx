@@ -12,6 +12,7 @@ const status = {
   latest_cv_draft: null,
   adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 },
 };
+const passwordPolicy = { version: 1, min_length: 15, max_length: 128, common_passwords_rejected: true, composition_requirements: [] };
 
 function response(value: unknown, statusCode = 200): Response {
   return new Response(value === undefined ? "" : JSON.stringify(value), { status: statusCode });
@@ -135,31 +136,122 @@ describe("AuthProvider routed lifecycle", () => {
   });
 
   it("registers without creating a session and reports safe registration errors", async () => {
-    const fetch = vi.fn((url: string) => {
+    const fetch = vi.fn((url: string, _init?: RequestInit) => {
       const path = new URL(url, window.location.origin).pathname;
+      if (path === "/api/v1/auth/password-policy") return Promise.resolve(response(passwordPolicy));
       if (path === "/api/v1/auth/register") return Promise.resolve(response({}, 201));
       throw new Error(`Unexpected request: ${path}`);
     });
     vi.stubGlobal("fetch", fetch);
     renderApp("/register");
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "new@example.test" } });
-    fireEvent.change(passwordInput(), { target: { value: "a-long-enough-password" } });
+    expect(await screen.findByText(/Use at least 15 characters/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.test" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a long and ordinary phrase" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "a long and ordinary phrase" } });
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
     await screen.findByRole("heading", { name: "Sign in" });
     expect(sessionStorage.getItem(TOKEN)).toBeNull();
+    expect(JSON.parse(fetch.mock.calls.find(([url]) => String(url).includes("/auth/register"))?.[1]?.body as string)).toEqual({ email: "new@example.test", password: "a long and ordinary phrase" });
   });
 
   it.each([[409, "An account already exists for this email."], [422, "Registration is unavailable."]])(
     "shows a safe registration error for %s", async (statusCode, message) => {
-      vi.stubGlobal("fetch", vi.fn(async () => response(undefined, statusCode)));
+      vi.stubGlobal("fetch", vi.fn(async (url: string) => new URL(url, window.location.origin).pathname === "/api/v1/auth/password-policy" ? response(passwordPolicy) : response(undefined, statusCode)));
       renderApp("/register");
-      fireEvent.change(screen.getByRole("textbox"), { target: { value: "new@example.test" } });
-      fireEvent.change(passwordInput(), { target: { value: "a-long-enough-password" } });
+      await screen.findByText(/Use at least 15 characters/);
+      fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.test" } });
+      fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a long and ordinary phrase" } });
+      fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "a long and ordinary phrase" } });
       fireEvent.click(screen.getByRole("button", { name: "Create account" }));
       expect(await screen.findByRole("alert")).toHaveTextContent(message);
       expect(sessionStorage.getItem(TOKEN)).toBeNull();
     },
   );
+
+  it("loads the public contract before displaying requirements and blocks submission on load failure", async () => {
+    const fetch = vi.fn(async () => { throw new Error("offline"); });
+    vi.stubGlobal("fetch", fetch);
+    renderApp("/register");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Password requirements could not be loaded");
+    expect(screen.getByRole("button", { name: "Create account" })).toBeDisabled();
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining("/api/v1/auth/password-policy"), expect.anything());
+  });
+
+  it("uses policy length values from the endpoint and updates both local length indicators", async () => {
+    const customPolicy = { ...passwordPolicy, min_length: 12, max_length: 16 };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new URL(url, window.location.origin).pathname === "/api/v1/auth/password-policy" ? response(customPolicy) : response({}, 201)));
+    renderApp("/register");
+    expect(await screen.findByText(/Use at least 12 characters/)).toBeInTheDocument();
+    expect(screen.getByText("Not met: At least 12 characters")).toBeInTheDocument();
+    expect(screen.getByText("Met: No more than 16 characters")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "short" } });
+    expect(screen.getByText("Not met: At least 12 characters")).toBeInTheDocument();
+    expect(screen.getByText("Met: No more than 16 characters")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "12345678901234567" } });
+    expect(screen.getByText("Met: At least 12 characters")).toBeInTheDocument();
+    expect(screen.getByText("Not met: No more than 16 characters")).toBeInTheDocument();
+  });
+
+  it("counts Unicode code points when checking password length", async () => {
+    const customPolicy = { ...passwordPolicy, min_length: 2, max_length: 2 };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new URL(url, window.location.origin).pathname === "/api/v1/auth/password-policy" ? response(customPolicy) : response({}, 201)));
+    renderApp("/register");
+    await screen.findByText(/Use at least 2 characters/);
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "🙂" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "🙂" } });
+    expect(screen.getByText("Not met: At least 2 characters")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "🙂🙂" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "🙂🙂" } });
+    expect(screen.getByText("Met: At least 2 characters")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create account" })).toBeEnabled();
+  });
+
+  it("requires confirmation after interaction and accepts long passphrases without composition checks", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new URL(url, window.location.origin).pathname === "/api/v1/auth/password-policy" ? response(passwordPolicy) : response({}, 201)));
+    renderApp("/register");
+    await screen.findByText(/Use at least 15 characters/);
+    const phrase = "an entirely ordinary long passphrase with spaces";
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: phrase } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "different phrase" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Passwords do not match.");
+    expect(screen.getByRole("button", { name: "Create account" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: phrase } });
+    expect(screen.queryByText("Passwords do not match.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create account" })).toBeEnabled();
+  });
+
+  it("shows a safe message when the backend rejects a common password", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new URL(url, window.location.origin).pathname === "/api/v1/auth/password-policy" ? response(passwordPolicy) : response({ detail: "password_too_common" }, 422)));
+    renderApp("/register");
+    await screen.findByText(/Use at least 15 characters/);
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "preserved@example.test" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "password123456789" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "password123456789" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Choose a less common password.");
+    expect(screen.getByLabelText("Email")).toHaveValue("preserved@example.test");
+    expect(screen.getByLabelText("Password")).toHaveValue("password123456789");
+  });
+
+  it("prevents duplicate registration requests and shows a pending state", async () => {
+    let resolveRegistration!: (value: Response) => void;
+    const fetch = vi.fn((url: string) => new URL(url, window.location.origin).pathname === "/api/v1/auth/password-policy"
+      ? Promise.resolve(response(passwordPolicy))
+      : new Promise<Response>((resolve) => { resolveRegistration = resolve; }));
+    vi.stubGlobal("fetch", fetch);
+    renderApp("/register");
+    await screen.findByText(/Use at least 15 characters/);
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "pending@example.test" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "this is a long passphrase" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "this is a long passphrase" } });
+    const button = screen.getByRole("button", { name: "Create account" });
+    fireEvent.click(button);
+    expect(await screen.findByRole("button", { name: "Creating account…" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Creating account…" }));
+    expect(fetch.mock.calls.filter(([url]) => String(url).includes("/auth/register"))).toHaveLength(1);
+    resolveRegistration(response({}, 201));
+    await screen.findByRole("heading", { name: "Sign in" });
+  });
 
   it("logs in, validates the returned token, and reaches the protected app", async () => {
     vi.stubGlobal("fetch", vi.fn((url: string) => {
@@ -196,6 +288,8 @@ describe("AuthProvider routed lifecycle", () => {
     fireEvent.submit(form);
     expect(await screen.findByRole("button", { name: "Signing in…" })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent("Signing in…");
+    expect(screen.getByRole("textbox", { name: "Email" })).toBeDisabled();
+    expect(passwordInput()).toBeDisabled();
     fireEvent.submit(form);
     expect(fetch.mock.calls.filter(([url]) => new URL(url, window.location.origin).pathname === "/api/v1/auth/login")).toHaveLength(1);
     await act(async () => { resolveLogin(response({ access_token: "new-token" })); });
@@ -206,19 +300,25 @@ describe("AuthProvider routed lifecycle", () => {
     let resolveRegistration!: (value: Response) => void;
     const fetch = vi.fn((url: string) => {
       const path = new URL(url, window.location.origin).pathname;
+      if (path === "/api/v1/auth/password-policy") return Promise.resolve(response(passwordPolicy));
       if (path === "/api/v1/auth/register") return new Promise<Response>((done) => { resolveRegistration = done; });
       throw new Error(`Unexpected request: ${path}`);
     });
     vi.stubGlobal("fetch", fetch);
     renderApp("/register");
+    await screen.findByText(/Use at least 15 characters/);
     fireEvent.change(screen.getByRole("textbox", { name: "Email" }), { target: { value: "new@example.test" } });
     fireEvent.change(passwordInput(), { target: { value: "a-long-enough-password" } });
+    fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "a-long-enough-password" } });
     const form = screen.getByRole("button", { name: "Create account" }).closest("form")!;
     fireEvent.submit(form);
     expect(await screen.findByRole("button", { name: "Creating account…" })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent("Creating your account…");
+    expect(screen.getByLabelText("Email")).toBeDisabled();
+    expect(passwordInput()).toBeDisabled();
+    expect(screen.getByLabelText("Confirm password")).toBeDisabled();
     fireEvent.submit(form);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls.filter(([url]) => new URL(url, window.location.origin).pathname === "/api/v1/auth/register")).toHaveLength(1);
     await act(async () => { resolveRegistration(response({}, 201)); });
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
   });
@@ -303,15 +403,21 @@ describe("AuthProvider routed lifecycle", () => {
     vi.stubGlobal("fetch", vi.fn());
     renderApp("/login");
     expect(screen.getByLabelText("Email")).toHaveAttribute("name", "email");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("autoComplete", "email");
     expect(screen.getByLabelText("Password")).toHaveAttribute("name", "password");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("autoComplete", "current-password");
     expect(screen.getByRole("link", { name: "Create account" })).toHaveAttribute("href", "/register");
   });
 
   it("renders labelled register controls and a sign-in router link", () => {
-    vi.stubGlobal("fetch", vi.fn());
+    vi.stubGlobal("fetch", vi.fn(async () => response(passwordPolicy)));
     renderApp("/register");
     expect(screen.getByLabelText("Email")).toHaveAttribute("name", "email");
+    expect(screen.getByLabelText("Email")).toHaveAttribute("autoComplete", "email");
     expect(screen.getByLabelText("Password")).toHaveAttribute("name", "password");
+    expect(screen.getByLabelText("Password")).toHaveAttribute("autoComplete", "new-password");
+    expect(screen.getByLabelText("Confirm password")).toHaveAttribute("type", "password");
+    expect(screen.getByLabelText("Confirm password")).toHaveAttribute("autoComplete", "new-password");
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
   });
 
