@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { AdviserPage } from "./AdviserPage";
@@ -30,6 +30,31 @@ it("treats authoritative intake 404 as first-time editable intake and strips upd
   await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/intake", expect.objectContaining({ method: "PUT" })));
   const [, options] = request.mock.calls.find((call) => call[0] === "/api/v1/candidate-adviser/intake" && (call[1] as { method?: string } | undefined)?.method === "PUT") ?? [];
   expect(String((options as { body: string }).body)).not.toContain("updated_at");
+});
+
+it("shows pending and confirmed feedback for the Adviser intake save", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  let finishSave!: (value: unknown) => void;
+  let failStatusRefresh!: (error: Error) => void;
+  const delayedSave = new Promise<unknown>((resolve) => { finishSave = resolve; });
+  const delayedStatusRefresh = new Promise<unknown>((_, reject) => { failStatusRefresh = reject; });
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const direction = await screen.findByRole("textbox", { name: "Career direction" });
+  fireEvent.change(direction, { target: { value: "Updated synthetic direction" } });
+  request.mockReturnValueOnce(delayedSave).mockReturnValueOnce(delayedStatusRefresh).mockResolvedValueOnce(assessment("stale"));
+  fireEvent.click(screen.getByRole("button", { name: "Save intake" }));
+  expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
+  expect(screen.getByRole("status")).toHaveTextContent("Saving adviser intake…");
+  expect(screen.queryByText("Adviser intake saved.")).not.toBeInTheDocument();
+  await act(async () => { finishSave({ ...intake, career_direction: "Updated synthetic direction" }); });
+  expect(await screen.findByText("Adviser intake saved.")).toBeInTheDocument();
+  expect(await screen.findByText("Refreshing adviser context…")).toBeInTheDocument();
+  expect(screen.queryByText("Saving adviser intake…")).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Career direction" })).toHaveValue("Updated synthetic direction");
+  await act(async () => { failStatusRefresh(new ApiError(503, "")); });
+  expect(await screen.findByRole("alert")).toHaveTextContent("Adviser status is unavailable.");
+  expect(screen.getByText("Adviser intake saved.")).toBeInTheDocument();
 });
 
 it("requires first intake Save before Generate and retains PUT authority without another intake GET", async () => {
@@ -79,7 +104,7 @@ it("keeps an authoritative recovery notice after an assessment conflict refresh"
   await screen.findByRole("button", { name: "Generate assessment" });
   request.mockRejectedValueOnce(new ApiError(409, "")).mockResolvedValueOnce(status()).mockRejectedValueOnce(new ApiError(404, ""));
   fireEvent.click(screen.getByRole("button", { name: "Generate assessment" }));
-  expect(await screen.findByRole("status")).toHaveTextContent("Adviser state changed. The current state has been refreshed.");
+  expect(await screen.findByText("Adviser state changed. The current state has been refreshed.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Generate assessment" })).toBeEnabled();
 });
 

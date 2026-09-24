@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -176,6 +176,51 @@ describe("AuthProvider routed lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     await screen.findByText("Welcome person@example.test");
     expect(sessionStorage.getItem(TOKEN)).toBe("new-token");
+  });
+
+  it("shows login pending feedback and prevents duplicate authentication requests", async () => {
+    let resolveLogin!: (value: Response) => void;
+    const fetch = vi.fn((url: string) => {
+      const path = new URL(url, window.location.origin).pathname;
+      if (path === "/api/v1/auth/login") return new Promise<Response>((done) => { resolveLogin = done; });
+      if (path === "/api/v1/users/me") return Promise.resolve(response(user));
+      if (path === "/api/v1/onboarding/status") return Promise.resolve(response(status));
+      if (path === "/api/v1/profile") return Promise.resolve(response({}, 404));
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetch);
+    renderApp("/login");
+    fireEvent.change(screen.getByRole("textbox", { name: "Email" }), { target: { value: "person@example.test" } });
+    fireEvent.change(passwordInput(), { target: { value: "valid-password" } });
+    const form = screen.getByRole("button", { name: "Sign in" }).closest("form")!;
+    fireEvent.submit(form);
+    expect(await screen.findByRole("button", { name: "Signing in…" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Signing in…");
+    fireEvent.submit(form);
+    expect(fetch.mock.calls.filter(([url]) => new URL(url, window.location.origin).pathname === "/api/v1/auth/login")).toHaveLength(1);
+    await act(async () => { resolveLogin(response({ access_token: "new-token" })); });
+    expect(await screen.findByText("Welcome person@example.test")).toBeInTheDocument();
+  });
+
+  it("shows registration pending feedback and prevents duplicate registration requests", async () => {
+    let resolveRegistration!: (value: Response) => void;
+    const fetch = vi.fn((url: string) => {
+      const path = new URL(url, window.location.origin).pathname;
+      if (path === "/api/v1/auth/register") return new Promise<Response>((done) => { resolveRegistration = done; });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetch);
+    renderApp("/register");
+    fireEvent.change(screen.getByRole("textbox", { name: "Email" }), { target: { value: "new@example.test" } });
+    fireEvent.change(passwordInput(), { target: { value: "a-long-enough-password" } });
+    const form = screen.getByRole("button", { name: "Create account" }).closest("form")!;
+    fireEvent.submit(form);
+    expect(await screen.findByRole("button", { name: "Creating account…" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Creating your account…");
+    fireEvent.submit(form);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await act(async () => { resolveRegistration(response({}, 201)); });
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
   });
 
   it("reports invalid credentials without recursively expiring an authenticated session", async () => {
@@ -376,6 +421,43 @@ describe("AuthProvider routed lifecycle", () => {
     expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
     expect(screen.getByText("Saved")).toBeInTheDocument();
+  });
+
+  it("keeps confirmed profile-save feedback through the post-save form unmount and remount", async () => {
+    sessionStorage.setItem(TOKEN, "stored-token");
+    let resolveSave!: (value: Response) => void;
+    let resolveRefreshedProfile!: (value: Response) => void;
+    let profileGets = 0;
+    const created = { id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Synthetic" };
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      const path = new URL(url, window.location.origin).pathname;
+      if (path === "/api/v1/users/me") return Promise.resolve(response(user));
+      if (path === "/api/v1/onboarding/status") return Promise.resolve(response(status));
+      if (path === "/api/v1/profile" && init?.method === "POST") return new Promise<Response>((done) => { resolveSave = done; });
+      if (path === "/api/v1/profile") {
+        profileGets += 1;
+        return profileGets === 1 ? Promise.resolve(response({}, 404)) : new Promise<Response>((done) => { resolveRefreshedProfile = done; });
+      }
+      throw new Error(`Unexpected request: ${path}`);
+    }));
+    renderApp();
+    await screen.findByRole("heading", { name: "Create profile" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Headline" }), { target: { value: "Synthetic" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
+    expect(screen.queryByRole("status", { name: "Profile saved successfully." })).not.toBeInTheDocument();
+
+    await waitFor(() => expect(resolveSave).toBeTypeOf("function"));
+    await act(async () => { resolveSave(response(created)); });
+    expect(await screen.findByRole("status")).toHaveTextContent("Profile saved successfully.");
+    await waitFor(() => expect(profileGets).toBe(2));
+    expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Profile saved successfully.");
+
+    await act(async () => { resolveRefreshedProfile(response(created)); });
+    expect(await screen.findByRole("heading", { name: "Edit profile" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Profile saved successfully.");
   });
 
   it("protects /cv and resumes the authenticated CV page", async () => {

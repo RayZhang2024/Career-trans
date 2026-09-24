@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { ApiError } from "./auth";
 import { CvPage } from "./CvPage";
@@ -156,6 +156,117 @@ it("keeps semantic evidence read-only and blocks confirmation until exclusions a
   expect(request.mock.calls.some(([path]) => String(path).includes("/confirm"))).toBe(false);
 });
 
+it("makes upload pending state visible and blocks duplicate upload requests", async () => {
+  let finishUpload!: (value: unknown) => void;
+  request.mockResolvedValueOnce(noDraft).mockImplementationOnce(() => new Promise((resolve) => { finishUpload = resolve; })).mockResolvedValueOnce(noDraft);
+  render(<CvPage />);
+  const input = await screen.findByLabelText("CV files");
+  fireEvent.change(input, { target: { files: [new File(["synthetic"], "cv.md", { type: "text/markdown" })] } });
+  fireEvent.click(screen.getByRole("button", { name: "Upload CV" }));
+  expect(await screen.findByRole("button", { name: "Uploading…" })).toBeDisabled();
+  expect(screen.getByRole("status")).toHaveTextContent("Uploading CV…");
+  expect(request.mock.calls.filter(([path]) => path === "/api/v1/cv-ingestion/upload")).toHaveLength(1);
+  await act(async () => { finishUpload(draftWith("draft-uploading", "uploaded")); });
+});
+
+it("shows CV review save pending state and success only after the PATCH resolves", async () => {
+  const draft = draftWith("draft-save", "review_ready", mergedEmpty);
+  const saved = { ...draft, merged: mergedEmpty };
+  let finishSave!: (value: unknown) => void;
+  request
+    .mockResolvedValueOnce(statusWith("draft-save", "review_ready"))
+    .mockResolvedValueOnce(draft)
+    .mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+  render(<CvPage />);
+  await screen.findByRole("heading", { name: "Review your CV" });
+  fireEvent.click(screen.getByRole("button", { name: "Add Credential" }));
+  fireEvent.change(screen.getByLabelText("name"), { target: { value: "Synthetic credential" } });
+
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
+  expect(screen.getByRole("status")).toHaveTextContent("Saving CV changes…");
+  expect(screen.queryByText("CV changes saved.")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Saving…" }));
+  expect(request.mock.calls.filter(([path, init]) => path === "/api/v1/cv-ingestion/draft-save" && init?.method === "PATCH")).toHaveLength(1);
+
+  await act(async () => { finishSave(saved); });
+  expect(await screen.findByText("CV changes saved.")).toBeInTheDocument();
+  expect(screen.queryByText(/unsaved review changes/i)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled();
+  expect(request.mock.calls.filter(([path, init]) => path === "/api/v1/cv-ingestion/draft-save" && init?.method === "PATCH")).toHaveLength(1);
+});
+
+it("locks every CV review mutation while save owns the snapshot and restores edits after failure", async () => {
+  const merged: TestCVData = {
+    ...mergedEmpty,
+    employment: [{ employer: "Synthetic", title: "Engineer", start_date: "", end_date: "", location: "", description: "Original description" }],
+    credentials: [{ name: "Synthetic credential", credential_type: "certification", issuer: "", issued_date: "", expiry_date: "", status: "", description: "" }],
+    evidence: [{ evidence_type: "project", title: "Synthetic evidence", text: "Retained fact", skills: ["Python"], provenance: [] }],
+  };
+  const draft = draftWith("draft-locked", "review_ready", merged);
+  let rejectSave!: (error: Error) => void;
+  request
+    .mockResolvedValueOnce(statusWith("draft-locked", "review_ready"))
+    .mockResolvedValueOnce(draft)
+    .mockImplementationOnce(() => new Promise((_, reject) => { rejectSave = reject; }));
+  render(<CvPage />);
+  await screen.findByRole("heading", { name: "Review your CV" });
+  const employment = screen.getByRole("group", { name: "Employment 1" });
+  const description = within(employment).getByLabelText("description");
+  fireEvent.change(description, { target: { value: "Submitted description" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
+
+  expect(within(employment).getByLabelText("description")).toBeDisabled();
+  expect(screen.getByLabelText("credential type")).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Add Employment" })).toBeDisabled();
+  expect(within(employment).getByRole("button", { name: "Remove" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Exclude" })).toBeDisabled();
+  fireEvent.change(within(employment).getByLabelText("description"), { target: { value: "Later edit that must not stick" } });
+  fireEvent.change(screen.getByLabelText("credential type"), { target: { value: "formal_training" } });
+  expect(within(employment).getByLabelText("description")).toHaveValue("Submitted description");
+  expect(screen.getByLabelText("credential type")).toHaveValue("certification");
+  const patches = request.mock.calls.filter(([path, init]) => path === "/api/v1/cv-ingestion/draft-locked" && init?.method === "PATCH");
+  expect(patches).toHaveLength(1);
+  expect(JSON.parse(String(patches[0][1]?.body)).employment[0].description).toBe("Submitted description");
+
+  await act(async () => { rejectSave(new Error("offline")); });
+  expect(await screen.findByRole("alert")).toHaveTextContent("CV review changes could not be saved.");
+  expect(screen.getByText(/unsaved review changes/i)).toBeInTheDocument();
+  expect(within(employment).getByLabelText("description")).toHaveValue("Submitted description");
+  expect(within(employment).getByLabelText("description")).toBeEnabled();
+  expect(screen.getByLabelText("credential type")).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Add Employment" })).toBeEnabled();
+  expect(within(employment).getByRole("button", { name: "Remove" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Exclude" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+});
+
+it("keeps a failed CV save dirty, accessible, and explicitly retryable", async () => {
+  const draft = draftWith("draft-retry", "review_ready", mergedEmpty);
+  request
+    .mockResolvedValueOnce(statusWith("draft-retry", "review_ready"))
+    .mockResolvedValueOnce(draft)
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValueOnce({ ...draft, merged: mergedEmpty });
+  render(<CvPage />);
+  await screen.findByRole("heading", { name: "Review your CV" });
+  fireEvent.click(screen.getByRole("button", { name: "Add Credential" }));
+  fireEvent.change(screen.getByLabelText("name"), { target: { value: "Retryable credential" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("CV review changes could not be saved.");
+  expect(screen.getByText(/unsaved review changes/i)).toBeInTheDocument();
+  expect(screen.queryByText("CV changes saved.")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("name")).toHaveValue("Retryable credential");
+  expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(await screen.findByText("CV changes saved.")).toBeInTheDocument();
+  expect(screen.queryByText(/unsaved review changes/i)).not.toBeInTheDocument();
+  expect(request.mock.calls.filter(([path, init]) => path === "/api/v1/cv-ingestion/draft-retry" && init?.method === "PATCH")).toHaveLength(2);
+});
+
 
 it("removes an ordinary structured item and saves the corrected review", async () => {
   const merged = {
@@ -227,6 +338,8 @@ it("prevents duplicate interpret requests while the action is pending", async ()
   render(<CvPage />);
   const button = await screen.findByRole("button", { name: "Interpret CV" });
   fireEvent.click(button);
+  expect(await screen.findByRole("button", { name: "Interpreting…" })).toBeDisabled();
+  expect(screen.getByRole("status")).toHaveTextContent("Interpreting CV…");
   fireEvent.click(button);
   expect(request.mock.calls.filter(([path]) => path === "/api/v1/cv-ingestion/draft-p/interpret")).toHaveLength(1);
   finish(draftWith("draft-p", "review_ready", mergedEmpty));
