@@ -2,7 +2,7 @@ import json
 
 from sqlalchemy import select
 
-from app.api.deps import get_agentic_job_discovery_service, get_job_ranking_service
+from app.api.deps import get_user_agentic_job_discovery_service, get_user_job_ranking_service
 from app.main import app
 from app.models.user import User
 from app.schemas.agentic_discovery import (
@@ -97,8 +97,8 @@ def test_discover_agentic_me_uses_current_users_context_and_flows_to_rank_me(cli
                 analysed_count=0,
             )
 
-    app.dependency_overrides[get_agentic_job_discovery_service] = FakeDiscoveryService
-    app.dependency_overrides[get_job_ranking_service] = FakeRankingService
+    app.dependency_overrides[get_user_agentic_job_discovery_service] = FakeDiscoveryService
+    app.dependency_overrides[get_user_job_ranking_service] = FakeRankingService
     try:
         response_a = client.post("/api/v1/jobs/discover-agentic-me", headers=headers_a, json=_payload())
         response_b = client.post("/api/v1/jobs/discover-agentic-me", headers=headers_b, json=_payload())
@@ -115,14 +115,14 @@ def test_discover_agentic_me_uses_current_users_context_and_flows_to_rank_me(cli
         assert missing_context.status_code == 409
         assert "Upload, review and confirm" in missing_context.json()["detail"]
     finally:
-        app.dependency_overrides.pop(get_agentic_job_discovery_service, None)
-        app.dependency_overrides.pop(get_job_ranking_service, None)
+        app.dependency_overrides.pop(get_user_agentic_job_discovery_service, None)
+        app.dependency_overrides.pop(get_user_job_ranking_service, None)
 
 
 def test_discover_agentic_me_rejects_caller_supplied_context(client, db_session) -> None:
     headers, email = _auth(client, "discovery-schema@example.com")
     _confirm_context(db_session, email, evidence_title="Evidence")
-    app.dependency_overrides[get_agentic_job_discovery_service] = lambda: None
+    app.dependency_overrides[get_user_agentic_job_discovery_service] = lambda: None
     try:
         response = client.post(
             "/api/v1/jobs/discover-agentic-me",
@@ -130,5 +130,5 @@ def test_discover_agentic_me_rejects_caller_supplied_context(client, db_session)
             json={**_payload(), "candidate_context": {"profile_text": "not accepted"}},
         )
     finally:
-        app.dependency_overrides.pop(get_agentic_job_discovery_service, None)
+        app.dependency_overrides.pop(get_user_agentic_job_discovery_service, None)
     assert response.status_code == 422

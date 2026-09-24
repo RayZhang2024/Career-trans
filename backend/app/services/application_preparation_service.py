@@ -1,6 +1,7 @@
 """Application Preparation orchestration over existing candidate/job authorities."""
 
 import hashlib
+from collections.abc import Callable
 import json
 import re
 from datetime import datetime, timezone
@@ -34,6 +35,7 @@ from app.services.user_job_discovery_service import UserJobDiscoveryService, _ap
 from app.services.application_document_renderer import ApplicationDocumentRenderer
 from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
+from app.services.llm_runtime import PREPARATION_OPERATIONS, ResolvedRuntimeSnapshot, resolve_runtime_snapshot
 
 
 _CONTRACT_VERSION = "application-preparation-v2"
@@ -108,19 +110,25 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
     """Small coordinator; target resolution, drafting validation and rendering stay separate."""
 
     def __init__(
-        self, session: Session, *, graph: CareerAnalysisGraph,
-        drafting_agent: ApplicationDraftingAgent, user_discovery: UserJobDiscoveryService,
+        self, session: Session, *, graph: CareerAnalysisGraph | None = None,
+        drafting_agent: ApplicationDraftingAgent | None = None, user_discovery: UserJobDiscoveryService,
         page_fetcher: PageFetcher | None = None, vacancy_extractor: PageVacancyExtractor | None = None,
         settings: Settings | None = None, renderer_template_version: str = "ats_standard-v1",
+        runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+        graph_factory: Callable[[], CareerAnalysisGraph] | None = None,
+        drafting_agent_factory: Callable[[], ApplicationDraftingAgent] | None = None,
     ) -> None:
         super().__init__(session)
         self._graph = graph
         self._drafting_agent = drafting_agent
+        self._graph_factory = graph_factory
+        self._drafting_agent_factory = drafting_agent_factory
         self._user_discovery = user_discovery
         self._page_fetcher = page_fetcher
         self._vacancy_extractor = vacancy_extractor
         self._settings = settings or get_settings()
         self._renderer_template_version = renderer_template_version
+        self._runtime_snapshot = runtime_snapshot or resolve_runtime_snapshot(self._settings)
 
     def prepare(self, user_id: str, request: ApplicationPrepareRequest) -> ApplicationPreparationRead:
         # Validate every deterministic prerequisite before a semantic call.
@@ -140,11 +148,12 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
         target = self._resolve_target(user_id, request, context)
         source_catalog = self._bounded_sources(context, structured, target.requirement_matches)
         draft_context = self._draft_context(target, source_catalog, structured)
-        cv_draft = self._drafting_agent.draft_cv(draft_context)
+        drafting_agent = self._get_drafting_agent()
+        cv_draft = drafting_agent.draft_cv(draft_context)
         cv = self._materialize_cv(cv_draft, structured, source_catalog)
         letter = None
         if request.include_cover_letter:
-            letter = self._drafting_agent.draft_cover_letter({**draft_context, "cv_summary": cv.professional_summary})
+            letter = drafting_agent.draft_cover_letter({**draft_context, "cv_summary": cv.professional_summary})
             self._validate_text_and_refs(letter.body, letter.source_refs, source_catalog)
         answers = self._draft_answers(request.application_questions, draft_context, source_catalog)
         result = ApplicationPreparationResult(cv=cv, cover_letter=letter, answers=answers, target_pages=request.target_pages)
@@ -210,7 +219,7 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
         # A raw-text target has no independent listing authority.  Its local
         # wrapper is only a fallback if extraction does not identify a field.
         graph_listing = None if kind == ApplicationTargetKind.JOB_TEXT else listing
-        state = self._graph.invoke(job_text=listing.description, candidate_context=context, job_listing=graph_listing)
+        state = self._get_graph().invoke(job_text=listing.description, candidate_context=context, job_listing=graph_listing)
         profile = state.get("job_profile")
         matches = state.get("requirement_matches")
         if profile is None or not profile.requirements or not matches:
@@ -387,7 +396,7 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
     def _draft_answers(self, questions: list[str], draft_context: dict[str, object], catalog: dict[tuple[str, str], str]):
         if not questions:
             return []
-        drafted = self._drafting_agent.draft_answers({**draft_context, "questions": questions}).answers
+        drafted = self._get_drafting_agent().draft_answers({**draft_context, "questions": questions}).answers
         if len(drafted) != len(questions) or [item.question for item in drafted] != questions:
             raise ValueError("Application answer drafting did not return one answer per supplied question.")
         for item in drafted:
@@ -395,6 +404,20 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
                 assert item.answer is not None
                 self._validate_text_and_refs(item.answer, item.source_refs, catalog)
         return drafted
+
+    def _get_graph(self) -> CareerAnalysisGraph:
+        if self._graph is None:
+            if self._graph_factory is None:
+                raise RuntimeError("A career-analysis graph is required for fresh application preparation.")
+            self._graph = self._graph_factory()
+        return self._graph
+
+    def _get_drafting_agent(self) -> ApplicationDraftingAgent:
+        if self._drafting_agent is None:
+            if self._drafting_agent_factory is None:
+                raise RuntimeError("An application-drafting agent is required for application preparation.")
+            self._drafting_agent = self._drafting_agent_factory()
+        return self._drafting_agent
 
     @staticmethod
     def _unsupported_answer(question: str):
@@ -416,7 +439,12 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
         return _hash(_dump({"target": target, "identity": identity, "sources": sources, "structured": data, "options": {"target_pages": request.target_pages, "include_cover_letter": request.include_cover_letter, "application_questions": request.application_questions}}))
 
     def _contract_fingerprint(self) -> str:
-        return _hash(_dump({"contract": _CONTRACT_VERSION, "revision": _application_revision(), "renderer": self._renderer_template_version, "provider": self._settings.default_llm_provider.casefold().strip(), "models": {"cv": self._settings.application_drafting_model, "cover_letter": self._settings.application_drafting_model, "answer": self._settings.application_drafting_model}}))
+        return _hash(_dump({
+            "contract": _CONTRACT_VERSION,
+            "revision": _application_revision(),
+            "renderer": self._renderer_template_version,
+            "runtime": self._runtime_snapshot.fingerprint_projection(PREPARATION_OPERATIONS),
+        }))
 
 def _dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=_json_default)

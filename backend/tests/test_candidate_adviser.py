@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from app.agents.candidate_adviser import SemanticCandidateAdviser
-from app.api.deps import get_candidate_adviser_service
+from app.api.deps import get_user_candidate_adviser_service
 from app.main import app
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
@@ -294,7 +294,7 @@ def test_adviser_api_is_authenticated_and_user_scoped(client, db_session) -> Non
     assert user_a is not None
     _confirmed_cv(db_session, user_a)
     service = CandidateAdviserService(db_session, agent=_FakeAdviser())
-    app.dependency_overrides[get_candidate_adviser_service] = lambda: service
+    app.dependency_overrides[get_user_candidate_adviser_service] = lambda: service
     try:
         saved = client.put("/api/v1/candidate-adviser/intake", headers=headers_a, json=_intake().model_dump(mode="json"))
         assert saved.status_code == 200
@@ -305,7 +305,7 @@ def test_adviser_api_is_authenticated_and_user_scoped(client, db_session) -> Non
         assert client.post("/api/v1/candidate-adviser/assessment/confirm", headers=headers_a).json()["status"] == "confirmed"
         assert client.get("/api/v1/candidate-adviser/assessment", headers=headers_b).status_code == 404
     finally:
-        app.dependency_overrides.pop(get_candidate_adviser_service, None)
+        app.dependency_overrides.pop(get_user_candidate_adviser_service, None)
 
 
 def test_adviser_api_keeps_reads_and_prerequisite_failures_provider_free(client, db_session) -> None:
@@ -328,7 +328,7 @@ def test_adviser_api_keeps_reads_and_prerequisite_failures_provider_free(client,
         agent_factory=unavailable_adviser,
         clarification_interpreter_factory=unavailable_clarification,
     )
-    app.dependency_overrides[get_candidate_adviser_service] = lambda: service
+    app.dependency_overrides[get_user_candidate_adviser_service] = lambda: service
     try:
         # Missing intake wins over provider construction even with a CV.
         headers_without_intake, email_without_intake = _auth(client, "adviser-missing-intake@example.com")
@@ -364,7 +364,7 @@ def test_adviser_api_keeps_reads_and_prerequisite_failures_provider_free(client,
         assert client.post("/api/v1/candidate-adviser/assessment", headers=headers).status_code == 503
         assert calls == {"adviser": 1, "clarification": 0}
     finally:
-        app.dependency_overrides.pop(get_candidate_adviser_service, None)
+        app.dependency_overrides.pop(get_user_candidate_adviser_service, None)
 
 
 def test_adviser_api_clarification_factory_is_lazy_for_currentness_and_confirm(client, db_session) -> None:
@@ -405,7 +405,7 @@ def test_adviser_api_clarification_factory_is_lazy_for_currentness_and_confirm(c
         agent_factory=unavailable_adviser,
         clarification_interpreter_factory=unavailable_interpreter,
     )
-    app.dependency_overrides[get_candidate_adviser_service] = lambda: service
+    app.dependency_overrides[get_user_candidate_adviser_service] = lambda: service
     try:
         response = client.get("/api/v1/candidate-adviser/clarifications", headers=headers)
         assert response.status_code == 200, response.json()
@@ -421,7 +421,7 @@ def test_adviser_api_clarification_factory_is_lazy_for_currentness_and_confirm(c
         assert client.post(f"/api/v1/candidate-adviser/clarifications/{'a' * 64}/confirm", headers=headers).status_code == 200
         assert calls == {"adviser": 0, "clarification": 1}
     finally:
-        app.dependency_overrides.pop(get_candidate_adviser_service, None)
+        app.dependency_overrides.pop(get_user_candidate_adviser_service, None)
 
 
 def test_semantic_adviser_rejects_malformed_structured_output() -> None:

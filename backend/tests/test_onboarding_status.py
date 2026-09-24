@@ -172,7 +172,7 @@ def test_onboarding_status_with_assessment_is_provider_free_read_only_and_uses_e
     # A status route must not construct an LLM client or materialise question
     # rows merely to render a read model.
     monkeypatch.setattr(CandidateAdviserService, "list_clarifications", lambda *_args: (_ for _ in ()).throw(AssertionError("must not materialise clarifications")))
-    monkeypatch.setattr("app.api.deps.get_candidate_adviser_service", lambda: (_ for _ in ()).throw(AssertionError("provider-backed dependency must not be used")))
+    monkeypatch.setattr("app.api.deps.get_user_candidate_adviser_service", lambda: (_ for _ in ()).throw(AssertionError("provider-backed dependency must not be used")))
     writes: list[str] = []
     def observe(_conn, _cursor, statement, _parameters, _context, _many):
         if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):

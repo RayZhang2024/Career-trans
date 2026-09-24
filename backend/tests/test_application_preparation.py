@@ -28,6 +28,7 @@ from app.schemas.matching import EvidenceRef, EvidenceSourceType, MatchType, Req
 from app.services.application_document_renderer import ApplicationDocumentRenderer
 from app.services.application_preparation_service import ApplicationPreparationService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.llm_runtime import resolve_runtime_snapshot
 
 
 class _Drafting:
@@ -261,7 +262,7 @@ def test_empty_available_snapshot_is_not_confused_with_legacy_absence(db_session
 def test_preparation_input_fingerprint_keeps_v1_semantics_while_contract_bumps(db_session, monkeypatch):
     import app.services.application_preparation_service as preparation_module
 
-    settings = Settings(default_llm_provider="openai", application_drafting_model="model-a")
+    settings = Settings(default_llm_provider="openai", application_drafting_model="gpt-5.6-luna")
     service, _ = _service(db_session, monkeypatch, settings=settings)
     request = ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False)
     before = service._resolve_target("u1", request, _context())
@@ -338,6 +339,33 @@ def test_reusable_canonical_analysis_bypasses_graph(db_session, monkeypatch):
     job = _job(); db_session.add(job); db_session.commit()
     service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(discovered_job_id=job.id), include_cover_letter=False))
     assert discovery.reuse_calls == 1 and graph.calls == 0
+
+
+def test_reusable_target_resolution_does_not_construct_semantic_clients(db_session, monkeypatch):
+    service, context = _service(db_session, monkeypatch)
+    graph = _Graph()
+    state = graph.invoke(job_text="Python delivery role", candidate_context=context)
+    reusable = type("Reusable", (), {"job_profile": state["job_profile"], "requirement_matches": state["requirement_matches"]})()
+    settings = Settings(default_llm_provider="openai")
+    runtime = resolve_runtime_snapshot(settings)
+    monkeypatch.setattr(api_deps, "get_settings", lambda: settings)
+
+    def provider_construction_is_not_needed(*args, **kwargs):
+        pytest.fail("reusable target lookup must not construct a semantic provider client")
+
+    monkeypatch.setattr(api_deps, "get_semantic_response_client", provider_construction_is_not_needed)
+    prepared_service = api_deps.get_application_preparation_service(db_session, runtime)
+    prepared_service._user_discovery = _Discovery(reusable)
+    job = _job(); db_session.add(job); db_session.commit()
+
+    target = prepared_service._resolve_target(
+        "u1",
+        ApplicationPrepareRequest(target=ApplicationTargetInput(discovered_job_id=job.id)),
+        context,
+    )
+
+    assert target.canonical_discovered_job_id == job.id
+    assert prepared_service._graph is None and prepared_service._drafting_agent is None
 
 
 def test_url_requires_jobposting_metadata_and_stays_local(db_session, monkeypatch):
@@ -515,15 +543,18 @@ def test_supported_literal_numeric_claim_passes_but_derived_percentage_fails(db_
 
 
 def test_actual_contract_and_input_fingerprints_change_only_for_contract_or_options(db_session, monkeypatch):
-    settings = Settings(default_llm_provider="openai", application_drafting_model="model-a")
+    settings = Settings(default_llm_provider="openai", application_drafting_model="gpt-5.6-luna")
     service, _ = _service(db_session, monkeypatch, settings=settings)
     first = service._contract_fingerprint(); assert first == service._contract_fingerprint()
-    service._settings = Settings(default_llm_provider="ollama", application_drafting_model="model-a")
+    service._settings = Settings(default_llm_provider="ollama", application_drafting_model="gpt-5.6-luna")
+    service._runtime_snapshot = resolve_runtime_snapshot(service._settings)
     provider_changed = service._contract_fingerprint()
-    service._settings = Settings(default_llm_provider="openai", application_drafting_model="model-b")
+    service._settings = Settings(default_llm_provider="openai", application_drafting_model="gpt-5.6-sol")
+    service._runtime_snapshot = resolve_runtime_snapshot(service._settings)
     model_changed = service._contract_fingerprint()
     assert first != provider_changed and first != model_changed
     service._settings = settings
+    service._runtime_snapshot = resolve_runtime_snapshot(settings)
     target = service._resolve_target("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python role " * 20)), _context())
     # Request options are part of the preparation input identity, not evaluation reuse.
     source = service._bounded_sources(_context(), _data(), target.requirement_matches)
@@ -535,7 +566,7 @@ def test_actual_contract_and_input_fingerprints_change_only_for_contract_or_opti
 
 
 def test_contract_fingerprint_includes_renderer_version(db_session, monkeypatch):
-    service, _ = _service(db_session, monkeypatch, settings=Settings(default_llm_provider="openai", application_drafting_model="model-a"))
+    service, _ = _service(db_session, monkeypatch, settings=Settings(default_llm_provider="openai", application_drafting_model="gpt-5.6-luna"))
     first = service._contract_fingerprint(); service._renderer_template_version = "ats_standard-v2"
     assert first != service._contract_fingerprint()
 
@@ -583,6 +614,7 @@ def test_authenticated_api_owner_and_cross_user_download_isolation(client, db_se
         injected = {**payload, "candidate_context": {"evidence": []}}
         assert client.post("/api/v1/applications/prepare", json=injected, headers=owner).status_code == 422
     finally:
+        pass
         fastapi_app.dependency_overrides.pop(get_application_preparation_service, None)
 
 
@@ -603,9 +635,8 @@ def test_application_history_detail_and_downloads_are_provider_free(client, db_s
 
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setattr(api_deps, "get_semantic_response_client", provider_construction_would_503)
-    # The cached analysis constructor must not mask whether this request would
-    # otherwise traverse the provider dependency chain.
-    api_deps.get_job_analysis_service.cache_clear()
+    # Semantic service construction is request-scoped, so a prior direct
+    # builder call cannot mask this provider dependency chain.
     owner = {"Authorization": f"Bearer {create_access_token('u1')}"}
     other = {"Authorization": f"Bearer {create_access_token('u2')}"}
     try:
@@ -642,4 +673,4 @@ def test_application_history_detail_and_downloads_are_provider_free(client, db_s
         assert created.status_code == 503
         assert constructed
     finally:
-        api_deps.get_job_analysis_service.cache_clear()
+        pass

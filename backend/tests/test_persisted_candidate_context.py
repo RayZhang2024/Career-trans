@@ -2,7 +2,7 @@ import json
 
 from sqlalchemy import select
 
-from app.api.deps import get_job_ranking_service, get_requirement_matching_service
+from app.api.deps import get_user_job_ranking_service, get_requirement_matching_service
 from app.main import app
 from app.models.candidate_profile import CandidateProfile
 from app.models.user import User
@@ -117,7 +117,7 @@ def test_rank_me_reuses_existing_ranking_service_with_persisted_context(client, 
             captured.append(request)
             return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=0, relevance_screened_count=0, finalist_count=0, analysed_count=0)
 
-    app.dependency_overrides[get_job_ranking_service] = FakeRankingService
+    app.dependency_overrides[get_user_job_ranking_service] = FakeRankingService
     try:
         response = client.post(
             "/api/v1/jobs/rank-me",
@@ -129,7 +129,7 @@ def test_rank_me_reuses_existing_ranking_service_with_persisted_context(client, 
             "Platform delivery", "Systems project", "Engineer at Example", "MSc at University"
         ]
     finally:
-        app.dependency_overrides.pop(get_job_ranking_service, None)
+        app.dependency_overrides.pop(get_user_job_ranking_service, None)
 
 
 def test_context_summary_is_safe_and_user_scoped(client, db_session) -> None:

@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import deps
-from app.api.deps import get_cv_ingestion_service
+from app.api.deps import get_user_cv_ingestion_service
 from app.api.routes import config as config_routes
 from app.core.config import Settings
 from app.core.database import get_db
@@ -53,7 +53,7 @@ def _uploaded_markdown_draft(client: TestClient, headers: dict[str, str]) -> str
     ],
 )
 def test_cv_interpret_maps_expected_semantic_failures_to_safe_http_errors(client, db_session, error, expected_status, expected_detail) -> None:
-    app.dependency_overrides[get_cv_ingestion_service] = lambda: CVIngestionService(db_session, interpreter=FailingInterpreter(error))
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: CVIngestionService(db_session, interpreter=FailingInterpreter(error))
     try:
         headers = _auth(client)
         draft_id = _uploaded_markdown_draft(client, headers)
@@ -63,7 +63,7 @@ def test_cv_interpret_maps_expected_semantic_failures_to_safe_http_errors(client
         assert "Candidate private text" not in response.json()["detail"]
         assert "api_key" not in response.json()["detail"].casefold()
     finally:
-        app.dependency_overrides.pop(get_cv_ingestion_service, None)
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
 def test_cv_interpret_missing_openai_key_returns_503_at_api_boundary(client, db_session) -> None:
@@ -73,14 +73,14 @@ def test_cv_interpret_missing_openai_key_returns_503_at_api_boundary(client, db_
             interpreter_factory=lambda: SemanticCVInterpreter(
                 deps.get_semantic_response_client(
                     Settings(openai_api_key=None),
-                    model="cv-test-model",
+                    model="gpt-5.6-luna",
                     operation="cv_evidence_extraction",
                 ),
-                "cv-test-model",
+                "gpt-5.6-luna",
             ),
         )
 
-    app.dependency_overrides[get_cv_ingestion_service] = missing_key_service
+    app.dependency_overrides[get_user_cv_ingestion_service] = missing_key_service
     try:
         headers = _auth(client, "missing-key@example.com")
         draft_id = _uploaded_markdown_draft(client, headers)
@@ -89,7 +89,7 @@ def test_cv_interpret_missing_openai_key_returns_503_at_api_boundary(client, db_
         assert "OPENAI_API_KEY" in response.json()["detail"]
         assert "Candidate private text" not in response.json()["detail"]
     finally:
-        app.dependency_overrides.pop(get_cv_ingestion_service, None)
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
 def test_unexpected_cv_interpret_programming_error_remains_500(db_session) -> None:
@@ -97,7 +97,7 @@ def test_unexpected_cv_interpret_programming_error_remains_500(db_session) -> No
         yield db_session
 
     app.dependency_overrides[get_db] = override_db
-    app.dependency_overrides[get_cv_ingestion_service] = lambda: CVIngestionService(db_session, interpreter=FailingInterpreter(RuntimeError("programming defect")))
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: CVIngestionService(db_session, interpreter=FailingInterpreter(RuntimeError("programming defect")))
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
             headers = _auth(client, "unexpected-error@example.com")
@@ -105,7 +105,7 @@ def test_unexpected_cv_interpret_programming_error_remains_500(db_session) -> No
             response = client.post(f"/api/v1/cv-ingestion/{draft_id}/interpret", headers=headers)
         assert response.status_code == 500
     finally:
-        app.dependency_overrides.pop(get_cv_ingestion_service, None)
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
         app.dependency_overrides.pop(get_db, None)
 
 

@@ -4,6 +4,8 @@ import os
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.schemas.ai_settings import ReasoningEffort
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables or .env."""
@@ -47,6 +49,15 @@ class Settings(BaseSettings):
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("CANDIDATE_ADVISER_MODEL", "candidate_adviser_model"),
     )
+    cv_semantic_extraction_reasoning_effort: ReasoningEffort | None = None
+    candidate_adviser_reasoning_effort: ReasoningEffort | None = None
+    job_extraction_reasoning_effort: ReasoningEffort | None = None
+    requirement_matching_reasoning_effort: ReasoningEffort | None = None
+    career_alignment_reasoning_effort: ReasoningEffort | None = None
+    job_relevance_reasoning_effort: ReasoningEffort | None = None
+    job_archetype_reasoning_effort: ReasoningEffort | None = None
+    agentic_discovery_reasoning_effort: ReasoningEffort | None = None
+    application_drafting_reasoning_effort: ReasoningEffort | None = None
     application_drafting_model: str = Field(
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("APPLICATION_DRAFTING_MODEL", "application_drafting_model"),
