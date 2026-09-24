@@ -31,14 +31,5 @@ def test_studio_config_points_to_a_compiled_career_graph(
             "build_recommendation",
         }.issubset(studio.graph.get_graph().nodes)
     finally:
-        from app.api.deps import (
-            get_career_assessment_service,
-            get_job_analysis_service,
-            get_requirement_matching_service,
-        )
-
-        get_job_analysis_service.cache_clear()
-        get_requirement_matching_service.cache_clear()
-        get_career_assessment_service.cache_clear()
         get_settings.cache_clear()
         sys.modules.pop("app.workflows.studio", None)

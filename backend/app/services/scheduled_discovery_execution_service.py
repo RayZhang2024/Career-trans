@@ -1,6 +1,7 @@
 """Durable claim-then-execute orchestration for saved discovery schedules."""
 
 import json
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,7 @@ from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
+from app.services.llm_runtime import ResolvedRuntimeSnapshot
 
 STALE_EXECUTION_AGE = timedelta(hours=2)
 
@@ -39,11 +41,22 @@ class _ChannelOutcome:
 class ScheduledDiscoveryExecutionService:
     """Claims commit before acquisition, so provider work is never in a DB transaction."""
 
-    def __init__(self, session: Session, *, structured_ats: object, agentic_web_factory: Callable[[], object], user_runs: object) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        structured_ats: object,
+        agentic_web_factory: Callable[..., object],
+        user_runs: object | None = None,
+        user_runs_factory: Callable[[ResolvedRuntimeSnapshot], object] | None = None,
+        runtime_snapshot_resolver: Callable[[str], ResolvedRuntimeSnapshot] | None = None,
+    ) -> None:
         self._session = session
         self._structured_ats = structured_ats
         self._agentic_web_factory = agentic_web_factory
         self._user_runs = user_runs
+        self._user_runs_factory = user_runs_factory
+        self._runtime_snapshot_resolver = runtime_snapshot_resolver
 
     def process_due(self, now: datetime, limit: int) -> list[ScheduledDiscoveryExecution]:
         schedules = self._session.scalars(
@@ -132,6 +145,13 @@ class ScheduledDiscoveryExecutionService:
         query = JobSearchQuery.model_validate(snapshot["query"])
         acquisition = AcquisitionConfig.model_validate(snapshot["acquisition"])
         outcomes: list[_ChannelOutcome] = []
+        # A schedule owner snapshot is resolved before its first semantic stage,
+        # then shared with both agentic acquisition and user evaluation.
+        runtime_snapshot = (
+            self._resolve_runtime(execution.user_id)
+            if acquisition.agentic_web.enabled and self._runtime_snapshot_resolver is not None
+            else None
+        )
 
         if acquisition.structured_ats.enabled:
             try:
@@ -166,7 +186,7 @@ class ScheduledDiscoveryExecutionService:
         if acquisition.agentic_web.enabled:
             try:
                 config = acquisition.agentic_web
-                response = self._agentic_web_factory().discover(
+                response = self._agentic_service(runtime_snapshot).discover(
                     AgenticDiscoveryRequest(
                         candidate_context=context,
                         query=query,
@@ -216,7 +236,10 @@ class ScheduledDiscoveryExecutionService:
 
         evaluation = EvaluationConfig.model_validate(snapshot["evaluation"])
         try:
-            run = self._user_runs.start(
+            if runtime_snapshot is None and self._runtime_snapshot_resolver is not None:
+                runtime_snapshot = self._resolve_runtime(execution.user_id)
+            user_runs = self._user_run_service(runtime_snapshot)
+            run = user_runs.start(
                 execution.user_id,
                 DiscoveryRunCreateRequest(
                     query=query,
@@ -237,6 +260,21 @@ class ScheduledDiscoveryExecutionService:
             return self._finish(execution, status, now, summaries, failures)
         except Exception:
             return self._finish(execution, ExecutionStatus.FAILED, now, {"canonical_jobs": len(canonical_ids)}, {"evaluation": 1})
+
+    def _resolve_runtime(self, user_id: str) -> ResolvedRuntimeSnapshot:
+        assert self._runtime_snapshot_resolver is not None
+        return self._runtime_snapshot_resolver(user_id)
+
+    def _agentic_service(self, runtime_snapshot: ResolvedRuntimeSnapshot | None) -> object:
+        parameters = inspect.signature(self._agentic_web_factory).parameters
+        return self._agentic_web_factory(runtime_snapshot) if parameters else self._agentic_web_factory()
+
+    def _user_run_service(self, runtime_snapshot: ResolvedRuntimeSnapshot | None) -> object:
+        if runtime_snapshot is not None and self._user_runs_factory is not None:
+            return self._user_runs_factory(runtime_snapshot)
+        if self._user_runs is None:
+            raise RuntimeError("A user discovery service factory is required for evaluation.")
+        return self._user_runs
 
     def _recover_stale(self, schedule: DiscoverySchedule, now: datetime) -> None:
         if not schedule.active_execution_id:

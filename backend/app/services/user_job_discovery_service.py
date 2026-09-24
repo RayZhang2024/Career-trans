@@ -31,6 +31,7 @@ from app.services.job_presemantic_selection_service import JobPresemanticSelecti
 from app.services.job_ranking_service import JobRankingService
 from app.services.posting_legitimacy_service import PostingLegitimacyService
 from app.services.public_job_actionability import is_public_job_actionable
+from app.services.llm_runtime import JOB_EVALUATION_OPERATIONS, ResolvedRuntimeSnapshot, resolve_runtime_snapshot
 
 
 _CONTRACT_VERSION = "user-discovery-run-v1"
@@ -39,10 +40,11 @@ _CONTRACT_VERSION = "user-discovery-run-v1"
 class UserJobDiscoveryService:
     """Persist run history and only reuse complete, still-current user evaluations."""
 
-    def __init__(self, session: Session, *, ranking_service: JobRankingService | None = None, settings: Settings | None = None) -> None:
+    def __init__(self, session: Session, *, ranking_service: JobRankingService | None = None, settings: Settings | None = None, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> None:
         self._session = session
         self._ranking_service = ranking_service
         self._settings = settings or get_settings()
+        self._runtime_snapshot = runtime_snapshot or resolve_runtime_snapshot(self._settings)
 
     def start(self, user_id: str, request: DiscoveryRunCreateRequest) -> DiscoveryRunRead:
         if self._ranking_service is None:
@@ -286,10 +288,7 @@ class UserJobDiscoveryService:
         revision = _application_revision()
         return _fingerprint({
             "contract": _CONTRACT_VERSION, "revision": revision,
-            "provider": self._settings.default_llm_provider.casefold().strip(),
-            "models": {"relevance": self._settings.job_relevance_model, "archetype": self._settings.job_archetype_model,
-                       "extraction": self._settings.job_extraction_model, "matching": self._settings.requirement_matching_model,
-                       "alignment": self._settings.career_alignment_model},
+            "runtime": self._runtime_snapshot.fingerprint_projection(JOB_EVALUATION_OPERATIONS),
         })
 
     def _reusable_evaluation(self, user_id: str, job: DiscoveredJob, candidate: str, contract: str) -> UserJobEvaluation | None:

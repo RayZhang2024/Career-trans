@@ -7,17 +7,20 @@ from app.api.deps import (
     PersistedCandidateContext,
     get_job_analysis_service,
     get_job_ranking_service,
+    get_user_job_ranking_service,
     get_ats_resolver_service,
     get_company_source_discovery_service,
     get_employer_universe_service,
     get_discover_and_rank_service,
     get_agentic_job_discovery_service,
+    get_user_agentic_job_discovery_service,
     get_job_discovery_service,
     get_external_discovery_import_service,
     get_structured_ats_discovery_service,
     get_opportunity_inbox_service,
     get_job_detail_enrichment_service,
     get_requirement_matching_service,
+    get_user_requirement_matching_service,
     get_user_job_discovery_service,
     get_user_job_discovery_read_service,
     get_discovery_schedule_service,
@@ -310,7 +313,7 @@ def rank_jobs(
 def rank_jobs_for_current_user(
     payload: JobRankingMeRequest,
     candidate_context: PersistedCandidateContext,
-    service: JobRankingService = Depends(get_job_ranking_service),
+    service: JobRankingService = Depends(get_user_job_ranking_service),
 ) -> JobRankingResponse:
     """Rank jobs against only the authenticated user's confirmed CV-derived context."""
     return service.rank(
@@ -358,7 +361,7 @@ def discover_agentic_jobs(
 def discover_agentic_jobs_for_current_user(
     payload: AgenticDiscoveryMeRequest,
     candidate_context: PersistedCandidateContext,
-    service: AgenticJobDiscoveryService = Depends(get_agentic_job_discovery_service),
+    service: AgenticJobDiscoveryService = Depends(get_user_agentic_job_discovery_service),
 ) -> AgenticDiscoveryResponse:
     """Discover bounded public vacancies using only the caller's confirmed context."""
     return service.discover(
@@ -432,7 +435,7 @@ def match_job(
 def match_job_for_current_user(
     payload: JobMatchMeRequest,
     candidate_context: PersistedCandidateContext,
-    service: RequirementMatchingService = Depends(get_requirement_matching_service),
+    service: RequirementMatchingService = Depends(get_user_requirement_matching_service),
 ) -> JobMatchResponse:
     """Match a job using confirmed persisted evidence for the authenticated user."""
     try:

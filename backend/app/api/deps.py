@@ -46,6 +46,17 @@ from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
 from app.services.application_tracking_service import ApplicationTrackingService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
+from app.services.ai_settings_service import AiSettingsService
+from app.services.llm_runtime import (
+    JOB_EVALUATION_OPERATIONS,
+    PREPARATION_OPERATIONS,
+    RUNTIME_OPERATION_TO_SETTING,
+    ResolvedRuntimeSnapshot,
+    RuntimePreferenceError,
+    deployment_operation_values,
+    resolve_runtime_snapshot,
+    validate_combination,
+)
 from app.providers.jobs.greenhouse import GreenhouseJobSource
 from app.providers.jobs.ashby import AshbyJobSource
 from app.providers.jobs.lever import LeverJobSource
@@ -109,9 +120,21 @@ def get_semantic_response_client(
     *,
     model: str,
     operation: str,
+    runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
 ) -> SemanticResponseClient:
     """Resolve semantic LLMs independently of the configured web-search provider."""
     provider = settings.default_llm_provider.casefold().strip()
+    setting_operation = RUNTIME_OPERATION_TO_SETTING[operation]
+    if runtime_snapshot is not None:
+        selected = runtime_snapshot.operation(setting_operation)
+        model = selected.model
+        reasoning_effort = selected.reasoning_effort
+    else:
+        reasoning_effort = deployment_operation_values(settings)[setting_operation][1]
+    try:
+        validate_combination(provider, model, reasoning_effort)
+    except RuntimePreferenceError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     base_url = settings.effective_llm_base_url
     try:
         llm = LLMProviderFactory(
@@ -128,7 +151,7 @@ def get_semantic_response_client(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
-    return SemanticResponseClient(llm, operation=operation)
+    return SemanticResponseClient(llm, operation=operation, reasoning_effort=reasoning_effort)
 
 
 def validate_semantic_configuration(settings: Settings) -> None:
@@ -148,6 +171,11 @@ def validate_semantic_configuration(settings: Settings) -> None:
     for name, model in models.items():
         if not model.strip():
             raise SemanticProviderConfigurationError(f"{name} must be configured.")
+    for model, effort in deployment_operation_values(settings).values():
+        try:
+            validate_combination(provider, model, effort)
+        except RuntimePreferenceError as exc:
+            raise SemanticProviderConfigurationError(str(exc)) from exc
     try:
         LLMProviderFactory(
             EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
@@ -165,7 +193,18 @@ def validate_semantic_configuration(settings: Settings) -> None:
         raise SemanticProviderConfigurationError(str(exc)) from exc
 
 
-def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
+def get_user_runtime_snapshot(
+    db: DbSession,
+    current_user: CurrentUser,
+) -> ResolvedRuntimeSnapshot:
+    """Resolve once per authenticated workflow; this performs no provider work."""
+    return AiSettingsService(db).snapshot_for_user(current_user.id)
+
+
+def _build_cv_ingestion_service(
+    db: Session,
+    runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+) -> CVIngestionService:
     def build_interpreter() -> SemanticCVInterpreter:
         current_settings = get_settings()
         return SemanticCVInterpreter(
@@ -173,8 +212,9 @@ def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
                 current_settings,
                 model=current_settings.cv_semantic_extraction_model,
                 operation="cv_evidence_extraction",
+                runtime_snapshot=runtime_snapshot,
             ),
-            current_settings.cv_semantic_extraction_model,
+            runtime_snapshot.operation(RUNTIME_OPERATION_TO_SETTING["cv_evidence_extraction"]).model if runtime_snapshot else current_settings.cv_semantic_extraction_model,
         )
 
     return CVIngestionService(
@@ -183,12 +223,27 @@ def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
     )
 
 
+def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
+    """Deployment-default CV service for explicit system/development use."""
+    return _build_cv_ingestion_service(db)
+
+
+def get_user_cv_ingestion_service(
+    db: DbSession,
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> CVIngestionService:
+    return _build_cv_ingestion_service(db, runtime_snapshot)
+
+
 def get_persisted_candidate_context_loader(db: DbSession) -> PersistedCandidateContextLoader:
     """Request-scoped loader; user-specific contexts must never be globally cached."""
     return PersistedCandidateContextLoader(db)
 
 
-def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
+def _build_candidate_adviser_service(
+    db: Session,
+    runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+) -> CandidateAdviserService:
     def build_agent() -> SemanticCandidateAdviser:
         current_settings = get_settings()
         return SemanticCandidateAdviser(
@@ -196,8 +251,9 @@ def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
                 current_settings,
                 model=current_settings.candidate_adviser_model,
                 operation="candidate_adviser",
+                runtime_snapshot=runtime_snapshot,
             ),
-            current_settings.candidate_adviser_model,
+            runtime_snapshot.operation("candidate_adviser").model if runtime_snapshot else current_settings.candidate_adviser_model,
         )
 
     def build_interpreter() -> SemanticCandidateAdviserClarificationInterpreter:
@@ -207,8 +263,9 @@ def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
                 current_settings,
                 model=current_settings.candidate_adviser_model,
                 operation="candidate_adviser_clarification",
+                runtime_snapshot=runtime_snapshot,
             ),
-            current_settings.candidate_adviser_model,
+            runtime_snapshot.operation("candidate_adviser").model if runtime_snapshot else current_settings.candidate_adviser_model,
         )
 
     return CandidateAdviserService(
@@ -216,6 +273,17 @@ def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
         agent_factory=build_agent,
         clarification_interpreter_factory=build_interpreter,
     )
+
+
+def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
+    return _build_candidate_adviser_service(db)
+
+
+def get_user_candidate_adviser_service(
+    db: DbSession,
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> CandidateAdviserService:
+    return _build_candidate_adviser_service(db, runtime_snapshot)
 
 
 def get_confirmed_candidate_context(
@@ -234,32 +302,48 @@ def get_confirmed_candidate_context(
 PersistedCandidateContext = Annotated[CandidateContext, Depends(get_confirmed_candidate_context)]
 
 
-@lru_cache
 def get_job_analysis_service() -> JobAnalysisService:
     settings = get_settings()
+    return _build_job_analysis_service(settings)
+
+
+def _build_job_analysis_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> JobAnalysisService:
+    model = runtime_snapshot.operation("job_extraction").model if runtime_snapshot else settings.job_extraction_model
     extractor = OpenAIJobExtractor(
         api_key="",
-        model=settings.job_extraction_model,
+        model=model,
         client=get_semantic_response_client(
             settings,
-            model=settings.job_extraction_model,
+            model=model,
             operation="job_extraction",
+            runtime_snapshot=runtime_snapshot,
         ),
     )
-
     return JobAnalysisService(extractor=extractor)
 
 
-@lru_cache
 def get_requirement_matching_service() -> RequirementMatchingService:
     settings = get_settings()
+    return _build_requirement_matching_service(settings)
+
+
+def get_user_requirement_matching_service(
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> RequirementMatchingService:
+    """Build matching with the authenticated user's immutable workflow snapshot."""
+    return _build_requirement_matching_service(get_settings(), runtime_snapshot)
+
+
+def _build_requirement_matching_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> RequirementMatchingService:
+    model = runtime_snapshot.operation("requirement_matching").model if runtime_snapshot else settings.requirement_matching_model
     matcher = OpenAIRequirementMatcher(
         api_key="",
-        model=settings.requirement_matching_model,
+        model=model,
         client=get_semantic_response_client(
             settings,
-            model=settings.requirement_matching_model,
+            model=model,
             operation="requirement_matching",
+            runtime_snapshot=runtime_snapshot,
         ),
     )
     return RequirementMatchingService(matcher=matcher)
@@ -370,32 +454,49 @@ def get_agentic_web_search_provider(settings: Settings) -> WebSearchProvider:
 
 def get_agentic_job_discovery_service(db: DbSession) -> AgenticJobDiscoveryService:
     settings = get_settings()
+    return _build_agentic_job_discovery_service(db, settings)
+
+
+def _build_agentic_job_discovery_service(
+    db: Session,
+    settings: Settings,
+    runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+) -> AgenticJobDiscoveryService:
     # Resolve the search capability first so disabled mode fails before any in-process
     # semantic components are constructed.
     search_provider = get_agentic_web_search_provider(settings)
     return AgenticJobDiscoveryService(
         strategy_generator=OpenAISearchStrategyGenerator(
             api_key="",
-            model=settings.agentic_discovery_model,
+            model=runtime_snapshot.operation("agentic_discovery").model if runtime_snapshot else settings.agentic_discovery_model,
             client=get_semantic_response_client(
                 settings,
                 model=settings.agentic_discovery_model,
                 operation="search_strategy_generation",
+                runtime_snapshot=runtime_snapshot,
             ),
         ),
         search_provider=search_provider,
         page_fetcher=PublicHttpPageFetcher(),
         vacancy_extractor=OpenAIPageVacancyExtractor(
             api_key="",
-            model=settings.agentic_discovery_model,
+            model=runtime_snapshot.operation("agentic_discovery").model if runtime_snapshot else settings.agentic_discovery_model,
             client=get_semantic_response_client(
                 settings,
                 model=settings.agentic_discovery_model,
                 operation="web_vacancy_extraction",
+                runtime_snapshot=runtime_snapshot,
             ),
         ),
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
     )
+
+
+def get_user_agentic_job_discovery_service(
+    db: DbSession,
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> AgenticJobDiscoveryService:
+    return _build_agentic_job_discovery_service(db, get_settings(), runtime_snapshot)
 
 
 @lru_cache
@@ -422,44 +523,59 @@ def get_employer_universe_service(db: DbSession) -> EmployerUniverseService:
     return EmployerUniverseService(session=db)
 
 
-@lru_cache
 def get_job_relevance_agent() -> OpenAIJobRelevanceAgent:
     settings = get_settings()
+    return _build_job_relevance_agent(settings)
+
+
+def _build_job_relevance_agent(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> OpenAIJobRelevanceAgent:
+    model = runtime_snapshot.operation("job_relevance").model if runtime_snapshot else settings.job_relevance_model
     return OpenAIJobRelevanceAgent(
         api_key="",
-        model=settings.job_relevance_model,
+        model=model,
         client=get_semantic_response_client(
             settings,
-            model=settings.job_relevance_model,
+            model=model,
             operation="job_relevance",
+            runtime_snapshot=runtime_snapshot,
         ),
     )
 
 
-@lru_cache
 def get_job_archetype_agent() -> OpenAIJobArchetypeAgent:
     settings = get_settings()
+    return _build_job_archetype_agent(settings)
+
+
+def _build_job_archetype_agent(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> OpenAIJobArchetypeAgent:
+    model = runtime_snapshot.operation("job_archetype").model if runtime_snapshot else settings.job_archetype_model
     return OpenAIJobArchetypeAgent(
         api_key="",
-        model=settings.job_archetype_model,
+        model=model,
         client=get_semantic_response_client(
             settings,
-            model=settings.job_archetype_model,
+            model=model,
             operation="job_archetype",
+            runtime_snapshot=runtime_snapshot,
         ),
     )
 
 
-@lru_cache
 def get_career_assessment_service() -> CareerAssessmentService:
     settings = get_settings()
+    return _build_career_assessment_service(settings)
+
+
+def _build_career_assessment_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> CareerAssessmentService:
+    model = runtime_snapshot.operation("career_alignment").model if runtime_snapshot else settings.career_alignment_model
     agent = OpenAICareerAlignmentAgent(
         api_key="",
-        model=settings.career_alignment_model,
+        model=model,
         client=get_semantic_response_client(
             settings,
-            model=settings.career_alignment_model,
+            model=model,
             operation="career_alignment",
+            runtime_snapshot=runtime_snapshot,
         ),
     )
     return CareerAssessmentService(agent=agent)
@@ -485,6 +601,23 @@ def get_career_analysis_graph(
     )
 
 
+def _build_user_career_analysis_graph(runtime_snapshot: ResolvedRuntimeSnapshot) -> CareerAnalysisGraph:
+    settings = get_settings()
+    return CareerAnalysisGraph(
+        job_analysis_service=_build_job_analysis_service(settings, runtime_snapshot),
+        requirement_matching_service=_build_requirement_matching_service(settings, runtime_snapshot),
+        fit_assessment_service=FitAssessmentService(),
+        career_assessment_service=_build_career_assessment_service(settings, runtime_snapshot),
+        recommendation_service=RecommendationService(),
+    )
+
+
+def get_user_career_analysis_graph(
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> CareerAnalysisGraph:
+    return _build_user_career_analysis_graph(runtime_snapshot)
+
+
 def get_job_ranking_service(
     relevance_agent: Annotated[OpenAIJobRelevanceAgent, Depends(get_job_relevance_agent)],
     archetype_agent: Annotated[OpenAIJobArchetypeAgent, Depends(get_job_archetype_agent)],
@@ -493,34 +626,61 @@ def get_job_ranking_service(
     return JobRankingService(relevance_agent=relevance_agent, archetype_agent=archetype_agent, career_analysis_graph=career_analysis_graph)
 
 
+def get_user_job_ranking_service(
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> JobRankingService:
+    settings = get_settings()
+    return _build_user_job_ranking_service(settings, runtime_snapshot)
+
+
+def _build_user_job_ranking_service(
+    settings: Settings,
+    runtime_snapshot: ResolvedRuntimeSnapshot,
+) -> JobRankingService:
+    return JobRankingService(
+        relevance_agent=_build_job_relevance_agent(settings, runtime_snapshot),
+        archetype_agent=_build_job_archetype_agent(settings, runtime_snapshot),
+        career_analysis_graph=_build_user_career_analysis_graph(runtime_snapshot),
+    )
+
+
 def get_user_job_discovery_service(
     db: DbSession,
-    ranking_service: Annotated[JobRankingService, Depends(get_job_ranking_service)],
+    ranking_service: Annotated[JobRankingService, Depends(get_user_job_ranking_service)],
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
 ) -> UserJobDiscoveryService:
     """Server-owned personal run/reuse policy over canonical shared job IDs."""
-    return UserJobDiscoveryService(db, ranking_service=ranking_service)
+    return UserJobDiscoveryService(db, ranking_service=ranking_service, runtime_snapshot=runtime_snapshot)
 
 
-def get_user_job_discovery_read_service(db: DbSession) -> UserJobDiscoveryService:
+def get_user_job_discovery_read_service(
+    db: DbSession,
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> UserJobDiscoveryService:
     """Provider-free dependency for persisted Jobs GET projections."""
-    return UserJobDiscoveryService(db)
+    return UserJobDiscoveryService(db, runtime_snapshot=runtime_snapshot)
 
 
 def get_application_preparation_service(
     db: DbSession,
-    graph: Annotated[CareerAnalysisGraph, Depends(get_career_analysis_graph)],
-    discovery: Annotated[UserJobDiscoveryService, Depends(get_user_job_discovery_service)],
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
 ) -> ApplicationPreparationService:
     settings = get_settings()
-    agent = OpenAIApplicationDraftingAgent(
-        cv_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cv_drafting"),
-        cover_letter_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cover_letter"),
-        answer_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_answer_drafting"),
-        model=settings.application_drafting_model,
-    )
+
+    def build_drafting_agent() -> OpenAIApplicationDraftingAgent:
+        return OpenAIApplicationDraftingAgent(
+            cv_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cv_drafting", runtime_snapshot=runtime_snapshot),
+            cover_letter_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cover_letter", runtime_snapshot=runtime_snapshot),
+            answer_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_answer_drafting", runtime_snapshot=runtime_snapshot),
+            model=runtime_snapshot.operation("application_drafting").model,
+        )
+
     return ApplicationPreparationService(
-        db, graph=graph, drafting_agent=agent, user_discovery=discovery,
-        page_fetcher=PublicHttpPageFetcher(),
+        db,
+        user_discovery=UserJobDiscoveryService(db, runtime_snapshot=runtime_snapshot),
+        graph_factory=lambda: _build_user_career_analysis_graph(runtime_snapshot),
+        drafting_agent_factory=build_drafting_agent,
+        page_fetcher=PublicHttpPageFetcher(), settings=settings, runtime_snapshot=runtime_snapshot,
     )
 
 
@@ -541,14 +701,18 @@ def get_discovery_schedule_service(db: DbSession) -> DiscoveryScheduleService:
 def get_scheduled_discovery_execution_service(
     db: DbSession,
     structured_ats: Annotated[StructuredAtsDiscoveryService, Depends(get_structured_ats_discovery_service)],
-    user_runs: Annotated[UserJobDiscoveryService, Depends(get_user_job_discovery_service)],
 ) -> ScheduledDiscoveryExecutionService:
     """The agentic service is deliberately built only if a schedule enables it."""
     return ScheduledDiscoveryExecutionService(
         db,
         structured_ats=structured_ats,
-        agentic_web_factory=lambda: get_agentic_job_discovery_service(db),
-        user_runs=user_runs,
+        agentic_web_factory=lambda snapshot: _build_agentic_job_discovery_service(db, get_settings(), snapshot),
+        user_runs_factory=lambda snapshot: UserJobDiscoveryService(
+            db,
+            ranking_service=_build_user_job_ranking_service(get_settings(), snapshot),
+            runtime_snapshot=snapshot,
+        ),
+        runtime_snapshot_resolver=lambda user_id: AiSettingsService(db).snapshot_for_user(user_id),
     )
 
 

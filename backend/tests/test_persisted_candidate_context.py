@@ -2,7 +2,8 @@ import json
 
 from sqlalchemy import select
 
-from app.api.deps import get_job_ranking_service, get_requirement_matching_service
+from app.api.deps import get_user_job_ranking_service, get_user_requirement_matching_service
+from app.api import deps
 from app.main import app
 from app.models.candidate_profile import CandidateProfile
 from app.models.user import User
@@ -10,6 +11,8 @@ from app.schemas.candidate import CandidateContext
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.job_ranking import JobRankingResponse
 from app.schemas.matching import RequirementMatchSet
+from app.schemas.ai_settings import UserAiSettingsReplace
+from app.services.ai_settings_service import AiSettingsService
 from app.services.candidate_profile_compaction import candidate_career_profile, candidate_search_profile
 from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
 
@@ -87,7 +90,7 @@ def test_match_me_uses_only_current_users_confirmed_context(client, db_session) 
             captured.append(candidate_context)
             return RequirementMatchSet(matches=[])
 
-    app.dependency_overrides[get_requirement_matching_service] = FakeMatchingService
+    app.dependency_overrides[get_user_requirement_matching_service] = FakeMatchingService
     try:
         response = client.post("/api/v1/jobs/match-me", headers=headers_a, json={"job_profile": {"title": "Engineer", "requirements": []}})
         assert response.status_code == 200
@@ -104,7 +107,48 @@ def test_match_me_uses_only_current_users_confirmed_context(client, db_session) 
         assert "Upload, review and confirm" in missing_context.json()["detail"]
         assert email_b not in captured[0].profile_text
     finally:
-        app.dependency_overrides.pop(get_requirement_matching_service, None)
+        app.dependency_overrides.pop(get_user_requirement_matching_service, None)
+
+
+def test_match_me_uses_each_authenticated_users_matching_snapshot_without_leakage(
+    client,
+    db_session,
+    monkeypatch,
+) -> None:
+    headers_a, email_a = _auth(client, "match-runtime-a@example.com")
+    headers_b, email_b = _auth(client, "match-runtime-b@example.com")
+    user_a = _confirm_context(db_session, email_a)
+    user_b = _confirm_context(db_session, email_b)
+    settings_service = AiSettingsService(db_session)
+    settings_service.replace(
+        user_a,
+        UserAiSettingsReplace(expected_revision=0, default_model="gpt-5.6-luna", default_reasoning_effort="low"),
+    )
+    settings_service.replace(
+        user_b,
+        UserAiSettingsReplace(expected_revision=0, default_model="gpt-5.6-sol", default_reasoning_effort="high"),
+    )
+
+    configurations: list[tuple[str, str | None]] = []
+
+    class FakeMatchingService:
+        def match(self, _job, _candidate_context):
+            return RequirementMatchSet(matches=[])
+
+    def build_matching_service(_settings, runtime_snapshot):
+        operation = runtime_snapshot.operation("requirement_matching")
+        configurations.append((operation.model, operation.reasoning_effort.value if operation.reasoning_effort else None))
+        return FakeMatchingService()
+
+    monkeypatch.setattr(deps, "_build_requirement_matching_service", build_matching_service)
+
+    payload = {"job_profile": {"title": "Engineer", "requirements": []}}
+    response_a = client.post("/api/v1/jobs/match-me", headers=headers_a, json=payload)
+    response_b = client.post("/api/v1/jobs/match-me", headers=headers_b, json=payload)
+
+    assert response_a.status_code == 200
+    assert response_b.status_code == 200
+    assert configurations == [("gpt-5.6-luna", "low"), ("gpt-5.6-sol", "high")]
 
 
 def test_rank_me_reuses_existing_ranking_service_with_persisted_context(client, db_session) -> None:
@@ -117,7 +161,7 @@ def test_rank_me_reuses_existing_ranking_service_with_persisted_context(client, 
             captured.append(request)
             return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=0, relevance_screened_count=0, finalist_count=0, analysed_count=0)
 
-    app.dependency_overrides[get_job_ranking_service] = FakeRankingService
+    app.dependency_overrides[get_user_job_ranking_service] = FakeRankingService
     try:
         response = client.post(
             "/api/v1/jobs/rank-me",
@@ -129,7 +173,7 @@ def test_rank_me_reuses_existing_ranking_service_with_persisted_context(client, 
             "Platform delivery", "Systems project", "Engineer at Example", "MSc at University"
         ]
     finally:
-        app.dependency_overrides.pop(get_job_ranking_service, None)
+        app.dependency_overrides.pop(get_user_job_ranking_service, None)
 
 
 def test_context_summary_is_safe_and_user_scoped(client, db_session) -> None:

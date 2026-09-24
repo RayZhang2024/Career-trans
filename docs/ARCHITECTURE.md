@@ -430,6 +430,19 @@ A weaker subsequent discovery summary therefore cannot overwrite a richer
 verified description. External omissions remain non-authoritative lifecycle
 evidence and never make prior jobs inactive.
 
+## User-effective semantic runtime preferences (V1A)
+
+Deployment configuration remains the provider and fallback source. An
+authenticated user may store provider-scoped OpenAI model/reasoning preferences
+through the credential-free AI settings API. A pure immutable runtime snapshot
+resolves each logical operation once per workflow; semantic request clients are
+request/run-scoped and do not share user-effective configuration through global
+caches. Purpose-specific runtime projections, rather than the preference row
+revision, participate in evaluation and application-preparation fingerprints.
+Unset reasoning effort means provider default and is omitted from OpenAI
+requests. Ollama deployment behavior is retained, but V1A does not expose
+arbitrary local-model selection. Host-side Codex discovery remains separate.
+
 ---
 
 # 10. Application Tracking Model

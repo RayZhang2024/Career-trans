@@ -1,7 +1,6 @@
 """Small provider-neutral boundary for Career-trans semantic LLM operations."""
 
 import json
-import re
 from dataclasses import dataclass
 from enum import StrEnum
 from types import SimpleNamespace
@@ -14,6 +13,8 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agents.openai_client import create_traced_openai_client
+from app.schemas.ai_settings import ReasoningEffort
+from app.services.llm_runtime import MODEL_CAPABILITIES, RuntimePreferenceError, validate_combination
 
 
 class LLMCapability(StrEnum):
@@ -94,6 +95,7 @@ class SemanticLLM(Protocol):
         operation: str,
         required_capabilities: frozenset[LLMCapability] = frozenset(),
         output_schema: dict[str, object] | None = None,
+        reasoning_effort: str | None = None,
     ) -> str: ...
 
 
@@ -124,10 +126,16 @@ class OpenAISemanticLLM:
         operation: str,
         required_capabilities: frozenset[LLMCapability] = frozenset(),
         output_schema: dict[str, object] | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         _require_capabilities("openai", self.capabilities, required_capabilities)
         if output_schema is not None:
             validate_openai_structured_output_model(model)
+        if reasoning_effort is not None:
+            try:
+                validate_combination("openai", model, ReasoningEffort(reasoning_effort))
+            except (ValueError, RuntimePreferenceError) as exc:
+                raise SemanticProviderConfigurationError(str(exc)) from exc
         client = create_traced_openai_client(
             api_key=self._api_key,
             trace_name=operation,
@@ -140,6 +148,8 @@ class OpenAISemanticLLM:
                 {"role": "user", "content": user_prompt},
             ],
         }
+        if reasoning_effort is not None:
+            request["reasoning"] = {"effort": reasoning_effort}
         if output_schema is not None:
             request["text"] = {
                 "format": {
@@ -195,8 +205,11 @@ class OllamaSemanticLLM:
         operation: str,
         required_capabilities: frozenset[LLMCapability] = frozenset(),
         output_schema: dict[str, object] | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         del operation, output_schema  # Ollama has no hosted tracing capability in this bounded adapter.
+        if reasoning_effort is not None:
+            raise SemanticProviderConfigurationError("The configured provider does not support reasoning-effort selection.")
         _require_capabilities("ollama", self.capabilities, required_capabilities)
         try:
             payload = self._transport(
@@ -266,14 +279,15 @@ class LLMProviderFactory:
 class SemanticResponseClient:
     """Compatibility façade so existing prompt-owning agents keep their unchanged inputs."""
 
-    def __init__(self, llm: SemanticLLM, *, operation: str) -> None:
-        self.responses = _SemanticResponses(llm, operation=operation)
+    def __init__(self, llm: SemanticLLM, *, operation: str, reasoning_effort: ReasoningEffort | None = None) -> None:
+        self.responses = _SemanticResponses(llm, operation=operation, reasoning_effort=reasoning_effort)
 
 
 class _SemanticResponses:
-    def __init__(self, llm: SemanticLLM, *, operation: str) -> None:
+    def __init__(self, llm: SemanticLLM, *, operation: str, reasoning_effort: ReasoningEffort | None) -> None:
         self._llm = llm
         self._operation = operation
+        self._reasoning_effort = reasoning_effort
 
     def create(self, *, model: str, input: object, **kwargs: object) -> SimpleNamespace:
         required = {LLMCapability.STRUCTURED_OUTPUT}
@@ -288,6 +302,7 @@ class _SemanticResponses:
                 operation=self._operation,
                 required_capabilities=frozenset(required),
                 output_schema=_json_schema_from_response_text(kwargs.get("text")),
+                reasoning_effort=self._reasoning_effort.value if self._reasoning_effort else None,
             )
         )
 
@@ -333,18 +348,14 @@ def _require_capabilities(
         )
 
 
-_OPENAI_STRUCTURED_OUTPUT_MODEL = re.compile(
-    r"^(?:(?:gpt-4o(?:-mini)?|gpt-4\.1(?:-mini|-nano)?|gpt-5(?:-mini|-nano)?)(?:-\d{4}-\d{2}-\d{2})?|gpt-5\.6(?:-(?:luna|terra|sol))?)$"
-)
-
-
 def openai_structured_output_supported(model: str) -> bool:
     """Return only statically-known Structured Outputs compatibility.
 
     OpenAI's Structured Outputs capability is model-specific. Unknown aliases are
     intentionally not assumed compatible because a request-time 400 is avoidable.
     """
-    return bool(_OPENAI_STRUCTURED_OUTPUT_MODEL.fullmatch(model.strip()))
+    capability = MODEL_CAPABILITIES.get("openai", model)
+    return bool(capability and capability.structured_output)
 
 
 def validate_openai_structured_output_model(model: str) -> None:
@@ -353,6 +364,16 @@ def validate_openai_structured_output_model(model: str) -> None:
             "Configured OpenAI semantic model does not have a known "
             "Structured Outputs capability. Configure a supported OpenAI model."
         )
+
+
+def validate_openai_reasoning_effort(model: str, effort: str | None) -> None:
+    """Fail before provider invocation rather than silently dropping effort."""
+    if effort is None:
+        return
+    try:
+        validate_combination("openai", model, ReasoningEffort(effort))
+    except (ValueError, RuntimePreferenceError) as exc:
+        raise SemanticProviderConfigurationError(str(exc)) from exc
 
 
 def _structured_output_schema_rejection_message(operation: str) -> str:

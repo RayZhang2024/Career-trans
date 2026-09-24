@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.ai_settings import ReasoningEffort
+
 
 class LLMConfigurationRead(BaseModel):
     """Safe effective semantic configuration; intentionally excludes credential values."""
@@ -18,6 +20,15 @@ class LLMConfigurationRead(BaseModel):
     job_relevance_model: str
     job_archetype_model: str
     agentic_discovery_model: str
+    cv_semantic_extraction_reasoning_effort: ReasoningEffort | None
+    candidate_adviser_reasoning_effort: ReasoningEffort | None
+    job_extraction_reasoning_effort: ReasoningEffort | None
+    requirement_matching_reasoning_effort: ReasoningEffort | None
+    career_alignment_reasoning_effort: ReasoningEffort | None
+    job_relevance_reasoning_effort: ReasoningEffort | None
+    job_archetype_reasoning_effort: ReasoningEffort | None
+    agentic_discovery_reasoning_effort: ReasoningEffort | None
+    application_drafting_reasoning_effort: ReasoningEffort | None
     agentic_search_provider: str
     openai_web_search_model: str
     openai_api_key_configured: bool

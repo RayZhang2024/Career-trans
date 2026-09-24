@@ -1,8 +1,10 @@
 from functools import lru_cache
 import os
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.schemas.ai_settings import ReasoningEffort
 
 
 class Settings(BaseSettings):
@@ -13,6 +15,26 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator(
+        "cv_semantic_extraction_reasoning_effort",
+        "candidate_adviser_reasoning_effort",
+        "job_extraction_reasoning_effort",
+        "requirement_matching_reasoning_effort",
+        "career_alignment_reasoning_effort",
+        "job_relevance_reasoning_effort",
+        "job_archetype_reasoning_effort",
+        "agentic_discovery_reasoning_effort",
+        "application_drafting_reasoning_effort",
+        mode="before",
+    )
+    @classmethod
+    def _blank_reasoning_effort_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
     app_name: str = "Career Agent API"
     api_v1_prefix: str = "/api/v1"
@@ -47,6 +69,15 @@ class Settings(BaseSettings):
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("CANDIDATE_ADVISER_MODEL", "candidate_adviser_model"),
     )
+    cv_semantic_extraction_reasoning_effort: ReasoningEffort | None = None
+    candidate_adviser_reasoning_effort: ReasoningEffort | None = None
+    job_extraction_reasoning_effort: ReasoningEffort | None = None
+    requirement_matching_reasoning_effort: ReasoningEffort | None = None
+    career_alignment_reasoning_effort: ReasoningEffort | None = None
+    job_relevance_reasoning_effort: ReasoningEffort | None = None
+    job_archetype_reasoning_effort: ReasoningEffort | None = None
+    agentic_discovery_reasoning_effort: ReasoningEffort | None = None
+    application_drafting_reasoning_effort: ReasoningEffort | None = None
     application_drafting_model: str = Field(
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("APPLICATION_DRAFTING_MODEL", "application_drafting_model"),

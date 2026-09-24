@@ -158,10 +158,14 @@ def test_demo_analyse_and_match_returns_end_to_end_result(
 
 
 def test_demo_analyse_and_match_rejects_short_job_text(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/demo/analyse-and-match",
-        json={"job_text": "Too short"},
-    )
+    fastapi_app.dependency_overrides[get_demo_analysis_workflow] = lambda: object()
+    try:
+        response = client.post(
+            "/api/v1/demo/analyse-and-match",
+            json={"job_text": "Too short"},
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_demo_analysis_workflow, None)
 
     assert response.status_code == 422
 

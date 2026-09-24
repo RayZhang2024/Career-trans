@@ -8,6 +8,8 @@ from sqlalchemy import select
 from app.models.discovery_schedule import ScheduledDiscoveryExecution
 from app.models.user import User
 from app.schemas.candidate import CandidateContext
+from app.schemas.ai_settings import UserAiPreferences
+from app.core.config import Settings
 from app.schemas.discovery import JobListing, JobSearchQuery
 from app.schemas.discovery_schedule import AcquisitionConfig, AgenticWebScheduleConfig, DiscoveryScheduleCreate, DiscoverySchedulePatch, ScheduleCadence, ScheduleSpec, StructuredAtsScheduleConfig, TriggerKind
 from app.schemas.structured_ats_discovery import StructuredAtsDiscoveryResponse, StructuredAtsSourceDiagnostic
@@ -16,6 +18,7 @@ from app.schemas.agentic_discovery import AgenticDiscoveryDiagnostics, AgenticDi
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
+from app.services.llm_runtime import resolve_runtime_snapshot
 
 
 UTC = timezone.utc
@@ -174,6 +177,63 @@ def test_snapshot_query_constraints_reach_existing_structured_ats(db_session, mo
     assert request.excluded_companies == ["Avoid"]
     assert request.excluded_title_terms == ["Sales"]
     assert request.employment_types == ["FullTime"]
+
+
+def test_scheduled_agentic_acquisition_and_evaluation_share_one_owner_snapshot(db_session, monkeypatch):
+    user = _user(db_session, "scheduled-runtime-owner@example.com")
+    listing = _listing()
+    SqlAlchemyDiscoveredJobStateStore(db_session).persist([listing])
+    schedule = DiscoveryScheduleService(db_session).create(
+        user.id,
+        _payload(acquisition=AcquisitionConfig(agentic_web=AgenticWebScheduleConfig(enabled=True))),
+        datetime(2026, 9, 14, 8, tzinfo=UTC),
+    )
+    resolved = resolve_runtime_snapshot(
+        Settings(),
+        UserAiPreferences(default_model="gpt-5.6-sol"),
+        preference_revision=3,
+        persisted_override_provider="openai",
+    )
+    resolver_owners = []
+    acquisition_snapshots = []
+    evaluation_snapshots = []
+    settings_change = {"model": "gpt-5.6-terra"}
+
+    class Agentic:
+        def discover(self, request):
+            # A simulated preference write during acquisition affects only a later
+            # execution; this execution's already-resolved snapshot stays fixed.
+            settings_change["model"] = "gpt-5.6-luna"
+            return _agentic_response([listing])
+
+    class Runs:
+        def start(self, _user_id, _request):
+            return SimpleNamespace(id="scheduled-run", status=SimpleNamespace(value="completed"), funnel={})
+
+    def resolve(owner_id):
+        resolver_owners.append(owner_id)
+        return resolved
+
+    runner = ScheduledDiscoveryExecutionService(
+        db_session,
+        structured_ats=object(),
+        agentic_web_factory=lambda snapshot: acquisition_snapshots.append(snapshot) or Agentic(),
+        user_runs_factory=lambda snapshot: evaluation_snapshots.append(snapshot) or Runs(),
+        runtime_snapshot_resolver=resolve,
+    )
+    monkeypatch.setattr("app.services.scheduled_discovery_execution_service.PersistedCandidateContextLoader.load_confirmed", lambda *_: CandidateContext())
+    claimed = runner.claim(schedule.id, TriggerKind.MANUAL, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    assert claimed is not None
+
+    result = runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC))
+
+    assert result.status == "completed"
+    assert resolver_owners == [user.id]
+    assert acquisition_snapshots == [resolved]
+    assert evaluation_snapshots == [resolved]
+    assert acquisition_snapshots[0] is evaluation_snapshots[0]
+    assert resolved.operation("agentic_discovery").model == "gpt-5.6-sol"
+    assert settings_change["model"] == "gpt-5.6-luna"
 
 
 def test_channel_statuses_zero_handoff_and_linked_run(db_session, monkeypatch):

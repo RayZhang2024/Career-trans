@@ -105,10 +105,14 @@ def test_analyse_job_returns_structured_profile(client: TestClient) -> None:
 
 
 def test_analyse_job_rejects_too_short_text(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/jobs/analyse",
-        json={"job_text": "Too short"},
-    )
+    fastapi_app.dependency_overrides[get_job_analysis_service] = lambda: object()
+    try:
+        response = client.post(
+            "/api/v1/jobs/analyse",
+            json={"job_text": "Too short"},
+        )
+    finally:
+        fastapi_app.dependency_overrides.pop(get_job_analysis_service, None)
 
     assert response.status_code == 422
 

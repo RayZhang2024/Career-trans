@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from app.api.deps import get_job_ranking_service
+from app.api.deps import get_user_job_ranking_service
 from app.main import app
 from app.models.discovered_job import DiscoveredJob
 from app.models.user import User
@@ -104,7 +104,7 @@ def test_rank_me_can_rerank_inbox_job_with_confirmed_context(client, db_session)
             captured.append(request)
             return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=0, relevance_screened_count=0, finalist_count=0, analysed_count=0)
 
-    app.dependency_overrides[get_job_ranking_service] = FakeRankingService
+    app.dependency_overrides[get_user_job_ranking_service] = FakeRankingService
     try:
         record = db_session.scalar(select(DiscoveredJob).where(DiscoveredJob.title == "Engineer"))
         response = client.post("/api/v1/jobs/rank-me", headers=headers, json={"jobs": [UserJobDiscoveryService._listing(record).model_dump(mode="json")]})
@@ -112,7 +112,7 @@ def test_rank_me_can_rerank_inbox_job_with_confirmed_context(client, db_session)
         assert [job.title for job in captured[0].jobs] == ["Engineer"]
         assert [evidence.title for evidence in captured[0].candidate_context.evidence] == ["Delivery"]
     finally:
-        app.dependency_overrides.pop(get_job_ranking_service, None)
+        app.dependency_overrides.pop(get_user_job_ranking_service, None)
 
 
 def test_rank_me_still_requires_confirmed_context_for_persisted_inbox_jobs(client) -> None:

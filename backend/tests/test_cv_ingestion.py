@@ -7,7 +7,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 import pytest
 from sqlalchemy import select
 
-from app.api.deps import get_cv_ingestion_service
+from app.api.deps import get_user_cv_ingestion_service
 from app.main import app
 from app.models.candidate_cv_ingestion import (
     CandidateCVIngestionDraft,
@@ -103,7 +103,7 @@ def _json_cv() -> dict:
 def test_json_upload_import_is_deterministic_reviewable_and_requires_confirmation(client, db_session) -> None:
     interpreter = FakeInterpreter()
     service = CVIngestionService(db_session, interpreter=interpreter)
-    app.dependency_overrides[get_cv_ingestion_service] = lambda: service
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: service
     try:
         headers = _auth(client, "cv-json@example.com")
         upload = client.post("/api/v1/cv-ingestion/upload", headers=headers, files=[("files", ("cv.json", json.dumps(_json_cv()), "application/json"))])
@@ -128,24 +128,24 @@ def test_json_upload_import_is_deterministic_reviewable_and_requires_confirmatio
         assert repeated.json()["confirmed_evidence_count"] == 0
         assert len(db_session.scalars(select(CandidateEvidenceRecord)).all()) == 2
     finally:
-        app.dependency_overrides.pop(get_cv_ingestion_service, None)
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
 def test_cv_drafts_are_scoped_to_authenticated_user(client, db_session) -> None:
     service = CVIngestionService(db_session, interpreter=FakeInterpreter())
-    app.dependency_overrides[get_cv_ingestion_service] = lambda: service
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: service
     try:
         first = _auth(client, "first-cv@example.com")
         second = _auth(client, "second-cv@example.com")
         draft_id = client.post("/api/v1/cv-ingestion/upload", headers=first, files=[("files", ("cv.md", "# CV\nPython engineer", "text/markdown"))]).json()["id"]
         assert client.get(f"/api/v1/cv-ingestion/{draft_id}", headers=second).status_code == 404
     finally:
-        app.dependency_overrides.pop(get_cv_ingestion_service, None)
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
 def test_confirmed_evidence_and_context_are_isolated_per_user(client, db_session) -> None:
     service = CVIngestionService(db_session, interpreter=FakeInterpreter())
-    app.dependency_overrides[get_cv_ingestion_service] = lambda: service
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: service
     try:
         first_headers = _auth(client, "context-first@example.com")
         second_headers = _auth(client, "context-second@example.com")
@@ -160,7 +160,7 @@ def test_confirmed_evidence_and_context_are_isolated_per_user(client, db_session
         assert client.get(f"/api/v1/cv-ingestion/{draft.id}", headers=second_headers).status_code == 404
         assert first_headers
     finally:
-        app.dependency_overrides.pop(get_cv_ingestion_service, None)
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
 def test_markdown_uses_semantic_interpreter_and_context_uses_confirmed_data(db_session) -> None:
@@ -296,7 +296,7 @@ def test_interpret_state_machine_rejects_repeat_and_preserves_confirmed_data(db_
 
 def test_review_patch_is_owned_and_persists_only_after_confirm(client, db_session) -> None:
     service = CVIngestionService(db_session, interpreter=FakeInterpreter())
-    app.dependency_overrides[get_cv_ingestion_service] = lambda: service
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: service
     try:
         owner = _auth(client, "draft-owner@example.com")
         other = _auth(client, "draft-other@example.com")
@@ -319,7 +319,7 @@ def test_review_patch_is_owned_and_persists_only_after_confirm(client, db_sessio
         owner_id = db_session.scalar(select(User.id).where(User.email == "draft-owner@example.com"))
         assert PersistedCandidateContextLoader(db_session).load(owner_id).skills_text == "Rust"
     finally:
-        app.dependency_overrides.pop(get_cv_ingestion_service, None)
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 
 
 def test_upload_batch_and_media_validation(db_session) -> None:

@@ -220,7 +220,7 @@ def test_contract_fingerprint_uses_local_revision_and_relevant_configuration(db_
     discovery_module._CACHED_APPLICATION_REVISION = None
     monkeypatch.setattr(discovery_module.subprocess, "check_output", lambda *_a, **_k: "revision-b\n")
     changed_revision = UserJobDiscoveryService(db_session, ranking_service=ranking, settings=Settings()).evaluation_contract_fingerprint()
-    changed_model = UserJobDiscoveryService(db_session, ranking_service=ranking, settings=Settings(job_relevance_model="another-model")).evaluation_contract_fingerprint()
+    changed_model = UserJobDiscoveryService(db_session, ranking_service=ranking, settings=Settings(job_relevance_model="gpt-5.6-sol")).evaluation_contract_fingerprint()
     assert first == same
     assert first != changed_revision
     assert changed_revision != changed_model
@@ -277,15 +277,16 @@ def test_mixed_reuse_and_unexpected_failure_is_partial_failed(db_session, monkey
     db_session.add_all([_user("user-a"), job_a, job_b]); db_session.commit()
     monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
     service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
-    service.start("user-a", _request(job_a.id))
+    first_run = service.start("user-a", _request(job_a.id))
+    prior_run_ids = {first_run.id}
     service = UserJobDiscoveryService(db_session, ranking_service=BrokenRanking())
     try:
         service.start("user-a", _request([job_a.id, job_b.id]))
     except RuntimeError:
         pass
-    run = service.list_runs("user-a")[0]
+    run = next(item for item in service.list_runs("user-a") if item.id not in prior_run_ids)
     outcomes = {item.discovered_job_id: item.outcome for item in run.jobs}
-    assert run.status == "partial_failed" and run.completed_at is not None
+    assert run.status == "partial_failed" and run.completed_at is not None, (run.status, outcomes)
     assert outcomes[job_a.id] == "reused_evaluation"
     assert outcomes[job_b.id] == "analysis_failed"
     assert "private" not in str(run.failure_summary)

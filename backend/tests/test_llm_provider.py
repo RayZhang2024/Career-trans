@@ -38,12 +38,18 @@ class FakeSemanticLLM:
 
 def test_openai_is_the_compatible_default_and_requires_safe_credential() -> None:
     settings = Settings(openai_api_key="server-secret")
-    client = deps.get_semantic_response_client(settings, model="existing-task-model", operation="job_extraction")
+    client = deps.get_semantic_response_client(settings, model="gpt-5.6-luna", operation="job_extraction")
 
     assert isinstance(client.responses._llm, OpenAISemanticLLM)
     with pytest.raises(HTTPException, match="OPENAI_API_KEY") as exc_info:
-        deps.get_semantic_response_client(Settings(openai_api_key=None), model="existing-task-model", operation="job_extraction")
+        deps.get_semantic_response_client(Settings(openai_api_key=None), model="gpt-5.6-luna", operation="job_extraction")
     assert "server-secret" not in str(exc_info.value.detail)
+
+
+def test_unknown_openai_model_is_not_assumed_structured_output_compatible() -> None:
+    with pytest.raises(HTTPException, match="capability catalog") as exc_info:
+        deps.get_semantic_response_client(Settings(openai_api_key="test-key"), model="arbitrary-model-alias", operation="job_extraction")
+    assert exc_info.value.status_code == 503
 
 
 def test_ollama_requires_no_cloud_key_and_respects_configured_base_url() -> None:
@@ -104,6 +110,7 @@ def test_semantic_response_facade_preserves_existing_agent_message_shape() -> No
             "operation": "requirement_matching",
             "required_capabilities": frozenset({LLMCapability.STRUCTURED_OUTPUT}),
             "output_schema": None,
+            "reasoning_effort": None,
         }
     ]
 
@@ -156,6 +163,49 @@ def test_openai_semantic_llm_uses_native_responses_json_schema(monkeypatch) -> N
             "schema": schema,
         }
     }
+    assert "reasoning" not in calls[0]
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "xhigh", "max"])
+def test_openai_semantic_llm_forwards_explicit_reasoning_effort(monkeypatch, effort: str) -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeResponses:
+        def create(self, **kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(output_text="ok")
+
+    monkeypatch.setattr("app.providers.llm.create_traced_openai_client", lambda **_: SimpleNamespace(responses=FakeResponses()))
+    assert OpenAISemanticLLM(api_key="server-secret").generate(
+        model="gpt-5.6-luna",
+        system_prompt="system",
+        user_prompt="user",
+        operation="job_extraction",
+        output_schema={"type": "object"},
+        reasoning_effort=effort,
+    ) == "ok"
+    assert calls[0]["reasoning"] == {"effort": effort}
+
+
+def test_openai_rejects_unsupported_reasoning_before_request(monkeypatch) -> None:
+    invoked = False
+
+    def should_not_construct(**_kwargs):
+        nonlocal invoked
+        invoked = True
+        raise AssertionError("provider client must not be constructed")
+
+    monkeypatch.setattr("app.providers.llm.create_traced_openai_client", should_not_construct)
+    with pytest.raises(SemanticProviderConfigurationError, match="reasoning effort"):
+        OpenAISemanticLLM(api_key="server-secret").generate(
+            model="gpt-4o",
+            system_prompt="private",
+            user_prompt="private",
+            operation="job_extraction",
+            output_schema={"type": "object"},
+            reasoning_effort="high",
+        )
+    assert not invoked
 
 
 @pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6"])
@@ -283,13 +333,9 @@ def test_structured_schema_rejection_diagnostics_are_operation_correct_and_priva
 def test_migrated_dependency_construction_accepts_ollama_without_openai(monkeypatch) -> None:
     settings = Settings(default_llm_provider="ollama", ollama_base_url="http://localhost:11434", openai_api_key=None)
     monkeypatch.setattr(deps, "get_settings", lambda: settings)
-    deps.get_job_analysis_service.cache_clear()
-    try:
-        service = deps.get_job_analysis_service()
-        assert isinstance(service._extractor._client, SemanticResponseClient)
-        assert isinstance(service._extractor._client.responses._llm, OllamaSemanticLLM)
-    finally:
-        deps.get_job_analysis_service.cache_clear()
+    service = deps.get_job_analysis_service()
+    assert isinstance(service._extractor._client, SemanticResponseClient)
+    assert isinstance(service._extractor._client.responses._llm, OllamaSemanticLLM)
 
 
 def test_all_migrated_semantic_components_receive_provider_neutral_clients(monkeypatch) -> None:
@@ -300,30 +346,17 @@ def test_all_migrated_semantic_components_receive_provider_neutral_clients(monke
         brave_search_api_key="test-brave-key",
     )
     monkeypatch.setattr(deps, "get_settings", lambda: settings)
-    cached = (
-        deps.get_job_analysis_service,
-        deps.get_requirement_matching_service,
-        deps.get_job_relevance_agent,
-        deps.get_job_archetype_agent,
-        deps.get_career_assessment_service,
-    )
-    for dependency in cached:
-        dependency.cache_clear()
-    try:
-        clients = [
-            deps.get_job_analysis_service()._extractor._client,
-            deps.get_requirement_matching_service()._matcher._client,
-            deps.get_job_relevance_agent()._client,
-            deps.get_job_archetype_agent()._client,
-            deps.get_career_assessment_service()._agent._client,
-            deps.get_agentic_job_discovery_service(object())._strategy_generator._client,
-            deps.get_agentic_job_discovery_service(object())._vacancy_extractor._client,
-        ]
-        assert all(isinstance(client, SemanticResponseClient) for client in clients)
-        assert all(isinstance(client.responses._llm, OllamaSemanticLLM) for client in clients)
-    finally:
-        for dependency in cached:
-            dependency.cache_clear()
+    clients = [
+        deps.get_job_analysis_service()._extractor._client,
+        deps.get_requirement_matching_service()._matcher._client,
+        deps.get_job_relevance_agent()._client,
+        deps.get_job_archetype_agent()._client,
+        deps.get_career_assessment_service()._agent._client,
+        deps.get_agentic_job_discovery_service(object())._strategy_generator._client,
+        deps.get_agentic_job_discovery_service(object())._vacancy_extractor._client,
+    ]
+    assert all(isinstance(client, SemanticResponseClient) for client in clients)
+    assert all(isinstance(client.responses._llm, OllamaSemanticLLM) for client in clients)
 
 
 def test_search_provider_selection_remains_independent_from_llm_provider() -> None:
