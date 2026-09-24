@@ -161,6 +161,19 @@ export type ApplicationPrepareRequest = {
   application_questions: string[];
 };
 
+export type ApplicationTrackingStatus = "prepared" | "applied" | "interview" | "rejected" | "offer" | "withdrawn";
+export type ApplicationTrackingEvent = { revision: number; from_status: ApplicationTrackingStatus | null; to_status: ApplicationTrackingStatus; recorded_at: string };
+export type ApplicationTrackingTarget = {
+  preparation_id: string; preparation_created_at: string; source_kind: string; title: string;
+  company: string | null; location: string | null; public_url: string | null;
+};
+export type ApplicationTracking = {
+  id: string; preparation_id: string; target: ApplicationTrackingTarget;
+  current_status: ApplicationTrackingStatus; revision: number; created_at: string; updated_at: string;
+  events: ApplicationTrackingEvent[];
+};
+export type ApplicationTrackingListItem = Omit<ApplicationTracking, "events">;
+
 export class SessionApi {
   private epoch = 0;
   private controllers = new Set<AbortController>();
