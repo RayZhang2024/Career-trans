@@ -4,10 +4,14 @@
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); }
+  constructor(public readonly status: number, message: string, public readonly detail: string | null = null) { super(message); }
 }
 
 export type User = { id: string; email: string; created_at: string };
+export type PasswordPolicy = {
+  version: number; min_length: number; max_length: number;
+  common_passwords_rejected: boolean; composition_requirements: string[];
+};
 
 export type SemanticOperation =
   | "cv_semantic_extraction"
@@ -242,7 +246,14 @@ export class SessionApi {
       }
       const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers, signal: controller.signal });
       if (authenticated && response.status === 401 && epoch === this.epoch) this.onAuthenticated401();
-      if (!response.ok) throw new ApiError(response.status, "Request could not be completed.");
+      if (!response.ok) {
+        let detail: string | null = null;
+        try {
+          const body = await response.clone().json() as { detail?: unknown };
+          if (typeof body.detail === "string") detail = body.detail;
+        } catch { /* Error responses may have no JSON body. */ }
+        throw new ApiError(response.status, "Request could not be completed.", detail);
+      }
       const value = await response.json() as T;
       if (epoch !== this.epoch) throw new DOMException("Superseded auth session", "AbortError");
       return value;

@@ -1,9 +1,29 @@
 from pydantic import BaseModel, EmailStr, Field
 
+from app.core.password_policy import PASSWORD_POLICY
+
+
+class PasswordPolicyRead(BaseModel):
+    version: int
+    min_length: int
+    max_length: int
+    common_passwords_rejected: bool
+    composition_requirements: list[str]
+
+    @classmethod
+    def current(cls) -> "PasswordPolicyRead":
+        return cls(
+            version=PASSWORD_POLICY.version,
+            min_length=PASSWORD_POLICY.min_length,
+            max_length=PASSWORD_POLICY.max_length,
+            common_passwords_rejected=PASSWORD_POLICY.common_passwords_rejected,
+            composition_requirements=list(PASSWORD_POLICY.composition_requirements),
+        )
+
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    password: str
 
 
 class LoginRequest(BaseModel):

@@ -9,6 +9,7 @@ FastAPI backend foundation for the multi-user Career Agent application.
 - email/password registration
 - secure Argon2 password hashing via `pwdlib`
 - JWT access-token login
+- shared new-password policy with a public metadata endpoint
 - protected `GET /api/v1/users/me`
 - user-scoped candidate-profile create/read/update
 - structured job extraction and evidence-first requirement matching
@@ -71,6 +72,7 @@ pytest
 ```text
 POST  /api/v1/auth/register
 POST  /api/v1/auth/login
+GET   /api/v1/auth/password-policy
 GET   /api/v1/users/me
 GET   /api/v1/profile
 POST  /api/v1/profile
@@ -82,6 +84,13 @@ GET   /health
 ```
 
 ## Important V1 limitations
+
+- Newly created passwords require 15–128 Unicode code points. Spaces and Unicode
+  are accepted without trimming; composition rules are not imposed. A small,
+  deterministic local blocklist rejects representative common passwords. It is
+  an initial control, not a complete breach corpus. Existing password hashes
+  are not changed, and login verification does not apply the new-password
+  policy.
 
 - SQLite and automatic `create_all()` are for early development.
 - Alembic migrations should be added before production deployment.

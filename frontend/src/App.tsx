@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { type OnboardingStatus, type Profile } from "./api";
+import { type OnboardingStatus, type PasswordPolicy, type Profile } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { CvPage } from "./CvPage";
 import { AdviserPage } from "./AdviserPage";
@@ -42,25 +42,74 @@ function Login() {
     catch (e) { setError(e instanceof ApiError && e.status === 401 ? "Incorrect email or password." : "Login is unavailable."); }
     finally { pendingRef.current = false; setPending(false); }
   }
-  return <AuthPage><form className="form-stack" onSubmit={submit}><div><h1>Sign in</h1><p className="muted">Access your Career-trans workspace.</p></div><label htmlFor="login-email">Email</label><input id="login-email" name="email" type="email" required disabled={pending} /><label htmlFor="login-password">Password</label><input id="login-password" name="password" type="password" required disabled={pending} /><button disabled={pending}>{pending ? "Signing in…" : "Sign in"}</button>{pending && <p role="status">Signing in…</p>}{error && <p role="alert">{error}</p>}<p className="auth-link">New to Career-trans? <Link to="/register">Create account</Link></p></form></AuthPage>;
+  return <AuthPage><form className="form-stack" onSubmit={submit}><div><h1>Sign in</h1><p className="muted">Access your Career-trans workspace.</p></div><label htmlFor="login-email">Email</label><input id="login-email" name="email" type="email" autoComplete="email" required disabled={pending} /><label htmlFor="login-password">Password</label><input id="login-password" name="password" type="password" autoComplete="current-password" required disabled={pending} /><button disabled={pending}>{pending ? "Signing in…" : "Sign in"}</button>{pending && <p role="status">Signing in…</p>}{error && <p role="alert">{error}</p>}<p className="auth-link">New to Career-trans? <Link to="/register">Create account</Link></p></form></AuthPage>;
 }
 
 function Register() {
-  const { register } = useAuth();
+  const { api, register } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState("");
+  const [policy, setPolicy] = useState<PasswordPolicy | null>(null);
+  const [policyError, setPolicyError] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [confirmationTouched, setConfirmationTouched] = useState(false);
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
+  useEffect(() => {
+    let active = true;
+    void api.request<PasswordPolicy>("/api/v1/auth/password-policy", {}, false).then((loaded) => {
+      if (active) { setPolicy(loaded); setPolicyError(""); }
+    }).catch(() => {
+      if (active) setPolicyError("Password requirements could not be loaded. Please reload this page before creating an account.");
+    });
+    return () => { active = false; };
+  }, [api]);
+  const passwordLength = Array.from(password).length;
+  const minimumMet = policy !== null && passwordLength >= policy.min_length;
+  const maximumMet = policy !== null && passwordLength <= policy.max_length;
+  const confirmationMismatch = confirmationTouched && confirmation !== password;
+  const canSubmit = policy !== null && !policyError && minimumMet && maximumMet && password === confirmation && !pending;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pendingRef.current) return;
-    pendingRef.current = true; setPending(true); setError("");
+    if (!canSubmit || pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    setError("");
     const data = new FormData(event.currentTarget);
     try { await register(String(data.get("email")), String(data.get("password"))); navigate("/login"); }
-    catch (e) { setError(e instanceof ApiError && e.status === 409 ? "An account already exists for this email." : "Registration is unavailable."); }
-    finally { pendingRef.current = false; setPending(false); }
+    catch (e) {
+      if (e instanceof ApiError && e.status === 409) setError("An account already exists for this email.");
+      else if (e instanceof ApiError && e.detail === "password_too_common") setError("Choose a less common password.");
+      else if (e instanceof ApiError && policy && e.detail === "password_too_short") setError(`Use at least ${policy.min_length} characters.`);
+      else if (e instanceof ApiError && policy && e.detail === "password_too_long") setError(`Use no more than ${policy.max_length} characters.`);
+      else setError("Registration is unavailable.");
+    } finally { pendingRef.current = false; setPending(false); }
   }
-  return <AuthPage><form className="form-stack" onSubmit={submit}><div><h1>Create account</h1><p className="muted">Create an account, then sign in to continue.</p></div><label htmlFor="register-email">Email</label><input id="register-email" name="email" type="email" required disabled={pending} /><label htmlFor="register-password">Password</label><input id="register-password" name="password" type="password" required disabled={pending} /><button disabled={pending}>{pending ? "Creating account…" : "Create account"}</button>{pending && <p role="status">Creating your account…</p>}{error && <p role="alert">{error}</p>}<p className="auth-link">Already have an account? <Link to="/login">Sign in</Link></p></form></AuthPage>;
+  return <AuthPage><form className="form-stack" onSubmit={submit}>
+    <div><h1>Create account</h1><p className="muted">Create an account, then sign in to continue.</p></div>
+    <label htmlFor="register-email">Email</label><input id="register-email" name="email" type="email" autoComplete="email" required disabled={pending} />
+    <label htmlFor="register-password">Password</label>
+    <input id="register-password" name="password" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} aria-describedby="password-policy" required disabled={pending} />
+    <div id="password-policy" className="password-policy">
+      {policy ? <>
+        <p>Use at least {policy.min_length} characters and no more than {policy.max_length} characters. Common passwords are not accepted.</p>
+        <p>Long passphrases are welcome. Spaces and symbols are allowed; no special mix of uppercase, numbers, or symbols is required.</p>
+        <ul className="password-rules" aria-label="Password requirements">
+          <li>{minimumMet ? "Met:" : "Not met:"} At least {policy.min_length} characters</li>
+          <li>{maximumMet ? "Met:" : "Not met:"} No more than {policy.max_length} characters</li>
+        </ul>
+      </> : <p role="status">Loading password requirements…</p>}
+    </div>
+    <label htmlFor="register-confirm-password">Confirm password</label>
+    <input id="register-confirm-password" name="confirmPassword" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => { setConfirmation(event.target.value); setConfirmationTouched(true); }} onBlur={() => setConfirmationTouched(true)} aria-describedby={confirmationMismatch ? "confirm-password-error" : undefined} required disabled={pending} />
+    {confirmationMismatch && <p id="confirm-password-error" className="field-error" role="alert">Passwords do not match.</p>}
+    {policyError && <p role="alert">{policyError}</p>}
+    {error && <p role="alert">{error}</p>}
+    <button type="submit" disabled={!canSubmit}>{pending ? "Creating account…" : "Create account"}</button>
+    {pending && <p role="status">Creating your account…</p>}
+    <p className="auth-link">Already have an account? <Link to="/login">Sign in</Link></p>
+  </form></AuthPage>;
 }
 
 const fields = ["display_name", "headline", "current_role", "location", "summary", "career_goal", "job_search_criteria", "preferred_email", "phone", "linkedin_url", "github_url", "portfolio_url"] as const;

@@ -1,6 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.password_policy import validate_new_password
 from app.core.security import hash_password, verify_password
 from app.models.user import User
 
@@ -15,6 +16,7 @@ def get_user_by_id(db: Session, user_id: str) -> User | None:
 
 
 def create_user(db: Session, email: str, password: str) -> User:
+    validate_new_password(password)
     user = User(email=email.strip().lower(), password_hash=hash_password(password))
     db.add(user)
     db.commit()
