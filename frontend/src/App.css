@@ -141,6 +141,28 @@ h2 { font-size: 1.2rem; }
 .nested-controls { border-left: 0.2rem solid #d9e0ea; display: grid; gap: 0.65rem; min-width: 0; padding-left: 0.8rem; }
 .legacy-state { background: #fff8e6; border: 1px solid #e8c972; border-radius: 0.45rem; display: grid; gap: 0.6rem; min-width: 0; padding: 0.75rem; }
 .legacy-state button { justify-self: start; max-width: 100%; }
+.ai-settings-page { display: grid; gap: 1rem; margin: 0 auto; max-width: 70rem; min-width: 0; padding: 0 1rem 2.5rem; }
+.ai-settings-page > .workspace-header { max-width: none; padding: 1rem 0 0; }
+.ai-settings-content, .ai-settings-content > section, .ai-provider-summary, .ai-defaults-section, .ai-read-only, .ai-advanced { display: grid; gap: 0.8rem; min-width: 0; }
+.ai-boundary-copy { display: grid; gap: 0.55rem; }
+.ai-summary-grid { display: grid; gap: 0.55rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); margin: 0; }
+.ai-summary-grid > div { background: #f6f8fc; border-radius: 0.45rem; min-width: 0; padding: 0.65rem; }
+.ai-summary-grid dt { color: #58657a; font-size: 0.85rem; }
+.ai-summary-grid dd { font-weight: 650; margin: 0.15rem 0 0; overflow-wrap: anywhere; }
+.ai-provider-summary > .muted, .ai-effective .muted { font-size: 0.84rem; }
+.ai-advanced > summary { cursor: pointer; font-size: 1.1rem; font-weight: 700; }
+.ai-operation-list { display: grid; gap: 0.75rem; min-width: 0; }
+.ai-operation-card { border: 1px solid #d9e0ea; border-radius: 0.55rem; display: grid; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; padding: 0.8rem; }
+.ai-operation-card h3, .ai-operation-card h4 { margin: 0; }
+.ai-operation-card label, .ai-defaults-section label { font-weight: 650; }
+.ai-effective { line-height: 1.55; margin: 0.2rem 0 0; overflow-wrap: anywhere; }
+.ai-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 0.65rem; }
+.ai-validation, .ai-validation-summary { background: #fff8e6; border-left: 0.25rem solid #a76c00; color: #684400; padding: 0.65rem 0.8rem; }
+.ai-validation-summary { display: grid; gap: 0.35rem; }
+.ai-state-card, .ai-read-only-reference { display: grid; gap: 0.7rem; overflow-wrap: anywhere; }
+.ai-state-card button { justify-self: start; }
+.ai-read-only p { overflow-wrap: anywhere; }
+@media (max-width: 640px) { .ai-settings-page { padding-left: 0.75rem; padding-right: 0.75rem; } .ai-actions { align-items: stretch; flex-direction: column; } .ai-actions button { max-width: 100%; } .ai-operation-card { padding: 0.7rem; } }
 @media (max-width: 640px) {
   .applications-page { padding-left: 0.75rem; padding-right: 0.75rem; }
   .application-section .card-actions button { max-width: 100%; }

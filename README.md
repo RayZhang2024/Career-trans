@@ -69,6 +69,7 @@ Register
   -> Jobs
   -> Applications
   -> Tracking
+  -> Settings / AI Models
 ```
 
 
@@ -428,8 +429,10 @@ Provider-backed semantic operations require the corresponding provider configura
 Semantic model defaults are deployment-owned through the nine `*_MODEL`
 settings documented in `backend/.env.example`. Authenticated users can store
 provider-scoped model and reasoning-effort preferences through the backend
-`/api/v1/ai/settings` API; V1A does not include a frontend settings page or
-per-user provider credentials. OpenAI exposes the locally supported GPT-5.6
+`/api/v1/ai/settings` API. V1B adds an authenticated Settings → AI Models
+page for editing deployment-supported model and reasoning-effort preferences;
+the page never displays per-user credentials or changes the deployment-owned provider.
+OpenAI exposes the locally supported GPT-5.6
 capability catalog, while Ollama deployment defaults remain available and
 user model/effort overrides are not offered. A null/unset reasoning effort
 preserves provider-default behavior by omitting the OpenAI reasoning parameter.

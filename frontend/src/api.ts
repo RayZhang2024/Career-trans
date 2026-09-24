@@ -8,6 +8,42 @@ export class ApiError extends Error {
 }
 
 export type User = { id: string; email: string; created_at: string };
+
+export type SemanticOperation =
+  | "cv_semantic_extraction"
+  | "candidate_adviser"
+  | "job_extraction"
+  | "requirement_matching"
+  | "career_alignment"
+  | "job_relevance"
+  | "job_archetype"
+  | "agentic_discovery"
+  | "application_drafting";
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type PreferenceActivity = "inherited" | "active" | "inactive_provider_mismatch" | "inactive_invalid" | "unsupported";
+export type AiModelCapability = { id: string; label: string; structured_output: boolean; reasoning_efforts: ReasoningEffort[] };
+export type AiModelCatalog = { provider: string; user_overrides_supported: boolean; models: AiModelCapability[] };
+export type AiOperationOverride = { model?: string | null; reasoning_effort?: ReasoningEffort | null };
+export type AiPreferences = { default_model: string | null; default_reasoning_effort: ReasoningEffort | null; operation_overrides: Partial<Record<SemanticOperation, AiOperationOverride>> };
+export type AiEffectiveOperation = { model: string; reasoning_effort: ReasoningEffort | null; inherited_model: boolean; inherited_reasoning_effort: boolean };
+export type AiSettings = {
+  revision: number; provider: string; user_overrides_supported: boolean; persisted_override_provider: string | null;
+  overrides_active: boolean; preference_activity: PreferenceActivity; preferences: AiPreferences;
+  effective: Record<SemanticOperation, AiEffectiveOperation>;
+};
+export type AiSettingsReplace = AiPreferences & { expected_revision: number };
+
+export const SEMANTIC_OPERATION_ORDER: ReadonlyArray<{ id: SemanticOperation; label: string }> = [
+  { id: "cv_semantic_extraction", label: "CV extraction" },
+  { id: "candidate_adviser", label: "Career Adviser" },
+  { id: "job_extraction", label: "Job extraction" },
+  { id: "requirement_matching", label: "Requirement matching" },
+  { id: "career_alignment", label: "Career alignment" },
+  { id: "job_relevance", label: "Job relevance" },
+  { id: "job_archetype", label: "Job archetype" },
+  { id: "agentic_discovery", label: "Agentic discovery" },
+  { id: "application_drafting", label: "Application drafting" },
+];
 export type Profile = {
   id: string; user_id: string; created_at: string; updated_at: string;
   display_name?: string | null; headline?: string | null; current_role?: string | null;
