@@ -40,7 +40,6 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const [created, setCreated] = useState<ApplicationPreparation | null>(null);
-  const [historyRefreshError, setHistoryRefreshError] = useState("");
   const submitLock = useRef(false);
   const prerequisiteGeneration = useRef(0);
   const alive = useRef(false);
@@ -53,7 +52,7 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
     previousOwner.current = user?.id;
     submitLock.current = false;
     setPending(false); setMode("text"); setJobText(""); setJobUrl(""); setPages(2);
-    setIncludeCoverLetter(true); setQuestions([""]); setError(""); setCreated(null); setHistoryRefreshError("");
+    setIncludeCoverLetter(true); setQuestions([""]); setError(""); setCreated(null);
   }, [user?.id]);
 
   const refreshPrerequisites = async (): Promise<Prerequisite | null> => {
@@ -104,13 +103,11 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
     setPending(true);
     setError("");
     setCreated(null);
-    setHistoryRefreshError("");
     try {
       const result = await api.request<ApplicationPreparation>("/api/v1/applications/prepare", { method: "POST", body: JSON.stringify(payload) });
       if (!alive.current || identityRef.current !== submitOwner) return;
       setCreated(result);
-      const refreshed = await onHistoryRefresh();
-      if (alive.current && identityRef.current === submitOwner && !refreshed) setHistoryRefreshError("Application history could not be refreshed.");
+      await onHistoryRefresh();
     } catch (reason) {
       if (!alive.current || identityRef.current !== submitOwner || (reason as Error)?.name === "AbortError") return;
       if (!(reason instanceof ApiError)) {
@@ -183,7 +180,6 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
       {pending && <p role="status">Preparing application… this may take several minutes.</p>}
       {error && <p role="alert">{error}</p>}
       {created && <p role="status">Preparation saved. <Link to={`/applications/${encodeURIComponent(created.id)}`}>Review this preparation</Link>.</p>}
-      {historyRefreshError && <p role="alert">{historyRefreshError} Use Refresh history to try again.</p>}
     </form>
   </section>;
 }

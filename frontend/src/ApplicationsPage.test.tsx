@@ -552,10 +552,16 @@ describe("Issue #198 direct vacancy preparation", () => {
     expect(await screen.findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/pending-result");
   });
 
-  it("keeps a confirmed 201 success and detail link when history refresh fails", async () => {
+  it("keeps confirmed preparation success while parent history fails and later refreshes", async () => {
     let historyCalls = 0;
+    const fresh = preparation("fresh-history", "Fresh application history");
     const fetch = externalFetcher({
-      "GET /api/v1/applications": () => ++historyCalls === 1 ? json([preparation("old")]) : json({ detail: "offline" }, 503),
+      "GET /api/v1/applications": () => {
+        historyCalls += 1;
+        if (historyCalls === 1) return json([preparation("old")]);
+        if (historyCalls === 2) return json({ detail: "offline" }, 503);
+        return json([fresh]);
+      },
       "POST /api/v1/applications/prepare": () => json(preparation("saved-new"), 201),
     }); renderApp(fetch);
     fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "E".repeat(100) } });
@@ -563,8 +569,46 @@ describe("Issue #198 direct vacancy preparation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
     expect(await screen.findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/saved-new");
     expect(screen.getByRole("status")).toHaveTextContent("Preparation saved.");
-    expect((await screen.findAllByRole("alert")).some((item) => item.textContent?.includes("Application history could not be refreshed"))).toBe(true);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Application history is unavailable.");
+    expect(screen.queryByText(/Application history could not be refreshed/)).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Applied AI Engineer" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh history" }));
+    expect(await screen.findByRole("heading", { name: "Fresh application history" })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Preparation saved.");
+    expect(screen.getByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/saved-new");
+    expect(historyCalls).toBe(3);
+  });
+
+  it("does not treat a superseded form-triggered history refresh as a child failure", async () => {
+    const olderFormRefresh = deferred<Response>();
+    let historyCalls = 0;
+    const fetch = externalFetcher({
+      "GET /api/v1/applications": () => {
+        historyCalls += 1;
+        if (historyCalls === 1) return json([preparation("old", "Existing history")]);
+        if (historyCalls === 2) return olderFormRefresh.promise;
+        return json([preparation("newest", "Newest manual history")]);
+      },
+      "POST /api/v1/applications/prepare": () => json(preparation("superseded-success"), 201),
+    }); renderApp(fetch);
+    fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "S".repeat(100) } });
+    await waitForExternalPreparationReady();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/superseded-success");
+    await waitFor(() => expect(historyCalls).toBe(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh history" }));
+    expect(await screen.findByRole("heading", { name: "Newest manual history" })).toBeInTheDocument();
+    olderFormRefresh.resolve(json({ detail: "stale failure" }, 503));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create preparation" })).toBeEnabled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not be refreshed/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Preparation saved.");
+    expect(screen.getByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/superseded-success");
+    expect(historyCalls).toBe(3);
   });
 
   it("refreshes successful preparation into the ordinary history list", async () => {
