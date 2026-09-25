@@ -104,6 +104,39 @@ export type ProfileRevisionPatch = ProfileRevisionAction & {
   proposed_profile?: EditableProfile | null;
   proposed_structured?: EditableStructuredProfile | null;
 };
+export type StructuredProfileSection = "employment" | "education" | "credentials" | "skills" | "projects" | "achievements";
+export type AdviserProfileProposalOperation = "add" | "replace_exact";
+type AdviserProfileProposalUpdateBase =
+  | { operation: "add"; target_fingerprint: null }
+  | { operation: "replace_exact"; target_fingerprint: string };
+export type AdviserProfileProposalUpdate = AdviserProfileProposalUpdateBase & (
+  | { section: "employment"; item: Employment }
+  | { section: "education"; item: Education }
+  | { section: "credentials"; item: Credential }
+  | { section: "skills"; item: CandidateSkill }
+  | { section: "projects"; item: CandidateProject }
+  | { section: "achievements"; item: CandidateAchievement }
+);
+export type AdviserProfileProposalState = "pending" | "rejected" | "transferred";
+export type AdviserProfileProposal = {
+  id: string;
+  state: AdviserProfileProposalState;
+  revision: number;
+  source_clarification_id: string;
+  source_assessment_fingerprint: string;
+  original_update: AdviserProfileProposalUpdate;
+  proposed_update: AdviserProfileProposalUpdate;
+  created_at: string;
+  updated_at: string;
+  rejected_at: string | null;
+  transferred_at: string | null;
+  transferred_profile_revision_id: string | null;
+};
+export type AdviserProfileProposalGenerationRead = { proposals: AdviserProfileProposal[] };
+export type AdviserProfileProposalTransferRead = {
+  proposal: AdviserProfileProposal;
+  profile_revision: ProfileRevision;
+};
 export type CareerEvidence = { evidence_id: string; title: string; text: string; skills: string[]; evidence_type: string };
 export type AdviserInsight = { text: string; source_references: Array<{ source_type: string; reference: string }> };
 export type CandidateAdviserAssessment = {

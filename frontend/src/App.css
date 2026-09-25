@@ -62,6 +62,32 @@ h2 { font-size: 1.2rem; }
 .inline-control { display: flex; gap: 0.5rem; }
 .inline-control input { min-width: 0; flex: 1; }
 .clarification-card { border-bottom: 1px solid #d9e0ea; padding: 0.75rem 0; }
+.profile-suggestions, .suggestion-generation, .suggestion-list, .suggestion-card, .proposal-editor, .proposal-editor-fields, .suggestion-item-summary { display: grid; gap: 0.8rem; min-width: 0; }
+.profile-suggestions { overflow-wrap: anywhere; }
+.suggestion-generation, .suggestion-card { background: #fbfcff; border: 1px solid #d9e0ea; border-radius: 0.6rem; min-width: 0; padding: 1rem; }
+.suggestion-generation h3, .suggestion-card h3, .suggestion-card h4 { margin: 0; }
+.suggestion-heading { align-items: flex-start; }
+.suggestion-state { background: #e8ecf5; border-radius: 999px; color: #263755; flex: 0 0 auto; font-size: 0.85rem; font-weight: 700; padding: 0.25rem 0.7rem; text-transform: capitalize; }
+.suggestion-state-pending { background: #fff4d6; color: #634600; }
+.suggestion-state-rejected { background: #fff1f2; color: #881337; }
+.suggestion-state-transferred { background: #e7f4eb; color: #185b32; }
+.suggestion-item-summary { border-top: 1px solid #e3e8f1; padding-top: 0.7rem; }
+.suggestion-item-summary ul { display: grid; gap: 0.35rem; margin: 0; overflow-wrap: anywhere; padding-left: 1.2rem; }
+.suggestion-comparison { display: grid; gap: 0.8rem; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
+.suggestion-comparison > .suggestion-item-summary { background: #f6f8fc; border: 1px solid #e3e8f1; border-radius: 0.45rem; min-width: 0; padding: 0.75rem; }
+.suggestion-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 0.6rem; min-width: 0; }
+.suggestion-actions > * { max-width: 100%; }
+.button-link { background: #e8ecf5; border-radius: 0.5rem; color: #1e315f; display: inline-block; font-weight: 650; padding: 0.7rem 1rem; text-decoration: none; }
+.button-link:hover { background: #d8dfed; }
+.proposal-editor { border: 1px solid #cbd5e1; border-radius: 0.5rem; margin: 0; padding: 0.85rem; }
+.proposal-editor legend { font-weight: 700; padding: 0 0.25rem; }
+.proposal-editor-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.proposal-editor-field { display: grid; gap: 0.35rem; min-width: 0; }
+.proposal-editor-field:has(textarea) { grid-column: 1 / -1; }
+.proposal-error { align-items: start; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 0.55rem; color: #881337; display: flex; flex-wrap: wrap; gap: 0.7rem; justify-content: space-between; min-width: 0; overflow-wrap: anywhere; padding: 0.85rem; }
+.proposal-error p { min-width: 0; }
+.profile-suggestion-notice { background: #eff6ff; border-left: 0.25rem solid #3b82f6; color: #1e4978; overflow-wrap: anywhere; padding: 0.7rem; }
+.suggestion-card > *, .suggestion-card .section-heading > * { min-width: 0; }
 .supersede-warning { border-color: #eab308; display: grid; gap: 0.75rem; }
 .jobs-page { display: grid; gap: 1rem; margin: 0 auto; max-width: 70rem; min-width: 0; padding: 0 1rem 2.5rem; }
 .jobs-header { max-width: none; padding: 1rem 0 0; }
@@ -228,3 +254,4 @@ h2 { font-size: 1.2rem; }
 .revision-sides ul { display: grid; gap: 0.45rem; margin: 0; overflow-wrap: anywhere; padding-left: 1.2rem; }
 @media (max-width: 640px) { .workspace { grid-template-columns: 1fr; } .workspace-header { align-items: flex-start; flex-direction: column; } .profile-fields { grid-template-columns: 1fr; } .field-wide { grid-column: auto; } .onboarding-list li { align-items: flex-start; flex-direction: column; } .onboarding-list span { text-align: left; } }
 @media (max-width: 640px) { .revision-sides { grid-template-columns: 1fr; } .revision-actions { align-items: stretch; flex-direction: column; } .revision-actions button { width: 100%; } .revision-panel > .section-heading { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 640px) { .suggestion-comparison, .proposal-editor-fields { grid-template-columns: minmax(0, 1fr); } .suggestion-actions { align-items: stretch; flex-direction: column; } .suggestion-actions button, .suggestion-actions .button-link { text-align: center; width: 100%; } .suggestion-heading { flex-direction: column; } .suggestion-generation, .suggestion-card { padding: 0.75rem; } }
