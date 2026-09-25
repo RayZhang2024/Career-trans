@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.cv_ingestion import Achievement, Credential, Education, Employment, Project, Skill
 from app.schemas.candidate_adviser import ClarificationProposedEvidence
+from app.schemas.profile_revision import CandidateProfileRevisionRead
 
 
 Fingerprint = str | None
@@ -191,6 +192,13 @@ class CandidateAdviserProfileProposalGenerationRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     proposals: list[CandidateAdviserProfileProposalRead] = Field(max_length=6)
+
+
+class CandidateAdviserProfileProposalTransferRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposal: CandidateAdviserProfileProposalRead
+    profile_revision: CandidateProfileRevisionRead
 
 
 class CandidateAdviserProfileProposalPatch(BaseModel):

@@ -23,6 +23,7 @@ from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalPatch,
     CandidateAdviserProfileProposalRead,
     CandidateAdviserProfileProposalGenerationRead,
+    CandidateAdviserProfileProposalTransferRead,
 )
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_profile_proposal import (
@@ -206,6 +207,28 @@ def reject_profile_proposal(
     service = CandidateAdviserProfileProposalService(db)
     try:
         return service.reject_pending(
+            current_user.id,
+            proposal_id,
+            expected_revision=payload.expected_revision,
+        )
+    except CandidateAdviserProfileProposalNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile proposal not found.") from exc
+    except CandidateAdviserProfileProposalConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/profile-proposals/{proposal_id}/transfer",
+    response_model=CandidateAdviserProfileProposalTransferRead,
+)
+def transfer_profile_proposal(
+    proposal_id: str,
+    payload: CandidateAdviserProfileProposalAction,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> CandidateAdviserProfileProposalTransferRead:
+    try:
+        return CandidateAdviserProfileProposalService(db).transfer_to_profile_revision(
             current_user.id,
             proposal_id,
             expected_revision=payload.expected_revision,

@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import select
+from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import sessionmaker
 
 from app.models.candidate_adviser import (
     CandidateAdviserAssessmentRecord,
@@ -14,6 +15,7 @@ from app.models.candidate_adviser import (
 from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
+from app.models.candidate_profile import CandidateProfile
 from app.models.user import User
 from app.schemas.candidate_adviser import (
     CandidateAdviserAssessmentContent,
@@ -40,6 +42,10 @@ from app.services.candidate_adviser_profile_proposal import (
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
+from app.services.profile_revision_service import (
+    CandidateProfileRevisionService,
+    ProfileRevisionStale,
+)
 
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
@@ -225,6 +231,358 @@ def test_replace_exact_requires_well_formed_target_and_add_has_no_target() -> No
     replace = _update(operation="replace_exact", target_fingerprint="b" * 64)
     assert add.target_fingerprint is None
     assert replace.target_fingerprint == "b" * 64
+
+
+def _seed_structured_profile(session, user_id: str, data: CandidateCVData) -> CandidateStructuredProfile:
+    row = CandidateStructuredProfile(
+        user_id=user_id,
+        structured_json=json.dumps(data.model_dump(mode="json"), sort_keys=True),
+    )
+    session.add(row)
+    ActiveCandidateEvidenceResolver(session).resolve(user_id, data)
+    session.commit()
+    return row
+
+
+def test_transfer_stages_normal_draft_without_mutating_current_profile_and_is_idempotent(db_session) -> None:
+    user_id = _user(db_session, "proposal-transfer-add@example.com")
+    clarification_id = _source(db_session, user_id)
+    current = CandidateCVData(skills=[Skill(name="Python"), Skill(name="Go")])
+    structured = _seed_structured_profile(db_session, user_id, current)
+    evidence_before = [
+        (item.id, item.evidence_type, item.title, item.provenance_json)
+        for item in db_session.scalars(
+            select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)
+        )
+    ]
+    proposal = CandidateAdviserProfileProposalService(db_session).materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="Rust")
+    )
+
+    service = CandidateAdviserProfileProposalService(db_session)
+    transferred = service.transfer_to_profile_revision(
+        user_id, proposal.id, expected_revision=proposal.revision
+    )
+    assert transferred.proposal.state == CandidateAdviserProfileProposalState.TRANSFERRED
+    assert transferred.proposal.transferred_at is not None
+    assert transferred.proposal.transferred_profile_revision_id == transferred.profile_revision.id
+    assert transferred.profile_revision.state == "draft"
+    assert transferred.profile_revision.revision == 1
+    assert transferred.profile_revision.changed_authorities == ["structured"]
+    assert transferred.profile_revision.proposed_profile is None
+    assert [skill.name for skill in transferred.profile_revision.proposed_structured.skills] == [
+        "Python", "Go", "Rust"
+    ]
+    assert not hasattr(transferred.profile_revision.proposed_structured, "evidence")
+    assert db_session.get(CandidateStructuredProfile, structured.id).structured_json == structured.structured_json
+    assert db_session.get(CandidateProfile, user_id) is None
+    evidence_after = [
+        (item.id, item.evidence_type, item.title, item.provenance_json)
+        for item in db_session.scalars(
+            select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)
+        )
+    ]
+    assert evidence_after == evidence_before
+
+    # Terminal idempotence is checked before the expected-version gate.
+    again = service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=1)
+    assert again.proposal.transferred_profile_revision_id == transferred.profile_revision.id
+    assert db_session.scalar(
+        select(CandidateProfileRevisionRecord).where(
+            CandidateProfileRevisionRecord.user_id == user_id
+        )
+    ).id == transferred.profile_revision.id
+
+
+def test_transfer_uses_edited_replace_target_and_preserves_its_position(db_session) -> None:
+    user_id = _user(db_session, "proposal-transfer-replace@example.com")
+    clarification_id = _source(db_session, user_id)
+    current = CandidateCVData(skills=[Skill(name="Python"), Skill(name="Go"), Skill(name="Rust")])
+    _seed_structured_profile(db_session, user_id, current)
+    service = CandidateAdviserProfileProposalService(db_session)
+    created = service.materialize_from_confirmed_clarification(
+        user_id,
+        clarification_id,
+        _update(name="TypeScript", operation="replace_exact", target_fingerprint="a" * 64),
+    )
+    edited = service.edit_pending(
+        user_id,
+        created.id,
+        expected_revision=created.revision,
+        proposed_update=_update(
+            name="Go Advanced",
+            operation="replace_exact",
+            target_fingerprint=structured_profile_item_fingerprint("skills", Skill(name="Go")),
+        ),
+    )
+    result = service.transfer_to_profile_revision(
+        user_id, created.id, expected_revision=edited.revision
+    )
+    assert [skill.name for skill in result.profile_revision.proposed_structured.skills] == [
+        "Python", "Go Advanced", "Rust"
+    ]
+
+
+@pytest.mark.parametrize("current_skills", [
+    [Skill(name="Python")],
+    [Skill(name="Python"), Skill(name="Python")],
+])
+def test_transfer_replace_requires_one_exact_current_target(db_session, current_skills) -> None:
+    user_id = _user(db_session, f"proposal-transfer-target-{len(current_skills)}@example.com")
+    clarification_id = _source(db_session, user_id)
+    _seed_structured_profile(db_session, user_id, CandidateCVData(skills=current_skills))
+    service = CandidateAdviserProfileProposalService(db_session)
+    proposal = service.materialize_from_confirmed_clarification(
+        user_id,
+        clarification_id,
+        _update(
+            name="New skill",
+            operation="replace_exact",
+            target_fingerprint=structured_profile_item_fingerprint("skills", Skill(name="Missing")),
+        ),
+    )
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="target"):
+        service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=1)
+    db_session.expire_all()
+    assert service.get_for_user(user_id, proposal.id).state == CandidateAdviserProfileProposalState.PENDING
+    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )) is None
+
+
+def test_transfer_add_rejects_exact_duplicate_in_current_section(db_session) -> None:
+    user_id = _user(db_session, "proposal-transfer-duplicate@example.com")
+    clarification_id = _source(db_session, user_id)
+    _seed_structured_profile(db_session, user_id, CandidateCVData(skills=[Skill(name="Rust")]))
+    service = CandidateAdviserProfileProposalService(db_session)
+    proposal = service.materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="Rust")
+    )
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="already exists"):
+        service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=1)
+    db_session.expire_all()
+    assert service.get_for_user(user_id, proposal.id).state == CandidateAdviserProfileProposalState.PENDING
+    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )) is None
+
+
+def test_transfer_can_stage_structured_authority_when_none_existed(db_session) -> None:
+    user_id = _user(db_session, "proposal-transfer-no-structured@example.com")
+    clarification_id = _source(db_session, user_id)
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    proposal = proposals.materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="First skill")
+    )
+    transfer = proposals.transfer_to_profile_revision(user_id, proposal.id, expected_revision=1)
+    assert transfer.profile_revision.proposed_structured.skills == [Skill(name="First skill")]
+    assert transfer.profile_revision.changed_authorities == ["structured"]
+    assert db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    )) is None
+    confirmed_review = CandidateProfileRevisionService(db_session).review(
+        user_id, transfer.profile_revision.id, expected_revision=1
+    )
+    CandidateProfileRevisionService(db_session).confirm(
+        user_id, transfer.profile_revision.id, expected_revision=confirmed_review.revision
+    )
+    assert db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    )) is not None
+
+
+def test_transfer_failure_after_staging_rolls_back_both_records(db_session, monkeypatch) -> None:
+    user_id = _user(db_session, "proposal-transfer-rollback@example.com")
+    clarification_id = _source(db_session, user_id)
+    proposal = CandidateAdviserProfileProposalService(db_session).materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="Rollback skill")
+    )
+    original_commit = db_session.commit
+
+    def fail_commit():
+        raise RuntimeError("injected commit failure")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+    with pytest.raises(RuntimeError, match="injected commit failure"):
+        CandidateAdviserProfileProposalService(db_session).transfer_to_profile_revision(
+            user_id, proposal.id, expected_revision=1
+        )
+    monkeypatch.setattr(db_session, "commit", original_commit)
+    db_session.expire_all()
+    stored = CandidateAdviserProfileProposalService(db_session).get_for_user(user_id, proposal.id)
+    assert stored.state == CandidateAdviserProfileProposalState.PENDING
+    assert stored.transferred_at is None and stored.transferred_profile_revision_id is None
+    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )) is None
+
+
+def test_transfer_catches_active_slot_race_and_rolls_back_proposal(tmp_path) -> None:
+    from app.core.database import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'proposal-active-slot-race.sqlite'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    try:
+        with sessions() as seed:
+            user_id = _user(seed, "proposal-active-slot-race@example.com")
+            clarification_id = _source(seed, user_id)
+            proposal = CandidateAdviserProfileProposalService(seed).materialize_from_confirmed_clarification(
+                user_id, clarification_id, _update(name="Racing skill")
+            )
+            proposal_id = proposal.id
+
+        with sessions() as transfer_session, sessions() as competing_session:
+            winner: list[str] = []
+
+            def create_competing_draft(session, flush_context, instances):
+                winner.append(
+                    CandidateProfileRevisionService(competing_session)
+                    .create_or_resume(user_id)
+                    .id
+                )
+
+            event.listen(transfer_session, "before_flush", create_competing_draft, once=True)
+            with pytest.raises(CandidateAdviserProfileProposalConflict, match="active Profile draft"):
+                CandidateAdviserProfileProposalService(transfer_session).transfer_to_profile_revision(
+                    user_id, proposal_id, expected_revision=1
+                )
+            assert winner
+            transfer_session.expire_all()
+            stored = CandidateAdviserProfileProposalService(transfer_session).get_for_user(
+                user_id, proposal_id
+            )
+            assert stored.state == CandidateAdviserProfileProposalState.PENDING
+            assert stored.transferred_at is None
+            assert stored.transferred_profile_revision_id is None
+            assert transfer_session.query(CandidateProfileRevisionRecord).filter_by(
+                user_id=user_id
+            ).count() == 1
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_transfer_conflicts_with_existing_active_draft_without_touching_proposal(db_session) -> None:
+    user_id = _user(db_session, "proposal-transfer-active@example.com")
+    clarification_id = _source(db_session, user_id)
+    proposal = CandidateAdviserProfileProposalService(db_session).materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="Rust")
+    )
+    existing = CandidateProfileRevisionService(db_session).create_or_resume(user_id)
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="active Profile draft"):
+        CandidateAdviserProfileProposalService(db_session).transfer_to_profile_revision(
+            user_id, proposal.id, expected_revision=1
+        )
+    db_session.expire_all()
+    assert CandidateProfileRevisionService(db_session).active(user_id).id == existing.id
+    stored = CandidateAdviserProfileProposalService(db_session).get_for_user(user_id, proposal.id)
+    assert stored.state == CandidateAdviserProfileProposalState.PENDING
+    assert stored.transferred_at is None and stored.transferred_profile_revision_id is None
+
+
+def test_transferred_revision_can_be_reviewed_confirmed_and_discard_does_not_reopen_proposal(db_session) -> None:
+    user_id = _user(db_session, "proposal-transfer-lifecycle@example.com")
+    clarification_id = _source(db_session, user_id)
+    ActiveCandidateEvidenceResolver(db_session).resolve(user_id, CandidateCVData())
+    db_session.commit()
+    evidence_before = [
+        (item.fingerprint, item.evidence_type, item.title, item.provenance_json)
+        for item in db_session.scalars(
+            select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)
+        )
+    ]
+    assert len(evidence_before) == 1
+    assert '"source_kind": "user_confirmed"' in evidence_before[0][3]
+    _seed_structured_profile(db_session, user_id, CandidateCVData(skills=[Skill(name="Python")]))
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    created = proposals.materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="Rust")
+    )
+    transfer = proposals.transfer_to_profile_revision(user_id, created.id, expected_revision=1)
+    revisions = CandidateProfileRevisionService(db_session)
+    reviewed = revisions.review(user_id, transfer.profile_revision.id, expected_revision=1)
+    confirmed = revisions.confirm(user_id, transfer.profile_revision.id, expected_revision=reviewed.revision)
+    assert confirmed.state == "confirmed"
+    assert [skill.name for skill in CandidateCVData.model_validate_json(
+        db_session.scalar(select(CandidateStructuredProfile).where(
+            CandidateStructuredProfile.user_id == user_id
+        )).structured_json
+    ).skills] == ["Python", "Rust"]
+    evidence_after = [
+        (item.fingerprint, item.evidence_type, item.title, item.provenance_json)
+        for item in db_session.scalars(
+            select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)
+        )
+    ]
+    assert evidence_after == evidence_before
+    assert all('"source_kind": "confirmed_profile"' not in item[3] for item in evidence_after)
+
+    other_user = _user(db_session, "proposal-transfer-discard@example.com")
+    other_source = _source(db_session, other_user)
+    other_proposal = proposals.materialize_from_confirmed_clarification(
+        other_user, other_source, _update(name="Discarded skill")
+    )
+    other_transfer = proposals.transfer_to_profile_revision(
+        other_user, other_proposal.id, expected_revision=1
+    )
+    revisions.discard(other_user, other_transfer.profile_revision.id, expected_revision=1)
+    db_session.expire_all()
+    assert proposals.get_for_user(other_user, other_proposal.id).state == CandidateAdviserProfileProposalState.TRANSFERRED
+    assert proposals.transfer_to_profile_revision(other_user, other_proposal.id, expected_revision=1).profile_revision.state == "discarded"
+
+
+def test_transferred_revision_becomes_stale_after_current_structured_state_changes(db_session) -> None:
+    user_id = _user(db_session, "proposal-transfer-stale@example.com")
+    clarification_id = _source(db_session, user_id)
+    row = _seed_structured_profile(
+        db_session, user_id, CandidateCVData(skills=[Skill(name="Original")])
+    )
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    proposal = proposals.materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="Proposed")
+    )
+    transfer = proposals.transfer_to_profile_revision(user_id, proposal.id, expected_revision=1)
+    changed = CandidateCVData(skills=[Skill(name="CV confirmed update")])
+    row.structured_json = json.dumps(changed.model_dump(mode="json"), sort_keys=True)
+    ActiveCandidateEvidenceResolver(db_session).resolve(user_id, changed)
+    db_session.commit()
+    with pytest.raises(ProfileRevisionStale, match="structured"):
+        CandidateProfileRevisionService(db_session).review(
+            user_id, transfer.profile_revision.id, expected_revision=1
+        )
+
+
+def test_competing_transfer_sessions_observe_first_terminal_transition(tmp_path) -> None:
+    from app.core.database import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'proposal-transfer-race.sqlite'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    try:
+        with sessions() as seed:
+            user_id = _user(seed, "proposal-transfer-race@example.com")
+            clarification_id = _source(seed, user_id)
+            proposal = CandidateAdviserProfileProposalService(seed).materialize_from_confirmed_clarification(
+                user_id, clarification_id, _update(name="Concurrent skill")
+            )
+            proposal_id = proposal.id
+
+        with sessions() as first, sessions() as second:
+            stale = CandidateAdviserProfileProposalService(first).get_for_user(user_id, proposal_id)
+            assert stale.state == CandidateAdviserProfileProposalState.PENDING
+            winner = CandidateAdviserProfileProposalService(second).transfer_to_profile_revision(
+                user_id, proposal_id, expected_revision=stale.revision
+            )
+            loser = CandidateAdviserProfileProposalService(first).transfer_to_profile_revision(
+                user_id, proposal_id, expected_revision=stale.revision
+            )
+            assert loser.proposal.state == CandidateAdviserProfileProposalState.TRANSFERRED
+            assert loser.profile_revision.id == winner.profile_revision.id
+            assert first.query(CandidateProfileRevisionRecord).filter_by(user_id=user_id).count() == 1
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 @pytest.mark.parametrize("answer_kind", [ClarificationAnswerKind.CAREER_FACT, ClarificationAnswerKind.MIXED])
@@ -462,6 +820,13 @@ def test_proposal_crud_is_inert_to_snapshot_context_evidence_and_adviser_current
         user_id, created.id, expected_revision=created.revision, proposed_update=_update(name="Edited")
     )
     service.reject_pending(user_id, edited.id, expected_revision=edited.revision)
+    staged = service.materialize_from_confirmed_clarification(
+        user_id, source_id, _update(name="Transfer only")
+    )
+    transfer = service.transfer_to_profile_revision(
+        user_id, staged.id, expected_revision=staged.revision
+    )
+    assert transfer.proposal.state == CandidateAdviserProfileProposalState.TRANSFERRED
 
     after_snapshot = reader.read(user_id).model_dump(mode="json")
     after_context_model = reader.candidate_context(reader.read(user_id))
@@ -482,7 +847,8 @@ def test_proposal_crud_is_inert_to_snapshot_context_evidence_and_adviser_current
         after_context_model
     ) == before_discovery_fingerprint
     assert after_evidence == before_evidence
-    assert after_revisions == before_revisions == []
+    assert before_revisions == []
+    assert len(after_revisions) == 1 and after_revisions[0].state == "draft"
     assert after_structured == before_structured
     assert adviser.get_assessment_read_only(user_id).status == CandidateAdviserAssessmentStatus.CONFIRMED
 
@@ -515,10 +881,6 @@ def test_http_proposal_routes_are_authenticated_user_scoped_and_provider_free(cl
     assert client.get(
         f"/api/v1/candidate-adviser/profile-proposals/{created.id}", headers=headers_a
     ).status_code == 200
-    assert client.post(
-        f"/api/v1/candidate-adviser/profile-proposals/{created.id}/transfer",
-        headers=headers_a,
-    ).status_code == 404
     assert client.get(
         f"/api/v1/candidate-adviser/profile-proposals/{created.id}", headers=headers_b
     ).status_code == 404
@@ -532,3 +894,35 @@ def test_http_proposal_routes_are_authenticated_user_scoped_and_provider_free(cl
         headers=headers_a,
         json={"expected_revision": 2},
     ).json()["state"] == "rejected"
+    assert client.post(
+        f"/api/v1/candidate-adviser/profile-proposals/{created.id}/transfer",
+        headers=headers_a,
+        json={"expected_revision": 3},
+    ).status_code == 409
+
+
+def test_transfer_http_endpoint_is_provider_free(client, db_session, monkeypatch) -> None:
+    from app.api import deps
+
+    def no_provider(*args, **kwargs):
+        raise AssertionError("Profile proposal transfer must not construct provider services")
+
+    monkeypatch.setattr(deps, "_build_candidate_adviser_service", no_provider)
+    monkeypatch.setattr(deps, "get_semantic_response_client", no_provider)
+    credentials = {"email": "proposal-transfer-http@example.com", "password": "strong-password"}
+    assert client.post("/api/v1/auth/register", json=credentials).status_code == 201
+    token = client.post("/api/v1/auth/login", json=credentials).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    user = db_session.scalar(select(User).where(User.email == credentials["email"]))
+    clarification_id = _source(db_session, user.id)
+    proposal = CandidateAdviserProfileProposalService(db_session).materialize_from_confirmed_clarification(
+        user.id, clarification_id, _update(name="HTTP transferred")
+    )
+    response = client.post(
+        f"/api/v1/candidate-adviser/profile-proposals/{proposal.id}/transfer",
+        headers=headers,
+        json={"expected_revision": proposal.revision},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["proposal"]["state"] == "transferred"
+    assert response.json()["profile_revision"]["state"] == "draft"

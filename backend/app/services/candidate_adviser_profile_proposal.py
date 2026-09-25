@@ -3,7 +3,7 @@ import json
 from collections import Counter
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -11,6 +11,8 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from app.models.candidate_adviser import CandidateAdviserClarificationRecord
 from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
+from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
+from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.schemas.candidate_adviser import (
     CandidateAdviserClarificationStatus,
     ClarificationAnswerKind,
@@ -19,6 +21,7 @@ from app.schemas.candidate_adviser import (
 from app.schemas.candidate_adviser_profile_proposal import (
     ConfirmedClarificationProposalSource,
     CandidateAdviserProfileProposalRead,
+    CandidateAdviserProfileProposalTransferRead,
     CandidateAdviserProfileProposalState,
     CandidateAdviserProfileProposalUpdate,
     StructuredProfileProposalTargetCatalogue,
@@ -30,8 +33,12 @@ from app.schemas.candidate_adviser_profile_proposal import (
     SkillProposalTarget,
     StructuredProfileSection,
 )
-from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.schemas.cv_ingestion import CandidateCVData
+from app.schemas.profile_revision import EditableCandidateStructuredData
+from app.services.profile_revision_service import (
+    CandidateProfileRevisionService,
+    ProfileRevisionConflict,
+)
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
@@ -311,6 +318,160 @@ class CandidateAdviserProfileProposalService:
             self._session.rollback()
             raise
         return self._read(record)
+
+    def transfer_to_profile_revision(
+        self,
+        user_id: str,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> CandidateAdviserProfileProposalTransferRead:
+        """Atomically hand a pending Adviser proposal into one #207 draft."""
+        record = self._session.scalar(
+            select(CandidateAdviserProfileProposalRecord)
+            .where(
+                CandidateAdviserProfileProposalRecord.id == proposal_id,
+                CandidateAdviserProfileProposalRecord.user_id == user_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if record is None:
+            raise CandidateAdviserProfileProposalNotFound("Profile proposal not found.")
+
+        revision_service = CandidateProfileRevisionService(self._session)
+        if record.state == CandidateAdviserProfileProposalState.TRANSFERRED:
+            return self._existing_transfer_result(record, user_id, revision_service)
+        if record.state == CandidateAdviserProfileProposalState.REJECTED:
+            raise CandidateAdviserProfileProposalConflict(
+                "A rejected Adviser proposal cannot be transferred."
+            )
+        self._expect_revision(record, expected_revision)
+
+        try:
+            source = self._confirmed_source(
+                user_id, record.source_clarification_id, fresh=True
+            )
+        except CandidateAdviserProfileProposalNotFound as exc:
+            raise CandidateAdviserProfileProposalConflict(
+                "The Adviser proposal's confirmed source clarification is unavailable."
+            ) from exc
+        if source.origin_assessment_fingerprint != record.source_assessment_fingerprint:
+            raise CandidateAdviserProfileProposalConflict(
+                "The Adviser proposal source provenance does not match its clarification."
+            )
+
+        try:
+            update = _UPDATE_ADAPTER.validate_json(record.proposed_update_json)
+        except ValidationError as exc:
+            raise CandidateAdviserProfileProposalConflict(
+                "The persisted proposal update is invalid and cannot be transferred."
+            ) from exc
+
+        def apply_to_current(
+            current: CandidateCVData | None,
+        ) -> EditableCandidateStructuredData:
+            current = current or CandidateCVData()
+            sections = {
+                StructuredProfileSection.EMPLOYMENT: list(current.employment),
+                StructuredProfileSection.EDUCATION: list(current.education),
+                StructuredProfileSection.CREDENTIALS: list(current.credentials),
+                StructuredProfileSection.SKILLS: list(current.skills),
+                StructuredProfileSection.PROJECTS: list(current.projects),
+                StructuredProfileSection.ACHIEVEMENTS: list(current.achievements),
+            }
+            target_section = StructuredProfileSection(update.section)
+            if update.operation == "add":
+                candidate_fingerprint = structured_profile_item_fingerprint(
+                    target_section, update.item
+                )
+                if any(
+                    structured_profile_item_fingerprint(target_section, item)
+                    == candidate_fingerprint
+                    for item in sections[target_section]
+                ):
+                    raise CandidateAdviserProfileProposalConflict(
+                        "An exact matching structured item already exists; the proposal cannot be added."
+                    )
+                sections[target_section].append(update.item)
+            else:
+                fingerprint = update.target_fingerprint
+                matches: list[tuple[StructuredProfileSection, int]] = []
+                for section, items in sections.items():
+                    for index, item in enumerate(items):
+                        if structured_profile_item_fingerprint(section, item) == fingerprint:
+                            matches.append((section, index))
+                if len(matches) != 1 or matches[0][0] != target_section:
+                    raise CandidateAdviserProfileProposalConflict(
+                        "The exact replacement target is missing, duplicated, or in another section."
+                    )
+                sections[target_section][matches[0][1]] = update.item
+            return EditableCandidateStructuredData(
+                employment=sections[StructuredProfileSection.EMPLOYMENT],
+                education=sections[StructuredProfileSection.EDUCATION],
+                credentials=sections[StructuredProfileSection.CREDENTIALS],
+                skills=sections[StructuredProfileSection.SKILLS],
+                projects=sections[StructuredProfileSection.PROJECTS],
+                achievements=sections[StructuredProfileSection.ACHIEVEMENTS],
+            )
+
+        try:
+            revision = revision_service.stage_new_revision(
+                user_id, structured_transform=apply_to_current
+            )
+            record.state = CandidateAdviserProfileProposalState.TRANSFERRED
+            record.transferred_profile_revision_id = revision.id
+            record.transferred_at = datetime.now(timezone.utc)
+            record.revision += 1
+            self._session.commit()
+            self._session.refresh(record)
+            self._session.refresh(revision)
+        except StaleDataError as exc:
+            self._session.rollback()
+            raise CandidateAdviserProfileProposalConflict(
+                "Proposal or Profile revision changed concurrently; retry the transfer."
+            ) from exc
+        except (IntegrityError, ProfileRevisionConflict) as exc:
+            self._session.rollback()
+            raise CandidateAdviserProfileProposalConflict(
+                "An active Profile draft exists or was created concurrently; finish or discard it before transferring."
+            ) from exc
+        except Exception:
+            self._session.rollback()
+            raise
+
+        return CandidateAdviserProfileProposalTransferRead(
+            proposal=self._read(record),
+            profile_revision=revision_service.read_record(revision, user_id),
+        )
+
+    def _existing_transfer_result(
+        self,
+        record: CandidateAdviserProfileProposalRecord,
+        user_id: str,
+        revision_service: CandidateProfileRevisionService,
+    ) -> CandidateAdviserProfileProposalTransferRead:
+        revision_id = record.transferred_profile_revision_id
+        if revision_id is None or record.transferred_at is None:
+            raise CandidateAdviserProfileProposalConflict(
+                "Transferred proposal history has no valid linked Profile revision."
+            )
+        revision = self._session.scalar(
+            select(CandidateProfileRevisionRecord)
+            .where(
+                CandidateProfileRevisionRecord.id == revision_id,
+                CandidateProfileRevisionRecord.user_id == user_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if revision is None:
+            raise CandidateAdviserProfileProposalConflict(
+                "Transferred proposal history has no valid linked Profile revision."
+            )
+        return CandidateAdviserProfileProposalTransferRead(
+            proposal=self._read(record),
+            profile_revision=revision_service.read_record(revision, user_id),
+        )
 
     def _confirmed_source(
         self, user_id: str, clarification_id: str, *, fresh: bool = False

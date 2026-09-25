@@ -3,6 +3,7 @@
 import hashlib
 import json
 from datetime import datetime, timezone
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -54,16 +55,79 @@ class CandidateProfileRevisionService:
         )
         return self._read(revision, user_id) if revision is not None else None
 
+    def read_record(
+        self, revision: CandidateProfileRevisionRecord, user_id: str
+    ) -> CandidateProfileRevisionRead:
+        """Serialize a scoped revision record, including one staged in this transaction."""
+        if revision.user_id != user_id:
+            raise ProfileRevisionNotFound("Profile revision not found.")
+        return self._read(revision, user_id)
+
     def create_or_resume(self, user_id: str) -> CandidateProfileRevisionRead:
         existing = self._active_row(user_id)
         if existing is not None:
             return self._read(existing, user_id)
 
-        profile = self._profile(user_id)
-        structured = self._structured(user_id)
+        revision = self._new_revision_record(user_id)
+        self._session.add(revision)
+        try:
+            self._session.commit()
+            self._session.refresh(revision)
+        except IntegrityError:
+            # Another request may have won the unique active slot after our read.
+            self._session.rollback()
+            existing = self._active_row(user_id)
+            if existing is None:
+                raise
+            return self._read(existing, user_id)
+        return self._read(revision, user_id)
+
+    def stage_new_revision(
+        self,
+        user_id: str,
+        *,
+        structured_transform: Callable[
+            [CandidateCVData | None], EditableCandidateStructuredData
+        ],
+    ) -> CandidateProfileRevisionRecord:
+        """Stage a new baseline-consistent draft without committing the transaction.
+
+        This internal workflow hook is for atomic domain transitions that must
+        insert a normal #207 revision together with another record mutation.
+        The transform receives the locked, freshly read full structured state.
+        """
+        if self._active_row(user_id, fresh=True, for_update=True) is not None:
+            raise ProfileRevisionConflict(
+                "An active Profile draft already exists. Finish or discard it before transferring this proposal."
+            )
+        revision = self._new_revision_record(
+            user_id,
+            structured_transform=structured_transform,
+            lock_authorities=True,
+        )
+        self._session.add(revision)
+        self._session.flush()
+        return revision
+
+    def _new_revision_record(
+        self,
+        user_id: str,
+        *,
+        structured_transform: Callable[
+            [CandidateCVData | None], EditableCandidateStructuredData
+        ] | None = None,
+        lock_authorities: bool = False,
+    ) -> CandidateProfileRevisionRecord:
+        profile = self._profile(user_id, for_update=lock_authorities)
+        structured = self._structured(user_id, for_update=lock_authorities)
         full_structured = self._full_structured_data(structured)
         editable_structured = self._editable_structured_data(full_structured)
-        revision = CandidateProfileRevisionRecord(
+        proposed_structured = (
+            structured_transform(full_structured)
+            if structured_transform is not None
+            else editable_structured
+        )
+        return CandidateProfileRevisionRecord(
             user_id=user_id,
             active_user_id=user_id,
             state=CandidateProfileRevisionState.DRAFT,
@@ -79,23 +143,11 @@ class CandidateProfileRevisionService:
                 else None
             ),
             proposed_structured_json=(
-                _canonical_json(editable_structured.model_dump(mode="json"))
-                if structured is not None
+                _canonical_json(proposed_structured.model_dump(mode="json"))
+                if structured is not None or structured_transform is not None
                 else None
             ),
         )
-        self._session.add(revision)
-        try:
-            self._session.commit()
-            self._session.refresh(revision)
-        except IntegrityError:
-            # Another request may have won the unique active slot after our read.
-            self._session.rollback()
-            existing = self._active_row(user_id)
-            if existing is None:
-                raise
-            return self._read(existing, user_id)
-        return self._read(revision, user_id)
 
     def save(
         self,
@@ -353,13 +405,18 @@ class CandidateProfileRevisionService:
             stale.append("structured")
         return stale
 
-    def _active_row(self, user_id: str) -> CandidateProfileRevisionRecord | None:
-        return self._session.scalar(
-            select(CandidateProfileRevisionRecord).where(
-                CandidateProfileRevisionRecord.active_user_id == user_id,
-                CandidateProfileRevisionRecord.user_id == user_id,
-            )
+    def _active_row(
+        self, user_id: str, *, fresh: bool = False, for_update: bool = False
+    ) -> CandidateProfileRevisionRecord | None:
+        statement = select(CandidateProfileRevisionRecord).where(
+            CandidateProfileRevisionRecord.active_user_id == user_id,
+            CandidateProfileRevisionRecord.user_id == user_id,
         )
+        if for_update:
+            statement = statement.with_for_update()
+        if fresh or for_update:
+            statement = statement.execution_options(populate_existing=True)
+        return self._session.scalar(statement)
 
     def _owned_active_row(
         self, user_id: str, revision_id: str
