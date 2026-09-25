@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.models.candidate_profile import CandidateProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
+from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.profile_revision import (
     CandidateProfileRevisionRead,
@@ -189,11 +190,107 @@ class CandidateProfileRevisionService:
             raise
         return self._read(revision, user_id)
 
+    def confirm(
+        self, user_id: str, revision_id: str, *, expected_revision: int
+    ) -> CandidateProfileRevisionRead:
+        """Atomically promote a reviewed proposal and mark it confirmed.
+
+        Repeating confirmation for an already-confirmed owned revision returns
+        its confirmed representation. Discarded revisions are never confirmable.
+        """
+        revision = self._session.scalar(
+            select(CandidateProfileRevisionRecord).where(
+                CandidateProfileRevisionRecord.id == revision_id,
+                CandidateProfileRevisionRecord.user_id == user_id,
+            )
+        )
+        if revision is None:
+            raise ProfileRevisionNotFound("Profile revision not found.")
+        if revision.state == CandidateProfileRevisionState.CONFIRMED:
+            return self._read(revision, user_id)
+        if revision.active_user_id != user_id:
+            raise ProfileRevisionConflict("This revision is no longer active.")
+        self._expect_revision(revision, expected_revision)
+        if revision.state != CandidateProfileRevisionState.REVIEW_READY:
+            raise ProfileRevisionConflict("Only a review-ready revision can be confirmed.")
+
+        changed = self._changed_authorities(revision)
+        # Lock and fingerprint only the authorities this proposal changes.
+        # The full structured fingerprint includes semantic evidence, which is
+        # preserved verbatim when constructing a changed structured authority.
+        profile = self._profile(user_id, for_update="profile" in changed)
+        structured = self._structured(user_id, for_update="structured" in changed)
+        full_structured = self._full_structured_data(structured)
+        stale: list[RevisionAuthority] = []
+        if "profile" in changed and profile_authority_fingerprint(
+            profile
+        ) != revision.base_profile_fingerprint:
+            stale.append("profile")
+        if "structured" in changed and structured_authority_fingerprint(
+            full_structured
+        ) != revision.base_structured_fingerprint:
+            stale.append("structured")
+        if stale:
+            raise ProfileRevisionStale(
+                "The current authority changed after this revision was created: "
+                + ", ".join(stale)
+                + ". Discard this revision and start again from current information."
+            )
+
+        try:
+            if "profile" in changed:
+                proposal = EditableCandidateProfileData.model_validate_json(
+                    revision.proposed_profile_json
+                )
+                if profile is None:
+                    profile = CandidateProfile(user_id=user_id)
+                    self._session.add(profile)
+                for field in _PROFILE_FIELDS:
+                    setattr(profile, field, getattr(proposal, field))
+
+            if "structured" in changed:
+                proposal = EditableCandidateStructuredData.model_validate_json(
+                    revision.proposed_structured_json
+                )
+                data = CandidateCVData(
+                    **proposal.model_dump(mode="python"),
+                    evidence=full_structured.evidence if full_structured is not None else [],
+                )
+                encoded = _canonical_json(data.model_dump(mode="json"))
+                if structured is None:
+                    structured = CandidateStructuredProfile(
+                        user_id=user_id, structured_json=encoded
+                    )
+                    self._session.add(structured)
+                else:
+                    structured.structured_json = encoded
+                ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
+
+            revision.state = CandidateProfileRevisionState.CONFIRMED
+            revision.active_user_id = None
+            revision.confirmed_at = datetime.now(timezone.utc)
+            revision.revision += 1
+            self._session.commit()
+            self._session.refresh(revision)
+        except StaleDataError as exc:
+            self._session.rollback()
+            raise ProfileRevisionConflict(
+                "Revision version conflict: another request changed this revision."
+            ) from exc
+        except Exception:
+            self._session.rollback()
+            raise
+        return self._read(revision, user_id)
+
     def _read(
         self, revision: CandidateProfileRevisionRecord, user_id: str
     ) -> CandidateProfileRevisionRead:
         changed = self._changed_authorities(revision)
-        stale = self._stale_authorities(revision, user_id, changed)
+        stale = (
+            []
+            if revision.state == CandidateProfileRevisionState.CONFIRMED
+            else self._stale_authorities(revision, user_id, changed)
+        )
         return CandidateProfileRevisionRead(
             id=revision.id,
             state=revision.state,
@@ -289,17 +386,23 @@ class CandidateProfileRevisionService:
                 f"Revision version conflict: expected {expected_revision}, current version is {revision.revision}."
             )
 
-    def _profile(self, user_id: str) -> CandidateProfile | None:
-        return self._session.scalar(
-            select(CandidateProfile).where(CandidateProfile.user_id == user_id)
-        )
+    def _profile(
+        self, user_id: str, *, for_update: bool = False
+    ) -> CandidateProfile | None:
+        query = select(CandidateProfile).where(CandidateProfile.user_id == user_id)
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(query)
 
-    def _structured(self, user_id: str) -> CandidateStructuredProfile | None:
-        return self._session.scalar(
-            select(CandidateStructuredProfile).where(
-                CandidateStructuredProfile.user_id == user_id
-            )
+    def _structured(
+        self, user_id: str, *, for_update: bool = False
+    ) -> CandidateStructuredProfile | None:
+        query = select(CandidateStructuredProfile).where(
+            CandidateStructuredProfile.user_id == user_id
         )
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        return self._session.scalar(query)
 
     @staticmethod
     def _profile_payload(profile: CandidateProfile) -> EditableCandidateProfileData:
