@@ -466,11 +466,11 @@ describe("Issue #198 direct vacancy preparation", () => {
     expect(body).toEqual({ target: { job_text: "A".repeat(100) }, target_pages: 3, include_cover_letter: false, application_questions: ["Question 2?", "Question 3?", "Question 4?", "Question 5?", "Question 6?", "Question 7?", "Last question?"] });
   });
 
-  it("fails closed for missing CV or display name and links to the appropriate remediation", async () => {
+  it("fails closed for missing structured information or display name and links to the appropriate remediation", async () => {
     const cvFetch = externalFetcher({ "/api/v1/onboarding/status": () => json({ ...readyForPreparation, candidate_context_ready: false }) });
     renderApp(cvFetch);
-    expect(await screen.findByRole("alert")).toHaveTextContent("A confirmed CV is required");
-    expect(screen.getByRole("link", { name: "Review or confirm your CV" })).toHaveAttribute("href", "/cv");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Confirmed structured career information is required");
+    expect(screen.getByRole("link", { name: "Review your Profile" })).toHaveAttribute("href", "/");
     expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
     cleanup();
     const profileFetch = externalFetcher({ "/api/v1/profile": () => json({ detail: "missing" }, 404) }); renderApp(profileFetch);
@@ -531,7 +531,7 @@ describe("Issue #198 direct vacancy preparation", () => {
     oldStatus.resolve(json({ ...readyForPreparation, candidate_context_ready: false })); oldProfile.resolve(json(namedProfile));
     await waitFor(() => expect(statusCalls).toBe(2));
     expect(screen.getByRole("button", { name: "Create preparation" })).toBeEnabled();
-    expect(screen.queryByText(/A confirmed CV is required/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Confirmed structured career information is required/)).not.toBeInTheDocument();
   });
 
   it("shows pending, disables mutable controls, and prevents duplicate preparation POSTs", async () => {
@@ -701,7 +701,7 @@ describe("Issue #198 direct vacancy preparation", () => {
     let statusCalls = 0;
     const cvFetch = externalFetcher({ "/api/v1/onboarding/status": () => ++statusCalls === 1 ? json(readyForPreparation) : json({ ...readyForPreparation, candidate_context_ready: false }), "POST /api/v1/applications/prepare": () => json({}, 409) }); renderApp(cvFetch);
     fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "I".repeat(100) } }); await waitForExternalPreparationReady(); fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("confirmed CV is required"); expect(screen.getByRole("link", { name: "Review or confirm your CV" })).toHaveAttribute("href", "/cv");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Confirmed structured career information is required"); expect(screen.getByRole("link", { name: "Review your Profile" })).toHaveAttribute("href", "/");
     cleanup();
     let profileCalls = 0;
     const profileFetch = externalFetcher({ "/api/v1/profile": () => ++profileCalls === 1 ? json(namedProfile) : json({ detail: "missing" }, 404), "POST /api/v1/applications/prepare": () => json({}, 409) }); renderApp(profileFetch);

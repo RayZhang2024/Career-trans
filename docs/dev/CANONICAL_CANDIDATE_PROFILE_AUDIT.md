@@ -6,6 +6,8 @@
 **Frozen audit baseline:** `e8b174479a2c36b734ce6dd6f82fef155c578ba8` (`main` at audit start)
 **Audit scope:** repository code, schemas, migrations, existing tests, and committed synthetic/demo material only. No live provider calls or private user data were used.
 
+**Historical note:** this audit records the repository at its frozen Issue #203 audit baseline, before Issue #207. Its point-in-time descriptions of Profile writes and CV-only structured authority have since been superseded by the manual revision workflow documented in `docs/ARCHITECTURE.md`.
+
 ## Executive summary
 
 Career-trans already has several separate user-owned candidate domains. The closest current authority for structured career facts is `CandidateStructuredProfile`, written only by the CV confirmation workflow. `ActiveCandidateEvidenceResolver` is the current authority for the active factual `CareerEvidence` set: it derives current claims from the structured profile plus confirmed factual Adviser clarifications, and reconciles them with durable evidence rows. These are related authorities, not duplicate representations of one model.

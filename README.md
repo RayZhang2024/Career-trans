@@ -46,8 +46,8 @@ The authenticated browser workspace includes:
 - register;
 - sign in / sign out;
 - authenticated session restore;
-- a read-first Profile view backed by the canonical candidate snapshot, with separate saved details, confirmed CV information, current preferences, eligibility, Adviser status and active evidence;
-- create and edit scalar profile details from the Profile view;
+- a read-first Profile view backed by the canonical candidate snapshot, with saved details, confirmed structured career information, preferences, eligibility, Adviser status and active evidence;
+- draft, review and confirm scalar Profile and structured career changes through the Profile revision workflow;
 - backend-owned onboarding status;
 - responsive desktop/mobile presentation;
 - CV upload, review, correction, and confirmation;

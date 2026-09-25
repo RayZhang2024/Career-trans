@@ -323,10 +323,10 @@ describe("Issue #171 Jobs workspace", () => {
     expect(screen.queryByRole("heading", { name: "Jobs" })).not.toBeInTheDocument();
   });
 
-  it("blocks evaluation before candidate context is ready and links to CV onboarding", async () => {
+  it("blocks evaluation before candidate context is ready and links to Profile", async () => {
     renderJobs(fakeFetch({ "/api/v1/onboarding/status": () => json({ ...ready, candidate_context_ready: false }) }));
-    expect(await screen.findByRole("heading", { name: "Complete your CV first" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Go to CV onboarding" })).toHaveAttribute("href", "/cv");
+    expect(await screen.findByRole("heading", { name: "Complete your Profile first" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review Profile" })).toHaveAttribute("href", "/");
     fireEvent.click(screen.getByRole("button", { name: "Recent vacancies" }));
     expect(screen.queryByRole("heading", { name: "Evaluate selected actionable jobs" })).not.toBeInTheDocument();
   });

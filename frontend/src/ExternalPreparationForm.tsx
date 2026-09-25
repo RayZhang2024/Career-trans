@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ApiError, type ApplicationPreparation, type ApplicationPrepareRequest, type OnboardingStatus, type Profile } from "./api";
 import { useAuth } from "./auth";
 
-type Prerequisite = "checking" | "ready" | "cv_missing" | "profile_missing" | "unavailable";
+type Prerequisite = "checking" | "ready" | "candidate_info_missing" | "profile_missing" | "unavailable";
 type SourceMode = "text" | "url";
 
 const MIN_JOB_TEXT_CODE_POINTS = 100;
@@ -20,7 +20,7 @@ function isHttpUrl(value: string): boolean {
 }
 
 function resolvePrerequisite(statusResult: PromiseSettledResult<OnboardingStatus>, profileResult: PromiseSettledResult<Profile>): Prerequisite {
-  if (statusResult.status === "fulfilled" && !statusResult.value.candidate_context_ready) return "cv_missing";
+  if (statusResult.status === "fulfilled" && !statusResult.value.candidate_context_ready) return "candidate_info_missing";
   if (statusResult.status !== "fulfilled") return "unavailable";
   if (profileResult.status === "rejected") return profileResult.reason instanceof ApiError && profileResult.reason.status === 404 ? "profile_missing" : "unavailable";
   return profileResult.value.display_name?.trim() ? "ready" : "profile_missing";
@@ -120,7 +120,7 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
       } else if (reason.status === 409) {
         const refreshed = await refreshPrerequisites();
         if (!alive.current || refreshed === null) return;
-        if (refreshed === "cv_missing" || refreshed === "profile_missing" || refreshed === "unavailable") return;
+        if (refreshed === "candidate_info_missing" || refreshed === "profile_missing" || refreshed === "unavailable") return;
         setError("Career-trans could not complete this preparation with the current application data. No preparation success was confirmed.");
       } else if (reason.status === 422 && reason.detail === INSUFFICIENT_DETAIL) {
         setError(mode === "text"
@@ -144,7 +144,7 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
   return <section className="card application-section external-preparation" aria-labelledby="external-preparation-heading">
     <h2 id="external-preparation-heading">Prepare for another vacancy</h2>
     <p className="muted">Prepare a vacancy directly here; it does not need to come from Career-trans job discovery.</p>
-    {currentPrerequisite === "cv_missing" && <p role="alert">A confirmed CV is required before preparing an application. <Link to="/cv">Review or confirm your CV</Link>.</p>}
+    {currentPrerequisite === "candidate_info_missing" && <p role="alert">Confirmed structured career information is required before preparing an application. Add it through the Profile revision workflow or confirm a CV. <Link to="/">Review your Profile</Link>.</p>}
     {currentPrerequisite === "profile_missing" && <p role="alert">An application display name is required before preparing an application. <Link to="/">Update your profile</Link>.</p>}
     {currentPrerequisite === "unavailable" && <div role="alert">{prerequisiteError} <button type="button" className="button-secondary" onClick={retryPrerequisites} disabled={pending}>Retry prerequisites</button></div>}
     {currentPrerequisite === "checking" && <p role="status">Checking candidate readiness and application display name…</p>}

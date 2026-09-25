@@ -317,7 +317,7 @@ def rank_jobs_for_current_user(
     candidate_context: PersistedCandidateContext,
     service: JobRankingService = Depends(get_user_job_ranking_service),
 ) -> JobRankingResponse:
-    """Rank jobs against only the authenticated user's confirmed CV-derived context."""
+    """Rank jobs against only the authenticated user's confirmed candidate context."""
     return service.rank(
         JobRankingRequest(
             jobs=payload.jobs,
