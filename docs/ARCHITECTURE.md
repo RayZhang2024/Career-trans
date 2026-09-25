@@ -252,6 +252,10 @@ Manual Profile changes are persisted in a separate `CandidateProfileRevisionReco
 
 The canonical snapshot contains current confirmed Profile and structured career information only; pending manual and CV drafts do not enter `CandidateContext`. CV confirmation remains a whole-structured-information replacement after explicit confirmation, while scalar Profile details, Adviser intake/preferences, and eligibility remain separate. Existing Adviser input fingerprints determine whether structured changes make an assessment stale. Discovery fingerprints change naturally when their candidate-context inputs change; identity-only changes do not. New application preparations use the current confirmed snapshot, while persisted discovery evaluations and application preparations remain historical and immutable.
 
+### Candidate Adviser structured Profile proposals (Issue #208 Phase 1)
+
+A confirmed Adviser clarification may remain an active factual `CareerEvidence` source through `ActiveCandidateEvidenceResolver` and may additionally source a separate persisted structured Profile proposal. Phase 1 proposals are provider-free records with typed updates limited to employment, education, credentials, skills, projects, or achievements. Exact `add` and `replace_exact` operations are represented; replacement carries a deterministic section-and-item fingerprint and does not perform fuzzy matching. The record retains the clarification ID, originating assessment fingerprint, immutable original update, and separately editable proposal update. Pending/rejected proposal operations do not write `CandidateProfile`, `CandidateStructuredProfile`, `CareerEvidence`, Profile revisions, or the canonical snapshot. Proposals remain outside `CandidateContext`; transfer into the Issue #207 revision workflow is not implemented in this phase.
+
 ---
 
 # 8. Candidate Data Model

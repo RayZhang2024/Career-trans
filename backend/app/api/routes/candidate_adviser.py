@@ -1,8 +1,29 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from app.api.deps import CurrentUser, get_user_candidate_adviser_service
-from app.providers.llm import SemanticOutputError, SemanticProviderConfigurationError, SemanticProviderRequestError, SemanticProviderUnavailableError
-from app.schemas.candidate_adviser import CandidateAdviserAssessmentRead, CandidateAdviserClarificationAnswer, CandidateAdviserClarificationRead, CandidateAdviserIntake, CandidateAdviserIntakeRead
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from app.api.deps import CurrentUser, DbSession, get_user_candidate_adviser_service
+from app.providers.llm import (
+    SemanticOutputError,
+    SemanticProviderConfigurationError,
+    SemanticProviderRequestError,
+    SemanticProviderUnavailableError,
+)
+from app.schemas.candidate_adviser import (
+    CandidateAdviserAssessmentRead,
+    CandidateAdviserClarificationAnswer,
+    CandidateAdviserClarificationRead,
+    CandidateAdviserIntake,
+    CandidateAdviserIntakeRead,
+)
+from app.schemas.candidate_adviser_profile_proposal import (
+    CandidateAdviserProfileProposalAction,
+    CandidateAdviserProfileProposalPatch,
+    CandidateAdviserProfileProposalRead,
+)
 from app.services.candidate_adviser_service import CandidateAdviserService
+from app.services.candidate_adviser_profile_proposal import (
+    CandidateAdviserProfileProposalConflict,
+    CandidateAdviserProfileProposalNotFound,
+    CandidateAdviserProfileProposalService,
+)
 
 router = APIRouter(prefix="/candidate-adviser", tags=["candidate-adviser"])
 
@@ -88,4 +109,67 @@ def confirm_clarification(
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clarification not found.") from exc
     except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/profile-proposals", response_model=list[CandidateAdviserProfileProposalRead])
+def list_profile_proposals(
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> list[CandidateAdviserProfileProposalRead]:
+    return CandidateAdviserProfileProposalService(db).list_for_user(current_user.id, limit=limit)
+
+
+@router.get("/profile-proposals/{proposal_id}", response_model=CandidateAdviserProfileProposalRead)
+def read_profile_proposal(
+    proposal_id: str,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> CandidateAdviserProfileProposalRead:
+    service = CandidateAdviserProfileProposalService(db)
+    try:
+        return service.get_for_user(current_user.id, proposal_id)
+    except CandidateAdviserProfileProposalNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile proposal not found.") from exc
+
+
+@router.patch("/profile-proposals/{proposal_id}", response_model=CandidateAdviserProfileProposalRead)
+def edit_profile_proposal(
+    proposal_id: str,
+    payload: CandidateAdviserProfileProposalPatch,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> CandidateAdviserProfileProposalRead:
+    service = CandidateAdviserProfileProposalService(db)
+    try:
+        return service.edit_pending(
+            current_user.id,
+            proposal_id,
+            expected_revision=payload.expected_revision,
+            proposed_update=payload.proposed_update,
+        )
+    except CandidateAdviserProfileProposalNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile proposal not found.") from exc
+    except CandidateAdviserProfileProposalConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/profile-proposals/{proposal_id}/reject", response_model=CandidateAdviserProfileProposalRead)
+def reject_profile_proposal(
+    proposal_id: str,
+    payload: CandidateAdviserProfileProposalAction,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> CandidateAdviserProfileProposalRead:
+    service = CandidateAdviserProfileProposalService(db)
+    try:
+        return service.reject_pending(
+            current_user.id,
+            proposal_id,
+            expected_revision=payload.expected_revision,
+        )
+    except CandidateAdviserProfileProposalNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile proposal not found.") from exc
+    except CandidateAdviserProfileProposalConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
