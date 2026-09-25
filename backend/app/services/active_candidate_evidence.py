@@ -247,6 +247,7 @@ class ActiveCandidateEvidenceResolver:
         by_fingerprint = {record.fingerprint: record for record in records}
         active: list[CareerEvidence] = []
         missing: list[str] = []
+        stale: list[str] = []
         for item in drafts:
             canonical = career_evidence_fingerprint(item)
             record = by_fingerprint.get(canonical) or by_fingerprint.get(
@@ -254,12 +255,15 @@ class ActiveCandidateEvidenceResolver:
             )
             if record is None:
                 missing.append(canonical)
+            elif not _matches_current_materialization(record, item, canonical):
+                stale.append(canonical)
             else:
                 active.append(_runtime(record))
         return ActiveCandidateEvidenceRead(
             evidence=tuple(active),
             expected_count=len(drafts),
             missing_fingerprints=tuple(missing),
+            stale_fingerprints=tuple(stale),
         )
 
     def _confirmed_clarification_drafts(self, user_id: str) -> list[CanonicalCareerEvidenceDraft]:
@@ -321,12 +325,37 @@ def _provenance_key(value: CareerEvidenceProvenance) -> tuple[str, str | None, t
     return (value.source_kind, value.document_sha256, tuple(value.segment_ids), value.source_ref)
 
 
+def _matches_current_materialization(
+    record: CandidateEvidenceRecord,
+    item: CanonicalCareerEvidenceDraft,
+    canonical_fingerprint: str,
+) -> bool:
+    """Return whether the persisted row already equals resolve()'s current output."""
+    if (
+        record.fingerprint != canonical_fingerprint
+        or record.evidence_type != item.evidence_type
+        or record.title != item.title
+        or record.text != item.text
+    ):
+        return False
+    try:
+        skills = json.loads(record.skills_json)
+        provenance = json.loads(record.provenance_json)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    expected_provenance = [
+        value.model_dump(mode="json") for value in item.provenance
+    ]
+    return skills == _unique(item.skills) and provenance == expected_provenance
+
+
 @dataclass(frozen=True, slots=True)
 class ActiveCandidateEvidenceRead:
     evidence: tuple[CareerEvidence, ...]
     expected_count: int
     missing_fingerprints: tuple[str, ...]
+    stale_fingerprints: tuple[str, ...]
 
     @property
     def complete(self) -> bool:
-        return not self.missing_fingerprints
+        return not self.missing_fingerprints and not self.stale_fingerprints
