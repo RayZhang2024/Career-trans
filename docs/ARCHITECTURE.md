@@ -230,13 +230,16 @@ CV source text and generated application materials are excluded.
 
 The snapshot reports structured-profile readiness and evidence materialisation
 counts. `incomplete` means one or more facts currently derived from the
-confirmed structured profile or confirmed factual clarifications lack a
-persisted active evidence row. Candidate-context consumers fail closed for
-that state instead of treating partial evidence as complete. The state is
+confirmed structured profile or confirmed factual clarifications either lack a
+persisted evidence row or have a matching row whose canonical fingerprint,
+skills, provenance, or other materialised metadata no longer matches what the
+current resolver would write. Candidate-context consumers fail closed for that
+state instead of treating partial or stale evidence as complete. The state is
 visible for later legacy repair planning; this version does not backfill it or
-introduce a second persisted candidate store. `not_applicable` is used when no
-structured profile or current evidence claim exists, such as a profile-only
-account.
+introduce a second persisted candidate store. `not_applicable` is used when
+there is no confirmed structured profile, such as a profile-only account; a
+structured profile with zero derived evidence claims is complete with zero
+expected rows.
 
 ---
 
