@@ -13,7 +13,7 @@ from app.models.candidate_cv_ingestion import (
     CandidateStructuredProfile,
 )
 from app.schemas.candidate import CandidateContext, CandidateContextSummary, CareerEvidence
-from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, EvidenceProvenance, ExtractedCVDocument
+from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionHistoryItem, CVIngestionHistoryRead, CVIngestionState, CandidateCVData, EvidenceProvenance, ExtractedCVDocument
 from app.schemas.ai_settings import SemanticOperation
 from app.schemas.candidate_read_snapshot import CanonicalCandidateReadSnapshot
 from app.services.cv_file_extraction_service import CVFileExtractionService
@@ -128,22 +128,26 @@ class CVIngestionService:
         if draft.state != CVIngestionState.REVIEW_READY or not draft.merged_json:
             raise ValueError("CV ingestion draft is not ready for confirmation.")
         data = CandidateCVData.model_validate(json.loads(draft.merged_json))
-        profile = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
-        if profile is None:
-            profile = CandidateStructuredProfile(user_id=user_id, structured_json=json.dumps(data.model_dump(mode="json")))
-            self._session.add(profile)
-        else:
-            profile.structured_json = json.dumps(data.model_dump(mode="json"))
-        existing_ids = set(
-            self._session.scalars(
-                select(CandidateEvidenceRecord.id).where(CandidateEvidenceRecord.user_id == user_id)
+        try:
+            profile = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+            if profile is None:
+                profile = CandidateStructuredProfile(user_id=user_id, structured_json=json.dumps(data.model_dump(mode="json")))
+                self._session.add(profile)
+            else:
+                profile.structured_json = json.dumps(data.model_dump(mode="json"))
+            existing_ids = set(
+                self._session.scalars(
+                    select(CandidateEvidenceRecord.id).where(CandidateEvidenceRecord.user_id == user_id)
+                )
             )
-        )
-        active = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
-        count = len([item for item in active if item.evidence_id not in existing_ids])
-        draft.state = CVIngestionState.CONFIRMED
-        self._session.commit()
-        return count
+            active = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
+            count = len([item for item in active if item.evidence_id not in existing_ids])
+            draft.state = CVIngestionState.CONFIRMED
+            self._session.commit()
+            return count
+        except Exception:
+            self._session.rollback()
+            raise
 
     def _draft(self, user_id: str, draft_id: str) -> CandidateCVIngestionDraft:
         draft = self._session.scalar(select(CandidateCVIngestionDraft).where(CandidateCVIngestionDraft.id == draft_id, CandidateCVIngestionDraft.user_id == user_id))
@@ -278,6 +282,28 @@ class CVIngestionReadService:
 
     def __init__(self, session: Session) -> None:
         self._session = session
+
+    def list(self, user_id: str, *, limit: int = 20) -> CVIngestionHistoryRead:
+        rows = list(self._session.scalars(
+            select(CandidateCVIngestionDraft)
+            .where(CandidateCVIngestionDraft.user_id == user_id)
+            .order_by(CandidateCVIngestionDraft.created_at.desc(), CandidateCVIngestionDraft.id.desc())
+            .limit(limit + 1)
+        ))
+        truncated = len(rows) > limit
+        rows = rows[:limit]
+        items = []
+        for draft in rows:
+            documents = [ExtractedCVDocument.model_validate(value) for value in json.loads(draft.documents_json)]
+            items.append(CVIngestionHistoryItem(
+                id=draft.id,
+                state=draft.state,
+                created_at=draft.created_at,
+                updated_at=draft.updated_at,
+                filenames=[document.provenance.filename for document in documents],
+                document_count=len(documents),
+            ))
+        return CVIngestionHistoryRead(items=items, limit=limit, truncated=truncated)
 
     def read(self, user_id: str, draft_id: str) -> CVIngestionDraftRead:
         draft = self._session.scalar(select(CandidateCVIngestionDraft).where(

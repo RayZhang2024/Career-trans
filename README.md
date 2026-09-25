@@ -243,6 +243,8 @@ confirmed
 
 AI-extracted content does not silently become authoritative.
 
+The original uploaded binary is not retained. The authenticated CV history endpoint returns a bounded, newest-first list of source metadata; opening a source returns its extracted text and provenance details through an owner-scoped, read-only request. Historical inspection does not change the latest draft or canonical candidate snapshot. Confirming a review atomically replaces the structured CV profile, reconciles active evidence, and marks the draft confirmed. Existing confirmed profiles without a retained CV source remain valid; a replacement upload is optional.
+
 ### Candidate Adviser
 
 A separate career-strategy enrichment workflow with:

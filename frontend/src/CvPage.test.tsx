@@ -344,3 +344,112 @@ it("prevents duplicate interpret requests while the action is pending", async ()
   expect(request.mock.calls.filter(([path]) => path === "/api/v1/cv-ingestion/draft-p/interpret")).toHaveLength(1);
   finish(draftWith("draft-p", "review_ready", mergedEmpty));
 });
+
+it("keeps delayed historical source reads separate from the current latest draft", async () => {
+  const current = draftWith("draft-current", "uploaded");
+  const history = { limit: 20, truncated: false, items: [
+    { id: "draft-old", state: "confirmed", created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-01T00:00:00Z", filenames: ["old.md"], document_count: 1 },
+    { id: "draft-current", state: "uploaded", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", filenames: ["current.md"], document_count: 1 },
+  ] };
+  let finishOld!: (value: unknown) => void;
+  request
+    .mockResolvedValueOnce(statusWith("draft-current", "uploaded"))
+    .mockResolvedValueOnce(current)
+    .mockResolvedValueOnce(history)
+    .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
+    .mockResolvedValueOnce({ ...current, documents: [{ provenance: { filename: "current.md", media_type: "text/markdown", document_sha256: "current-hash", segment_ids: ["current:1"] }, segments: [{ segment_id: "current:1", text: "CURRENT SOURCE TEXT", page_number: 1, heading: "Current" }] }] });
+  render(<CvPage />);
+  expect(await screen.findByRole("button", { name: "Interpret CV" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "View CV history" }));
+  fireEvent.click((await screen.findAllByRole("button", { name: "View source" }))[0]);
+  const oldCall = request.mock.calls.findIndex(([path]) => path === "/api/v1/cv-ingestion/draft-old");
+  expect(oldCall).toBeGreaterThan(-1);
+  fireEvent.click(screen.getAllByRole("button", { name: "View source" })[1]);
+  expect(await screen.findByText("CURRENT SOURCE TEXT")).toBeInTheDocument();
+  await act(async () => { finishOld({ ...current, id: "draft-old", documents: [{ provenance: { filename: "old.md", media_type: "text/markdown", document_sha256: "old-hash", segment_ids: ["old:1"] }, segments: [{ segment_id: "old:1", text: "OLD SOURCE TEXT", page_number: 1, heading: "Old" }] }] }); });
+  expect(screen.getByText("CURRENT SOURCE TEXT")).toBeInTheDocument();
+  expect(screen.queryByText("OLD SOURCE TEXT")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Interpret CV" }));
+  await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/v1/cv-ingestion/draft-current/interpret", { method: "POST" }));
+});
+
+it("requires explicit replacement confirmation before replacing an existing profile", async () => {
+  const review = draftWith("draft-replacement", "review_ready", mergedEmpty);
+  request
+    .mockResolvedValueOnce(statusWith("draft-replacement", "review_ready", true))
+    .mockResolvedValueOnce(review)
+    .mockResolvedValueOnce({ draft_id: review.id, confirmed_evidence_count: 0 })
+    .mockResolvedValueOnce(statusWith("draft-replacement", "confirmed", true))
+    .mockResolvedValueOnce({ ...review, state: "confirmed" });
+  render(<CvPage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm reviewed CV" }));
+  expect(screen.getByRole("heading", { name: "Replace current CV-derived information?" })).toBeInTheDocument();
+  expect(screen.getByText(/Your saved Profile details, preferences, eligibility and Career Adviser information are unchanged\./)).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: /Replace your current career profile/i })).not.toBeInTheDocument();
+  expect(request.mock.calls.some(([path]) => String(path).includes("/confirm"))).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(request.mock.calls.some(([path]) => String(path).includes("/confirm"))).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm reviewed CV" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm and replace CV-derived information" }));
+  await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/v1/cv-ingestion/draft-replacement/confirm", { method: "POST" }));
+  expect(await screen.findByRole("heading", { name: "CV confirmed" })).toBeInTheDocument();
+});
+
+it("refreshes an already-open history panel after a successful upload", async () => {
+  const oldDraft = draftWith("draft-old", "uploaded");
+  const newDraft = draftWith("draft-new", "uploaded");
+  const historyRow = (id: string, filename: string, state: "uploaded" | "review_ready" | "confirmed") => ({
+    id, state, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", filenames: [filename], document_count: 1,
+  });
+  request
+    .mockResolvedValueOnce(statusWith("draft-old", "uploaded"))
+    .mockResolvedValueOnce(oldDraft)
+    .mockResolvedValueOnce({ items: [historyRow("draft-old", "old.md", "uploaded")], limit: 20, truncated: false })
+    .mockResolvedValueOnce(newDraft)
+    .mockResolvedValueOnce(statusWith("draft-new", "uploaded"))
+    .mockResolvedValueOnce(newDraft)
+    .mockResolvedValueOnce({ items: [historyRow("draft-new", "new.md", "uploaded"), historyRow("draft-old", "old.md", "uploaded")], limit: 20, truncated: false });
+  render(<CvPage />);
+  expect(await screen.findByRole("button", { name: "Interpret CV" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "View CV history" }));
+  expect(await screen.findByText("old.md")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Start new CV upload" }));
+  fireEvent.click(screen.getByRole("button", { name: "Continue with new upload" }));
+  fireEvent.change(screen.getByLabelText("CV files"), { target: { files: [new File(["new"], "new.md", { type: "text/markdown" })] } });
+  fireEvent.click(screen.getByRole("button", { name: "Upload CV" }));
+  await vi.waitFor(() => expect(request.mock.calls.filter(([path]) => path === "/api/v1/cv-ingestion?limit=20")).toHaveLength(2));
+  expect(await screen.findByText("new.md")).toBeInTheDocument();
+  expect(screen.getByText(/uploaded · Latest draft/)).toBeInTheDocument();
+  expect(screen.queryByText("Loading CV history…")).not.toBeInTheDocument();
+});
+
+it("ignores stale history responses after a workflow transition and keeps the newest result", async () => {
+  const uploadedDraft = draftWith("draft-race", "uploaded");
+  const reviewDraft = draftWith("draft-race", "review_ready", mergedEmpty);
+  const historyRow = (filename: string, state: "uploaded" | "review_ready") => ({
+    id: "draft-race", state, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", filenames: [filename], document_count: 1,
+  });
+  let finishOldHistory!: (value: unknown) => void;
+  request
+    .mockResolvedValueOnce(statusWith("draft-race", "uploaded"))
+    .mockResolvedValueOnce(uploadedDraft)
+    .mockImplementationOnce(() => new Promise((resolve) => { finishOldHistory = resolve; }))
+    .mockResolvedValueOnce(reviewDraft)
+    .mockResolvedValueOnce(statusWith("draft-race", "review_ready"))
+    .mockResolvedValueOnce(reviewDraft)
+    .mockResolvedValueOnce({ items: [historyRow("new-history.md", "review_ready")], limit: 20, truncated: false });
+  render(<CvPage />);
+  expect(await screen.findByRole("button", { name: "Interpret CV" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "View CV history" }));
+  expect(await screen.findByText("Loading CV history…")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Interpret CV" }));
+  expect(await screen.findByRole("heading", { name: "Review your CV" })).toBeInTheDocument();
+  expect(await screen.findByText("new-history.md")).toBeInTheDocument();
+  await act(async () => {
+    finishOldHistory({ items: [historyRow("old-history.md", "uploaded")], limit: 20, truncated: false });
+  });
+  expect(screen.getByText("new-history.md")).toBeInTheDocument();
+  expect(screen.queryByText("old-history.md")).not.toBeInTheDocument();
+  expect(screen.getByText(/review_ready · Latest draft/)).toBeInTheDocument();
+  expect(screen.queryByText("Loading CV history…")).not.toBeInTheDocument();
+});
