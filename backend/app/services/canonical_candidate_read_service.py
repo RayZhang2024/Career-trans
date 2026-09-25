@@ -107,6 +107,7 @@ class CanonicalCandidateReadService:
             expected_evidence_count=evidence_read.expected_count,
             materialized_evidence_count=len(evidence_read.evidence),
             missing_evidence_count=len(evidence_read.missing_fingerprints),
+            stale_evidence_count=len(evidence_read.stale_fingerprints),
             latest_cv_draft_state=latest_draft.state if latest_draft else None,
         )
         return CanonicalCandidateReadSnapshot(
@@ -198,6 +199,7 @@ class CanonicalCandidateReadService:
             evidence_materialization_status=readiness.evidence_materialization_status,
             expected_evidence_count=readiness.expected_evidence_count,
             missing_evidence_count=readiness.missing_evidence_count,
+            stale_evidence_count=readiness.stale_evidence_count,
             career_strategy_configured=bool(
                 profile and profile.career_goal and profile.career_goal.strip()
             ),
