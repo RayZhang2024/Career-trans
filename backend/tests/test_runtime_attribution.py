@@ -7,7 +7,8 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateCVReviewBaseline
-from app.schemas.ai_settings import SemanticOperation
+from app.core.config import Settings
+from app.schemas.ai_settings import ReasoningEffort, SemanticOperation, UserAiPreferences
 from app.schemas.cv_ingestion import CandidateCVData, CVIngestionState
 from app.schemas.semantic_runtime_attribution import (
     SemanticRuntimeAttribution,
@@ -22,6 +23,7 @@ from app.services.semantic_runtime_attribution import (
     not_used_attribution,
     read_attribution,
 )
+from app.services.llm_runtime import resolve_runtime_snapshot
 
 
 class _Interpreter:
@@ -67,6 +69,21 @@ def test_runtime_attribution_contract_and_projection_are_strict_and_privacy_mini
         SemanticRuntimeAttribution(status="legacy_unavailable", provider=None, operations={"job_extraction": {"model": "old", "reasoning_effort": None}})
     assert not_used_attribution().model_dump(mode="json") == {"status": "not_used", "provider": None, "operations": {}}
     assert legacy_unavailable_attribution().model_dump(mode="json") == {"status": "legacy_unavailable", "provider": None, "operations": {}}
+
+
+def test_gpt6_resolved_model_and_effort_are_projected_into_v1c_attribution():
+    snapshot = resolve_runtime_snapshot(
+        Settings(),
+        UserAiPreferences(default_model="gpt-6-astra", default_reasoning_effort=ReasoningEffort.XHIGH),
+        preference_revision=3,
+        persisted_override_provider="openai",
+    )
+    attribution = available_attribution(snapshot, (SemanticOperation.CV_SEMANTIC_EXTRACTION,))
+    assert attribution.model_dump(mode="json") == {
+        "status": "available",
+        "provider": "openai",
+        "operations": {"cv_semantic_extraction": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"}},
+    }
 
 
 def test_cv_uploaded_null_structured_not_used_semantic_available_and_failure_null(db_session, runtime_snapshot_a):

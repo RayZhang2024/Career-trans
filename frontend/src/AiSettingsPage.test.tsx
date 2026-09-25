@@ -143,6 +143,31 @@ describe("Issue #189 Settings → AI Models", () => {
     expect(document.body.textContent?.toLowerCase()).not.toContain("api key status");
   });
 
+  it("renders GPT-6 labels and model-specific effort options from the backend catalog", async () => {
+    const gpt6Catalog: AiModelCatalog = {
+      provider: "openai",
+      user_overrides_supported: true,
+      models: [
+        { id: "gpt-6-astra", label: "GPT-6 Astra", structured_output: true, reasoning_efforts: ["low", "medium", "high", "xhigh", "max"] },
+        { id: "gpt-6-sol", label: "GPT-6 Sol", structured_output: true, reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+        { id: "gpt-6-luna", label: "GPT-6 Luna", structured_output: true, reasoning_efforts: ["none", "low", "medium", "high", "xhigh", "max"] },
+      ],
+    };
+    const api = fetcher({}, gpt6Catalog);
+    renderSettings(api.mock);
+    await waitForSettings();
+    expect(screen.getAllByRole("option", { name: "GPT-6 Astra" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("option", { name: "GPT-6 Sol" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("option", { name: "GPT-6 Luna" }).length).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "gpt-6-astra" } });
+    const defaultEffort = screen.getByLabelText("Default reasoning effort");
+    expect(within(defaultEffort).queryByRole("option", { name: "No reasoning" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "gpt-6-sol" } });
+    expect(within(defaultEffort).getByRole("option", { name: "No reasoning" })).toHaveValue("none");
+    expect(api.calls.filter((call) => call.path === "/api/v1/ai/models")).toHaveLength(1);
+  });
+
   it("saves one full replacement with the current revision and adopts the returned settings as clean authority", async () => {
     const persisted = settings({ revision: 7, preference_activity: "active", overrides_active: true });
     const api = fetcher({

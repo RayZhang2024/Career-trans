@@ -127,10 +127,44 @@ def test_partial_operation_override_inherits_other_field_and_defaults_do_not_rew
 
 def test_legacy_catalog_compatibility_is_not_user_selectability() -> None:
     assert MODEL_CAPABILITIES.get("openai", "gpt-4.1-2025-04-14").structured_output
-    assert all(item.id in {"gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"} for item in MODEL_CAPABILITIES.selectable_openai)
+    assert {item.id for item in MODEL_CAPABILITIES.selectable_openai} == {
+        "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
+    }
     with pytest.raises(RuntimePreferenceError, match="user-selectable"):
         validate_preferences(_base_settings(), UserAiPreferences(default_model="gpt-4o"))
     assert resolve_runtime_snapshot(_base_settings(job_relevance_model="gpt-4o")).operation("job_relevance").model == "gpt-4o"
+
+
+def test_gpt6_catalog_efforts_and_validation_are_model_specific() -> None:
+    catalog = {item.id: item for item in MODEL_CAPABILITIES.selectable_openai}
+    assert catalog["gpt-6-astra"].structured_output is True
+    assert catalog["gpt-6-astra"].reasoning_efforts == tuple(ReasoningEffort(value) for value in ("low", "medium", "high", "xhigh", "max"))
+    for model in ("gpt-6-sol", "gpt-6-luna"):
+        assert catalog[model].structured_output is True
+        assert catalog[model].reasoning_efforts == tuple(ReasoningEffort)
+        validate_preferences(_base_settings(), UserAiPreferences(default_model=model, default_reasoning_effort="none"))
+    with pytest.raises(RuntimePreferenceError, match="reasoning effort"):
+        validate_preferences(_base_settings(), UserAiPreferences(default_model="gpt-6-astra", default_reasoning_effort="none"))
+    for effort in ("low", "medium", "high", "xhigh", "max"):
+        validate_preferences(_base_settings(), UserAiPreferences(default_model="gpt-6-astra", default_reasoning_effort=effort))
+
+
+def test_gpt6_runtime_defaults_overrides_and_existing_deployment_defaults() -> None:
+    settings = _base_settings()
+    assert settings.job_relevance_model == "gpt-5.6-luna"
+    defaults = UserAiPreferences(default_model="gpt-6-sol", default_reasoning_effort="max")
+    snapshot = resolve_runtime_snapshot(settings, defaults, preference_revision=1, persisted_override_provider="openai")
+    assert snapshot.operation(SemanticOperation.JOB_RELEVANCE).model == "gpt-6-sol"
+    assert snapshot.operation(SemanticOperation.JOB_RELEVANCE).reasoning_effort is ReasoningEffort.MAX
+
+    override = UserAiPreferences(
+        default_model="gpt-6-sol",
+        default_reasoning_effort="low",
+        operation_overrides={"job_relevance": {"model": "gpt-6-astra", "reasoning_effort": "xhigh"}},
+    )
+    overridden = resolve_runtime_snapshot(settings, override, preference_revision=2, persisted_override_provider="openai")
+    assert overridden.operation(SemanticOperation.JOB_RELEVANCE).model == "gpt-6-astra"
+    assert overridden.operation(SemanticOperation.JOB_RELEVANCE).reasoning_effort is ReasoningEffort.XHIGH
 
 
 def test_provider_mismatch_retains_preferences_and_returning_provider_reactivates(db_session) -> None:
@@ -300,7 +334,12 @@ def test_authenticated_ai_settings_api_is_credential_free_and_provider_is_not_br
     models = client.get("/api/v1/ai/models", headers=headers)
     read = client.get("/api/v1/ai/settings", headers=headers)
     assert models.status_code == 200
-    assert {item["id"] for item in models.json()["models"]} == {"gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"}
+    advertised = {item["id"]: item for item in models.json()["models"]}
+    assert set(advertised) == {"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"}
+    assert all(advertised[model]["structured_output"] for model in ("gpt-6-astra", "gpt-6-sol", "gpt-6-luna"))
+    assert advertised["gpt-6-astra"]["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert advertised["gpt-6-sol"]["reasoning_efforts"] == ["none", "low", "medium", "high", "xhigh", "max"]
+    assert advertised["gpt-6-luna"]["reasoning_efforts"] == ["none", "low", "medium", "high", "xhigh", "max"]
     assert "api_key" not in models.text.casefold()
     assert read.status_code == 200 and read.json()["revision"] == 0
     assert "api_key" not in read.text.casefold()
