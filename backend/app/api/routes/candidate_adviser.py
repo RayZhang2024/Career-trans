@@ -1,5 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from app.api.deps import CurrentUser, DbSession, get_user_candidate_adviser_service
+from app.api.deps import (
+    CurrentUser,
+    DbSession,
+    get_user_candidate_adviser_profile_proposal_generation_service,
+    get_user_candidate_adviser_service,
+)
 from app.providers.llm import (
     SemanticOutputError,
     SemanticProviderConfigurationError,
@@ -17,6 +22,7 @@ from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalAction,
     CandidateAdviserProfileProposalPatch,
     CandidateAdviserProfileProposalRead,
+    CandidateAdviserProfileProposalGenerationRead,
 )
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_profile_proposal import (
@@ -24,6 +30,7 @@ from app.services.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalNotFound,
     CandidateAdviserProfileProposalService,
 )
+from app.services.candidate_adviser_profile_proposal_generation import CandidateAdviserProfileProposalGenerationService
 
 router = APIRouter(prefix="/candidate-adviser", tags=["candidate-adviser"])
 
@@ -110,6 +117,40 @@ def confirm_clarification(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clarification not found.") from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/clarifications/{clarification_id}/profile-proposals",
+    response_model=CandidateAdviserProfileProposalGenerationRead,
+)
+def generate_profile_proposals(
+    clarification_id: str,
+    current_user: CurrentUser,
+    service: CandidateAdviserProfileProposalGenerationService = Depends(
+        get_user_candidate_adviser_profile_proposal_generation_service
+    ),
+) -> CandidateAdviserProfileProposalGenerationRead:
+    try:
+        return service.generate(current_user.id, clarification_id)
+    except CandidateAdviserProfileProposalNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clarification not found.") from exc
+    except CandidateAdviserProfileProposalConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except SemanticProviderConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Candidate Adviser proposal generation is not configured.",
+        ) from exc
+    except SemanticProviderUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Candidate Adviser proposal generation is temporarily unavailable.",
+        ) from exc
+    except (SemanticProviderRequestError, SemanticOutputError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Candidate Adviser proposal generation failed to return valid proposals.",
+        ) from exc
 
 
 @router.get("/profile-proposals", response_model=list[CandidateAdviserProfileProposalRead])

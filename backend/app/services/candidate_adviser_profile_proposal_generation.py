@@ -1,0 +1,133 @@
+"""Explicit orchestration for generating source-grounded Profile proposals."""
+
+from typing import Callable
+
+from pydantic import TypeAdapter, ValidationError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.agents.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalGenerator
+from app.providers.llm import SemanticOutputError
+from app.schemas.candidate_adviser_profile_proposal import (
+    CandidateAdviserProfileProposalGeneration,
+    CandidateAdviserProfileProposalGenerationInput,
+    CandidateAdviserProfileProposalGenerationRead,
+    CandidateAdviserProfileProposalUpdate,
+    StructuredProfileSection,
+)
+from app.services.candidate_adviser_profile_proposal import (
+    CandidateAdviserProfileProposalConflict,
+    CandidateAdviserProfileProposalService,
+    _canonical_json,
+    structured_profile_item_fingerprint,
+)
+
+
+_UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
+_SECTION_ITEMS = {
+    StructuredProfileSection.EMPLOYMENT: "employment",
+    StructuredProfileSection.EDUCATION: "education",
+    StructuredProfileSection.CREDENTIALS: "credentials",
+    StructuredProfileSection.SKILLS: "skills",
+    StructuredProfileSection.PROJECTS: "projects",
+    StructuredProfileSection.ACHIEVEMENTS: "achievements",
+}
+
+
+class CandidateAdviserProfileProposalGenerationService:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        generator_factory: Callable[[], CandidateAdviserProfileProposalGenerator],
+    ) -> None:
+        self._session = session
+        self._generator_factory = generator_factory
+
+    def generate(self, user_id: str, clarification_id: str) -> CandidateAdviserProfileProposalGenerationRead:
+        lifecycle = CandidateAdviserProfileProposalService(self._session)
+        source_record, source = lifecycle.generation_source(user_id, clarification_id)
+        if not source.proposed_evidence:
+            return CandidateAdviserProfileProposalGenerationRead(proposals=[])
+
+        catalogue = lifecycle.target_catalogue(user_id)
+        generation_input = CandidateAdviserProfileProposalGenerationInput(
+            source=source,
+            target_catalogue=catalogue,
+        )
+        generated = self._generator_factory().generate(generation_input=generation_input)
+        updates = self._canonical_updates(generated)
+        self._validate_targets(updates, catalogue, lifecycle.target_fingerprint_counts(user_id))
+
+        # Re-read all authority after the remote call; stale source/targets fail
+        # closed before any proposal row is inserted.
+        current_source_record, _ = lifecycle.generation_source(user_id, clarification_id)
+        if (
+            current_source_record.id != source_record.id
+            or current_source_record.status != source_record.status
+            or current_source_record.interpretation_json != source_record.interpretation_json
+            or current_source_record.question_text != source_record.question_text
+        ):
+            raise CandidateAdviserProfileProposalConflict(
+                "The confirmed clarification changed during Profile proposal generation."
+            )
+        current_catalogue = lifecycle.target_catalogue(user_id)
+        self._validate_targets(
+            updates, current_catalogue, lifecycle.target_fingerprint_counts(user_id)
+        )
+        persisted = lifecycle.materialize_batch_from_confirmed_clarification(
+            user_id, clarification_id, updates
+        )
+        return CandidateAdviserProfileProposalGenerationRead(proposals=persisted)
+
+    @staticmethod
+    def _canonical_updates(
+        generated: CandidateAdviserProfileProposalGeneration,
+    ) -> list[CandidateAdviserProfileProposalUpdate]:
+        try:
+            generated = CandidateAdviserProfileProposalGeneration.model_validate(generated)
+            updates = [_UPDATE_ADAPTER.validate_python(update) for update in generated.proposals]
+        except ValidationError as exc:
+            raise SemanticOutputError(
+                "Candidate Adviser Profile proposal generation returned an invalid proposal."
+            ) from exc
+        canonical = [_canonical_json(update.model_dump(mode="json")) for update in updates]
+        if len(set(canonical)) != len(canonical):
+            raise SemanticOutputError(
+                "Candidate Adviser Profile proposal generation returned duplicate proposals."
+            )
+        return updates
+
+    @staticmethod
+    def _validate_targets(updates, catalogue, current_counts) -> None:
+        supplied = {
+            section: {entry.fingerprint for entry in getattr(catalogue, field_name)}
+            for section, field_name in _SECTION_ITEMS.items()
+        }
+        supplied_anywhere = set().union(*supplied.values())
+
+        for update in updates:
+            update = _UPDATE_ADAPTER.validate_python(update)
+            if update.operation == "add":
+                if update.target_fingerprint is not None:
+                    raise CandidateAdviserProfileProposalConflict(
+                        "An add proposal cannot target a current structured item."
+                    )
+                continue
+            target = update.target_fingerprint
+            section = StructuredProfileSection(update.section)
+            if not target or target not in supplied_anywhere:
+                raise CandidateAdviserProfileProposalConflict(
+                    "A replace_exact proposal must target an item in the supplied current Profile catalogue."
+                )
+            if target not in supplied[section]:
+                raise CandidateAdviserProfileProposalConflict(
+                    "A replace_exact target must belong to the same structured section."
+                )
+            if current_counts[section][target] != 1 or any(
+                count[target] for other_section, count in current_counts.items()
+                if other_section is not section
+            ):
+                raise CandidateAdviserProfileProposalConflict(
+                    "A replace_exact target must match exactly one item in the same structured section."
+                )

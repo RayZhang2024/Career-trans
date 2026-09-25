@@ -5,6 +5,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.cv_ingestion import Achievement, Credential, Education, Employment, Project, Skill
+from app.schemas.candidate_adviser import ClarificationProposedEvidence
 
 
 Fingerprint = str | None
@@ -79,6 +80,90 @@ CandidateAdviserProfileProposalUpdate: TypeAlias = Annotated[
 ]
 
 
+class ConfirmedClarificationProposalSource(BaseModel):
+    """The only facts permitted as the generator's new-claim basis."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clarification_id: str
+    question_text: str = Field(max_length=1_200)
+    confirmed_context_summary: str = Field(max_length=1_200)
+    proposed_evidence: list[ClarificationProposedEvidence] = Field(max_length=3)
+
+
+class EmploymentProposalTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    item: Employment
+
+
+class EducationProposalTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    item: Education
+
+
+class CredentialProposalTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    item: Credential
+
+
+class SkillProposalTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    item: Skill
+
+
+class ProjectProposalTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    item: Project
+
+
+class AchievementProposalTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    item: Achievement
+
+
+class StructuredProfileProposalTargetCatalogue(BaseModel):
+    """First ten current items per section, in canonical source order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    employment: list[EmploymentProposalTarget] = Field(max_length=10)
+    education: list[EducationProposalTarget] = Field(max_length=10)
+    credentials: list[CredentialProposalTarget] = Field(max_length=10)
+    skills: list[SkillProposalTarget] = Field(max_length=10)
+    projects: list[ProjectProposalTarget] = Field(max_length=10)
+    achievements: list[AchievementProposalTarget] = Field(max_length=10)
+    truncated_sections: list[StructuredProfileSection]
+
+
+class CandidateAdviserProfileProposalGenerationInput(BaseModel):
+    """Bounded generation context; current Profile data is target-only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: ConfirmedClarificationProposalSource
+    target_catalogue: StructuredProfileProposalTargetCatalogue
+
+
+class CandidateAdviserProfileProposalGeneration(BaseModel):
+    """Strict semantic output, canonically revalidated before persistence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposals: list[CandidateAdviserProfileProposalUpdate] = Field(max_length=6)
+
+
 class CandidateAdviserProfileProposalState(StrEnum):
     PENDING = "pending"
     REJECTED = "rejected"
@@ -100,6 +185,12 @@ class CandidateAdviserProfileProposalRead(BaseModel):
     rejected_at: datetime | None
     transferred_at: datetime | None = None
     transferred_profile_revision_id: str | None = None
+
+
+class CandidateAdviserProfileProposalGenerationRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    proposals: list[CandidateAdviserProfileProposalRead] = Field(max_length=6)
 
 
 class CandidateAdviserProfileProposalPatch(BaseModel):

@@ -1,5 +1,6 @@
 import hashlib
 import json
+from collections import Counter
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, TypeAdapter
@@ -16,11 +17,21 @@ from app.schemas.candidate_adviser import (
     ClarificationInterpretation,
 )
 from app.schemas.candidate_adviser_profile_proposal import (
+    ConfirmedClarificationProposalSource,
     CandidateAdviserProfileProposalRead,
     CandidateAdviserProfileProposalState,
     CandidateAdviserProfileProposalUpdate,
+    StructuredProfileProposalTargetCatalogue,
+    AchievementProposalTarget,
+    CredentialProposalTarget,
+    EducationProposalTarget,
+    EmploymentProposalTarget,
+    ProjectProposalTarget,
+    SkillProposalTarget,
     StructuredProfileSection,
 )
+from app.models.candidate_cv_ingestion import CandidateStructuredProfile
+from app.schemas.cv_ingestion import CandidateCVData
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
@@ -67,50 +78,150 @@ class CandidateAdviserProfileProposalService:
         clarification_id: str,
         update: CandidateAdviserProfileProposalUpdate,
     ) -> CandidateAdviserProfileProposalRead:
+        return self.materialize_batch_from_confirmed_clarification(
+            user_id, clarification_id, [update]
+        )[0]
+
+    def materialize_batch_from_confirmed_clarification(
+        self,
+        user_id: str,
+        clarification_id: str,
+        updates: list[CandidateAdviserProfileProposalUpdate],
+    ) -> list[CandidateAdviserProfileProposalRead]:
+        """Validate and persist a complete generated batch in one commit."""
         source = self._confirmed_source(user_id, clarification_id)
-        typed_update = self._validate_update(update)
-        original_json = _canonical_json(typed_update.model_dump(mode="json"))
-        key_payload = {
-            "source_clarification_id": source.clarification_id,
-            "source_assessment_fingerprint": source.origin_assessment_fingerprint,
-            "original_update": typed_update.model_dump(mode="json"),
-        }
-        proposal_key = hashlib.sha256(_canonical_json(key_payload).encode("utf-8")).hexdigest()
-        existing = self._session.scalar(
+        prepared: list[tuple[str, str]] = []
+        for update in updates:
+            typed_update = self._validate_update(update)
+            update_json = _canonical_json(typed_update.model_dump(mode="json"))
+            key_payload = {
+                "source_clarification_id": source.clarification_id,
+                "source_assessment_fingerprint": source.origin_assessment_fingerprint,
+                "original_update": typed_update.model_dump(mode="json"),
+            }
+            proposal_key = hashlib.sha256(_canonical_json(key_payload).encode("utf-8")).hexdigest()
+            prepared.append((proposal_key, update_json))
+
+        keys = [key for key, _ in prepared]
+        if len(set(keys)) != len(keys):
+            raise CandidateAdviserProfileProposalConflict(
+                "A generated batch cannot contain duplicate proposal updates."
+            )
+        existing_rows = self._session.scalars(
             select(CandidateAdviserProfileProposalRecord).where(
                 CandidateAdviserProfileProposalRecord.user_id == user_id,
-                CandidateAdviserProfileProposalRecord.proposal_key == proposal_key,
+                CandidateAdviserProfileProposalRecord.proposal_key.in_(keys),
             )
-        )
-        if existing is not None:
-            return self._read(existing)
+        ).all() if keys else []
+        existing_by_key = {row.proposal_key: row for row in existing_rows}
+        records: list[CandidateAdviserProfileProposalRecord] = []
+        new_records: list[CandidateAdviserProfileProposalRecord] = []
+        for proposal_key, update_json in prepared:
+            existing = existing_by_key.get(proposal_key)
+            if existing is not None:
+                records.append(existing)
+                continue
+            record = CandidateAdviserProfileProposalRecord(
+                user_id=user_id,
+                proposal_key=proposal_key,
+                state=CandidateAdviserProfileProposalState.PENDING,
+                revision=1,
+                source_clarification_id=source.clarification_id,
+                source_assessment_fingerprint=source.origin_assessment_fingerprint,
+                original_update_json=update_json,
+                proposed_update_json=update_json,
+            )
+            records.append(record)
+            new_records.append(record)
+        if not new_records:
+            return [self._read(record) for record in records]
 
-        record = CandidateAdviserProfileProposalRecord(
-            user_id=user_id,
-            proposal_key=proposal_key,
-            state=CandidateAdviserProfileProposalState.PENDING,
-            revision=1,
-            source_clarification_id=source.clarification_id,
-            source_assessment_fingerprint=source.origin_assessment_fingerprint,
-            original_update_json=original_json,
-            proposed_update_json=original_json,
-        )
-        self._session.add(record)
+        self._session.add_all(new_records)
         try:
             self._session.commit()
-            self._session.refresh(record)
+            for record in new_records:
+                self._session.refresh(record)
         except IntegrityError:
             self._session.rollback()
-            existing = self._session.scalar(
+            recovered = self._session.scalars(
                 select(CandidateAdviserProfileProposalRecord).where(
                     CandidateAdviserProfileProposalRecord.user_id == user_id,
-                    CandidateAdviserProfileProposalRecord.proposal_key == proposal_key,
+                    CandidateAdviserProfileProposalRecord.proposal_key.in_(keys),
                 )
+            ).all() if keys else []
+            recovered_by_key = {row.proposal_key: row for row in recovered}
+            if not all(key in recovered_by_key for key in keys):
+                raise CandidateAdviserProfileProposalConflict(
+                    "A concurrent proposal batch changed the idempotency set; retry generation."
+                )
+            return [self._read(recovered_by_key[key]) for key in keys]
+        return [self._read(record) for record in records]
+
+    def generation_source(
+        self, user_id: str, clarification_id: str
+    ) -> tuple[CandidateAdviserClarificationRecord, ConfirmedClarificationProposalSource]:
+        """Return only the confirmed, affirmative facts allowed into generation."""
+        record = self._confirmed_source(user_id, clarification_id)
+        interpretation = ClarificationInterpretation.model_validate_json(record.interpretation_json)
+        source = ConfirmedClarificationProposalSource(
+            clarification_id=record.clarification_id,
+            question_text=record.question_text[:1_200],
+            confirmed_context_summary=interpretation.confirmed_context_summary[:1_200],
+            proposed_evidence=interpretation.proposed_evidence,
+        )
+        return record, source
+
+    def target_catalogue(self, user_id: str) -> StructuredProfileProposalTargetCatalogue:
+        """Build a deterministic, bounded catalogue without exposing CV evidence."""
+        row = self._session.scalar(
+            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
+        )
+        data = CandidateCVData.model_validate_json(row.structured_json) if row else CandidateCVData()
+        mappings = (
+            (StructuredProfileSection.EMPLOYMENT, data.employment, EmploymentProposalTarget),
+            (StructuredProfileSection.EDUCATION, data.education, EducationProposalTarget),
+            (StructuredProfileSection.CREDENTIALS, data.credentials, CredentialProposalTarget),
+            (StructuredProfileSection.SKILLS, data.skills, SkillProposalTarget),
+            (StructuredProfileSection.PROJECTS, data.projects, ProjectProposalTarget),
+            (StructuredProfileSection.ACHIEVEMENTS, data.achievements, AchievementProposalTarget),
+        )
+        values: dict[str, object] = {}
+        truncated: list[StructuredProfileSection] = []
+        for section, items, target_model in mappings:
+            values[section.value] = [
+                target_model(
+                    fingerprint=structured_profile_item_fingerprint(section, item),
+                    item=item,
+                )
+                for item in items[:10]
+            ]
+            if len(items) > 10:
+                truncated.append(section)
+        values["truncated_sections"] = truncated
+        return StructuredProfileProposalTargetCatalogue.model_validate(values)
+
+    def target_fingerprint_counts(
+        self, user_id: str
+    ) -> dict[StructuredProfileSection, Counter[str]]:
+        """Count exact targets across full current state, including catalogue omissions."""
+        row = self._session.scalar(
+            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
+        )
+        data = CandidateCVData.model_validate_json(row.structured_json) if row else CandidateCVData()
+        sections = (
+            (StructuredProfileSection.EMPLOYMENT, data.employment),
+            (StructuredProfileSection.EDUCATION, data.education),
+            (StructuredProfileSection.CREDENTIALS, data.credentials),
+            (StructuredProfileSection.SKILLS, data.skills),
+            (StructuredProfileSection.PROJECTS, data.projects),
+            (StructuredProfileSection.ACHIEVEMENTS, data.achievements),
+        )
+        return {
+            section: Counter(
+                structured_profile_item_fingerprint(section, item) for item in items
             )
-            if existing is None:
-                raise
-            return self._read(existing)
-        return self._read(record)
+            for section, items in sections
+        }
 
     def list_for_user(
         self, user_id: str, *, limit: int = 20
