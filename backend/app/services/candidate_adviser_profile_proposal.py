@@ -158,10 +158,10 @@ class CandidateAdviserProfileProposalService:
         return [self._read(record) for record in records]
 
     def generation_source(
-        self, user_id: str, clarification_id: str
+        self, user_id: str, clarification_id: str, *, fresh: bool = False
     ) -> tuple[CandidateAdviserClarificationRecord, ConfirmedClarificationProposalSource]:
         """Return only the confirmed, affirmative facts allowed into generation."""
-        record = self._confirmed_source(user_id, clarification_id)
+        record = self._confirmed_source(user_id, clarification_id, fresh=fresh)
         interpretation = ClarificationInterpretation.model_validate_json(record.interpretation_json)
         source = ConfirmedClarificationProposalSource(
             clarification_id=record.clarification_id,
@@ -171,12 +171,11 @@ class CandidateAdviserProfileProposalService:
         )
         return record, source
 
-    def target_catalogue(self, user_id: str) -> StructuredProfileProposalTargetCatalogue:
+    def target_catalogue(
+        self, user_id: str, *, fresh: bool = False
+    ) -> StructuredProfileProposalTargetCatalogue:
         """Build a deterministic, bounded catalogue without exposing CV evidence."""
-        row = self._session.scalar(
-            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
-        )
-        data = CandidateCVData.model_validate_json(row.structured_json) if row else CandidateCVData()
+        data = self._structured_data(user_id, fresh=fresh)
         mappings = (
             (StructuredProfileSection.EMPLOYMENT, data.employment, EmploymentProposalTarget),
             (StructuredProfileSection.EDUCATION, data.education, EducationProposalTarget),
@@ -201,13 +200,10 @@ class CandidateAdviserProfileProposalService:
         return StructuredProfileProposalTargetCatalogue.model_validate(values)
 
     def target_fingerprint_counts(
-        self, user_id: str
+        self, user_id: str, *, fresh: bool = False
     ) -> dict[StructuredProfileSection, Counter[str]]:
         """Count exact targets across full current state, including catalogue omissions."""
-        row = self._session.scalar(
-            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
-        )
-        data = CandidateCVData.model_validate_json(row.structured_json) if row else CandidateCVData()
+        data = self._structured_data(user_id, fresh=fresh)
         sections = (
             (StructuredProfileSection.EMPLOYMENT, data.employment),
             (StructuredProfileSection.EDUCATION, data.education),
@@ -222,6 +218,15 @@ class CandidateAdviserProfileProposalService:
             )
             for section, items in sections
         }
+
+    def _structured_data(self, user_id: str, *, fresh: bool) -> CandidateCVData:
+        statement = select(CandidateStructuredProfile).where(
+            CandidateStructuredProfile.user_id == user_id
+        )
+        if fresh:
+            statement = statement.execution_options(populate_existing=True)
+        row = self._session.scalar(statement)
+        return CandidateCVData.model_validate_json(row.structured_json) if row else CandidateCVData()
 
     def list_for_user(
         self, user_id: str, *, limit: int = 20
@@ -308,14 +313,15 @@ class CandidateAdviserProfileProposalService:
         return self._read(record)
 
     def _confirmed_source(
-        self, user_id: str, clarification_id: str
+        self, user_id: str, clarification_id: str, *, fresh: bool = False
     ) -> CandidateAdviserClarificationRecord:
-        source = self._session.scalar(
-            select(CandidateAdviserClarificationRecord).where(
-                CandidateAdviserClarificationRecord.user_id == user_id,
-                CandidateAdviserClarificationRecord.clarification_id == clarification_id,
-            )
+        statement = select(CandidateAdviserClarificationRecord).where(
+            CandidateAdviserClarificationRecord.user_id == user_id,
+            CandidateAdviserClarificationRecord.clarification_id == clarification_id,
         )
+        if fresh:
+            statement = statement.execution_options(populate_existing=True)
+        source = self._session.scalar(statement)
         if source is None:
             raise CandidateAdviserProfileProposalNotFound("Confirmed clarification not found.")
         if (

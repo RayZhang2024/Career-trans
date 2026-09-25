@@ -4,9 +4,12 @@ import json
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.agents.candidate_adviser_profile_proposal import SemanticCandidateAdviserProfileProposalGenerator
 from app.main import app
+from app.core.database import Base
 from app.models.candidate_adviser import CandidateAdviserClarificationRecord
 from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
@@ -14,6 +17,7 @@ from app.models.user import User
 from app.providers.llm import (
     SemanticOutputError,
     SemanticProviderConfigurationError,
+    SemanticProviderRequestError,
     SemanticProviderUnavailableError,
 )
 from app.providers.openai_structured_output import strict_schema_from_pydantic_model
@@ -295,6 +299,71 @@ def test_target_disappearing_during_provider_call_fails_closed(db_session):
     assert _rows(db_session, user_id) == []
 
 
+def test_external_session_target_change_is_seen_during_revalidation(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'target-race.db'}")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory() as seed_session:
+        user_id = _user(seed_session, "proposal-target-race@example.com")
+        clarification_id = _source(seed_session, user_id)
+        skill = Skill(name="Python", category="language")
+        _seed_structured(seed_session, user_id, CandidateCVData(skills=[skill]))
+        fingerprint = structured_profile_item_fingerprint("skills", skill)
+
+    with session_factory() as session_a, session_factory() as session_b:
+        assert session_a is not session_b
+
+        def remove_target_in_other_session(_input):
+            row_b = session_b.scalar(select(CandidateStructuredProfile).where(
+                CandidateStructuredProfile.user_id == user_id
+            ))
+            row_b.structured_json = CandidateCVData().model_dump_json()
+            session_b.commit()
+
+        fake = FakeGenerator([
+            _skill_update("Advanced Python", operation="replace_exact", target=fingerprint)
+        ], callback=remove_target_in_other_session)
+        with pytest.raises(CandidateAdviserProfileProposalConflict):
+            _service(session_a, fake).generate(user_id, clarification_id)
+        assert fake.received.target_catalogue.skills[0].fingerprint == fingerprint
+        assert session_b.scalars(select(CandidateAdviserProfileProposalRecord)).all() == []
+    engine.dispose()
+
+
+def test_external_session_source_change_is_compared_with_immutable_baseline(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'source-race.db'}")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with session_factory() as seed_session:
+        user_id = _user(seed_session, "proposal-source-race@example.com")
+        clarification_id = _source(seed_session, user_id)
+
+    with session_factory() as session_a, session_factory() as session_b:
+        assert session_a is not session_b
+
+        def alter_source_in_other_session(_input):
+            source_b = session_b.scalar(select(CandidateAdviserClarificationRecord).where(
+                CandidateAdviserClarificationRecord.user_id == user_id,
+                CandidateAdviserClarificationRecord.clarification_id == clarification_id,
+            ))
+            interpretation = ClarificationInterpretation.model_validate_json(
+                source_b.interpretation_json
+            )
+            source_b.interpretation_json = json.dumps(
+                interpretation.model_copy(update={
+                    "confirmed_context_summary": "Changed by concurrent session."
+                }).model_dump(mode="json"),
+                sort_keys=True,
+            )
+            session_b.commit()
+
+        fake = FakeGenerator([_skill_update()], callback=alter_source_in_other_session)
+        with pytest.raises(CandidateAdviserProfileProposalConflict, match="changed during"):
+            _service(session_a, fake).generate(user_id, clarification_id)
+        assert session_b.scalars(select(CandidateAdviserProfileProposalRecord)).all() == []
+    engine.dispose()
+
+
 def test_duplicate_current_exact_fingerprints_fail_closed(db_session):
     user_id = _user(db_session)
     clarification_id = _source(db_session, user_id)
@@ -468,5 +537,65 @@ def test_explicit_generation_endpoint_is_authenticated_and_typed(client, db_sess
         )
         assert response.status_code == 200
         assert response.json()["proposals"][0]["state"] == "pending"
+    finally:
+        app.dependency_overrides.pop(get_user_candidate_adviser_profile_proposal_generation_service, None)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status", "safe_detail"),
+    [
+        (
+            SemanticProviderConfigurationError("private provider configuration detail"),
+            503,
+            "Candidate Adviser proposal generation is not configured.",
+        ),
+        (
+            SemanticProviderUnavailableError("private provider availability detail"),
+            503,
+            "Candidate Adviser proposal generation is temporarily unavailable.",
+        ),
+        (
+            SemanticProviderRequestError("private provider request detail"),
+            502,
+            "Candidate Adviser proposal generation failed to return valid proposals.",
+        ),
+        (
+            SemanticOutputError("private provider output detail"),
+            502,
+            "Candidate Adviser proposal generation failed to return valid proposals.",
+        ),
+    ],
+)
+def test_generation_http_provider_errors_are_safe(
+    client, db_session, error, expected_status, safe_detail
+):
+    from app.api.deps import get_user_candidate_adviser_profile_proposal_generation_service
+
+    error_name = type(error).__name__.casefold()
+    credentials = {
+        "email": f"proposal-http-error-{expected_status}-{error_name}@example.com",
+        "password": "strong-password",
+    }
+    assert client.post("/api/v1/auth/register", json=credentials).status_code == 201
+    token = client.post("/api/v1/auth/login", json=credentials).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    user = db_session.scalar(select(User).where(User.email == credentials["email"]))
+    clarification_id = _source(db_session, user.id)
+
+    class FailedGenerator:
+        def generate(self, *, generation_input):
+            raise error
+
+    service = _service(db_session, FailedGenerator())
+    app.dependency_overrides[get_user_candidate_adviser_profile_proposal_generation_service] = lambda: service
+    try:
+        response = client.post(
+            f"/api/v1/candidate-adviser/clarifications/{clarification_id}/profile-proposals",
+            headers=headers,
+        )
+        assert response.status_code == expected_status
+        assert response.json()["detail"] == safe_detail
+        assert "private provider" not in response.text
+        assert _rows(db_session, user.id) == []
     finally:
         app.dependency_overrides.pop(get_user_candidate_adviser_profile_proposal_generation_service, None)

@@ -1,12 +1,13 @@
 """Explicit orchestration for generating source-grounded Profile proposals."""
 
+from dataclasses import dataclass
 from typing import Callable
 
 from pydantic import TypeAdapter, ValidationError
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalGenerator
+from app.models.candidate_adviser import CandidateAdviserClarificationRecord
 from app.providers.llm import SemanticOutputError
 from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalGeneration,
@@ -19,7 +20,6 @@ from app.services.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalConflict,
     CandidateAdviserProfileProposalService,
     _canonical_json,
-    structured_profile_item_fingerprint,
 )
 
 
@@ -32,6 +32,31 @@ _SECTION_ITEMS = {
     StructuredProfileSection.PROJECTS: "projects",
     StructuredProfileSection.ACHIEVEMENTS: "achievements",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _ConfirmedSourceBaseline:
+    row_id: str
+    user_id: str
+    clarification_id: str
+    status: str
+    question_text: str
+    interpretation_json: str
+    origin_assessment_fingerprint: str
+
+    @classmethod
+    def capture(
+        cls, record: CandidateAdviserClarificationRecord
+    ) -> "_ConfirmedSourceBaseline":
+        return cls(
+            row_id=record.id,
+            user_id=record.user_id,
+            clarification_id=record.clarification_id,
+            status=record.status,
+            question_text=record.question_text,
+            interpretation_json=record.interpretation_json,
+            origin_assessment_fingerprint=record.origin_assessment_fingerprint,
+        )
 
 
 class CandidateAdviserProfileProposalGenerationService:
@@ -49,6 +74,7 @@ class CandidateAdviserProfileProposalGenerationService:
         source_record, source = lifecycle.generation_source(user_id, clarification_id)
         if not source.proposed_evidence:
             return CandidateAdviserProfileProposalGenerationRead(proposals=[])
+        source_baseline = _ConfirmedSourceBaseline.capture(source_record)
 
         catalogue = lifecycle.target_catalogue(user_id)
         generation_input = CandidateAdviserProfileProposalGenerationInput(
@@ -57,24 +83,23 @@ class CandidateAdviserProfileProposalGenerationService:
         )
         generated = self._generator_factory().generate(generation_input=generation_input)
         updates = self._canonical_updates(generated)
-        self._validate_targets(updates, catalogue, lifecycle.target_fingerprint_counts(user_id))
 
         # Re-read all authority after the remote call; stale source/targets fail
         # closed before any proposal row is inserted.
-        current_source_record, _ = lifecycle.generation_source(user_id, clarification_id)
-        if (
-            current_source_record.id != source_record.id
-            or current_source_record.status != source_record.status
-            or current_source_record.interpretation_json != source_record.interpretation_json
-            or current_source_record.question_text != source_record.question_text
-        ):
+        current_source_record, _ = lifecycle.generation_source(
+            user_id, clarification_id, fresh=True
+        )
+        if _ConfirmedSourceBaseline.capture(current_source_record) != source_baseline:
             raise CandidateAdviserProfileProposalConflict(
                 "The confirmed clarification changed during Profile proposal generation."
             )
-        current_catalogue = lifecycle.target_catalogue(user_id)
-        self._validate_targets(
-            updates, current_catalogue, lifecycle.target_fingerprint_counts(user_id)
-        )
+        current_catalogue = lifecycle.target_catalogue(user_id, fresh=True)
+        current_counts = lifecycle.target_fingerprint_counts(user_id, fresh=True)
+        # First ensure each target was present in the immutable catalogue the
+        # provider received, then ensure it remains exact in freshly loaded
+        # current state and current bounded catalogue.
+        self._validate_targets(updates, catalogue, current_counts)
+        self._validate_targets(updates, current_catalogue, current_counts)
         persisted = lifecycle.materialize_batch_from_confirmed_clarification(
             user_id, clarification_id, updates
         )
