@@ -192,6 +192,7 @@ def test_context_summary_is_safe_and_user_scoped(client, db_session) -> None:
         "evidence_materialization_status": "complete",
         "expected_evidence_count": 4,
         "missing_evidence_count": 0,
+        "stale_evidence_count": 0,
         "career_strategy_configured": False,
         "job_search_criteria_configured": False,
     }
