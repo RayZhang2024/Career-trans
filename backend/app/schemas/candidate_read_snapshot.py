@@ -32,6 +32,7 @@ class CandidateReadiness(BaseModel):
     expected_evidence_count: int = Field(ge=0)
     materialized_evidence_count: int = Field(ge=0)
     missing_evidence_count: int = Field(ge=0)
+    stale_evidence_count: int = Field(ge=0)
     latest_cv_draft_state: CVIngestionState | None = None
 
 
