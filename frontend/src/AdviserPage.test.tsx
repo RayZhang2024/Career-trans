@@ -168,7 +168,7 @@ it("keeps a confirmed clarification read-only through dependent refresh until re
   fireEvent.click(screen.getByRole("button", { name: "Confirm clarification" }));
   expect(await screen.findByRole("heading", { name: "Clarification confirmed" })).toBeInTheDocument();
   expect(screen.getByText("Normalized answer")).toBeInTheDocument();
-  expect(screen.getByText("Confirmed context")).toBeInTheDocument();
+  expect(screen.getAllByText("Confirmed context")).toHaveLength(2);
   expect(screen.queryByRole("textbox", { name: "Clarification answer" })).not.toBeInTheDocument();
   resolveStatus(status()); resolveAssessment({ status: "stale", content });
   expect(await screen.findByRole("button", { name: "Reassess" })).toBeEnabled();
@@ -576,4 +576,37 @@ it.each([[404, "stale"], [409, "confirmed"]] as const)("recovers answer conflict
   fireEvent.click(screen.getByRole("button", { name: "Interpret answer" }));
   if (recovered === "stale") await screen.findByRole("button", { name: "Reassess" }); else await screen.findByText("Question restored");
   expect(request.mock.calls.filter((call) => String(call[0]).endsWith("/answer"))).toHaveLength(1); expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/intake" && !call[1])).toHaveLength(1); expect(screen.getByRole("status")).toHaveTextContent("Adviser state changed. The current state has been refreshed.");
+});
+
+it("offers profile suggestions only after a confirmed career clarification and waits for an explicit generation click", async () => {
+  const reviewing = { ...unanswered("career-fact"), status: "review_ready" as const, answer_text: "Delivered a synthetic service", interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Confirmed delivery experience", proposed_evidence: [{ title: "Service delivery", text: "Delivered a synthetic service.", skills: ["planning"] }] } };
+  const confirmed = { ...reviewing, status: "confirmed" as const };
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([reviewing]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  request.mockResolvedValueOnce(confirmed).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("stale"));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm clarification" }));
+  await screen.findByRole("heading", { name: "Clarification confirmed" });
+  const generate = await screen.findByRole("button", { name: "Generate profile suggestions" });
+  expect(screen.getByText("Suggestions use only the career facts you confirmed above. Generating suggestions does not change your current Profile.")).toBeInTheDocument();
+  expect(request.mock.calls.filter(([url]) => String(url).includes("/profile-proposals"))).toHaveLength(0);
+
+  request.mockResolvedValueOnce([]).mockResolvedValueOnce({ proposals: [] }).mockResolvedValueOnce([]);
+  fireEvent.click(generate);
+  expect(await screen.findByRole("status")).toHaveTextContent("No structured Profile suggestions were produced from this clarification. Your current Profile is unchanged.");
+  expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/clarifications/career-fact/profile-proposals", { method: "POST" });
+});
+
+it("isolates profile suggestion history failures from the Adviser assessment lifecycle", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockRejectedValueOnce(new ApiError(404, ""));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("button", { name: "Generate assessment" });
+  request.mockRejectedValueOnce(new Error("history offline"));
+  fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Profile suggestions could not be loaded.");
+  expect(screen.getByRole("textbox", { name: "Career direction" })).toBeEnabled();
+  request.mockResolvedValueOnce(assessment("review_ready"));
+  fireEvent.click(screen.getByRole("button", { name: "Generate assessment" }));
+  expect(await screen.findByText("Assessment ready for your review.")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Profile suggestions could not be loaded.");
 });

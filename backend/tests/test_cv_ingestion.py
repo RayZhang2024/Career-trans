@@ -16,11 +16,18 @@ from app.models.candidate_cv_ingestion import (
     CandidateStructuredProfile,
 )
 from app.models.user import User
+from app.models.candidate_adviser import CandidateAdviserClarificationRecord
+from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
 from app.schemas.cv_ingestion import CandidateCVData
+from app.schemas.candidate_adviser import ClarificationAnswerKind, ClarificationInterpretation
+from app.schemas.candidate_adviser_profile_proposal import SkillProposalUpdate
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService, PersistedCandidateContextLoader
 from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.cv_merge_service import CVMergeService
+from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
+from app.services.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalService
+from app.services.profile_revision_service import CandidateProfileRevisionService, ProfileRevisionStale
 
 
 class FakeInterpreter:
@@ -129,6 +136,89 @@ def test_json_upload_import_is_deterministic_reviewable_and_requires_confirmatio
         assert len(db_session.scalars(select(CandidateEvidenceRecord)).all()) == 2
     finally:
         app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
+
+
+def test_real_cv_confirmation_makes_transferred_profile_revision_stale(client, db_session) -> None:
+    email = "cv-confirmation-stales-transferred-revision@example.com"
+    headers = _auth(client, email)
+    user = db_session.scalar(select(User).where(User.email == email))
+    initial = CandidateCVData(skills=[{"name": "Current A"}])
+    db_session.add(CandidateStructuredProfile(
+        user_id=user.id,
+        structured_json=json.dumps(initial.model_dump(mode="json"), sort_keys=True),
+    ))
+    ActiveCandidateEvidenceResolver(db_session).resolve(user.id, initial)
+    clarification_id = "f" * 64
+    interpretation = ClarificationInterpretation(
+        answer_kind=ClarificationAnswerKind.CAREER_FACT,
+        confirmed_context_summary="A confirmed career fact supports the proposed skill.",
+        proposed_evidence=[],
+    )
+    db_session.add(CandidateAdviserClarificationRecord(
+        user_id=user.id,
+        clarification_id=clarification_id,
+        question_key="e" * 64,
+        origin_assessment_fingerprint="d" * 64,
+        question_text="What skill did you use?",
+        question_source_references_json="[]",
+        priority_index=0,
+        answer_text="Rust",
+        interpretation_json=json.dumps(interpretation.model_dump(mode="json"), sort_keys=True),
+        status="confirmed",
+    ))
+    db_session.commit()
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    proposal = proposals.materialize_from_confirmed_clarification(
+        user.id,
+        clarification_id,
+        SkillProposalUpdate(operation="add", section="skills", item={"name": "Adviser proposal"}),
+    )
+    transfer = proposals.transfer_to_profile_revision(
+        user.id, proposal.id, expected_revision=proposal.revision
+    )
+    linked_revision_id = transfer.profile_revision.id
+    original_base_fingerprint = db_session.get(
+        CandidateProfileRevisionRecord, linked_revision_id
+    ).base_structured_fingerprint
+
+    ingestion = CVIngestionService(db_session, interpreter=FakeInterpreter())
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: ingestion
+    newer_cv = _json_cv()
+    newer_cv["skills"] = [{"name": "CV B current skill", "category": "technical"}]
+    try:
+        uploaded = client.post(
+            "/api/v1/cv-ingestion/upload",
+            headers=headers,
+            files=[("files", ("newer-cv.json", json.dumps(newer_cv), "application/json"))],
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        draft_id = uploaded.json()["id"]
+        reviewed_cv = client.post(f"/api/v1/cv-ingestion/{draft_id}/interpret", headers=headers)
+        assert reviewed_cv.status_code == 200, reviewed_cv.text
+        assert reviewed_cv.json()["state"] == "review_ready"
+        confirmed_cv = client.post(f"/api/v1/cv-ingestion/{draft_id}/confirm", headers=headers)
+        assert confirmed_cv.status_code == 200, confirmed_cv.text
+        assert ingestion._interpreter.calls == 0
+    finally:
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
+
+    current_row = db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user.id
+    ))
+    current = CandidateCVData.model_validate_json(current_row.structured_json)
+    assert "CV B current skill" in [skill.name for skill in current.skills]
+    stored_proposal = proposals.get_for_user(user.id, proposal.id)
+    assert stored_proposal.state == "transferred"
+    linked_revision = db_session.get(CandidateProfileRevisionRecord, linked_revision_id)
+    assert linked_revision is not None and linked_revision.state == "draft"
+    with pytest.raises(ProfileRevisionStale, match="structured"):
+        CandidateProfileRevisionService(db_session).review(
+            user.id, linked_revision_id, expected_revision=transfer.profile_revision.revision
+        )
+    db_session.refresh(linked_revision)
+    assert linked_revision.state == "draft"
+    assert linked_revision.revision == transfer.profile_revision.revision
+    assert linked_revision.base_structured_fingerprint == original_base_fingerprint
 
 
 def test_cv_drafts_are_scoped_to_authenticated_user(client, db_session) -> None:

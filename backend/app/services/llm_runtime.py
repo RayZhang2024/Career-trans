@@ -19,6 +19,7 @@ RUNTIME_OPERATION_TO_SETTING: Mapping[str, SemanticOperation] = {
     "cv_evidence_extraction": SemanticOperation.CV_SEMANTIC_EXTRACTION,
     "candidate_adviser": SemanticOperation.CANDIDATE_ADVISER,
     "candidate_adviser_clarification": SemanticOperation.CANDIDATE_ADVISER,
+    "candidate_adviser_profile_proposal": SemanticOperation.CANDIDATE_ADVISER,
     "job_extraction": SemanticOperation.JOB_EXTRACTION,
     "requirement_matching": SemanticOperation.REQUIREMENT_MATCHING,
     "career_alignment": SemanticOperation.CAREER_ALIGNMENT,

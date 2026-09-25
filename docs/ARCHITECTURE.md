@@ -252,6 +252,12 @@ Manual Profile changes are persisted in a separate `CandidateProfileRevisionReco
 
 The canonical snapshot contains current confirmed Profile and structured career information only; pending manual and CV drafts do not enter `CandidateContext`. CV confirmation remains a whole-structured-information replacement after explicit confirmation, while scalar Profile details, Adviser intake/preferences, and eligibility remain separate. Existing Adviser input fingerprints determine whether structured changes make an assessment stale. Discovery fingerprints change naturally when their candidate-context inputs change; identity-only changes do not. New application preparations use the current confirmed snapshot, while persisted discovery evaluations and application preparations remain historical and immutable.
 
+### Candidate Adviser structured Profile proposals (Issue #208 Phases 1–4)
+
+Clarification confirmation remains provider-free and immediately reconciles confirmed career/mixed clarification evidence through `ActiveCandidateEvidenceResolver`. A separate explicit `POST /api/v1/candidate-adviser/clarifications/{clarification_id}/profile-proposals` action may generate typed suggestions from the clarification's validated affirmative `proposed_evidence` and a bounded current structured Profile target catalogue. The structured Profile is target context only; it is not a source for new factual claims. The catalogue is limited to the first ten items in canonical order per editable section, records which sections were truncated, and excludes `CandidateCVData.evidence`. Provider output is strict-schema validated and exact replacement fingerprints are rechecked against current state after generation. The entire batch is materialized atomically as pending proposal records, retaining deterministic idempotency, immutable original updates, and separately editable proposal updates. These records remain noncanonical until an explicit transfer creates a normal Issue #207 Profile revision.
+
+The Adviser page exposes this lifecycle separately from assessment and clarification loading: users explicitly generate suggestions from a confirmed career/mixed clarification, review and edit the typed item, then reject it or send it to the Profile workflow. Proposal history remains inspectable across Adviser assessment changes. Transferred proposals remain historical records; the Profile page owns review and confirmation of the linked draft, and transfer itself does not change current Profile data.
+
 ---
 
 # 8. Candidate Data Model

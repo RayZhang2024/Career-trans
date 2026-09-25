@@ -9,6 +9,7 @@ from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.candidate_adviser import SemanticCandidateAdviser
 from app.agents.application_drafting import OpenAIApplicationDraftingAgent
 from app.agents.candidate_adviser_clarification import SemanticCandidateAdviserClarificationInterpreter
+from app.agents.candidate_adviser_profile_proposal import SemanticCandidateAdviserProfileProposalGenerator
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_extraction import OpenAIJobExtractor
 from app.agents.job_relevance import OpenAIJobRelevanceAgent
@@ -41,6 +42,7 @@ from app.services.canonical_candidate_read_service import (
     CanonicalCandidateReadService,
 )
 from app.services.candidate_adviser_service import CandidateAdviserService
+from app.services.candidate_adviser_profile_proposal_generation import CandidateAdviserProfileProposalGenerationService
 from app.schemas.candidate import CandidateContext
 from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.job_ranking_service import JobRankingService
@@ -302,6 +304,27 @@ def get_user_candidate_adviser_service(
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
 ) -> CandidateAdviserService:
     return _build_candidate_adviser_service(db, runtime_snapshot)
+
+
+def get_user_candidate_adviser_profile_proposal_generation_service(
+    db: DbSession,
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+) -> CandidateAdviserProfileProposalGenerationService:
+    # The semantic client is deliberately resolved only inside this closure,
+    # after generation has validated the owned confirmed source and evidence.
+    def build_generator() -> SemanticCandidateAdviserProfileProposalGenerator:
+        current_settings = get_settings()
+        return SemanticCandidateAdviserProfileProposalGenerator(
+            get_semantic_response_client(
+                current_settings,
+                model=current_settings.candidate_adviser_model,
+                operation="candidate_adviser_profile_proposal",
+                runtime_snapshot=runtime_snapshot,
+            ),
+            runtime_snapshot.operation("candidate_adviser").model,
+        )
+
+    return CandidateAdviserProfileProposalGenerationService(db, generator_factory=build_generator)
 
 
 def get_confirmed_candidate_context(

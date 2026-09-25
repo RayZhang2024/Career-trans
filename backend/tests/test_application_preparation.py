@@ -199,6 +199,98 @@ def test_manual_revisions_feed_only_future_application_preparations_and_pending_
         assert (row.identity_snapshot_json, row.target_snapshot_json, row.preparation_input_fingerprint, row.preparation_result_json, row.runtime_attribution_json) == history
 
 
+def test_transferred_adviser_proposal_is_invisible_to_preparation_until_revision_confirmation(db_session, monkeypatch):
+    from app.models.application_preparation import ApplicationPreparation
+    from app.models.candidate_adviser import CandidateAdviserClarificationRecord
+    from app.schemas.candidate_adviser import ClarificationAnswerKind, ClarificationInterpretation
+    from app.schemas.candidate_adviser_profile_proposal import SkillProposalUpdate
+    from app.services.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalService
+
+    service, _ = _service(db_session, monkeypatch)
+    drafting = service._drafting_agent
+    request = ApplicationPrepareRequest(
+        target=ApplicationTargetInput(job_text="Python delivery role " * 20),
+        include_cover_letter=False,
+    )
+    first = service.prepare("u1", request)
+    first_row = db_session.get(ApplicationPreparation, first.id)
+    first_history = (
+        first_row.identity_snapshot_json,
+        first_row.target_snapshot_json,
+        first_row.preparation_input_fingerprint,
+        first_row.preparation_result_json,
+        first_row.runtime_attribution_json,
+    )
+    assert "Rust" not in drafting.contexts[-1]["allowed_skills"]
+
+    clarification_id = "c" * 64
+    interpretation = ClarificationInterpretation(
+        answer_kind=ClarificationAnswerKind.CAREER_FACT,
+        confirmed_context_summary="The candidate has used Rust.",
+        proposed_evidence=[],
+    )
+    db_session.add(CandidateAdviserClarificationRecord(
+        user_id="u1",
+        clarification_id=clarification_id,
+        question_key="d" * 64,
+        origin_assessment_fingerprint="e" * 64,
+        question_text="Which additional language have you used?",
+        question_source_references_json="[]",
+        priority_index=0,
+        answer_text="Rust",
+        interpretation_json=json.dumps(interpretation.model_dump(mode="json"), sort_keys=True),
+        status="confirmed",
+    ))
+    db_session.commit()
+    proposal = CandidateAdviserProfileProposalService(db_session).materialize_from_confirmed_clarification(
+        "u1",
+        clarification_id,
+        SkillProposalUpdate(operation="add", section="skills", item=Skill(name="Rust")),
+    )
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    transfer = proposals.transfer_to_profile_revision(
+        "u1", proposal.id, expected_revision=proposal.revision
+    )
+    assert transfer.profile_revision.state == "draft"
+
+    second = service.prepare("u1", request)
+    second_row = db_session.get(ApplicationPreparation, second.id)
+    second_history = (
+        second_row.identity_snapshot_json,
+        second_row.target_snapshot_json,
+        second_row.preparation_input_fingerprint,
+        second_row.preparation_result_json,
+        second_row.runtime_attribution_json,
+    )
+    assert second.preparation_input_fingerprint == first.preparation_input_fingerprint
+    assert second.identity.model_dump(mode="json") == first.identity.model_dump(mode="json")
+    assert "Rust" not in drafting.contexts[-1]["allowed_skills"]
+    assert second.result.cv.selected_projects[0].name == "Canonical Project"
+
+    revisions = CandidateProfileRevisionService(db_session)
+    ready = revisions.review(
+        "u1", transfer.profile_revision.id, expected_revision=transfer.profile_revision.revision
+    )
+    confirmed = revisions.confirm(
+        "u1", transfer.profile_revision.id, expected_revision=ready.revision
+    )
+    assert confirmed.state == "confirmed"
+    third = service.prepare("u1", request)
+    assert third.preparation_input_fingerprint != first.preparation_input_fingerprint
+    assert "Rust" in drafting.contexts[-1]["allowed_skills"]
+
+    # Preparation records are immutable snapshots across both transfer and later confirmation.
+    for preparation_id, expected in ((first.id, first_history), (second.id, second_history)):
+        row = db_session.get(ApplicationPreparation, preparation_id)
+        assert (
+            row.identity_snapshot_json,
+            row.target_snapshot_json,
+            row.preparation_input_fingerprint,
+            row.preparation_result_json,
+            row.runtime_attribution_json,
+        ) == expected
+
+
 def test_raw_text_creates_immutable_preparation_and_documents(db_session, monkeypatch):
     service, _ = _service(db_session, monkeypatch)
     result = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20)))
