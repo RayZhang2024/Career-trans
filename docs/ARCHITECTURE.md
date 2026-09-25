@@ -224,8 +224,10 @@ Authenticated reads compose a non-persisted typed snapshot from the existing
 `CandidateProfile`, `CandidateStructuredProfile`, user-owned active
 `CareerEvidence`, Adviser intake, eligibility and only confirmed, current
 Adviser assessment content. The authenticated `GET /api/v1/profile/snapshot`
-endpoint exposes that snapshot to backend clients such as the future Profile
-UI. Reads are provider-free and do not reconcile, flush or commit records. Raw
+endpoint exposes that snapshot to backend clients, including the authenticated
+Profile view. The UI renders the snapshot's separate domains without
+assembling another candidate authority. Reads are provider-free and do not
+reconcile, flush or commit records. Raw
 CV source text and generated application materials are excluded.
 
 The snapshot reports structured-profile readiness and evidence materialisation

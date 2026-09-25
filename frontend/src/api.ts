@@ -55,6 +55,69 @@ export type Profile = {
   job_search_criteria?: string | null; preferred_email?: string | null; phone?: string | null;
   linkedin_url?: string | null; github_url?: string | null; portfolio_url?: string | null;
 };
+export type CandidateEligibility = {
+  work_authorisation: string[];
+  security_clearances: string[];
+  locations: string[];
+};
+export type Employment = { employer: string; title: string; start_date: string | null; end_date: string | null; location: string | null; description: string };
+export type Education = { institution: string; qualification: string; field_of_study: string | null; description: string };
+export type Credential = { name: string; credential_type: string; issuer: string | null; issued_date: string | null; expiry_date: string | null; status: string | null; description: string };
+export type CandidateSkill = { name: string; category: string | null };
+export type CandidateProject = { name: string; description: string; skills: string[] };
+export type CandidateAchievement = { text: string };
+export type CandidateCVData = {
+  employment: Employment[];
+  education: Education[];
+  credentials: Credential[];
+  skills: CandidateSkill[];
+  projects: CandidateProject[];
+  achievements: CandidateAchievement[];
+  evidence: Array<{ evidence_type: string; title: string; text: string; skills: string[] }>;
+};
+export type CareerEvidence = { evidence_id: string; title: string; text: string; skills: string[]; evidence_type: string };
+export type AdviserInsight = { text: string; source_references: Array<{ source_type: string; reference: string }> };
+export type CandidateAdviserAssessment = {
+  professional_positioning: AdviserInsight;
+  transferable_strengths: AdviserInsight[];
+  development_gaps: AdviserInsight[];
+  role_hypotheses: AdviserInsight[];
+  transition_assessment: AdviserInsight;
+  open_questions: AdviserInsight[];
+  career_strategy_summary: AdviserInsight;
+  job_search_strategy_summary: AdviserInsight;
+};
+export type AdviserIntake = {
+  career_direction: string;
+  work_preferences: string[];
+  constraints: string[];
+  self_assessment: string[];
+  motivations: string[];
+  tradeoffs: string[];
+  eligibility: CandidateEligibility;
+  updated_at: string;
+};
+export type CandidateReadiness = {
+  structured_profile_available: boolean;
+  ready_for_candidate_context: boolean;
+  evidence_materialization_status: "not_applicable" | "complete" | "incomplete";
+  expected_evidence_count: number;
+  materialized_evidence_count: number;
+  missing_evidence_count: number;
+  stale_evidence_count: number;
+  latest_cv_draft_state: "uploaded" | "review_ready" | "confirmed" | null;
+};
+export type AdviserReadStatus = "not_available" | "review_ready" | "confirmed" | "stale" | "unavailable";
+export type CanonicalCandidateReadSnapshot = {
+  profile: Profile | null;
+  structured_profile: CandidateCVData | null;
+  active_evidence: CareerEvidence[];
+  adviser_intake: AdviserIntake | null;
+  eligibility: CandidateEligibility;
+  adviser_assessment: CandidateAdviserAssessment | null;
+  adviser_assessment_status: AdviserReadStatus;
+  readiness: CandidateReadiness;
+};
 export type OnboardingStatus = {
   profile_exists: boolean; candidate_context_ready: boolean;
   latest_cv_draft: { id: string; state: "uploaded" | "review_ready" | "confirmed"; created_at: string; updated_at: string } | null;
