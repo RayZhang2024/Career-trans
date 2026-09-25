@@ -13,13 +13,98 @@ from app.schemas.candidate_profile import (
     CandidateProfileRead,
     CandidateProfileUpdate,
 )
+from app.schemas.profile_revision import (
+    CandidateProfileRevisionAction,
+    CandidateProfileRevisionPatch,
+    CandidateProfileRevisionRead,
+)
 from app.services.profile_service import (
     create_profile_for_user,
     get_profile_for_user,
     update_profile_for_user,
 )
+from app.services.profile_revision_service import (
+    CandidateProfileRevisionService,
+    ProfileRevisionConflict,
+    ProfileRevisionNotFound,
+)
 
 router = APIRouter(prefix="/profile", tags=["profile"])
+
+
+@router.get("/revisions/active", response_model=CandidateProfileRevisionRead | None)
+def read_active_profile_revision(
+    db: DbSession, current_user: CurrentUser
+) -> CandidateProfileRevisionRead | None:
+    return CandidateProfileRevisionService(db).active(current_user.id)
+
+
+@router.post("/revisions", response_model=CandidateProfileRevisionRead)
+def create_profile_revision(
+    db: DbSession, current_user: CurrentUser
+) -> CandidateProfileRevisionRead:
+    return CandidateProfileRevisionService(db).create_or_resume(current_user.id)
+
+
+@router.patch("/revisions/{revision_id}", response_model=CandidateProfileRevisionRead)
+def save_profile_revision(
+    revision_id: str,
+    payload: CandidateProfileRevisionPatch,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> CandidateProfileRevisionRead:
+    try:
+        patch_fields = payload.model_fields_set - {"expected_revision"}
+        return CandidateProfileRevisionService(db).save(
+            current_user.id,
+            revision_id,
+            expected_revision=payload.expected_revision,
+            patch_fields=patch_fields,
+            proposed_profile=payload.proposed_profile,
+            proposed_structured=payload.proposed_structured,
+        )
+    except ProfileRevisionNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile revision not found.") from exc
+    except ProfileRevisionConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/revisions/{revision_id}/review", response_model=CandidateProfileRevisionRead)
+def review_profile_revision(
+    revision_id: str,
+    payload: CandidateProfileRevisionAction,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> CandidateProfileRevisionRead:
+    try:
+        return CandidateProfileRevisionService(db).review(
+            current_user.id,
+            revision_id,
+            expected_revision=payload.expected_revision,
+        )
+    except ProfileRevisionNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile revision not found.") from exc
+    except ProfileRevisionConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/revisions/{revision_id}/discard", response_model=CandidateProfileRevisionRead)
+def discard_profile_revision(
+    revision_id: str,
+    payload: CandidateProfileRevisionAction,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> CandidateProfileRevisionRead:
+    try:
+        return CandidateProfileRevisionService(db).discard(
+            current_user.id,
+            revision_id,
+            expected_revision=payload.expected_revision,
+        )
+    except ProfileRevisionNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile revision not found.") from exc
+    except ProfileRevisionConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get("/context-summary", response_model=CandidateContextSummary)

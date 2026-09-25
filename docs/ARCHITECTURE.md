@@ -245,6 +245,10 @@ there is no confirmed structured profile, such as a profile-only account; a
 structured profile with zero derived evidence claims is complete with zero
 expected rows.
 
+### Manual Profile revision proposals (Phase 1)
+
+Manual Profile changes are persisted in a separate `CandidateProfileRevisionRecord` proposal. Its scalar CandidateProfile fields and editable structured career sections remain separate from the current authorities. The editable structured schema omits `CandidateCVData.evidence`, so manual drafts cannot author or rewrite source-grounded evidence or CV provenance. Creation copies current editable values when present and records deterministic, absence-aware fingerprints for the scalar and full structured authorities (the latter includes evidence). A portable nullable unique active-user slot enforces one `draft`/`review_ready` revision per user. Versioned save, review, and discard operations are provider-free; review checks only the baselines for authorities changed by the proposal. Pending proposals are excluded from the canonical snapshot. This Phase 1 lifecycle intentionally has no confirmation or promotion operation; current authorities remain unchanged.
+
 ---
 
 # 8. Candidate Data Model
