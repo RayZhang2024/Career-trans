@@ -12,15 +12,17 @@ from app.models.candidate_cv_ingestion import (
     CandidateEvidenceRecord,
     CandidateStructuredProfile,
 )
-from app.models.candidate_profile import CandidateProfile
-from app.services.candidate_adviser_service import CandidateAdviserService
-from app.schemas.candidate import CandidateContext, CandidateContextSummary, CandidateEligibility, CareerEvidence
+from app.schemas.candidate import CandidateContext, CandidateContextSummary, CareerEvidence
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionState, CandidateCVData, EvidenceProvenance, ExtractedCVDocument
 from app.schemas.ai_settings import SemanticOperation
+from app.schemas.candidate_read_snapshot import CanonicalCandidateReadSnapshot
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_interpretation_service import CVSemanticInterpreter
 from app.services.cv_merge_service import CVMergeService
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
+from app.services.canonical_candidate_read_service import (
+    CanonicalCandidateReadService,
+)
 from app.services.llm_runtime import ResolvedRuntimeSnapshot
 from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, not_used_attribution, read_attribution
 
@@ -304,87 +306,36 @@ def _project_draft(draft: CandidateCVIngestionDraft) -> CVIngestionDraftRead:
     )
 
 class PersistedCandidateContextLoader:
-    """Build existing CandidateContext only from confirmed records owned by one user."""
+    """Compatibility facade projecting the canonical read snapshot to CandidateContext."""
 
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def load(self, user_id: str, *, read_only: bool = False) -> CandidateContext:
-        profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
-        structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
-        data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
-        resolver = ActiveCandidateEvidenceResolver(self._session)
-        evidence = resolver.read_active(user_id, data) if read_only else resolver.resolve(user_id, data)
-        if not read_only:
-            self._session.commit()
-        profile_text = " ".join(value for value in ([profile.headline, profile.current_role, profile.summary, profile.location] if profile else []) if value)
-        employment_text = "\n".join(f"{item.title} at {item.employer}. {item.description}" for item in data.employment)
-        education_text = "\n".join(f"{item.qualification} at {item.institution}. {item.description}" for item in data.education)
-        adviser = CandidateAdviserService(self._session)
-        intake = adviser.get_intake(user_id)
-        assessment = adviser.current_assessment_read_only(user_id) if read_only else adviser.current_assessment(user_id)
-        career_strategy_parts = [
-            profile.career_goal if profile and profile.career_goal else "",
-            intake.career_direction if intake else "",
-            assessment.content.career_strategy_summary.text if assessment else "",
-            *((item.text for item in assessment.content.role_hypotheses) if assessment else ()),
-        ]
-        criteria_parts = [
-            profile.job_search_criteria if profile and profile.job_search_criteria else "",
-            *(intake.work_preferences if intake else []),
-            *(intake.constraints if intake else []),
-            *(intake.tradeoffs if intake else []),
-            assessment.content.job_search_strategy_summary.text if assessment else "",
-        ]
-        return CandidateContext(
-            profile_text="\n".join(value for value in [profile_text, employment_text, education_text] if value),
-            skills_text=", ".join(item.name for item in data.skills),
-            career_strategy_text="\n".join(value for value in career_strategy_parts if value),
-            job_search_criteria_text="\n".join(value for value in criteria_parts if value),
-            eligibility=intake.eligibility if intake else CandidateEligibility(),
-            evidence=evidence,
+    def read_snapshot(self, user_id: str) -> CanonicalCandidateReadSnapshot:
+        return CanonicalCandidateReadService(self._session).read(user_id)
+
+    def load(self, user_id: str, *, read_only: bool = True) -> CandidateContext:
+        del read_only  # Retained for call compatibility; persisted reads are now always pure.
+        snapshot = self.read_snapshot(user_id)
+        context = CanonicalCandidateReadService.candidate_context(
+            snapshot, require_complete_evidence=True
         )
+        assert context is not None
+        return context
 
     def load_confirmed(self, user_id: str) -> CandidateContext | None:
-        """Return only confirmed CV-derived context; never fall back to demo data."""
-        structured = self._session.scalar(
-            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
+        """Return confirmed context only when its evidence set is fully materialised."""
+        snapshot = self.read_snapshot(user_id)
+        return CanonicalCandidateReadService.candidate_context(
+            snapshot,
+            require_structured_profile=True,
+            require_complete_evidence=True,
         )
-        return self.load(user_id) if structured is not None else None
 
     def load_confirmed_read_only(self, user_id: str) -> CandidateContext | None:
-        """Confirmed authority composition with no reconciliation or writes."""
-        structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
-        return self.load(user_id, read_only=True) if structured is not None else None
+        """Compatibility alias; all canonical context reads are side-effect-free."""
+        return self.load_confirmed(user_id)
 
     def summary(self, user_id: str) -> CandidateContextSummary:
-        profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
-        career_strategy_configured = bool(profile and profile.career_goal and profile.career_goal.strip())
-        job_search_criteria_configured = bool(
-            profile and profile.job_search_criteria and profile.job_search_criteria.strip()
-        )
-        structured = self._session.scalar(
-            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
-        )
-        if structured is None:
-            return CandidateContextSummary(
-                ready=False,
-                employment_count=0,
-                education_count=0,
-                skill_count=0,
-                evidence_count=0,
-                career_strategy_configured=career_strategy_configured,
-                job_search_criteria_configured=job_search_criteria_configured,
-            )
-        data = CandidateCVData.model_validate(json.loads(structured.structured_json))
-        evidence_count = len(ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data))
-        self._session.commit()
-        return CandidateContextSummary(
-            ready=True,
-            employment_count=len(data.employment),
-            education_count=len(data.education),
-            skill_count=len(data.skills),
-            evidence_count=evidence_count,
-            career_strategy_configured=career_strategy_configured,
-            job_search_criteria_configured=job_search_criteria_configured,
-        )
+        snapshot = self.read_snapshot(user_id)
+        return CanonicalCandidateReadService.summary(snapshot)

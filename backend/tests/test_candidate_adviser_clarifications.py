@@ -22,6 +22,7 @@ from app.schemas.candidate_adviser import (
 from app.schemas.candidate import CareerEvidenceProvenance
 from app.schemas.cv_ingestion import CandidateCVData
 from app.services.candidate_adviser_service import CandidateAdviserService
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.agents.candidate_adviser_clarification import SemanticCandidateAdviserClarificationInterpreter
 from app.providers.openai_structured_output import strict_schema_from_pydantic_model
 
@@ -123,6 +124,9 @@ def test_confirmed_career_clarification_is_the_only_transition_to_active_evidenc
     assert len(active) == 1
     provenance = json.loads(active[0].provenance_json)
     assert provenance == [{"source_kind": "user_confirmed", "document_sha256": None, "segment_ids": [], "source_ref": f"clarification:{clarification.clarification_id}"}]
+    snapshot = CanonicalCandidateReadService(db_session).read(user_id)
+    assert snapshot.readiness.ready_for_candidate_context is True
+    assert any(item.title == "Synthetic delivery" for item in snapshot.active_evidence)
     assert service.get_assessment(user_id).status == "stale"
     assert service.list_clarifications(user_id) == []
 

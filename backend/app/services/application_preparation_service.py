@@ -14,8 +14,6 @@ from app.agents.application_drafting import ApplicationDraftingAgent
 from app.agents.agentic_discovery import PageVacancyExtractor
 from app.core.config import Settings, get_settings
 from app.models.application_preparation import ApplicationPreparation
-from app.models.candidate_cv_ingestion import CandidateStructuredProfile
-from app.models.candidate_profile import CandidateProfile
 from app.models.discovered_job import DiscoveredJob
 from app.models.user import User
 from app.providers.page_fetch import PageFetcher
@@ -31,7 +29,10 @@ from app.schemas.candidate import CandidateContext, CareerEvidence
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.discovery import JobListing
 from app.schemas.matching import EvidenceRef, EvidenceSourceType, RequirementMatch
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import (
+    CandidateEvidenceMaterializationIncomplete,
+    CanonicalCandidateReadService,
+)
 from app.services.user_job_discovery_service import UserJobDiscoveryService, _application_revision
 from app.services.application_document_renderer import ApplicationDocumentRenderer
 from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
@@ -141,14 +142,26 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
 
     def prepare(self, user_id: str, request: ApplicationPrepareRequest) -> ApplicationPreparationRead:
         # Validate every deterministic prerequisite before a semantic call.
-        context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+        snapshot = CanonicalCandidateReadService(self._session).read(user_id)
+        try:
+            context = CanonicalCandidateReadService.candidate_context(
+                snapshot,
+                require_structured_profile=True,
+                require_complete_evidence=True,
+            )
+        except CandidateEvidenceMaterializationIncomplete as exc:
+            raise ValueError(
+                "Current candidate evidence is not fully materialised."
+            ) from exc
         if context is None:
             raise ValueError("Candidate profile is not ready.")
-        profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
+        profile = snapshot.profile
         user = self._session.get(User, user_id)
         if profile is None or not profile.display_name or not profile.display_name.strip() or user is None:
             raise ValueError("Application display name is required before preparation.")
-        structured = self._structured(user_id)
+        structured = snapshot.structured_profile
+        if structured is None:
+            raise ValueError("Candidate profile is not ready.")
         identity = ApplicationIdentitySnapshot(
             display_name=profile.display_name.strip(), email=(profile.preferred_email or user.email).strip(),
             phone=profile.phone, location=profile.location, linkedin_url=profile.linkedin_url,
@@ -200,7 +213,9 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
             if job is None or not self._user_discovery.is_currently_actionable(job):
                 raise LookupError("Application target is unavailable.")
             listing = JobListing(source=job.source, source_token=job.source_token, external_id=job.external_id, title=job.title, company=job.company, location=job.location, url=job.url, description=job.description, posted_at=job.posted_at, work_arrangement=job.work_arrangement, employment_type=job.employment_type, detail_authority=job.detail_authority, verification_status=job.verification_status, verification_reason=job.verification_reason)
-            reusable = self._user_discovery.current_evaluation_for_job(user_id, job)
+            reusable = self._user_discovery.current_evaluation_for_job(
+                user_id, job, candidate_context=context
+            )
             if reusable is not None:
                 return _ResolvedApplicationTarget(ApplicationTargetSnapshot(source_kind=target.kind, canonical_discovered_job_id=job.id, public_url=job.url, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, employment_type=job.employment_type, job_profile=reusable.job_profile, requirement_matches=reusable.requirement_matches, job_content_hash=job.content_hash), False)
             return _ResolvedApplicationTarget(self._analysis_snapshot(target.kind, listing, context, canonical_id=job.id, content_hash=job.content_hash), True)
@@ -437,12 +452,6 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
     def _unsupported_answer(question: str):
         from app.schemas.application_preparation import ApplicationQuestionAnswer
         return ApplicationQuestionAnswer(question=question, status=ApplicationAnswerStatus.UNSUPPORTED)
-
-    def _structured(self, user_id: str) -> CandidateCVData:
-        record = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
-        if record is None:
-            raise ValueError("Candidate profile is not ready.")
-        return CandidateCVData.model_validate(json.loads(record.structured_json))
 
     @staticmethod
     def _input_fingerprint(target, identity, catalog, data, request) -> str:
