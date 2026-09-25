@@ -10,11 +10,13 @@ CREATE TABLE candidate_adviser_profile_proposals (
     source_assessment_fingerprint VARCHAR(64) NOT NULL,
     original_update_json TEXT NOT NULL,
     proposed_update_json TEXT NOT NULL,
+    transferred_profile_revision_id VARCHAR(36) REFERENCES candidate_profile_revisions(id),
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL,
     rejected_at TIMESTAMP,
+    transferred_at TIMESTAMP,
     CONSTRAINT uq_candidate_adviser_profile_proposals_user_key UNIQUE (user_id, proposal_key),
-    CONSTRAINT ck_candidate_adviser_profile_proposals_state CHECK (state IN ('pending', 'rejected'))
+    CONSTRAINT ck_candidate_adviser_profile_proposals_state CHECK (state IN ('pending', 'rejected', 'transferred'))
 );
 CREATE INDEX ix_candidate_adviser_profile_proposals_user_id
     ON candidate_adviser_profile_proposals(user_id);

@@ -82,13 +82,14 @@ CandidateAdviserProfileProposalUpdate: TypeAlias = Annotated[
 class CandidateAdviserProfileProposalState(StrEnum):
     PENDING = "pending"
     REJECTED = "rejected"
+    TRANSFERRED = "transferred"
 
 
 class CandidateAdviserProfileProposalRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    state: Literal["pending", "rejected"]
+    state: CandidateAdviserProfileProposalState
     revision: int
     source_clarification_id: str
     source_assessment_fingerprint: str
@@ -97,6 +98,8 @@ class CandidateAdviserProfileProposalRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     rejected_at: datetime | None
+    transferred_at: datetime | None = None
+    transferred_profile_revision_id: str | None = None
 
 
 class CandidateAdviserProfileProposalPatch(BaseModel):

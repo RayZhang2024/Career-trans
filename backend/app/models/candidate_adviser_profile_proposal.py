@@ -17,7 +17,7 @@ class CandidateAdviserProfileProposalRecord(Base):
             name="uq_candidate_adviser_profile_proposals_user_key",
         ),
         CheckConstraint(
-            "state IN ('pending', 'rejected')",
+            "state IN ('pending', 'rejected', 'transferred')",
             name="ck_candidate_adviser_profile_proposals_state",
         ),
     )
@@ -34,6 +34,9 @@ class CandidateAdviserProfileProposalRecord(Base):
     source_assessment_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     original_update_json: Mapped[str] = mapped_column(Text, nullable=False)
     proposed_update_json: Mapped[str] = mapped_column(Text, nullable=False)
+    transferred_profile_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("candidate_profile_revisions.id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
@@ -42,3 +45,4 @@ class CandidateAdviserProfileProposalRecord(Base):
         onupdate=lambda: datetime.now(timezone.utc), nullable=False,
     )
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    transferred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -1,5 +1,6 @@
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -23,6 +24,8 @@ from app.schemas.candidate_adviser import (
     ClarificationProposedEvidence,
 )
 from app.schemas.candidate_adviser_profile_proposal import (
+    CandidateAdviserProfileProposalRead,
+    CandidateAdviserProfileProposalState,
     CandidateAdviserProfileProposalUpdate,
     StructuredProfileSection,
 )
@@ -173,6 +176,50 @@ def test_exact_item_fingerprint_is_canonical_material_and_section_specific() -> 
     assert first != changed_item
 
 
+def test_transferred_is_readable_as_reserved_history_state() -> None:
+    transferred_at = datetime.now(timezone.utc)
+    history = CandidateAdviserProfileProposalRead(
+        id="historical-proposal",
+        state=CandidateAdviserProfileProposalState.TRANSFERRED,
+        revision=2,
+        source_clarification_id="a" * 64,
+        source_assessment_fingerprint="b" * 64,
+        original_update=_update(),
+        proposed_update=_update(name="Edited"),
+        created_at=transferred_at,
+        updated_at=transferred_at,
+        rejected_at=None,
+        transferred_at=transferred_at,
+        transferred_profile_revision_id="profile-revision-id",
+    )
+    assert history.state == "transferred"
+    assert history.transferred_at == transferred_at
+    assert history.transferred_profile_revision_id == "profile-revision-id"
+
+
+def test_database_state_constraint_accepts_reserved_transferred_history(db_session) -> None:
+    user_id = _user(db_session, "proposal-transferred-history@example.com")
+    update_json = json.dumps(_update().model_dump(mode="json"), sort_keys=True)
+    history = CandidateAdviserProfileProposalRecord(
+        user_id=user_id,
+        proposal_key="f" * 64,
+        state=CandidateAdviserProfileProposalState.TRANSFERRED,
+        revision=2,
+        source_clarification_id="a" * 64,
+        source_assessment_fingerprint="b" * 64,
+        original_update_json=update_json,
+        proposed_update_json=update_json,
+    )
+    # Seed a persisted history representation directly to exercise the model
+    # CHECK constraint. Phase 1 exposes no operation that performs this state change.
+    db_session.add(history)
+    db_session.commit()
+    read = CandidateAdviserProfileProposalService(db_session).get_for_user(user_id, history.id)
+    assert read.state == CandidateAdviserProfileProposalState.TRANSFERRED
+    assert read.transferred_at is None
+    assert read.transferred_profile_revision_id is None
+
+
 def test_replace_exact_requires_well_formed_target_and_add_has_no_target() -> None:
     add = _update()
     replace = _update(operation="replace_exact", target_fingerprint="b" * 64)
@@ -188,6 +235,8 @@ def test_materialization_accepts_confirmed_career_or_mixed_clarification(db_sess
         user_id, clarification_id, _update()
     )
     assert created.state == "pending"
+    assert created.transferred_at is None
+    assert created.transferred_profile_revision_id is None
     assert created.source_clarification_id == clarification_id
     assert created.source_assessment_fingerprint == "a" * 64
 
@@ -321,6 +370,8 @@ def test_reject_is_idempotent_retains_history_and_uses_expected_revision(db_sess
     repeated = service.reject_pending(user_id, created.id, expected_revision=created.revision)
     assert rejected.state == "rejected"
     assert rejected.rejected_at is not None
+    assert rejected.transferred_at is None
+    assert rejected.transferred_profile_revision_id is None
     assert rejected.revision == created.revision + 1
     assert rejected.original_update == created.original_update
     assert rejected.proposed_update == created.proposed_update
@@ -343,6 +394,7 @@ def test_list_is_user_scoped_newest_first_and_bounded(db_session) -> None:
     )
     second_source = _source(db_session, second_user)
     service = CandidateAdviserProfileProposalService(db_session)
+    assert not hasattr(service, "transfer")
     older = service.materialize_from_confirmed_clarification(first_user, first_source, _update(name="Older"))
     newer = service.materialize_from_confirmed_clarification(first_user, another_source, _update(name="Newer"))
     other = service.materialize_from_confirmed_clarification(second_user, second_source, _update())
@@ -463,6 +515,10 @@ def test_http_proposal_routes_are_authenticated_user_scoped_and_provider_free(cl
     assert client.get(
         f"/api/v1/candidate-adviser/profile-proposals/{created.id}", headers=headers_a
     ).status_code == 200
+    assert client.post(
+        f"/api/v1/candidate-adviser/profile-proposals/{created.id}/transfer",
+        headers=headers_a,
+    ).status_code == 404
     assert client.get(
         f"/api/v1/candidate-adviser/profile-proposals/{created.id}", headers=headers_b
     ).status_code == 404

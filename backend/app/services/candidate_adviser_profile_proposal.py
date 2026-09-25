@@ -269,4 +269,6 @@ class CandidateAdviserProfileProposalService:
             created_at=record.created_at,
             updated_at=record.updated_at,
             rejected_at=record.rejected_at,
+            transferred_at=record.transferred_at,
+            transferred_profile_revision_id=record.transferred_profile_revision_id,
         )
