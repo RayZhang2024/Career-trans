@@ -258,6 +258,12 @@ A separate career-strategy enrichment workflow with:
 
 It enriches career/search context without silently rewriting CV provenance.
 
+Users may also explicitly generate typed, noncanonical Profile suggestions from
+confirmed career-fact or mixed clarifications. Suggestions can be reviewed,
+edited, rejected, or sent to the manual Profile revision workflow. Sending a
+suggestion creates a draft; only the Profile workflow's explicit review and
+confirmation updates current Profile information.
+
 ### JobProfile
 
 Structured job representation containing role information, responsibilities, requirements, skills, seniority and eligibility constraints.
@@ -359,6 +365,12 @@ PUT  /api/v1/candidate-adviser/intake
 POST /api/v1/candidate-adviser/assessment
 POST /api/v1/candidate-adviser/assessment/confirm
 GET  /api/v1/candidate-adviser/clarifications
+POST /api/v1/candidate-adviser/clarifications/{clarification_id}/profile-proposals
+GET  /api/v1/candidate-adviser/profile-proposals
+GET  /api/v1/candidate-adviser/profile-proposals/{proposal_id}
+PATCH /api/v1/candidate-adviser/profile-proposals/{proposal_id}
+POST /api/v1/candidate-adviser/profile-proposals/{proposal_id}/reject
+POST /api/v1/candidate-adviser/profile-proposals/{proposal_id}/transfer
 
 POST /api/v1/jobs/analyse
 POST /api/v1/jobs/match
