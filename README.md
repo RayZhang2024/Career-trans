@@ -83,7 +83,8 @@ Current backend capabilities include:
 - CV upload and text extraction;
 - semantic CV interpretation into structured candidate data;
 - explicit CV review/edit/confirmation lifecycle;
-- persisted candidate context and CareerEvidence;
+- a typed, user-scoped candidate read snapshot over the existing profile, structured CV, active evidence and Adviser authorities;
+- persisted CareerEvidence with explicit read-model materialisation-completeness reporting;
 - Candidate Adviser intake, assessment, confirmation and adaptive clarification lifecycle;
 - structured job-description extraction into `JobProfile`;
 - evidence-limited requirement matching;
@@ -336,6 +337,8 @@ GET  /api/v1/users/me
 GET   /api/v1/profile
 POST  /api/v1/profile
 PATCH /api/v1/profile
+GET   /api/v1/profile/context-summary
+GET   /api/v1/profile/snapshot
 GET   /api/v1/onboarding/status
 
 POST /api/v1/cv-ingestion/upload

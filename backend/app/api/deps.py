@@ -36,6 +36,10 @@ from app.services.job_detail_enrichment_service import JobDetailEnrichmentServic
 from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
 from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import (
+    CandidateEvidenceMaterializationIncomplete,
+    CanonicalCandidateReadService,
+)
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.schemas.candidate import CandidateContext
 from app.services.cv_interpretation_service import SemanticCVInterpreter
@@ -249,6 +253,11 @@ def get_persisted_candidate_context_loader(db: DbSession) -> PersistedCandidateC
     return PersistedCandidateContextLoader(db)
 
 
+def get_canonical_candidate_read_service(db: DbSession) -> CanonicalCandidateReadService:
+    """Request-scoped, authenticated-domain reader; it never caches user data."""
+    return CanonicalCandidateReadService(db)
+
+
 def _build_candidate_adviser_service(
     db: Session,
     runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
@@ -297,9 +306,20 @@ def get_user_candidate_adviser_service(
 
 def get_confirmed_candidate_context(
     current_user: CurrentUser,
-    loader: Annotated[PersistedCandidateContextLoader, Depends(get_persisted_candidate_context_loader)],
+    reader: Annotated[CanonicalCandidateReadService, Depends(get_canonical_candidate_read_service)],
 ) -> CandidateContext:
-    context = loader.load_confirmed(current_user.id)
+    snapshot = reader.read(current_user.id)
+    try:
+        context = reader.candidate_context(
+            snapshot,
+            require_structured_profile=True,
+            require_complete_evidence=True,
+        )
+    except CandidateEvidenceMaterializationIncomplete as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Current candidate evidence is incomplete. Candidate context is unavailable.",
+        ) from exc
     if context is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

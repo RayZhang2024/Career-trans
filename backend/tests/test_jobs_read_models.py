@@ -28,6 +28,7 @@ from app.schemas.job_ranking import (
 from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 import app.api.deps as deps_module
@@ -162,8 +163,10 @@ def test_materialised_confirmed_loader_read_only_is_fingerprint_equivalent_and_w
     db_session.add(CandidateStructuredProfile(user_id="materialised", structured_json=data.model_dump_json()))
     db_session.commit()
     loader = PersistedCandidateContextLoader(db_session)
+    materialised = ActiveCandidateEvidenceResolver(db_session).resolve("materialised", data)
+    db_session.commit()
     normal = loader.load_confirmed("materialised")
-    assert normal is not None  # normal authority materialises the current evidence once.
+    assert normal is not None and len(normal.evidence) == len(materialised)
     observed: list[str] = []
 
     def capture(_conn, _cursor, statement, *_args):

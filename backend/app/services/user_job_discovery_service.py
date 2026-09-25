@@ -26,6 +26,7 @@ from app.schemas.user_job_discovery import (
     DiscoveryRunJobDetailRead,
 )
 from app.services.candidate_profile_compaction import candidate_career_profile, candidate_matching_profile, candidate_search_profile
+from app.services.canonical_candidate_read_service import CandidateEvidenceMaterializationIncomplete
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.job_presemantic_selection_service import JobPresemanticSelectionService
 from app.services.job_ranking_service import JobRankingService
@@ -120,7 +121,10 @@ class UserJobDiscoveryService:
     def start(self, user_id: str, request: DiscoveryRunCreateRequest) -> DiscoveryRunRead:
         if self._ranking_service is None:
             raise RuntimeError("Ranking service is required to create a discovery run.")
-        context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+        try:
+            context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+        except CandidateEvidenceMaterializationIncomplete as exc:
+            raise ValueError("Current candidate evidence is not fully materialised.") from exc
         if context is None:
             raise ValueError("Candidate profile is not ready.")
         candidate_fingerprint = self.candidate_evaluation_fingerprint(context)
@@ -221,7 +225,10 @@ class UserJobDiscoveryService:
         return self._read_run(run)
 
     def current_opportunities(self, user_id: str) -> UserOpportunityResponse:
-        context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+        try:
+            context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+        except CandidateEvidenceMaterializationIncomplete:
+            return UserOpportunityResponse()
         if context is None:
             return UserOpportunityResponse()
         candidate = self.candidate_evaluation_fingerprint(context)
@@ -270,10 +277,13 @@ class UserJobDiscoveryService:
         return DiscoveryRunJobDetailRead(discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id, outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json) if evaluation else None, runtime_attribution=read_attribution(evaluation.runtime_attribution_json) if evaluation else None)
 
     def current_evaluation_for_job(
-        self, user_id: str, job: DiscoveredJob
+        self, user_id: str, job: DiscoveredJob, *, candidate_context: CandidateContext | None = None
     ) -> RankedJobOpportunity | None:
         """The shared #154 authority for a reusable complete evaluation."""
-        context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+        try:
+            context = candidate_context or PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+        except CandidateEvidenceMaterializationIncomplete:
+            return None
         if context is None or not self._is_actionable(job):
             return None
         evaluation = self._reusable_evaluation(
@@ -290,7 +300,10 @@ class UserJobDiscoveryService:
         return self._is_actionable(job)
 
     def _current_opportunity_items_read_only(self, user_id: str) -> list[UserOpportunityRead]:
-        context = PersistedCandidateContextLoader(self._session).load_confirmed_read_only(user_id)
+        try:
+            context = PersistedCandidateContextLoader(self._session).load_confirmed_read_only(user_id)
+        except CandidateEvidenceMaterializationIncomplete:
+            return []
         if context is None:
             return []
         candidate, contract = self.candidate_evaluation_fingerprint(context), self.evaluation_contract_fingerprint()

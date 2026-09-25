@@ -1,4 +1,5 @@
 import re
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -57,6 +58,12 @@ class CandidateEligibility(BaseModel):
     security_clearances: list[str] = Field(default_factory=list)
     locations: list[str] = Field(default_factory=list)
 
+
+class CandidateEvidenceMaterializationStatus(StrEnum):
+    NOT_APPLICABLE = "not_applicable"
+    COMPLETE = "complete"
+    INCOMPLETE = "incomplete"
+
 class CandidateContext(BaseModel):
     """User-agnostic candidate context consumed by matching workflows.
 
@@ -85,6 +92,10 @@ class CandidateContextSummary(BaseModel):
     education_count: int = Field(ge=0)
     skill_count: int = Field(ge=0)
     evidence_count: int = Field(ge=0)
+    structured_profile_available: bool = False
+    evidence_materialization_status: CandidateEvidenceMaterializationStatus = CandidateEvidenceMaterializationStatus.NOT_APPLICABLE
+    expected_evidence_count: int = Field(default=0, ge=0)
+    missing_evidence_count: int = Field(default=0, ge=0)
     career_strategy_configured: bool = False
     job_search_criteria_configured: bool = False
 

@@ -17,6 +17,7 @@ from app.schemas.discovery import JobSearchQuery
 from app.schemas.discovery_schedule import AcquisitionConfig, EvaluationConfig, ExecutionStatus, TriggerKind
 from app.schemas.structured_ats_discovery import StructuredAtsDiscoveryRequest
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
+from app.services.canonical_candidate_read_service import CandidateEvidenceMaterializationIncomplete
 from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
@@ -138,7 +139,10 @@ class ScheduledDiscoveryExecutionService:
         if execution is None or execution.status != ExecutionStatus.RUNNING.value:
             raise LookupError("Claimed schedule execution is unavailable.")
         snapshot = json.loads(execution.config_snapshot_json)
-        context = PersistedCandidateContextLoader(self._session).load_confirmed(execution.user_id)
+        try:
+            context = PersistedCandidateContextLoader(self._session).load_confirmed(execution.user_id)
+        except CandidateEvidenceMaterializationIncomplete:
+            return self._finish(execution, ExecutionStatus.SKIPPED, now, {}, {"candidate_evidence_incomplete": 1})
         if context is None:
             return self._finish(execution, ExecutionStatus.SKIPPED, now, {}, {"candidate_not_ready": 1})
 

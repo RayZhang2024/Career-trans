@@ -218,6 +218,26 @@ requirement-matching profile.
 
 The user should be able to review and edit important profile fields.
 
+### Current candidate read snapshot
+
+Authenticated reads compose a non-persisted typed snapshot from the existing
+`CandidateProfile`, `CandidateStructuredProfile`, user-owned active
+`CareerEvidence`, Adviser intake, eligibility and only confirmed, current
+Adviser assessment content. The authenticated `GET /api/v1/profile/snapshot`
+endpoint exposes that snapshot to backend clients such as the future Profile
+UI. Reads are provider-free and do not reconcile, flush or commit records. Raw
+CV source text and generated application materials are excluded.
+
+The snapshot reports structured-profile readiness and evidence materialisation
+counts. `incomplete` means one or more facts currently derived from the
+confirmed structured profile or confirmed factual clarifications lack a
+persisted active evidence row. Candidate-context consumers fail closed for
+that state instead of treating partial evidence as complete. The state is
+visible for later legacy repair planning; this version does not backfill it or
+introduce a second persisted candidate store. `not_applicable` is used when no
+structured profile or current evidence claim exists, such as a profile-only
+account.
+
 ---
 
 # 8. Candidate Data Model

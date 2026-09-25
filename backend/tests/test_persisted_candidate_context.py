@@ -188,6 +188,10 @@ def test_context_summary_is_safe_and_user_scoped(client, db_session) -> None:
         "education_count": 1,
         "skill_count": 2,
         "evidence_count": 4,
+        "structured_profile_available": True,
+        "evidence_materialization_status": "complete",
+        "expected_evidence_count": 4,
+        "missing_evidence_count": 0,
         "career_strategy_configured": False,
         "job_search_criteria_configured": False,
     }

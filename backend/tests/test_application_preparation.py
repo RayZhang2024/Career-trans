@@ -27,7 +27,8 @@ from app.schemas.job import JobProfile, JobRequirement, RequirementCategory, Req
 from app.schemas.matching import EvidenceRef, EvidenceSourceType, MatchType, RequirementMatch
 from app.services.application_document_renderer import ApplicationDocumentRenderer
 from app.services.application_preparation_service import ApplicationPreparationService
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.services.llm_runtime import resolve_runtime_snapshot
 
 
@@ -70,9 +71,9 @@ class _RawTextGraph(_Graph):
 
 
 class _Discovery:
-    def __init__(self, reusable=None): self.reusable = reusable; self.actionability_calls = 0; self.reuse_calls = 0
+    def __init__(self, reusable=None): self.reusable = reusable; self.actionability_calls = 0; self.reuse_calls = 0; self.candidate_contexts = []
     def is_currently_actionable(self, job): self.actionability_calls += 1; return True
-    def current_evaluation_for_job(self, user_id, job): self.reuse_calls += 1; return self.reusable
+    def current_evaluation_for_job(self, user_id, job, *, candidate_context=None): self.reuse_calls += 1; self.candidate_contexts.append(candidate_context); return self.reusable
 
 
 class _Pages:
@@ -98,7 +99,15 @@ def _service(db_session, monkeypatch, drafting=None, discovery=None, pages=None,
     user = User(id="u1", email="account@example.test", password_hash="safe")
     profile = CandidateProfile(user_id="u1", display_name="Example Person", preferred_email="old@example.test", location="London")
     db_session.add_all([user, profile, CandidateStructuredProfile(user_id="u1", structured_json=_data().model_dump_json())]); db_session.commit()
-    context = _context(); monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: context)
+    context = _context()
+    ActiveCandidateEvidenceResolver(db_session).resolve("u1", _data())
+    db_session.commit()
+    read_snapshot = CanonicalCandidateReadService.read
+    monkeypatch.setattr(
+        CanonicalCandidateReadService,
+        "read",
+        lambda self, user_id: read_snapshot(self, user_id).model_copy(update={"active_evidence": context.evidence}),
+    )
     return ApplicationPreparationService(db_session, graph=_Graph(), drafting_agent=drafting or _Drafting(), user_discovery=discovery or _Discovery(), page_fetcher=pages, settings=settings, runtime_snapshot=runtime_snapshot), context
 
 
@@ -320,7 +329,7 @@ def test_preparation_input_fingerprint_keeps_v1_semantics_while_contract_bumps(d
     service, _ = _service(db_session, monkeypatch, settings=settings)
     request = ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False)
     before = service._resolve_target("u1", request, _context()).target
-    structured = service._structured("u1")
+    structured = CanonicalCandidateReadService(db_session).read("u1").structured_profile
     catalog = service._bounded_sources(_context(), structured, before.requirement_matches)
     from app.schemas.application_preparation import ApplicationIdentitySnapshot
     identity = ApplicationIdentitySnapshot(display_name="Example Person", email="old@example.test", location="London")
@@ -390,9 +399,14 @@ def test_reusable_canonical_analysis_bypasses_graph(db_session, monkeypatch):
     graph = _Graph(); state = graph.invoke(job_text="x", candidate_context=_context())
     reusable = type("Reusable", (), {"job_profile": state["job_profile"], "requirement_matches": state["requirement_matches"]})()
     discovery = _Discovery(reusable); service, _ = _service(db_session, monkeypatch, discovery=discovery); service._graph = graph; graph.calls = 0
+    reader = CanonicalCandidateReadService.read
+    reads = []
+    monkeypatch.setattr(CanonicalCandidateReadService, "read", lambda self, user_id: (reads.append(user_id), reader(self, user_id))[1])
     job = _job(); db_session.add(job); db_session.commit()
     service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(discovered_job_id=job.id), include_cover_letter=False))
     assert discovery.reuse_calls == 1 and graph.calls == 0
+    assert reads == ["u1"]
+    assert discovery.candidate_contexts[0] is not None
 
 
 def test_reusable_target_resolution_does_not_construct_semantic_clients(db_session, monkeypatch):
@@ -676,7 +690,9 @@ def test_application_history_detail_and_downloads_are_provider_free(client, db_s
     """Persisted application reads do not construct ranking or semantic clients."""
     service, _ = _service(db_session, monkeypatch)
     historical_context = _context().model_copy(update={"evidence": [CareerEvidence(evidence_id="e1", title="Private fixture", text="SNAPSHOT_ONLY_9281 Python delivery from 2 hours to 20 minutes", skills=["Python"], provenance=[CareerEvidenceProvenance(document_sha256="a" * 64, segment_ids=["s1"])])]})
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: historical_context)
+    current_snapshot = CanonicalCandidateReadService(db_session).read("u1")
+    historical_snapshot = current_snapshot.model_copy(update={"active_evidence": historical_context.evidence})
+    monkeypatch.setattr(CanonicalCandidateReadService, "read", lambda _self, _user: historical_snapshot)
     with_cover = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=True))
     without_cover = service.prepare("u1", ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False))
     db_session.add(User(id="u2", email="other@example.test", password_hash="safe")); db_session.commit()

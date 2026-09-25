@@ -1,8 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import CurrentUser, DbSession, get_persisted_candidate_context_loader
+from app.api.deps import (
+    CurrentUser,
+    DbSession,
+    get_canonical_candidate_read_service,
+)
 from app.schemas.candidate import CandidateContextSummary
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.schemas.candidate_read_snapshot import CanonicalCandidateReadSnapshot
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.schemas.candidate_profile import (
     CandidateProfileCreate,
     CandidateProfileRead,
@@ -20,9 +25,18 @@ router = APIRouter(prefix="/profile", tags=["profile"])
 @router.get("/context-summary", response_model=CandidateContextSummary)
 def context_summary(
     current_user: CurrentUser,
-    loader: PersistedCandidateContextLoader = Depends(get_persisted_candidate_context_loader),
+    reader: CanonicalCandidateReadService = Depends(get_canonical_candidate_read_service),
 ) -> CandidateContextSummary:
-    return loader.summary(current_user.id)
+    return reader.summary(reader.read(current_user.id))
+
+
+@router.get("/snapshot", response_model=CanonicalCandidateReadSnapshot)
+def read_candidate_snapshot(
+    current_user: CurrentUser,
+    reader: CanonicalCandidateReadService = Depends(get_canonical_candidate_read_service),
+) -> CanonicalCandidateReadSnapshot:
+    """Return the authenticated user's typed, side-effect-free candidate snapshot."""
+    return reader.read(current_user.id)
 
 
 @router.get("", response_model=CandidateProfileRead)

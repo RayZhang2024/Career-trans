@@ -6,6 +6,7 @@ evidence.  Persisted rows are historical storage, not an active-set query.
 
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -228,20 +229,38 @@ class ActiveCandidateEvidenceResolver:
 
     def read_active(self, user_id: str, data: CandidateCVData) -> list[CareerEvidence]:
         """Return the persisted current set without reconciling or mutating rows."""
+        return list(self.inspect_active(user_id, data).evidence)
+
+    def inspect_active(
+        self, user_id: str, data: CandidateCVData
+    ) -> "ActiveCandidateEvidenceRead":
+        """Inspect the current derived set and persisted coverage without writes.
+
+        ``read_active`` intentionally returns only persisted evidence rows. This
+        richer read makes omissions explicit so a downstream consumer cannot
+        mistake a partial materialisation for the full current evidence set.
+        """
         drafts = self._builder.build(data, self._confirmed_clarification_drafts(user_id))
         records = list(self._session.scalars(
             select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)
         ))
         by_fingerprint = {record.fingerprint: record for record in records}
         active: list[CareerEvidence] = []
+        missing: list[str] = []
         for item in drafts:
             canonical = career_evidence_fingerprint(item)
             record = by_fingerprint.get(canonical) or by_fingerprint.get(
                 legacy_career_evidence_fingerprint(item)
             )
-            if record is not None:
+            if record is None:
+                missing.append(canonical)
+            else:
                 active.append(_runtime(record))
-        return active
+        return ActiveCandidateEvidenceRead(
+            evidence=tuple(active),
+            expected_count=len(drafts),
+            missing_fingerprints=tuple(missing),
+        )
 
     def _confirmed_clarification_drafts(self, user_id: str) -> list[CanonicalCareerEvidenceDraft]:
         records = self._session.scalars(
@@ -300,3 +319,14 @@ def _unique(values: Iterable[str]) -> list[str]:
 
 def _provenance_key(value: CareerEvidenceProvenance) -> tuple[str, str | None, tuple[str, ...], str | None]:
     return (value.source_kind, value.document_sha256, tuple(value.segment_ids), value.source_ref)
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveCandidateEvidenceRead:
+    evidence: tuple[CareerEvidence, ...]
+    expected_count: int
+    missing_fingerprints: tuple[str, ...]
+
+    @property
+    def complete(self) -> bool:
+        return not self.missing_fingerprints
