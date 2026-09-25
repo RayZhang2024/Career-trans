@@ -7,7 +7,7 @@ from app.models.candidate_cv_ingestion import CandidateEvidenceRecord
 from app.models.candidate_profile import CandidateProfile
 from app.models.user import User
 from app.schemas.candidate import CandidateEvidenceMaterializationStatus
-from app.schemas.candidate_adviser import CandidateAdviserIntake
+from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserIntake
 from app.schemas.candidate_read_snapshot import CandidateAdviserReadStatus
 from app.schemas.candidate import CandidateContext
 from app.schemas.cv_ingestion import CandidateCVData, CVIngestionState
@@ -212,6 +212,39 @@ def test_context_summary_and_snapshot_api_are_read_only_and_user_scoped(db_sessi
     assert user_a and user_b
     _confirm(db_session, user_a)
     _confirm(db_session, user_b, data=CandidateCVData.model_validate({"evidence": [{"evidence_type": "project", "title": "Private B", "text": "Only user B."}]}))
+    db_session.add_all([
+        CandidateProfile(user_id=user_a, headline="Candidate A"),
+        CandidateProfile(user_id=user_b, headline="Candidate B"),
+    ])
+
+    class Adviser:
+        def assess(self, *, semantic_input):
+            text = semantic_input.intake.career_direction
+            insight = {
+                "text": text,
+                "source_references": [{"source_type": "intake", "reference": "career_direction"}],
+            }
+            return CandidateAdviserAssessmentContent.model_validate(
+                {
+                    "professional_positioning": insight,
+                    "transferable_strengths": [],
+                    "development_gaps": [],
+                    "role_hypotheses": [],
+                    "transition_assessment": insight,
+                    "open_questions": [],
+                    "career_strategy_summary": insight,
+                    "job_search_strategy_summary": insight,
+                }
+            )
+
+    adviser_a = CandidateAdviserService(db_session, agent=Adviser())
+    adviser_b = CandidateAdviserService(db_session, agent=Adviser())
+    adviser_a.save_intake(user_a, CandidateAdviserIntake(career_direction="Private Adviser A"))
+    adviser_b.save_intake(user_b, CandidateAdviserIntake(career_direction="Private Adviser B"))
+    adviser_a.assess(user_a)
+    adviser_a.confirm_assessment(user_a)
+    adviser_b.assess(user_b)
+    adviser_b.confirm_assessment(user_b)
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("read path attempted reconciliation")
@@ -232,4 +265,6 @@ def test_context_summary_and_snapshot_api_are_read_only_and_user_scoped(db_sessi
     assert summary.status_code == snapshot_a.status_code == snapshot_b.status_code == 200
     assert "Private B" not in snapshot_a.text
     assert "Platform delivery" in snapshot_a.text
+    assert "Candidate A" in snapshot_a.text and "Candidate B" not in snapshot_a.text
+    assert "Private Adviser A" in snapshot_a.text and "Private Adviser B" not in snapshot_a.text
     assert not any(kind in {"INSERT", "UPDATE", "DELETE", "REPLACE"} for kind in statements)
