@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app.api.deps import CurrentUser, DbSession, get_user_cv_ingestion_read_service, get_user_cv_ingestion_service
-from app.schemas.cv_ingestion import CandidateCVData, CVIngestionConfirmResponse, CVIngestionDraftRead
+from app.schemas.cv_ingestion import CandidateCVData, CVIngestionConfirmResponse, CVIngestionDraftRead, CVIngestionHistoryRead
 from app.providers.llm import (
     SemanticOutputError,
     SemanticProviderConfigurationError,
@@ -11,6 +11,17 @@ from app.providers.llm import (
 from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService
 
 router = APIRouter(prefix="/cv-ingestion", tags=["cv-ingestion"])
+
+
+@router.get("", response_model=CVIngestionHistoryRead)
+def list_cv_ingestion_history(
+    current_user: CurrentUser,
+    limit: int = 20,
+    service: CVIngestionReadService = Depends(get_user_cv_ingestion_read_service),
+) -> CVIngestionHistoryRead:
+    if limit < 1 or limit > 50:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be between 1 and 50.")
+    return service.list(current_user.id, limit=limit)
 
 
 @router.post("/upload", response_model=CVIngestionDraftRead, status_code=status.HTTP_201_CREATED)

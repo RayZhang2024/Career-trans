@@ -18,7 +18,7 @@ from app.models.candidate_cv_ingestion import (
 from app.models.user import User
 from app.schemas.cv_ingestion import CandidateCVData
 from app.services.cv_file_extraction_service import CVFileExtractionService
-from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
+from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService, PersistedCandidateContextLoader
 from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.cv_merge_service import CVMergeService
 
@@ -141,6 +141,68 @@ def test_cv_drafts_are_scoped_to_authenticated_user(client, db_session) -> None:
         assert client.get(f"/api/v1/cv-ingestion/{draft_id}", headers=second).status_code == 404
     finally:
         app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
+
+
+def test_cv_history_is_bounded_user_scoped_and_metadata_only(client, db_session) -> None:
+    first = _auth(client, "history-first@example.com")
+    second = _auth(client, "history-second@example.com")
+    for name in ("older.md", "newer.md"):
+        response = client.post("/api/v1/cv-ingestion/upload", headers=first, files=[("files", (name, f"# {name}\nprivate source text", "text/markdown"))])
+        assert response.status_code == 201
+    other = client.post("/api/v1/cv-ingestion/upload", headers=second, files=[("files", ("other.md", "other", "text/markdown"))])
+    assert other.status_code == 201
+
+    assert client.get("/api/v1/cv-ingestion").status_code == 401
+    response = client.get("/api/v1/cv-ingestion?limit=1", headers=first)
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["limit"] == 1 and payload["truncated"] is True
+    assert payload["items"][0]["filenames"] == ["newer.md"]
+    assert payload["items"][0]["document_count"] == 1
+    assert "segments" not in payload["items"][0]
+    assert "private source text" not in response.text
+    assert len(client.get("/api/v1/cv-ingestion", headers=second).json()["items"]) == 1
+    assert client.get("/api/v1/cv-ingestion?limit=51", headers=first).status_code == 422
+
+
+def test_cv_history_service_reads_without_sql_writes(db_session) -> None:
+    user = User(email="read-only-history@example.com", password_hash="unused")
+    db_session.add(user)
+    db_session.commit()
+    CVIngestionService(db_session).upload(user.id, [("cv.md", "text/markdown", b"source")])
+    statements: list[str] = []
+    from sqlalchemy import event
+
+    def capture(_conn, _cursor, statement, *_args):
+        statements.append(statement.lstrip().split(None, 1)[0].upper())
+
+    event.listen(db_session.bind, "before_cursor_execute", capture)
+    try:
+        result = CVIngestionReadService(db_session).list(user.id)
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture)
+    assert len(result.items) == 1
+    assert statements and all(item not in {"INSERT", "UPDATE", "DELETE", "REPLACE"} for item in statements)
+
+
+def test_confirmation_rolls_back_profile_evidence_and_draft_on_reconciliation_failure(db_session, monkeypatch) -> None:
+    draft = CVIngestionService(db_session, interpreter=FakeInterpreter()).upload(
+        "rollback-user", [("cv.json", "application/json", json.dumps(_json_cv()).encode())]
+    )
+    service = CVIngestionService(db_session, interpreter=FakeInterpreter())
+    service.interpret("rollback-user", draft.id)
+
+    def fail_resolution(_self, _user_id, _data):
+        raise RuntimeError("forced evidence reconciliation failure")
+
+    monkeypatch.setattr("app.services.cv_ingestion_service.ActiveCandidateEvidenceResolver.resolve", fail_resolution)
+    with pytest.raises(RuntimeError, match="forced evidence"):
+        service.confirm("rollback-user", draft.id)
+    db_session.expire_all()
+    assert db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == "rollback-user")) is None
+    assert db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == "rollback-user")).all() == []
+    persisted = db_session.scalar(select(CandidateCVIngestionDraft).where(CandidateCVIngestionDraft.id == draft.id))
+    assert persisted is not None and persisted.state == "review_ready"
 
 
 def test_confirmed_evidence_and_context_are_isolated_per_user(client, db_session) -> None:

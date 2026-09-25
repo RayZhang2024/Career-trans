@@ -208,6 +208,8 @@ Career preferences
 Profile ready
 ```
 
+CV ingestion stores extracted source text and provenance metadata, not the uploaded binary. `GET /api/v1/cv-ingestion?limit=...` lists at most 50 newest source records for the authenticated user without returning segment text; the existing detail read returns extracted segments and remains read-only. These reads do not resolve an AI provider or mutate canonical profile state. Historical source detail is kept separate from the onboarding latest-draft workflow in the frontend. Confirming a review writes the structured profile, reconciles active evidence, and transitions the draft to confirmed in one database transaction; failures roll the whole confirmation back. A previously confirmed structured profile remains usable even when no source draft was retained, and users are not forced to upload again.
+
 AI-extracted data should not silently become authoritative.
 
 Confirmed CV facts and candidate-authored adviser intake are persisted

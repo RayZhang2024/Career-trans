@@ -66,6 +66,8 @@ export type Credential = { name: string; credential_type: string; issuer: string
 export type CandidateSkill = { name: string; category: string | null };
 export type CandidateProject = { name: string; description: string; skills: string[] };
 export type CandidateAchievement = { text: string };
+export type CVEvidenceProvenance = { document_sha256: string; segment_ids: string[]; source_kind: "cv" };
+export type CVEvidenceDraft = { evidence_type: string; title: string; text: string; skills: string[]; provenance: CVEvidenceProvenance[] };
 export type CandidateCVData = {
   employment: Employment[];
   education: Education[];
@@ -73,7 +75,7 @@ export type CandidateCVData = {
   skills: CandidateSkill[];
   projects: CandidateProject[];
   achievements: CandidateAchievement[];
-  evidence: Array<{ evidence_type: string; title: string; text: string; skills: string[] }>;
+  evidence: CVEvidenceDraft[];
 };
 export type CareerEvidence = { evidence_id: string; title: string; text: string; skills: string[]; evidence_type: string };
 export type AdviserInsight = { text: string; source_references: Array<{ source_type: string; reference: string }> };
@@ -170,12 +172,18 @@ export type SemanticRuntimeOperationAttribution = { model: string; reasoning_eff
 export type SemanticRuntimeAttribution =
   | { status: "available"; provider: string; operations: Partial<Record<SemanticRuntimeOperation, SemanticRuntimeOperationAttribution>> }
   | { status: "not_used" | "legacy_unavailable"; provider: null; operations: Record<string, never> };
+export type CVIngestionState = "uploaded" | "review_ready" | "confirmed";
+export type CVDocumentProvenance = { filename: string; media_type: string; document_sha256: string; segment_ids: string[] };
+export type ExtractedCVSegment = { segment_id: string; text: string; page_number: number | null; heading: string | null };
+export type ExtractedCVDocument = { provenance: CVDocumentProvenance; segments: ExtractedCVSegment[] };
 export type CVIngestionDraft = {
-  id: string; state: "uploaded" | "review_ready" | "confirmed";
-  documents: Array<{ provenance: { filename: string } }>;
-  merged: Record<string, unknown> | null; created_at: string; updated_at: string;
-  runtime_attribution: SemanticRuntimeAttribution | null;
+  id: string; state: CVIngestionState; documents: ExtractedCVDocument[]; merged: CandidateCVData | null;
+  created_at: string; updated_at: string; runtime_attribution: SemanticRuntimeAttribution | null;
 };
+export type CVIngestionHistoryItem = {
+  id: string; state: CVIngestionState; created_at: string; updated_at: string; filenames: string[]; document_count: number;
+};
+export type CVIngestionHistoryRead = { items: CVIngestionHistoryItem[]; limit: number; truncated: boolean };
 export type HistoricalRunJobDetail = { discovered_job_id: string; evaluation_id: string | null; outcome: DiscoveryRunJobSummary["outcome"]; failure_stage: string | null; failure_kind: string | null; opportunity: RankedJobOpportunity | null; runtime_attribution: SemanticRuntimeAttribution | null };
 export type InboxProvenance = { runtime: string; source_ref: string | null; discovered_via: string | null; imported_at: string };
 export type InboxSummary = {

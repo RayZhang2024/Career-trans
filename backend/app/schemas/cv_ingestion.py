@@ -135,6 +135,23 @@ class CVIngestionDraftRead(BaseModel):
     runtime_attribution: SemanticRuntimeAttribution | None = None
 
 
+class CVIngestionHistoryItem(BaseModel):
+    """Compact metadata for one user-owned CV source record."""
+
+    id: str
+    state: CVIngestionState
+    created_at: datetime
+    updated_at: datetime
+    filenames: list[str]
+    document_count: int
+
+
+class CVIngestionHistoryRead(BaseModel):
+    items: list[CVIngestionHistoryItem]
+    limit: int
+    truncated: bool
+
+
 class CVIngestionConfirmResponse(BaseModel):
     draft_id: str
     confirmed_evidence_count: int
