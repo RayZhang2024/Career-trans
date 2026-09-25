@@ -133,6 +133,7 @@ def test_incomplete_evidence_is_explicit_and_does_not_write_during_read(db_sessi
         body = response.json()
         assert body["readiness"]["evidence_materialization_status"] == "incomplete"
         assert body["readiness"]["missing_evidence_count"] == 1
+        assert body["readiness"]["stale_evidence_count"] == 0
         snapshot = CanonicalCandidateReadService(db_session).read(user_id)
         with pytest.raises(CandidateEvidenceMaterializationIncomplete):
             CanonicalCandidateReadService.candidate_context(snapshot, require_complete_evidence=True)
@@ -140,6 +141,64 @@ def test_incomplete_evidence_is_explicit_and_does_not_write_during_read(db_sessi
     finally:
         event.remove(connection, "before_cursor_execute", listener)
     assert not any(kind in {"INSERT", "UPDATE", "DELETE", "REPLACE"} for kind in statements)
+
+
+def test_stale_materialized_metadata_is_incomplete_without_read_side_repair(
+    db_session, client, monkeypatch
+) -> None:
+    headers, email = _auth(client, "snapshot-stale-materialization@example.com")
+    user_id = db_session.scalar(select(User.id).where(User.email == email))
+    assert user_id
+    _confirm(db_session, user_id)
+
+    rows = {
+        row.title: row
+        for row in db_session.scalars(
+            select(CandidateEvidenceRecord).where(
+                CandidateEvidenceRecord.user_id == user_id
+            )
+        )
+    }
+    rows["Platform delivery"].skills_json = json.dumps(["Legacy skill"])
+    rows["Engineer at Example Co"].provenance_json = "[]"
+    db_session.commit()
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("read path attempted reconciliation")
+
+    monkeypatch.setattr(ActiveCandidateEvidenceResolver, "resolve", forbidden)
+    monkeypatch.setattr(db_session, "commit", forbidden)
+    monkeypatch.setattr(db_session, "flush", forbidden)
+    statements: list[str] = []
+    connection = db_session.get_bind()
+    listener = lambda _conn, _cursor, statement, _params, _context, _many: statements.append(
+        statement.lstrip().split(None, 1)[0].upper()
+    )
+    event.listen(connection, "before_cursor_execute", listener)
+    try:
+        response = client.get("/api/v1/profile/snapshot", headers=headers)
+        assert response.status_code == 200
+        body = response.json()
+        readiness = body["readiness"]
+        assert readiness["evidence_materialization_status"] == "incomplete"
+        assert readiness["expected_evidence_count"] == 4
+        assert readiness["materialized_evidence_count"] == 2
+        assert readiness["missing_evidence_count"] == 0
+        assert readiness["stale_evidence_count"] == 2
+        active_titles = {item["title"] for item in body["active_evidence"]}
+        assert "Platform delivery" not in active_titles
+        assert "Engineer at Example Co" not in active_titles
+
+        snapshot = CanonicalCandidateReadService(db_session).read(user_id)
+        with pytest.raises(CandidateEvidenceMaterializationIncomplete):
+            CanonicalCandidateReadService.candidate_context(
+                snapshot, require_complete_evidence=True
+            )
+    finally:
+        event.remove(connection, "before_cursor_execute", listener)
+    assert not any(
+        kind in {"INSERT", "UPDATE", "DELETE", "REPLACE"} for kind in statements
+    )
 
 
 def test_review_ready_cv_draft_is_not_projected_as_current_truth(db_session, client) -> None:
