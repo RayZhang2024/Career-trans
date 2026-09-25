@@ -46,7 +46,11 @@ PREPARATION_OPERATIONS = (
 )
 
 _ALL_EFFORTS = tuple(ReasoningEffort)
+_GPT6_STANDARD_EFFORTS = tuple(effort for effort in _ALL_EFFORTS if effort is not ReasoningEffort.NONE)
 _SELECTABLE = (
+    ModelCapabilityRead(id="gpt-6-astra", label="GPT-6 Astra", structured_output=True, reasoning_efforts=_GPT6_STANDARD_EFFORTS),
+    ModelCapabilityRead(id="gpt-6-sol", label="GPT-6 Sol", structured_output=True, reasoning_efforts=_ALL_EFFORTS),
+    ModelCapabilityRead(id="gpt-6-luna", label="GPT-6 Luna", structured_output=True, reasoning_efforts=_ALL_EFFORTS),
     ModelCapabilityRead(id="gpt-5.6-luna", label="GPT-5.6 Luna", structured_output=True, reasoning_efforts=_ALL_EFFORTS),
     ModelCapabilityRead(id="gpt-5.6-terra", label="GPT-5.6 Terra", structured_output=True, reasoning_efforts=_ALL_EFFORTS),
     ModelCapabilityRead(id="gpt-5.6-sol", label="GPT-5.6 Sol", structured_output=True, reasoning_efforts=_ALL_EFFORTS),

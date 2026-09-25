@@ -208,7 +208,7 @@ def test_openai_rejects_unsupported_reasoning_before_request(monkeypatch) -> Non
     assert not invoked
 
 
-@pytest.mark.parametrize("model", ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6"])
+@pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6"])
 def test_known_openai_structured_output_models_are_supported(model: str) -> None:
     assert openai_structured_output_supported(model) is True
 
