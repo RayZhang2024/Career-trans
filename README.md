@@ -79,7 +79,8 @@ Register
 Current backend capabilities include:
 
 - email/password registration and JWT authentication;
-- authenticated, user-scoped profile CRUD;
+- authenticated, user-scoped Profile reads and persisted draft/review/confirmation
+  revisions; current Profile mutations go through the revision workflow;
 - onboarding-status read model;
 - CV upload and text extraction;
 - semantic CV interpretation into structured candidate data;
@@ -338,10 +339,15 @@ POST /api/v1/auth/login
 GET  /api/v1/users/me
 
 GET   /api/v1/profile
-POST  /api/v1/profile
-PATCH /api/v1/profile
 GET   /api/v1/profile/context-summary
 GET   /api/v1/profile/snapshot
+
+GET   /api/v1/profile/revisions/active
+POST  /api/v1/profile/revisions
+PATCH /api/v1/profile/revisions/{revision_id}
+POST  /api/v1/profile/revisions/{revision_id}/review
+POST  /api/v1/profile/revisions/{revision_id}/confirm
+POST  /api/v1/profile/revisions/{revision_id}/discard
 GET   /api/v1/onboarding/status
 
 POST /api/v1/cv-ingestion/upload
@@ -370,6 +376,10 @@ GET  /api/v1/applications
 ```
 
 Swagger is the authoritative route reference.
+
+`POST /api/v1/profile` and `PATCH /api/v1/profile` are legacy compatibility
+mutation endpoints. They reject direct writes and direct clients to the Profile
+revision workflow; they are not ordinary CRUD operations.
 
 ---
 
