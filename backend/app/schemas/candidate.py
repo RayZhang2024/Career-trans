@@ -96,6 +96,7 @@ class CandidateContextSummary(BaseModel):
     evidence_materialization_status: CandidateEvidenceMaterializationStatus = CandidateEvidenceMaterializationStatus.NOT_APPLICABLE
     expected_evidence_count: int = Field(default=0, ge=0)
     missing_evidence_count: int = Field(default=0, ge=0)
+    stale_evidence_count: int = Field(default=0, ge=0)
     career_strategy_configured: bool = False
     job_search_criteria_configured: bool = False
 
