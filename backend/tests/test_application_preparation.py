@@ -15,6 +15,7 @@ from app.schemas.application_preparation import (
 )
 from app.schemas.candidate import CandidateContext, CareerEvidence, CareerEvidenceProvenance
 from app.schemas.cv_ingestion import CandidateCVData, Credential, Education, Employment, Project, Skill
+from app.schemas.profile_revision import EditableCandidateStructuredData
 from app.schemas.agentic_discovery import PageContent
 from app.schemas.discovery import DiscoveredJobState
 from app.core.config import Settings
@@ -29,6 +30,7 @@ from app.services.application_document_renderer import ApplicationDocumentRender
 from app.services.application_preparation_service import ApplicationPreparationService
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
+from app.services.profile_revision_service import CandidateProfileRevisionService
 from app.services.llm_runtime import resolve_runtime_snapshot
 
 
@@ -109,6 +111,92 @@ def _service(db_session, monkeypatch, drafting=None, discovery=None, pages=None,
         lambda self, user_id: read_snapshot(self, user_id).model_copy(update={"active_evidence": context.evidence}),
     )
     return ApplicationPreparationService(db_session, graph=_Graph(), drafting_agent=drafting or _Drafting(), user_discovery=discovery or _Discovery(), page_fetcher=pages, settings=settings, runtime_snapshot=runtime_snapshot), context
+
+
+def _confirm_manual_revision(db_session, user_id, *, profile_edit=None, structured_edit=None):
+    revisions = CandidateProfileRevisionService(db_session)
+    revision = revisions.create_or_resume(user_id)
+    patch_fields = set()
+    profile = revision.proposed_profile
+    structured = revision.proposed_structured
+    if profile_edit:
+        profile = profile.model_copy(update=profile_edit)
+        patch_fields.add("proposed_profile")
+    if structured_edit:
+        structured = structured.model_copy(update=structured_edit)
+        patch_fields.add("proposed_structured")
+    saved = revisions.save(
+        user_id, revision.id, expected_revision=revision.revision, patch_fields=patch_fields,
+        proposed_profile=profile, proposed_structured=structured,
+    )
+    ready = revisions.review(user_id, revision.id, expected_revision=saved.revision)
+    return revisions.confirm(user_id, revision.id, expected_revision=ready.revision)
+
+
+def test_manual_revisions_feed_only_future_application_preparations_and_pending_proposal_is_invisible(db_session, monkeypatch):
+    from app.models.application_preparation import ApplicationPreparation
+
+    service, _ = _service(db_session, monkeypatch)
+    request = ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python delivery role " * 20), include_cover_letter=False)
+    first = service.prepare("u1", request)
+    first_row = db_session.get(ApplicationPreparation, first.id)
+    first_history = (
+        first_row.identity_snapshot_json, first_row.target_snapshot_json, first_row.preparation_input_fingerprint,
+        first_row.preparation_result_json, first_row.runtime_attribution_json,
+    )
+
+    current = CandidateCVData.model_validate_json(db_session.query(CandidateStructuredProfile).filter_by(user_id="u1").one().structured_json)
+    pending = CandidateProfileRevisionService(db_session).create_or_resume("u1")
+    pending_structured = EditableCandidateStructuredData.model_validate(current.model_dump(exclude={"evidence"}))
+    pending_structured.projects[0].name = "Pending Project"
+    pending_structured.projects[0].description = "Pending Python delivery system description"
+    revisions = CandidateProfileRevisionService(db_session)
+    saved = revisions.save(
+        "u1", pending.id, expected_revision=pending.revision, patch_fields={"proposed_structured"},
+        proposed_profile=None, proposed_structured=pending_structured,
+    )
+    ready = revisions.review("u1", pending.id, expected_revision=saved.revision)
+
+    before_confirmation = service.prepare("u1", request)
+    assert before_confirmation.identity.display_name == "Example Person"
+    assert before_confirmation.identity.email == "old@example.test"
+    assert before_confirmation.result.cv.selected_projects[0].name == "Canonical Project"
+    assert before_confirmation.preparation_input_fingerprint == first.preparation_input_fingerprint
+    assert all(source.text.find("Pending") == -1 for source in service.get_review("u1", before_confirmation.id).evidence_sources)
+
+    confirmed_structured = revisions.confirm("u1", pending.id, expected_revision=ready.revision)
+    assert confirmed_structured.state == "confirmed"
+    after_structured = service.prepare("u1", request)
+    assert after_structured.result.cv.selected_projects[0].name == "Pending Project"
+    assert after_structured.preparation_input_fingerprint != first.preparation_input_fingerprint
+    after_structured_row = db_session.get(ApplicationPreparation, after_structured.id)
+    after_structured_history = (
+        after_structured_row.identity_snapshot_json, after_structured_row.target_snapshot_json,
+        after_structured_row.preparation_input_fingerprint, after_structured_row.preparation_result_json,
+        after_structured_row.runtime_attribution_json,
+    )
+    structured_row_history = (
+        db_session.get(ApplicationPreparation, before_confirmation.id).identity_snapshot_json,
+        db_session.get(ApplicationPreparation, before_confirmation.id).target_snapshot_json,
+        db_session.get(ApplicationPreparation, before_confirmation.id).preparation_input_fingerprint,
+        db_session.get(ApplicationPreparation, before_confirmation.id).preparation_result_json,
+        db_session.get(ApplicationPreparation, before_confirmation.id).runtime_attribution_json,
+    )
+
+    _confirm_manual_revision(db_session, "u1", profile_edit={"display_name": "Confirmed Name", "preferred_email": "confirmed@example.test", "phone": "555-0100"})
+    after_identity = service.prepare("u1", request)
+    assert after_identity.identity.display_name == "Confirmed Name"
+    assert after_identity.identity.email == "confirmed@example.test"
+    assert after_identity.identity.phone == "555-0100"
+    assert after_identity.preparation_input_fingerprint != after_structured.preparation_input_fingerprint
+
+    for item_id, history in (
+        (first.id, first_history),
+        (before_confirmation.id, structured_row_history),
+        (after_structured.id, after_structured_history),
+    ):
+        row = db_session.get(ApplicationPreparation, item_id)
+        assert (row.identity_snapshot_json, row.target_snapshot_json, row.preparation_input_fingerprint, row.preparation_result_json, row.runtime_attribution_json) == history
 
 
 def test_raw_text_creates_immutable_preparation_and_documents(db_session, monkeypatch):

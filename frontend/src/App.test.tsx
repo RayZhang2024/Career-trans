@@ -82,7 +82,7 @@ it("shows the empty state, a pending CV notice, and never mixes draft content in
   expect(screen.getByRole("link", { name: "Start CV onboarding" })).toHaveAttribute("href", "/cv");
   unmount();
   renderHome({ ...emptySnapshot(), structured_profile: { employment: [{ employer: "Current Co", title: "Current role", start_date: null, end_date: null, location: null, description: "Current confirmed facts." }], education: [], credentials: [], skills: [], projects: [], achievements: [], evidence: [] }, readiness: { ...emptySnapshot().readiness, structured_profile_available: true, latest_cv_draft_state: "review_ready" } });
-  expect(await screen.findByText(/Your current profile is still in use/)).toBeInTheDocument();
+  expect(await screen.findByText(/Your current structured career information remains in use/)).toBeInTheDocument();
   expect(screen.getByText("Current role at Current Co")).toBeInTheDocument();
   expect(screen.queryByText(/draft-only content/i)).not.toBeInTheDocument();
 });
@@ -92,6 +92,18 @@ it.each(["uploaded", "review_ready"] as const)("keeps confirmed CV facts visible
   expect(await screen.findByText(/newer CV update is awaiting review/)).toBeInTheDocument();
   expect(screen.getByText("Current confirmed role at Current Co")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Review CV update" })).toHaveAttribute("href", "/cv");
+});
+
+it("shows pending manual Profile changes and a pending CV update together", async () => {
+  const activeManual = revision({ proposed_profile: { ...nullProfile, headline: "Proposed headline" }, changed_authorities: ["profile"] });
+  renderHome({
+    ...emptySnapshot(),
+    profile: { id: "p", user_id: "u", created_at: "", updated_at: "", headline: "Current headline" },
+    structured_profile: { employment: [], education: [], credentials: [], skills: [], projects: [], achievements: [] },
+    readiness: { ...emptySnapshot().readiness, structured_profile_available: true, latest_cv_draft_state: "review_ready" },
+  }, activeManual);
+  expect(await screen.findByText(/You have pending profile changes/)).toBeInTheDocument();
+  expect(screen.getByText(/A newer CV update is awaiting review/)).toBeInTheDocument();
 });
 
 it("shows Adviser review and stale states without displaying draft assessment content", async () => {

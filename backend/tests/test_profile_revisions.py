@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -15,6 +16,8 @@ from app.models.candidate_cv_ingestion import (
 from app.models.candidate_profile import CandidateProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord
+from app.models.discovered_job import DiscoveredJob
+from app.models.user_job_discovery import UserJobEvaluation
 from app.models.user import User
 from app.schemas.candidate_adviser import (
     AdviserInsight,
@@ -31,6 +34,7 @@ from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolv
 from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.cv_ingestion_service import CVIngestionService
+from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.profile_revision_service import (
     CandidateProfileRevisionService,
     profile_authority_fingerprint,
@@ -734,6 +738,159 @@ def test_real_cv_confirmation_stales_structured_revision(client, db_session) -> 
         db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user.id)).structured_json
     )
     assert current.employment[0].employer == "B"
+
+
+def test_manual_structured_confirmation_then_cv_replacement_preserves_manual_history_and_profile_authority(client, db_session) -> None:
+    headers = _auth(client, "revision-manual-then-cv@example.com")
+    user = _user(db_session, "revision-manual-then-cv@example.com")
+    profile = _seed_profile(db_session, user.id, headline="Manual headline")
+    adviser = CandidateAdviserService(db_session)
+    adviser.save_intake(user.id, CandidateAdviserIntake(
+        career_direction="Lead engineering", work_preferences=["Remote"],
+        eligibility={"work_authorisation": ["UK"], "security_clearances": ["Baseline"], "locations": ["London"]},
+    ))
+    cv = CVIngestionService(db_session)
+    first = cv.upload(user.id, [("a.json", "application/json", _cv_json("A"))])
+    cv.interpret(user.id, first.id)
+    cv.confirm(user.id, first.id)
+
+    manual = _review_revision(
+        client,
+        headers,
+        edit_profile=lambda proposal: proposal.update(display_name="Manual Name", career_goal="Grow into leadership"),
+        edit_structured=lambda proposal: proposal.update(
+            employment=[{"employer": "Manual Co", "title": "Staff Engineer"}],
+            skills=[{"name": "Manual Skill"}],
+        ),
+    )
+    confirmed = client.post(
+        f"/api/v1/profile/revisions/{manual['id']}/confirm", headers=headers,
+        json={"expected_revision": manual["revision"]},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    manual_record = db_session.get(CandidateProfileRevisionRecord, manual["id"])
+    assert manual_record.state == "confirmed"
+    assert db_session.get(CandidateProfile, profile.id).display_name == "Manual Name"
+    current_manual = CandidateCVData.model_validate_json(
+        db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user.id)).structured_json
+    )
+    assert current_manual.employment[0].employer == "Manual Co"
+    assert [item.name for item in current_manual.skills] == ["Manual Skill"]
+    intake_before = adviser.get_intake(user.id).model_dump(mode="json")
+    eligibility_before = CanonicalCandidateReadService(db_session).read(user.id).eligibility.model_dump(mode="json")
+    insight = AdviserInsight(
+        text="A confirmed assessment insight.",
+        source_references=[{"source_type": "intake", "reference": "career_direction"}],
+    )
+    assessment = CandidateAdviserAssessmentContent(
+        professional_positioning=insight, transferable_strengths=[], development_gaps=[],
+        role_hypotheses=[], transition_assessment=insight, open_questions=[],
+        career_strategy_summary=insight, job_search_strategy_summary=insight,
+    )
+    db_session.add(CandidateAdviserAssessmentRecord(
+        user_id=user.id, input_fingerprint=adviser.input_fingerprint(user.id),
+        status=CandidateAdviserAssessmentStatus.CONFIRMED,
+        assessment_json=json.dumps(assessment.model_dump(mode="json")),
+    ))
+    db_session.commit()
+    assert CanonicalCandidateReadService(db_session).read(user.id).adviser_assessment_status.value == "confirmed"
+
+    second = cv.upload(user.id, [("b.json", "application/json", _cv_json("B"))])
+    cv.interpret(user.id, second.id)
+    cv.confirm(user.id, second.id)
+
+    refreshed = CandidateCVData.model_validate_json(
+        db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user.id)).structured_json
+    )
+    assert refreshed.employment[0].employer == "B"
+    assert refreshed.skills[0].name == "B Skill"
+    assert refreshed.evidence[0].title == "B source claim"
+    assert CanonicalCandidateReadService(db_session).read(user.id).active_evidence[0].title == "B source claim"
+    assert db_session.get(CandidateProfile, profile.id).display_name == "Manual Name"
+    assert db_session.get(CandidateProfile, profile.id).career_goal == "Grow into leadership"
+    assert db_session.get(CandidateProfile, profile.id).headline == "Manual headline"
+    assert adviser.get_intake(user.id).model_dump(mode="json") == intake_before
+    assert CanonicalCandidateReadService(db_session).read(user.id).eligibility.model_dump(mode="json") == eligibility_before
+    db_session.refresh(manual_record)
+    assert manual_record.state == "confirmed"
+    assert manual_record.confirmed_at is not None
+    assert CanonicalCandidateReadService(db_session).read(user.id).adviser_assessment_status.value == "stale"
+
+
+def test_candidate_context_and_discovery_fingerprint_follow_only_confirmed_relevant_profile_state(client, db_session) -> None:
+    headers = _auth(client, "revision-discovery-fingerprint@example.com")
+    user = _user(db_session, "revision-discovery-fingerprint@example.com")
+    _seed_profile(db_session, user.id, headline="Original headline")
+    _seed_structured(db_session, user.id, skill="Python")
+
+    def fingerprint() -> str:
+        snapshot = CanonicalCandidateReadService(db_session).read(user.id)
+        context = CanonicalCandidateReadService.candidate_context(snapshot, require_complete_evidence=True)
+        assert context is not None
+        return UserJobDiscoveryService.candidate_evaluation_fingerprint(context)
+
+    f1 = fingerprint()
+    job = DiscoveredJob(
+        identity_key="https://example.test/jobs/phase4", source="test", title="Engineer",
+        url="https://example.test/jobs/phase4", content_hash="a" * 64, state="active",
+        first_seen_at=datetime.now(timezone.utc), last_seen_at=datetime.now(timezone.utc),
+        last_changed_at=datetime.now(timezone.utc),
+    )
+    db_session.add(job)
+    db_session.flush()
+    historical = UserJobEvaluation(
+        user_id=user.id, discovered_job_id=job.id, job_content_hash=job.content_hash,
+        candidate_evaluation_fingerprint=f1, evaluation_contract_fingerprint="b" * 64,
+        job_snapshot_json='{"title":"Engineer"}', evaluation_json='{"score":72}',
+    )
+    db_session.add(historical)
+    db_session.commit()
+    history_before = (historical.candidate_evaluation_fingerprint, historical.job_snapshot_json, historical.evaluation_json)
+
+    pending = _review_revision(
+        client, headers,
+        edit_profile=lambda proposal: proposal.update(headline="Pending headline", career_goal="Pending goal"),
+        edit_structured=lambda proposal: proposal["skills"].append({"name": "Pending skill"}),
+    )
+    pending_context = CanonicalCandidateReadService.candidate_context(CanonicalCandidateReadService(db_session).read(user.id))
+    assert pending_context is not None
+    assert fingerprint() == f1
+    assert "Pending headline" not in pending_context.profile_text
+    assert "Pending skill" not in pending_context.skills_text
+
+    structured_confirm = client.post(
+        f"/api/v1/profile/revisions/{pending['id']}/confirm", headers=headers,
+        json={"expected_revision": pending["revision"]},
+    )
+    assert structured_confirm.status_code == 200, structured_confirm.text
+    f2 = fingerprint()
+    assert f2 != f1
+    db_session.refresh(historical)
+    assert (historical.candidate_evaluation_fingerprint, historical.job_snapshot_json, historical.evaluation_json) == history_before
+
+    relevant_profile = _review_revision(
+        client, headers, edit_profile=lambda proposal: proposal.update(job_search_criteria="Remote leadership roles"),
+    )
+    profile_confirm = client.post(
+        f"/api/v1/profile/revisions/{relevant_profile['id']}/confirm", headers=headers,
+        json={"expected_revision": relevant_profile["revision"]},
+    )
+    assert profile_confirm.status_code == 200, profile_confirm.text
+    f3 = fingerprint()
+    assert f3 != f2
+
+    identity = _review_revision(
+        client, headers,
+        edit_profile=lambda proposal: proposal.update(display_name="New Name", preferred_email="new@example.test", phone="555-0100"),
+    )
+    identity_confirm = client.post(
+        f"/api/v1/profile/revisions/{identity['id']}/confirm", headers=headers,
+        json={"expected_revision": identity["revision"]},
+    )
+    assert identity_confirm.status_code == 200, identity_confirm.text
+    assert fingerprint() == f3
+    db_session.refresh(historical)
+    assert (historical.candidate_evaluation_fingerprint, historical.job_snapshot_json, historical.evaluation_json) == history_before
 
 
 
