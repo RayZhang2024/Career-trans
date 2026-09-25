@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { type CandidateCVData, type CandidateEligibility, type CanonicalCandidateReadSnapshot, type OnboardingStatus, type PasswordPolicy, type Profile } from "./api";
+import { type CandidateCVData, type CandidateEligibility, type CanonicalCandidateReadSnapshot, type OnboardingStatus, type PasswordPolicy } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { CvPage } from "./CvPage";
 import { AdviserPage } from "./AdviserPage";
@@ -9,6 +9,7 @@ import { JobsSearchesPage } from "./JobsSearchesPage";
 import { ApplicationsPage, ApplicationDetailPage } from "./ApplicationsPage";
 import { TrackingDetailPage, TrackingPage } from "./TrackingPage";
 import { AiSettingsPage } from "./AiSettingsPage";
+import { ProfileRevisionWorkflow } from "./ProfileRevisionWorkflow";
 import "./App.css";
 
 function AppShell({ children }: { children: React.ReactNode }) {
@@ -112,36 +113,6 @@ function Register() {
   </form></AuthPage>;
 }
 
-const fields = ["display_name", "headline", "current_role", "location", "summary", "career_goal", "job_search_criteria", "preferred_email", "phone", "linkedin_url", "github_url", "portfolio_url"] as const;
-const longFields = new Set(["summary", "career_goal", "job_search_criteria"]);
-const fieldLabels: Record<(typeof fields)[number], string> = {
-  display_name: "Display name", headline: "Headline", current_role: "Current role", location: "Location", summary: "Summary", career_goal: "Career goal", job_search_criteria: "Job-search criteria", preferred_email: "Preferred email", phone: "Phone", linkedin_url: "LinkedIn URL", github_url: "GitHub URL", portfolio_url: "Portfolio URL",
-};
-type Values = Record<(typeof fields)[number], string>;
-const emptyValues = (): Values => Object.fromEntries(fields.map((field) => [field, ""])) as Values;
-
-export function ProfileForm({ profile, onSaved, onFeedbackClear }: { profile: Profile | null; onSaved: () => void | Promise<void>; onFeedbackClear: () => void }) {
-  const { api } = useAuth();
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState(false);
-  const pendingRef = useRef(false);
-  const [values, setValues] = useState<Values>(emptyValues);
-  useEffect(() => setValues(Object.fromEntries(fields.map((field) => [field, profile?.[field] ?? ""])) as Values), [profile]);
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (pendingRef.current) return;
-    pendingRef.current = true;
-    setPending(true);
-    setError("");
-    onFeedbackClear();
-    try { await api.request("/api/v1/profile", { method: profile ? "PATCH" : "POST", body: JSON.stringify(values) }); await onSaved(); }
-    catch { setError("Profile could not be saved."); }
-    finally { pendingRef.current = false; setPending(false); }
-  }
-  const change = (field: (typeof fields)[number], value: string) => { onFeedbackClear(); setValues((current) => ({ ...current, [field]: value })); };
-  return <section className="card profile-card"><form className="form-stack" onSubmit={submit}><div><h2>{profile ? "Edit profile" : "Create profile"}</h2><p className="muted">All profile fields are optional and can be updated later.</p></div><div className="profile-fields">{fields.map((field) => <div className={longFields.has(field) ? "field field-wide" : "field"} key={field}><label htmlFor={`profile-${field}`}>{fieldLabels[field]}</label>{longFields.has(field) ? <textarea id={`profile-${field}`} name={field} value={values[field]} disabled={pending} onChange={(event) => change(field, event.target.value)} /> : <input id={`profile-${field}`} name={field} value={values[field]} disabled={pending} onChange={(event) => change(field, event.target.value)} />}</div>)}</div><button disabled={pending}>{pending ? "Saving…" : "Save profile"}</button>{pending && <p role="status">Saving profile…</p>}{error && <p role="alert">{error}</p>}</form></section>;
-}
-
 function OnboardingCard({ status, error }: { status: OnboardingStatus | undefined; error: string }) {
   if (!status) return <section className="card onboarding-card"><h2>Getting started</h2>{error ? <p role="alert">{error}</p> : <p className="muted">Loading onboarding status…</p>}</section>;
   const adviserLabel = !status.candidate_context_ready ? "Complete CV first" : !status.adviser.intake_exists ? "Start Career Adviser" : status.adviser.assessment_status === "stale" ? "Reassessment needed" : status.adviser.assessment_status === "review_ready" ? "Review adviser assessment" : status.adviser.assessment_status === "confirmed" ? "Adviser assessment current" : "Intake saved";
@@ -169,10 +140,10 @@ function EligibilityView({ eligibility }: { eligibility: CandidateEligibility })
 }
 
 function CvInformation({ data }: { data: CandidateCVData | null }) {
-  if (!data) return <section className="card profile-section"><h2>Confirmed CV information</h2><p className="muted">Confirmed CV information is not available yet. <Link to="/cv">Continue CV onboarding</Link>.</p></section>;
+  if (!data) return <section className="card profile-section"><h2>Confirmed career information</h2><p className="muted">Confirmed career information is not available yet. <Link to="/cv">Continue CV onboarding</Link>.</p></section>;
   const hasAny = data.employment.length + data.education.length + data.credentials.length + data.skills.length + data.projects.length + data.achievements.length > 0;
-  return <section className="card profile-section"><h2>Confirmed CV information</h2>
-    {!hasAny && <p className="muted">No structured CV details are available yet.</p>}
+  return <section className="card profile-section"><h2>Confirmed career information</h2>
+    {!hasAny && <p className="muted">No confirmed structured career details are available yet.</p>}
     {data.employment.length > 0 && <div className="profile-subsection"><h3>Experience</h3><ul className="profile-record-list">{data.employment.map((item, index) => <li key={`${item.employer}-${item.title}-${index}`}><h4>{item.title} at {item.employer}</h4>{(item.start_date || item.end_date || item.location) && <p className="muted">{[item.start_date, item.end_date, item.location].filter(Boolean).join(" · ")}</p>}{item.description && <p className="profile-prose">{item.description}</p>}</li>)}</ul></div>}
     {data.education.length > 0 && <div className="profile-subsection"><h3>Education</h3><ul className="profile-record-list">{data.education.map((item, index) => <li key={`${item.institution}-${index}`}><h4>{item.qualification} — {item.institution}</h4>{item.field_of_study && <p>{item.field_of_study}</p>}{item.description && <p className="profile-prose">{item.description}</p>}</li>)}</ul></div>}
     {data.credentials.length > 0 && <div className="profile-subsection"><h3>Credentials and certifications</h3><ul className="profile-record-list">{data.credentials.map((item, index) => <li key={`${item.name}-${index}`}><h4>{item.name}</h4><p>{item.credential_type.replaceAll("_", " ")}{item.issuer ? ` · ${item.issuer}` : ""}</p>{(item.status || item.issued_date || item.expiry_date) && <p className="muted">{[item.status, item.issued_date, item.expiry_date].filter(Boolean).join(" · ")}</p>}{item.description && <p className="profile-prose">{item.description}</p>}</li>)}</ul></div>}
@@ -197,7 +168,7 @@ function ProfileReadView({ snapshot }: { snapshot: CanonicalCandidateReadSnapsho
   return <div className="profile-view">
     {incomplete && <div className="profile-warning" role="alert"><h2>Candidate evidence needs attention</h2><p>Career-trans detected an internal candidate-evidence consistency issue. Some matching or application actions may be temporarily unavailable.</p><p>Expected: {snapshot.readiness.expected_evidence_count}; materialised: {snapshot.readiness.materialized_evidence_count}; missing: {snapshot.readiness.missing_evidence_count}; stale: {snapshot.readiness.stale_evidence_count}.</p></div>}
     {pendingCv && <p className="notice profile-notice" role="status">Your current profile is still in use. A newer CV update is awaiting review. <Link to="/cv">Review CV update</Link>.</p>}
-    {!profile && !snapshot.structured_profile && <section className="card profile-section"><h2>Let’s build your career profile</h2><p>Save profile details and add a CV to help Career-trans understand your experience.</p><p><Link to="/cv">Start CV onboarding</Link></p></section>}
+    {!profile && !snapshot.structured_profile && <section className="card profile-section"><h2>Let’s build your career profile</h2><p>Add profile details and career information to help Career-trans understand your experience.</p><p><Link to="/cv">Start CV onboarding</Link></p></section>}
     {profile && <section className="card profile-section"><h2>Saved profile details</h2><p className="muted">Saved profile and application information; these details are not CV-confirmed facts.</p>{(profile.display_name || profile.headline || profile.current_role || profile.location) && <div className="profile-identity">{profile.display_name && <h3>{profile.display_name}</h3>}{profile.headline && <p>{profile.headline}</p>}{profile.current_role && <p>{profile.current_role}</p>}{profile.location && <p>{profile.location}</p>}</div>}{profile.summary && <div className="profile-prose"><h3>Summary</h3><p>{profile.summary}</p></div>}{(profile.preferred_email || profile.phone || profile.linkedin_url || profile.github_url || profile.portfolio_url) && <dl className="profile-detail-grid">{profile.preferred_email && <div><dt>Preferred email</dt><dd><a href={`mailto:${profile.preferred_email}`}>{profile.preferred_email}</a></dd></div>}{profile.phone && <div><dt>Phone</dt><dd><a href={`tel:${profile.phone}`}>{profile.phone}</a></dd></div>}{profile.linkedin_url && <ProfileUrl label="LinkedIn" value={profile.linkedin_url} />}{profile.github_url && <ProfileUrl label="GitHub" value={profile.github_url} />}{profile.portfolio_url && <ProfileUrl label="Portfolio" value={profile.portfolio_url} />}</dl>}</section>}
     <CvInformation data={snapshot.structured_profile} />
     {(profile?.career_goal || profile?.job_search_criteria || intake) && <section className="card profile-section"><h2>Career goals and current preferences</h2>{profile?.career_goal && <div><h3>Career goal</h3><p className="profile-prose">{profile.career_goal}</p></div>}{profile?.job_search_criteria && <div><h3>Job-search criteria</h3><p className="profile-prose">{profile.job_search_criteria}</p></div>}{intake?.career_direction && <div><h3>Career direction</h3><p className="profile-prose">{intake.career_direction}</p></div>}{intake && ([ ["Work preferences", intake.work_preferences], ["Constraints", intake.constraints], ["Trade-offs", intake.tradeoffs], ["Self-assessment", intake.self_assessment], ["Motivations", intake.motivations] ] as const).filter(([, items]) => items.length > 0).map(([label, items]) => <div key={label}><h3>{label}</h3><DetailList items={items} /></div>)}</section>}
@@ -214,22 +185,22 @@ export function ProfileHome() {
   const [snapshotLoading, setSnapshotLoading] = useState(true);
   const [statusError, setStatusError] = useState("");
   const [snapshotError, setSnapshotError] = useState("");
-  const [profileNotice, setProfileNotice] = useState("");
   const statusRequest = useRef(0);
   const snapshotRequest = useRef(0);
-  const loadStatus = async () => {
+  const loadStatus = async (): Promise<boolean> => {
     const request = ++statusRequest.current;
     setStatus(undefined);
     setStatusError("");
     try {
       const found = await api.request<OnboardingStatus>("/api/v1/onboarding/status");
-      if (request === statusRequest.current) setStatus(found);
+      if (request === statusRequest.current) { setStatus(found); return true; }
     } catch {
       if (request === statusRequest.current) {
         setStatus(undefined);
         setStatusError("Onboarding status is unavailable.");
       }
     }
+    return false;
   };
   const loadSnapshot = async (): Promise<boolean> => {
     const request = ++snapshotRequest.current;
@@ -253,13 +224,11 @@ export function ProfileHome() {
     load();
     return () => { snapshotRequest.current += 1; statusRequest.current += 1; };
   }, []);
-  const profileSaved = async () => {
-    const current = await loadSnapshot();
-    void loadStatus();
-    if (current) setProfileNotice("Profile saved. The details below reflect the latest information returned by Career-trans.");
+  const profileConfirmed = async (): Promise<boolean> => {
+    const [current] = await Promise.all([loadSnapshot(), loadStatus()]);
+    return current;
   };
-  const profile = snapshot?.profile ?? null;
-  return <AppShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Your career profile</h1><p className="muted">This is the information Career-trans currently uses for matching, job discovery and application preparation.</p></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area" aria-busy={snapshotLoading}>{profileNotice && <p role="status">{profileNotice}</p>}{snapshot === undefined ? snapshotError ? <div className="card section-error"><p role="alert">{snapshotError}</p><button onClick={() => void loadSnapshot()}>Retry profile</button></div> : <p className="muted" role="status">Loading your career profile…</p> : <><div className="profile-refresh">{snapshotLoading && <p className="muted" role="status">Refreshing your career profile…</p>}<button className="button-secondary" onClick={() => void loadSnapshot()}>Refresh profile</button></div><ProfileReadView snapshot={snapshot} /><details className="card profile-card profile-editor" open={!snapshot.profile}><summary>{snapshot.profile ? "Edit saved profile details" : "Create saved profile details"}</summary><ProfileForm profile={profile} onSaved={profileSaved} onFeedbackClear={() => setProfileNotice("")} /></details></>}</section></main></AppShell>;
+  return <AppShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Your career profile</h1><p className="muted">This is the information Career-trans currently uses for matching, job discovery and application preparation.</p></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area" aria-busy={snapshotLoading}><ProfileRevisionWorkflow snapshot={snapshot} onConfirmed={profileConfirmed} />{snapshot === undefined ? snapshotError ? <div className="card section-error"><p role="alert">{snapshotError}</p><button onClick={() => void loadSnapshot()}>Retry profile</button></div> : <p className="muted" role="status">Loading your career profile…</p> : <><div className="profile-refresh">{snapshotLoading && <p className="muted" role="status">Refreshing your career profile…</p>}<button className="button-secondary" onClick={() => void loadSnapshot()}>Refresh profile</button></div><ProfileReadView snapshot={snapshot} /></>}</section></main></AppShell>;
 }
 
 export function App() { return <Routes><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/" element={<Protected><ProfileHome /></Protected>} /><Route path="/cv" element={<Protected><AppShell><CvPage /></AppShell></Protected>} /><Route path="/adviser" element={<Protected><AppShell><AdviserPage /></AppShell></Protected>} /><Route path="/jobs" element={<Protected><AppShell><JobsPage /></AppShell></Protected>} /><Route path="/jobs/searches" element={<Protected><AppShell><JobsSearchesPage /></AppShell></Protected>} /><Route path="/applications" element={<Protected><AppShell><ApplicationsPage /></AppShell></Protected>} /><Route path="/applications/:preparationId" element={<Protected><AppShell><ApplicationDetailPage /></AppShell></Protected>} /><Route path="/tracking" element={<Protected><AppShell><TrackingPage /></AppShell></Protected>} /><Route path="/tracking/:trackingId" element={<Protected><AppShell><TrackingDetailPage /></AppShell></Protected>} /><Route path="/settings" element={<Protected><Navigate to="/settings/ai" replace /></Protected>} /><Route path="/settings/ai" element={<Protected><AppShell><AiSettingsPage /></AppShell></Protected>} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>; }

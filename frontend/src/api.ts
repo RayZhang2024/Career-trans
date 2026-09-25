@@ -55,6 +55,12 @@ export type Profile = {
   job_search_criteria?: string | null; preferred_email?: string | null; phone?: string | null;
   linkedin_url?: string | null; github_url?: string | null; portfolio_url?: string | null;
 };
+export type EditableProfile = {
+  display_name: string | null; headline: string | null; current_role: string | null;
+  location: string | null; summary: string | null; career_goal: string | null;
+  job_search_criteria: string | null; preferred_email: string | null; phone: string | null;
+  linkedin_url: string | null; github_url: string | null; portfolio_url: string | null;
+};
 export type CandidateEligibility = {
   work_authorisation: string[];
   security_clearances: string[];
@@ -76,6 +82,27 @@ export type CandidateCVData = {
   projects: CandidateProject[];
   achievements: CandidateAchievement[];
   evidence: CVEvidenceDraft[];
+};
+export type EditableStructuredProfile = Omit<CandidateCVData, "evidence">;
+export type ProfileRevisionState = "draft" | "review_ready" | "confirmed" | "discarded";
+export type RevisionAuthority = "profile" | "structured";
+export type ProfileRevision = {
+  id: string;
+  state: ProfileRevisionState;
+  revision: number;
+  proposed_profile: EditableProfile | null;
+  proposed_structured: EditableStructuredProfile | null;
+  changed_authorities: RevisionAuthority[];
+  stale_authorities: RevisionAuthority[];
+  created_at: string;
+  updated_at: string;
+  confirmed_at: string | null;
+  discarded_at: string | null;
+};
+export type ProfileRevisionAction = { expected_revision: number };
+export type ProfileRevisionPatch = ProfileRevisionAction & {
+  proposed_profile?: EditableProfile | null;
+  proposed_structured?: EditableStructuredProfile | null;
 };
 export type CareerEvidence = { evidence_id: string; title: string; text: string; skills: string[]; evidence_type: string };
 export type AdviserInsight = { text: string; source_references: Array<{ source_type: string; reference: string }> };

@@ -18,6 +18,12 @@ const snapshot = (profile: unknown = null) => ({
   adviser_assessment: null, adviser_assessment_status: "not_available",
   readiness: { structured_profile_available: false, ready_for_candidate_context: false, evidence_materialization_status: "not_applicable", expected_evidence_count: 0, materialized_evidence_count: 0, missing_evidence_count: 0, stale_evidence_count: 0, latest_cv_draft_state: null },
 });
+const readyRevision = () => ({
+  id: "revision-1", state: "review_ready", revision: 3,
+  proposed_profile: { display_name: null, headline: "Confirmed", current_role: null, location: null, summary: null, career_goal: null, job_search_criteria: null, preferred_email: null, phone: null, linkedin_url: null, github_url: null, portfolio_url: null },
+  proposed_structured: null, changed_authorities: ["profile"], stale_authorities: [],
+  created_at: "", updated_at: "", confirmed_at: null, discarded_at: null,
+});
 const passwordPolicy = { version: 1, min_length: 15, max_length: 128, common_passwords_rejected: true, composition_requirements: [] };
 
 function response(value: unknown, statusCode = 200): Response {
@@ -35,12 +41,17 @@ function passwordInput(): HTMLInputElement {
 }
 
 function authenticatedFetch(overrides: Record<string, () => Response | Promise<Response>> = {}) {
-  return vi.fn((url: string) => {
+  return vi.fn((url: string, init?: RequestInit) => {
     const path = new URL(url, window.location.origin).pathname;
     if (overrides[path]) return overrides[path]();
     if (path === "/api/v1/users/me") return Promise.resolve(response(user));
     if (path === "/api/v1/onboarding/status") return Promise.resolve(response(status));
     if (path === "/api/v1/profile/snapshot") return Promise.resolve(response(snapshot()));
+    if (path === "/api/v1/profile/revisions/active") return Promise.resolve(response(null));
+    if (path === "/api/v1/profile/revisions" && init?.method === "POST") return Promise.resolve(response({
+      id: "revision-1", state: "draft", revision: 1, proposed_profile: null, proposed_structured: null,
+      changed_authorities: [], stale_authorities: [], created_at: "", updated_at: "", confirmed_at: null, discarded_at: null,
+    }));
     throw new Error(`Unexpected request: ${path}`);
   });
 }
@@ -355,8 +366,8 @@ describe("AuthProvider routed lifecycle", () => {
       "/api/v1/profile/snapshot": () => response(snapshot({ id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Existing" })),
     }));
     renderApp();
-    fireEvent.click(await screen.findByText("Edit saved profile details"));
-    await screen.findByRole("heading", { name: "Edit profile" });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit profile" }));
+    await screen.findByRole("heading", { name: "Edit proposed profile changes" });
     expect(screen.getByRole("alert")).toHaveTextContent("Onboarding status is unavailable.");
   });
 
@@ -364,20 +375,20 @@ describe("AuthProvider routed lifecycle", () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/profile/snapshot": () => response(undefined, 503) }));
     renderApp();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Your career profile could not be loaded.");
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.map((alert) => alert.textContent)).toContain("Your career profile could not be loaded.");
     expect(screen.getByText("Not saved yet")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit profile" })).toBeDisabled();
   });
 
   it("does not infer profile absence from a rejected fetch", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/profile/snapshot": () => Promise.reject(new TypeError("network unavailable")) }));
     renderApp();
-    expect(await screen.findByRole("alert")).toHaveTextContent("Your career profile could not be loaded.");
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.map((alert) => alert.textContent)).toContain("Your career profile could not be loaded.");
     expect(screen.getByText("Not saved yet")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit profile" })).toBeDisabled();
   });
 
   it("clears an authenticated session after a later protected 401", async () => {
@@ -387,12 +398,12 @@ describe("AuthProvider routed lifecycle", () => {
       if (path === "/api/v1/users/me") return Promise.resolve(response(user));
       if (path === "/api/v1/onboarding/status") return Promise.resolve(response(status));
       if (path === "/api/v1/profile/snapshot") return Promise.resolve(response(snapshot()));
-      if (path === "/api/v1/profile" && init?.method === "POST") return Promise.resolve(response(undefined, 401));
+      if (path === "/api/v1/profile/revisions/active") return Promise.resolve(response(null));
+      if (path === "/api/v1/profile/revisions" && init?.method === "POST") return Promise.resolve(response(undefined, 401));
       throw new Error(`Unexpected request: ${path}`);
     }));
     renderApp();
-    await screen.findByRole("heading", { name: "Create profile" });
-    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit profile" }));
     await screen.findByRole("heading", { name: "Sign in" });
     expect(sessionStorage.getItem(TOKEN)).toBeNull();
   });
@@ -436,7 +447,7 @@ describe("AuthProvider routed lifecycle", () => {
     let resolveStatus!: (value: Response) => void;
     vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/onboarding/status": () => new Promise<Response>((done) => { resolveStatus = done; }) }));
     renderApp();
-    await screen.findByRole("heading", { name: "Create profile" });
+    await screen.findByRole("button", { name: "Edit profile" });
     expect(screen.getByText("Loading onboarding status…")).toBeInTheDocument();
     expect(screen.queryByText("Not saved yet")).not.toBeInTheDocument();
     resolveStatus(response(status));
@@ -460,7 +471,7 @@ describe("AuthProvider routed lifecycle", () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     let resolveInitialStatus!: (value: Response) => void;
     let statusCalls = 0;
-    let snapshotReads = 0;
+    let activeReads = 0;
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
       const path = new URL(url, window.location.origin).pathname;
       if (path === "/api/v1/users/me") return Promise.resolve(response(user));
@@ -469,21 +480,23 @@ describe("AuthProvider routed lifecycle", () => {
         if (statusCalls === 1) return new Promise<Response>((done) => { resolveInitialStatus = done; });
         return Promise.resolve(response({ ...status, profile_exists: true }));
       }
-      if (path === "/api/v1/profile" && init?.method === "POST") return Promise.resolve(response({ id: "p", user_id: "user-1", created_at: "", updated_at: "" }));
-      if (path === "/api/v1/profile/snapshot") { snapshotReads += 1; return Promise.resolve(response(snapshot(snapshotReads > 1 ? { id: "p", user_id: "user-1", created_at: "", updated_at: "" } : null))); }
+      if (path === "/api/v1/profile/revisions/active") { activeReads += 1; return Promise.resolve(response(activeReads === 1 ? readyRevision() : null)); }
+      if (path === "/api/v1/profile/revisions/revision-1/confirm" && init?.method === "POST") return Promise.resolve(response(readyRevision()));
+      if (path === "/api/v1/profile/snapshot") return Promise.resolve(response(snapshot({ id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Confirmed" })));
       throw new Error(`Unexpected request: ${path}`);
     }));
     renderApp();
-    await screen.findByRole("heading", { name: "Create profile" });
+    await screen.findByRole("button", { name: "Review changes" });
     expect(screen.getByText("Loading onboarding status…")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm changes" }));
     await screen.findByText("Saved");
     resolveInitialStatus(response(status));
     await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
     expect(screen.queryByText("Not saved yet")).not.toBeInTheDocument();
   });
 
-  it("does not render stale negative onboarding state when a post-save status refresh fails", async () => {
+  it("does not render stale negative onboarding state when the post-confirm status refresh fails", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     let statusCalls = 0;
     let snapshotReads = 0;
@@ -494,19 +507,20 @@ describe("AuthProvider routed lifecycle", () => {
         statusCalls += 1;
         return Promise.resolve(statusCalls === 1 ? response(status) : response(undefined, 503));
       }
-      if (path === "/api/v1/profile" && init?.method === "POST") return Promise.resolve(response({ id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Created" }));
-      if (path === "/api/v1/profile/snapshot") { snapshotReads += 1; return Promise.resolve(response(snapshot(snapshotReads > 1 ? { id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Created" } : null))); }
+      if (path === "/api/v1/profile/revisions/active") return Promise.resolve(response(statusCalls > 1 ? null : readyRevision()));
+      if (path === "/api/v1/profile/revisions/revision-1/confirm" && init?.method === "POST") return Promise.resolve(response(readyRevision()));
+      if (path === "/api/v1/profile/snapshot") { snapshotReads += 1; return Promise.resolve(response(snapshot({ id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: snapshotReads > 1 ? "Confirmed" : "Before" }))); }
       throw new Error(`Unexpected request: ${path}`);
     }));
     renderApp();
-    await screen.findByRole("heading", { name: "Create profile" });
-    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm changes" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Onboarding status is unavailable.");
     await screen.findByRole("heading", { name: "Saved profile details" });
     expect(screen.queryByText("Not saved yet")).not.toBeInTheDocument();
   });
 
-  it("does not render stale Create/Edit controls when a post-save profile refresh fails", async () => {
+  it("does not render an editable proposal as current when the post-confirm profile refresh fails", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
     let statusCalls = 0;
     let snapshotReads = 0;
@@ -517,50 +531,41 @@ describe("AuthProvider routed lifecycle", () => {
         statusCalls += 1;
         return Promise.resolve(response(statusCalls === 1 ? status : { ...status, profile_exists: true }));
       }
-      if (path === "/api/v1/profile" && init?.method === "POST") return Promise.resolve(response({ id: "p", user_id: "user-1", created_at: "", updated_at: "" }));
+      if (path === "/api/v1/profile/revisions/active") return Promise.resolve(response(statusCalls > 1 ? null : readyRevision()));
+      if (path === "/api/v1/profile/revisions/revision-1/confirm" && init?.method === "POST") return Promise.resolve(response(readyRevision()));
       if (path === "/api/v1/profile/snapshot") { snapshotReads += 1; return Promise.resolve(snapshotReads === 1 ? response(snapshot()) : response(undefined, 503)); }
       throw new Error(`Unexpected request: ${path}`);
     }));
     renderApp();
-    await screen.findByRole("heading", { name: "Create profile" });
-    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Your career profile could not be loaded.");
-    expect(screen.queryByRole("heading", { name: "Create profile" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm changes" }));
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.map((alert) => alert.textContent)).toContain("Your career profile could not be loaded.");
+    expect(screen.getByRole("button", { name: "Edit profile" })).toBeDisabled();
     expect(screen.getByText("Saved")).toBeInTheDocument();
   });
 
-  it("keeps confirmed profile-save feedback through the post-save form unmount and remount", async () => {
+  it("shows confirmation feedback only after the refreshed canonical snapshot resolves", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
-    let resolveSave!: (value: Response) => void;
     let resolveRefreshedSnapshot!: (value: Response) => void;
     let snapshotReads = 0;
-    const created = { id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Synthetic" };
+    let activeReads = 0;
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
       const path = new URL(url, window.location.origin).pathname;
       if (path === "/api/v1/users/me") return Promise.resolve(response(user));
       if (path === "/api/v1/onboarding/status") return Promise.resolve(response(status));
-      if (path === "/api/v1/profile" && init?.method === "POST") return new Promise<Response>((done) => { resolveSave = done; });
+      if (path === "/api/v1/profile/revisions/active") { activeReads += 1; return Promise.resolve(response(activeReads === 1 ? readyRevision() : null)); }
+      if (path === "/api/v1/profile/revisions/revision-1/confirm" && init?.method === "POST") return Promise.resolve(response(readyRevision()));
       if (path === "/api/v1/profile/snapshot") { snapshotReads += 1; return snapshotReads === 1 ? Promise.resolve(response(snapshot())) : new Promise<Response>((done) => { resolveRefreshedSnapshot = done; }); }
       throw new Error(`Unexpected request: ${path}`);
     }));
     renderApp();
-    await screen.findByRole("heading", { name: "Create profile" });
-    fireEvent.change(screen.getByRole("textbox", { name: "Headline" }), { target: { value: "Synthetic" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
-    expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
-    expect(screen.queryByRole("status", { name: "Profile saved successfully." })).not.toBeInTheDocument();
-
-    await waitFor(() => expect(resolveSave).toBeTypeOf("function"));
-    await act(async () => { resolveSave(response(created)); });
+    fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm changes" }));
     await waitFor(() => expect(snapshotReads).toBe(2));
-    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
-    expect(screen.getByRole("heading", { name: "Create profile" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Edit profile" })).not.toBeInTheDocument();
-
-    await act(async () => { resolveRefreshedSnapshot(response(snapshot(created))); });
-    expect(await screen.findByText("Saved profile details")).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Profile saved. The details below reflect the latest information returned by Career-trans.");
+    expect(screen.queryByText(/Profile changes confirmed/)).not.toBeInTheDocument();
+    await act(async () => { resolveRefreshedSnapshot(response(snapshot({ id: "p", user_id: "user-1", created_at: "", updated_at: "", headline: "Confirmed" }))); });
+    expect(await screen.findByText(/Profile changes confirmed/)).toBeInTheDocument();
   });
 
   it("protects /cv and resumes the authenticated CV page", async () => {
