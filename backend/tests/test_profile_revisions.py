@@ -2,11 +2,12 @@ import json
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.main import app
+from app.core.database import Base
 from app.models.candidate_cv_ingestion import (
     CandidateEvidenceRecord,
     CandidateStructuredProfile,
@@ -256,6 +257,73 @@ def test_revision_optimistic_version_prevents_concurrent_lost_update(client, db_
             )
     finally:
         competing_session.close()
+
+
+def test_concurrent_confirmation_of_absent_profile_is_idempotent(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'revision-confirm-race.db'}")
+    Base.metadata.create_all(bind=engine)
+    first_session = Session(engine, expire_on_commit=False)
+    second_session = Session(engine, expire_on_commit=False)
+    try:
+        user = User(email="revision-confirm-race@example.com", password_hash="unused")
+        first_session.add(user)
+        first_session.commit()
+
+        created = CandidateProfileRevisionService(first_session).create_or_resume(user.id)
+        saved = CandidateProfileRevisionService(first_session).save(
+            user.id,
+            created.id,
+            expected_revision=created.revision,
+            patch_fields={"proposed_profile"},
+            proposed_profile=EditableCandidateProfileData(headline="Race winner"),
+            proposed_structured=None,
+        )
+        reviewed = CandidateProfileRevisionService(first_session).review(
+            user.id, created.id, expected_revision=saved.revision
+        )
+
+        stale_identity = second_session.scalar(
+            select(CandidateProfileRevisionRecord).where(
+                CandidateProfileRevisionRecord.id == created.id
+            )
+        )
+        assert stale_identity is not None
+        assert stale_identity.state == "review_ready"
+        assert stale_identity.revision == reviewed.revision
+
+        first_confirm = CandidateProfileRevisionService(first_session).confirm(
+            user.id, created.id, expected_revision=reviewed.revision
+        )
+        assert first_confirm.state == "confirmed"
+
+        # The second session has a stale identity-map object. Confirmation must
+        # refresh the locked row, observe the terminal state, and return safely.
+        second_confirm = CandidateProfileRevisionService(second_session).confirm(
+            user.id, created.id, expected_revision=reviewed.revision
+        )
+        assert second_confirm.state == "confirmed"
+        assert second_confirm.revision == first_confirm.revision
+
+        first_session.expire_all()
+        assert len(first_session.scalars(
+            select(CandidateProfile).where(CandidateProfile.user_id == user.id)
+        ).all()) == 1
+        assert first_session.scalar(
+            select(CandidateProfile).where(CandidateProfile.user_id == user.id)
+        ).headline == "Race winner"
+        assert first_session.scalars(
+            select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user.id)
+        ).all() == []
+        assert first_session.scalars(
+            select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user.id)
+        ).all() == []
+        persisted = first_session.get(CandidateProfileRevisionRecord, created.id)
+        assert persisted.state == "confirmed" and persisted.active_user_id is None
+    finally:
+        first_session.close()
+        second_session.close()
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
 
 
 def test_revision_routes_are_authenticated_user_scoped_and_resume_only_own_active_record(client, db_session) -> None:
@@ -815,6 +883,53 @@ def test_structured_confirmation_makes_existing_adviser_assessment_stale(client,
     assert confirmed.status_code == 200, confirmed.text
     after = CanonicalCandidateReadService(db_session).read(user.id)
     assert after.adviser_assessment_status.value == "stale"
+
+
+def test_identity_only_profile_confirmation_preserves_adviser_currentness(client, db_session) -> None:
+    headers = _auth(client, "revision-adviser-identity@example.com")
+    user = _user(db_session, "revision-adviser-identity@example.com")
+    _seed_structured(db_session, user.id)
+    adviser = CandidateAdviserService(db_session)
+    adviser.save_intake(user.id, CandidateAdviserIntake(career_direction="Lead engineering"))
+    insight = AdviserInsight(
+        text="A current assessment insight.",
+        source_references=[{"source_type": "intake", "reference": "career_direction"}],
+    )
+    content = CandidateAdviserAssessmentContent(
+        professional_positioning=insight,
+        transferable_strengths=[],
+        development_gaps=[],
+        role_hypotheses=[],
+        transition_assessment=insight,
+        open_questions=[],
+        career_strategy_summary=insight,
+        job_search_strategy_summary=insight,
+    )
+    fingerprint = adviser.input_fingerprint(user.id)
+    db_session.add(CandidateAdviserAssessmentRecord(
+        user_id=user.id,
+        input_fingerprint=fingerprint,
+        status=CandidateAdviserAssessmentStatus.CONFIRMED,
+        assessment_json=json.dumps(content.model_dump(mode="json")),
+    ))
+    db_session.commit()
+    assert CanonicalCandidateReadService(db_session).read(user.id).adviser_assessment_status.value == "confirmed"
+
+    revision = _review_revision(
+        client,
+        headers,
+        edit_profile=lambda proposal: proposal.update(
+            display_name="New display name", preferred_email="new@example.test"
+        ),
+    )
+    confirmed = client.post(
+        f"/api/v1/profile/revisions/{revision['id']}/confirm",
+        headers=headers,
+        json={"expected_revision": revision["revision"]},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert adviser.input_fingerprint(user.id) == fingerprint
+    assert CanonicalCandidateReadService(db_session).read(user.id).adviser_assessment_status.value == "confirmed"
 
 
 def test_revision_read_write_routes_do_not_resolve_provider_runtime(client, db_session, monkeypatch) -> None:

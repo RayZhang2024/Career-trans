@@ -203,6 +203,8 @@ class CandidateProfileRevisionService:
                 CandidateProfileRevisionRecord.id == revision_id,
                 CandidateProfileRevisionRecord.user_id == user_id,
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if revision is None:
             raise ProfileRevisionNotFound("Profile revision not found.")
