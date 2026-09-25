@@ -76,20 +76,28 @@ export function CvPage() {
   const [sourceDraft, setSourceDraft] = useState<Draft | null>(null);
   const [sourceError, setSourceError] = useState("");
   const generation = useRef(0);
+  const historyGeneration = useRef(0);
   const sourceGeneration = useRef(0);
   const recoveredMissing = useRef(false);
 
   const loadStatus = async (retryMissing = false) => {
     const request = ++generation.current;
-    sourceGeneration.current += 1; setHistory(null); setSourceDraft(null); setConfirmReplacementPrompt(false);
+    historyGeneration.current += 1;
+    sourceGeneration.current += 1;
+    setHistory(null); setSourceDraft(null); setConfirmReplacementPrompt(false);
     if (!retryMissing) recoveredMissing.current = false;
     setStatus(undefined); setDraft(undefined); setError(""); setSupersedePrompt(false);
     try {
       const found = await api.request<OnboardingStatus>("/api/v1/onboarding/status");
       if (request !== generation.current) return;
       setStatus(found);
-      if (!found.latest_cv_draft) { setDraft(null); setDirty(false); return; }
+      if (!found.latest_cv_draft) {
+        setDraft(null); setDirty(false);
+        if (historyOpen && request === generation.current) void loadHistory();
+        return;
+      }
       await loadDraft(found.latest_cv_draft.id, retryMissing, request);
+      if (historyOpen && request === generation.current) void loadHistory();
     } catch {
       if (request === generation.current) { setStatus(undefined); setDraft(undefined); setError("CV status is unavailable. Please retry."); }
     }
@@ -105,11 +113,15 @@ export function CvPage() {
     }
   };
   const loadHistory = async () => {
+    const request = ++historyGeneration.current;
     setHistory(null);
+    setSourceError("");
     try {
       const result = await api.request<CVIngestionHistoryRead>("/api/v1/cv-ingestion?limit=20");
-      setHistory(result.items); setHistoryTruncated(result.truncated);
-    } catch { setHistory([]); setSourceError("CV source history is unavailable. Please retry."); }
+      if (request === historyGeneration.current) { setHistory(result.items); setHistoryTruncated(result.truncated); }
+    } catch {
+      if (request === historyGeneration.current) { setHistory([]); setSourceError("CV source history is unavailable. Please retry."); }
+    }
   };
   const showSource = async (id: string) => {
     const request = ++sourceGeneration.current;
@@ -154,7 +166,7 @@ export function CvPage() {
     <RuntimeAttributionPanel attribution={draft.runtime_attribution} boundary="cv" />
     {supersedePrompt && <section className="card supersede-warning" aria-label="Replace unfinished CV draft"><h2>Start a newer CV upload?</h2><p>This unfinished draft will remain stored, but the newer upload will become the draft resumed by onboarding.</p><div className="cv-actions"><button type="button" onClick={beginNewUpload}>Continue with new upload</button><button type="button" className="button-secondary" onClick={() => setSupersedePrompt(false)}>Keep current draft</button></div></section>}
     {draft.state === "uploaded" && <section className="card"><h1>CV uploaded</h1><p>Files: {draft.documents.map((item) => item.provenance.filename).join(", ")}</p><div className="cv-actions"><button disabled={Boolean(pending) || supersedePrompt} onClick={() => void interpret()}>{pending === "interpret" ? "Interpreting…" : "Interpret CV"}</button><button className="button-secondary" disabled={Boolean(pending) || supersedePrompt} onClick={requestNewUpload}>Start new CV upload</button></div></section>}
-    {draft.state === "review_ready" && <section className="card cv-review"><div><h1>Review your CV</h1><p className="muted">Save changes before confirming. Confirming makes the backend-saved review your active candidate context.</p><button className="button-secondary" disabled={Boolean(pending) || supersedePrompt} onClick={requestNewUpload}>Start new CV upload</button></div>{Object.keys(fields).map((section) => <StructuredSection section={section} data={review} onChange={changeReview} disabled={Boolean(pending)} key={section} />)}<EvidenceCards data={review} disabled={Boolean(pending)} onExclude={(index) => changeReview({ ...review, evidence: review.evidence.filter((_, itemIndex) => itemIndex !== index) })} />{dirty && <p className="notice">You have unsaved review changes. Save them before confirming this CV.</p>}{confirmReplacementPrompt && <section className="card supersede-warning" role="alert"><h2>Replace your current career profile?</h2><p>Confirming this review will replace the structured CV information currently feeding your Profile and reconcile its active Career Evidence. The current profile stays active if you cancel.</p><div className="cv-actions"><button disabled={Boolean(pending)} onClick={() => void confirm()}>Replace current profile with this CV</button><button type="button" className="button-secondary" onClick={() => setConfirmReplacementPrompt(false)}>Cancel</button></div></section>}<div className="cv-actions"><button disabled={Boolean(pending) || !dirty} onClick={() => void save()}>{pending === "save" ? "Saving…" : "Save changes"}</button><button disabled={Boolean(pending) || dirty} onClick={requestConfirm}>{pending === "confirm" ? "Confirming…" : "Confirm reviewed CV"}</button></div></section>}
+    {draft.state === "review_ready" && <section className="card cv-review"><div><h1>Review your CV</h1><p className="muted">Save changes before confirming. Confirming makes the backend-saved review your active candidate context.</p><button className="button-secondary" disabled={Boolean(pending) || supersedePrompt} onClick={requestNewUpload}>Start new CV upload</button></div>{Object.keys(fields).map((section) => <StructuredSection section={section} data={review} onChange={changeReview} disabled={Boolean(pending)} key={section} />)}<EvidenceCards data={review} disabled={Boolean(pending)} onExclude={(index) => changeReview({ ...review, evidence: review.evidence.filter((_, itemIndex) => itemIndex !== index) })} />{dirty && <p className="notice">You have unsaved review changes. Save them before confirming this CV.</p>}{confirmReplacementPrompt && <section className="card supersede-warning" role="alert"><h2>Replace current CV-derived information?</h2><p>Confirming this CV will replace the CV-derived career information currently used by Career-trans with the reviewed information shown here. Your saved Profile details, preferences, eligibility and Career Adviser information are unchanged.</p><div className="cv-actions"><button disabled={Boolean(pending)} onClick={() => void confirm()}>Confirm and replace CV-derived information</button><button type="button" className="button-secondary" onClick={() => setConfirmReplacementPrompt(false)}>Cancel</button></div></section>}<div className="cv-actions"><button disabled={Boolean(pending) || !dirty} onClick={() => void save()}>{pending === "save" ? "Saving…" : "Save changes"}</button><button disabled={Boolean(pending) || dirty} onClick={requestConfirm}>{pending === "confirm" ? "Confirming…" : "Confirm reviewed CV"}</button></div></section>}
     {draft.state === "confirmed" && <section className="card"><h1>CV confirmed</h1><p>This CV review has been confirmed. Its structured information now feeds your current career profile.</p><a href="/">View current Profile</a><p><button onClick={requestNewUpload}>Update CV / Upload newer CV</button></p></section>}
     <SourceSummary draft={draft} />
     <History history={history} open={historyOpen} truncated={historyTruncated} sourceDraft={sourceDraft} error={sourceError} latestId={status.latest_cv_draft?.id ?? null} onToggle={() => { const next = !historyOpen; setHistoryOpen(next); if (next && history === null) void loadHistory(); }} onView={(id) => void showSource(id)} />
