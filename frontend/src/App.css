@@ -210,4 +210,21 @@ h2 { font-size: 1.2rem; }
 .profile-section > *, .profile-view > * { min-width: 0; }
 .field { display: grid; gap: 0.35rem; min-width: 0; }
 .field-wide { grid-column: 1 / -1; }
+.profile-revision-workflow { display: grid; gap: 0.75rem; min-width: 0; }
+.revision-panel, .revision-editor-section, .revision-review, .revision-review-section, .revision-structured-section { display: grid; gap: 0.8rem; min-width: 0; }
+.revision-panel { overflow-wrap: anywhere; }
+.revision-panel h3, .revision-panel h4 { margin: 0; }
+.revision-state { background: #eef2f8; border-radius: 999px; color: #34445f; flex: 0 0 auto; font-size: 0.85rem; font-weight: 700; padding: 0.25rem 0.7rem; }
+.revision-editor-section, .revision-review-section { border-top: 1px solid #d9e0ea; padding-top: 0.9rem; }
+.revision-structured-section { border-top: 1px solid #e6eaf1; padding-top: 0.75rem; }
+.revision-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 0.65rem; min-width: 0; }
+.revision-actions button { max-width: 100%; }
+.revision-error { align-items: start; background: #fff1f2; border: 1px solid #fecdd3; border-radius: 0.55rem; color: #881337; display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: space-between; min-width: 0; padding: 0.85rem; }
+.revision-error p { min-width: 0; overflow-wrap: anywhere; }
+.revision-field-diff { border: 1px solid #d9e0ea; border-radius: 0.45rem; display: grid; gap: 0.6rem; min-width: 0; padding: 0.75rem; }
+.revision-sides { display: grid; gap: 0.65rem; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
+.revision-sides > p, .revision-sides > section { background: #f6f8fc; border-radius: 0.45rem; display: grid; gap: 0.35rem; margin: 0; min-width: 0; overflow-wrap: anywhere; padding: 0.7rem; }
+.revision-sides > p span { white-space: pre-wrap; }
+.revision-sides ul { display: grid; gap: 0.45rem; margin: 0; overflow-wrap: anywhere; padding-left: 1.2rem; }
 @media (max-width: 640px) { .workspace { grid-template-columns: 1fr; } .workspace-header { align-items: flex-start; flex-direction: column; } .profile-fields { grid-template-columns: 1fr; } .field-wide { grid-column: auto; } .onboarding-list li { align-items: flex-start; flex-direction: column; } .onboarding-list span { text-align: left; } }
+@media (max-width: 640px) { .revision-sides { grid-template-columns: 1fr; } .revision-actions { align-items: stretch; flex-direction: column; } .revision-actions button { width: 100%; } .revision-panel > .section-heading { align-items: flex-start; flex-direction: column; } }

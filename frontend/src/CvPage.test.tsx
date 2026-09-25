@@ -132,7 +132,7 @@ it("confirmed resume exposes Update CV and preserves the active-context message 
   expect(await screen.findByRole("heading", { name: "CV confirmed" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Update CV / Upload newer CV" }));
   expect(screen.getByRole("heading", { name: "Upload your CV" })).toBeInTheDocument();
-  expect(screen.getByText(/currently confirmed candidate profile remains active/)).toBeInTheDocument();
+  expect(screen.getByText(/current structured career information remains in use/)).toBeInTheDocument();
 });
 
 it("keeps semantic evidence read-only and blocks confirmation until exclusions are saved", async () => {
@@ -361,6 +361,8 @@ it("keeps delayed historical source reads separate from the current latest draft
   render(<CvPage />);
   expect(await screen.findByRole("button", { name: "Interpret CV" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "View CV history" }));
+  expect(screen.getByText(/Historical source records are read-only/)).toBeInTheDocument();
+  expect(screen.getByText(/Original files are not stored/)).toBeInTheDocument();
   fireEvent.click((await screen.findAllByRole("button", { name: "View source" }))[0]);
   const oldCall = request.mock.calls.findIndex(([path]) => path === "/api/v1/cv-ingestion/draft-old");
   expect(oldCall).toBeGreaterThan(-1);
@@ -383,16 +385,20 @@ it("requires explicit replacement confirmation before replacing an existing prof
     .mockResolvedValueOnce({ ...review, state: "confirmed" });
   render(<CvPage />);
   fireEvent.click(await screen.findByRole("button", { name: "Confirm reviewed CV" }));
-  expect(screen.getByRole("heading", { name: "Replace current CV-derived information?" })).toBeInTheDocument();
-  expect(screen.getByText(/Your saved Profile details, preferences, eligibility and Career Adviser information are unchanged\./)).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Replace current structured career information?" })).toBeInTheDocument();
+  expect(screen.getByText(/This may replace manual changes previously confirmed in that structured career information\./)).toBeInTheDocument();
+  expect(screen.getByText(/Saved Profile details, preferences, eligibility and Career Adviser information are unchanged\./)).toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: /Replace your current career profile/i })).not.toBeInTheDocument();
   expect(request.mock.calls.some(([path]) => String(path).includes("/confirm"))).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(request.mock.calls.some(([path]) => String(path).includes("/confirm"))).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Confirm reviewed CV" }));
-  fireEvent.click(screen.getByRole("button", { name: "Confirm and replace CV-derived information" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm and replace structured career information" }));
   await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/v1/cv-ingestion/draft-replacement/confirm", { method: "POST" }));
   expect(await screen.findByRole("heading", { name: "CV confirmed" })).toBeInTheDocument();
+  expect(screen.getByText(/retained as a historical source and review record/)).toBeInTheDocument();
+  expect(screen.getByText(/current structured career information may differ if you later confirmed manual changes or a newer CV/)).toBeInTheDocument();
+  expect(screen.queryByText(/structured information now feeds your current career profile/i)).not.toBeInTheDocument();
 });
 
 it("refreshes an already-open history panel after a successful upload", async () => {

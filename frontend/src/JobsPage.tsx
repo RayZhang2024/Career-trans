@@ -334,7 +334,7 @@ export function JobsPage() {
     <nav className="jobs-tabs" aria-label="Jobs sections">{(["opportunities", "runs", "inbox"] as Tab[]).map((item) => <button type="button" key={item} aria-pressed={tab === item} onClick={() => setTab(item)}>{item === "opportunities" ? "Opportunities" : item === "runs" ? "Discovery runs" : "Recent vacancies"}</button>)}</nav>
     <section className="jobs-prerequisite card" aria-label="Candidate readiness">
       {onboarding.phase === "loading" && !onboarding.data ? <p role="status">Checking candidate readiness…</p> : onboarding.data ? <>
-        {!ready && <><h2>Complete your CV first</h2><p>Confirm a CV to create the candidate context used for evaluation.</p><Link to="/cv">Go to CV onboarding</Link></>}
+        {!ready && <><h2>Complete your Profile first</h2><p>Confirm structured career information in Profile or confirm a CV to create the candidate context used for evaluation.</p><Link to="/">Review Profile</Link></>}
         {ready && onboarding.data.latest_cv_draft && onboarding.data.latest_cv_draft.state !== "confirmed" && <p className="notice">Evaluations use your current confirmed candidate profile. A newer CV update is awaiting review.</p>}
         {ready && onboarding.data.adviser.assessment_status !== "confirmed" && <p className="muted">Career Adviser completion is optional. Saved Adviser intake may already inform your evaluation context.</p>}
       </> : <div><p role="alert">Candidate readiness is unavailable. Evaluation controls remain hidden until it can be confirmed.</p><button type="button" className="button-secondary" onClick={() => void loadOnboarding()}>Retry readiness</button></div>}

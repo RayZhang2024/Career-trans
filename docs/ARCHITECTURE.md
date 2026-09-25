@@ -212,8 +212,9 @@ CV ingestion stores extracted source text and provenance metadata, not the uploa
 
 AI-extracted data should not silently become authoritative.
 
-Confirmed CV facts and candidate-authored adviser intake are persisted
-separately. A bounded, review-ready adviser assessment must be explicitly
+Current structured career information can be established by confirming a CV
+review or a manual Profile revision. Candidate-authored Adviser intake is a
+separate authority. A bounded, review-ready Adviser assessment must be explicitly
 confirmed and remain non-stale before it enriches discovery and career-alignment
 context. It never becomes `CareerEvidence` or enters the evidence-limited
 requirement-matching profile.
@@ -244,6 +245,12 @@ introduce a second persisted candidate store. `not_applicable` is used when
 there is no confirmed structured profile, such as a profile-only account; a
 structured profile with zero derived evidence claims is complete with zero
 expected rows.
+
+### Manual Profile revision proposals and confirmation (Issue #207 Phases 1–4)
+
+Manual Profile changes are persisted in a separate `CandidateProfileRevisionRecord` proposal. Its scalar CandidateProfile fields and editable structured career sections remain separate from the current authorities. A null proposed authority means that authority is excluded from the revision; deletion is not supported, and a present all-null scalar object can establish an empty Profile authority. The editable structured schema omits `CandidateCVData.evidence`, so manual drafts cannot author or rewrite source-grounded evidence or CV provenance. Creation copies current editable values when present and records deterministic, absence-aware fingerprints for the scalar and full structured authorities (the latter includes evidence). A portable nullable unique active-user slot enforces one `draft`/`review_ready` revision per user. Versioned save, review, discard, and confirmation operations are provider-free. Review and confirmation check only the baselines for authorities changed by the proposal; confirmation rechecks the full structured baseline, promotes changed authorities in one transaction, preserves semantic evidence, and reconciles active evidence through `ActiveCandidateEvidenceResolver`. A no-change review confirms as an idempotent no-op. Pending proposals are excluded from the canonical snapshot. Public Profile POST/PATCH routes reject writes so canonical Profile changes pass through confirmation.
+
+The canonical snapshot contains current confirmed Profile and structured career information only; pending manual and CV drafts do not enter `CandidateContext`. CV confirmation remains a whole-structured-information replacement after explicit confirmation, while scalar Profile details, Adviser intake/preferences, and eligibility remain separate. Existing Adviser input fingerprints determine whether structured changes make an assessment stale. Discovery fingerprints change naturally when their candidate-context inputs change; identity-only changes do not. New application preparations use the current confirmed snapshot, while persisted discovery evaluations and application preparations remain historical and immutable.
 
 ---
 
