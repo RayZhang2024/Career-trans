@@ -185,6 +185,29 @@ h2 { font-size: 1.2rem; }
   .section-heading > button { align-self: flex-start; }
 }
 .profile-fields { display: grid; gap: 0.9rem 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.profile-area { display: grid; gap: 1rem; min-width: 0; }
+.profile-view, .profile-section, .profile-subsection, .profile-adviser { display: grid; gap: 0.75rem; min-width: 0; }
+.profile-section, .profile-record-list li, .profile-chip-list li { overflow-wrap: anywhere; }
+.profile-section h3, .profile-record-list h4 { margin: 0; }
+.profile-section h3 { font-size: 1rem; }
+.profile-identity, .profile-prose { display: grid; gap: 0.35rem; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.profile-detail-grid { display: grid; gap: 0.55rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); margin: 0; min-width: 0; }
+.profile-detail-grid > div { background: #f6f8fc; border-radius: 0.45rem; min-width: 0; padding: 0.65rem 0.75rem; }
+.profile-detail-grid dt { color: #58657a; font-size: 0.84rem; }
+.profile-detail-grid dd { margin: 0.15rem 0 0; overflow-wrap: anywhere; }
+.profile-detail-grid a { overflow-wrap: anywhere; }
+.profile-record-list, .profile-chip-list { display: grid; gap: 0.65rem; list-style: none; margin: 0; min-width: 0; padding: 0; }
+.profile-record-list > li { border: 1px solid #d9e0ea; border-radius: 0.45rem; display: grid; gap: 0.45rem; min-width: 0; padding: 0.75rem; }
+.profile-chip-list { grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr)); }
+.profile-chip-list > li { background: #f6f8fc; border-radius: 0.45rem; min-width: 0; padding: 0.55rem 0.7rem; }
+.profile-evidence > summary, .profile-editor > summary { cursor: pointer; font-size: 1.1rem; font-weight: 700; }
+.profile-editor > .profile-card { border: 0; box-shadow: none; padding: 1rem 0 0; }
+.profile-warning { background: #fff8e6; border: 1px solid #e8c972; border-left: 0.25rem solid #a76c00; border-radius: 0.55rem; color: #684400; display: grid; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; padding: 0.85rem; }
+.profile-warning h2 { font-size: 1rem; }
+.profile-notice { border-radius: 0.45rem; overflow-wrap: anywhere; }
+.profile-refresh { align-items: center; display: flex; flex-wrap: wrap; gap: 0.65rem; justify-content: flex-end; min-width: 0; }
+.profile-refresh button { max-width: 100%; }
+.profile-section > *, .profile-view > * { min-width: 0; }
 .field { display: grid; gap: 0.35rem; min-width: 0; }
 .field-wide { grid-column: 1 / -1; }
 @media (max-width: 640px) { .workspace { grid-template-columns: 1fr; } .workspace-header { align-items: flex-start; flex-direction: column; } .profile-fields { grid-template-columns: 1fr; } .field-wide { grid-column: auto; } .onboarding-list li { align-items: flex-start; flex-direction: column; } .onboarding-list span { text-align: left; } }
