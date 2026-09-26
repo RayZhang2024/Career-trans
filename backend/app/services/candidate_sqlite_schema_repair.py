@@ -99,7 +99,12 @@ class CandidateSQLiteSchemaCompatibilityRepairService:
                 # schema writers between preflight and postflight.
                 connection.exec_driver_sql("BEGIN IMMEDIATE")
                 before = CandidatePhysicalSchemaInspector(connection).inspect()
-                operations = self._build_plan(connection, before)
+                if not inspect(connection).has_table("users"):
+                    raise CandidateSchemaCompatibilityRepairBlocked(
+                        "The physical users table prerequisite is absent; candidate schema repair is blocked.",
+                        before,
+                    )
+                operations = self._build_plan(before)
 
                 for operation in operations:
                     self._apply_operation(connection, operation)
@@ -134,7 +139,6 @@ class CandidateSQLiteSchemaCompatibilityRepairService:
 
     def _build_plan(
         self,
-        connection: Connection,
         before: CandidateSchemaCompatibilityRead,
     ) -> list[_RepairOperation]:
         if before.status is CandidateSchemaStatus.UNSUPPORTED_DRIFT:
@@ -154,12 +158,6 @@ class CandidateSQLiteSchemaCompatibilityRepairService:
             table_name for table_name, table_read in table_reads.items()
             if not table_read.table_exists
         }
-        if missing_table_names and not inspect(connection).has_table("users"):
-            raise CandidateSchemaCompatibilityRepairBlocked(
-                "The users table prerequisite is absent; candidate tables were not created.",
-                before,
-            )
-
         operations: list[_RepairOperation] = []
         ordered_missing_tables = [
             table.name for table in Base.metadata.sorted_tables

@@ -73,6 +73,28 @@ def _create_profile_history(engine, *, include_job_search_criteria=False, broken
             connection.execute(text("CREATE INDEX ix_candidate_profiles_user_id ON candidate_profiles(user_id)"))
 
 
+def _drop_users_table(engine):
+    # SQLite defaults to FK enforcement off. Set it explicitly on the checked
+    # out connection so synthetic drift fixtures can retain declared FK shapes.
+    with engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        connection.commit()
+        connection.execute(text("DROP TABLE users"))
+        connection.commit()
+
+
+def _current_candidate_schema_without_users(
+    engine, *, missing_profile_display_name=False, missing_profile_user_index=False,
+):
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        if missing_profile_display_name:
+            connection.execute(text("ALTER TABLE candidate_profiles DROP COLUMN display_name"))
+        if missing_profile_user_index:
+            connection.execute(text("DROP INDEX ix_candidate_profiles_user_id"))
+    _drop_users_table(engine)
+
+
 def _create_cv_history(engine):
     with engine.begin() as connection:
         connection.execute(text("""
@@ -488,6 +510,57 @@ def test_missing_users_table_blocks_repair_without_ddl():
     event.remove(engine, "before_cursor_execute", capture)
     assert not any(statement.lstrip().upper().startswith(("CREATE", "ALTER", "DROP")) for statement in statements)
     assert not any(inspect(engine).has_table(table) for table in CANDIDATE_DOMAIN_TABLES)
+
+
+def test_missing_users_blocks_repairable_candidate_schema_before_any_ddl():
+    engine = _engine()
+    _current_candidate_schema_without_users(
+        engine,
+        missing_profile_display_name=True,
+        missing_profile_user_index=True,
+    )
+    before = CandidatePhysicalSchemaInspector(engine).inspect()
+    profile = next(table for table in before.tables if table.table == "candidate_profiles")
+    assert not inspect(engine).has_table("users")
+    assert len([table for table in before.tables if not table.table_exists]) == 0
+    assert "display_name" in {column.name for column in profile.missing_columns}
+    assert "ix_candidate_profiles_user_id" in profile.missing_indexes
+    assert any(
+        fk["constrained_columns"] == ["user_id"] and fk["referred_table"] == "users"
+        for fk in inspect(engine).get_foreign_keys("candidate_profiles")
+    )
+
+    statements, capture = _captured(engine)
+    with pytest.raises(CandidateSchemaCompatibilityRepairBlocked, match="physical users table prerequisite"):
+        CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+    event.remove(engine, "before_cursor_execute", capture)
+
+    assert "display_name" not in {column["name"] for column in inspect(engine).get_columns("candidate_profiles")}
+    assert "ix_candidate_profiles_user_id" not in {
+        index["name"] for index in inspect(engine).get_indexes("candidate_profiles")
+    }
+    assert not any(
+        statement.lstrip().upper().startswith(("CREATE", "ALTER", "DROP"))
+        for statement in statements
+    )
+
+
+def test_missing_users_blocks_current_candidate_schema_instead_of_noop():
+    engine = _engine()
+    _current_candidate_schema_without_users(engine)
+    before = CandidatePhysicalSchemaInspector(engine).inspect()
+    assert before.status is CandidateSchemaStatus.COMPATIBLE
+    assert not inspect(engine).has_table("users")
+
+    statements, capture = _captured(engine)
+    with pytest.raises(CandidateSchemaCompatibilityRepairBlocked, match="physical users table prerequisite"):
+        CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+    event.remove(engine, "before_cursor_execute", capture)
+
+    assert not any(
+        statement.lstrip().upper().startswith(("CREATE", "ALTER", "DROP"))
+        for statement in statements
+    )
 
 
 def test_non_sqlite_dialect_is_rejected_before_connecting():
