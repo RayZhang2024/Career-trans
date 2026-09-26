@@ -27,7 +27,7 @@ The dry run only inspects explicitly supplied user IDs and always scopes each re
 | Equally latest confirmed CV payloads that differ, or malformed latest confirmed payload with no structured authority | `unresolved` | Require manual resolution; do not infer chronology or reconstruct. |
 | Existing valid structured authority | `already_compatible` unless active evidence is incomplete | Preserve current structured state even when a confirmed historical CV differs. |
 | Existing but invalid structured authority | `unresolved` | Do not fall back to an older CV and replace the existing authority. |
-| Missing or stale active evidence rows | `repairable` | Report resolver-derived reconciliation. The existing legacy fingerprint bridge is used as-is; legacy matches that still need current metadata are reported stale. |
+| Missing or stale active evidence rows | `repairable` | Evidence status distinguishes `missing`, `stale`, and `missing_and_stale`. Report resolver-derived reconciliation. The existing legacy fingerprint bridge is used as-is; legacy matches that still need current metadata are reported stale. |
 | Confirmed factual Adviser clarification | Informational | The existing active-evidence resolver may include confirmed factual/mixed evidence; clarification text does not reconstruct structured Profile facts. |
 | Unconfirmed clarification | Informational | Exclude it from active factual evidence and structured authority. |
 | Draft/review-ready revisions, Adviser proposals, absent lineage, duplicate facts, and prior discovery/application artifacts | Informational | Preserve them as history. Do not promote, deduplicate, infer lineage, or rewrite snapshots. |

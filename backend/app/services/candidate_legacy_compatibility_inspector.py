@@ -106,10 +106,16 @@ class CandidateLegacyCompatibilityInspector:
                 evidence_data = data or CandidateCVData()
 
             active = ActiveCandidateEvidenceResolver(self._session).inspect_active(user_id, evidence_data)
-            evidence_status = (
-                CandidateEvidenceCompatibilityStatus.COMPLETE
-                if active.complete else CandidateEvidenceCompatibilityStatus.INCOMPLETE
-            )
+            has_missing_evidence = bool(active.missing_fingerprints)
+            has_stale_evidence = bool(active.stale_fingerprints)
+            if has_missing_evidence and has_stale_evidence:
+                evidence_status = CandidateEvidenceCompatibilityStatus.MISSING_AND_STALE
+            elif has_missing_evidence:
+                evidence_status = CandidateEvidenceCompatibilityStatus.MISSING
+            elif has_stale_evidence:
+                evidence_status = CandidateEvidenceCompatibilityStatus.STALE
+            else:
+                evidence_status = CandidateEvidenceCompatibilityStatus.COMPLETE
             if not active.complete:
                 actions.append(CandidateCompatibilityAction.RECONCILE_ACTIVE_EVIDENCE)
                 issues.append(CandidateLegacyIssue(

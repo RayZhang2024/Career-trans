@@ -96,7 +96,9 @@ class CandidateStructuredAuthorityStatus(StrEnum):
 
 class CandidateEvidenceCompatibilityStatus(StrEnum):
     COMPLETE = "complete"
-    INCOMPLETE = "incomplete"
+    MISSING = "missing"
+    STALE = "stale"
+    MISSING_AND_STALE = "missing_and_stale"
     UNAVAILABLE = "unavailable"
 
 

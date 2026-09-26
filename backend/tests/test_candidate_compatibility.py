@@ -11,6 +11,7 @@ from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfil
 from app.schemas.candidate_compatibility import (
     CandidateCompatibilityAction,
     CandidateCompatibilityStatus,
+    CandidateEvidenceCompatibilityStatus,
     CandidateSchemaStatus,
     CandidateStructuredAuthorityStatus,
 )
@@ -384,10 +385,48 @@ def test_legacy_evidence_bridge_is_classified_stale_not_rebuilt(db_session):
 
     result = CandidateLegacyCompatibilityInspector(db_session).inspect_user("legacy-evidence")
 
-    assert result.evidence_status.value == "incomplete"
+    assert result.evidence_status is CandidateEvidenceCompatibilityStatus.STALE
     assert result.stale_evidence_count == 1
     assert any(issue.code.value == "legacy_evidence_reusable_but_stale" for issue in result.issues)
     assert CandidateCompatibilityAction.RECONCILE_ACTIVE_EVIDENCE in result.planned_actions
+
+
+def test_evidence_status_distinguishes_missing_and_missing_plus_stale(db_session):
+    _user(db_session, "missing-evidence")
+    missing_data = _cv_data(employment=[{"employer": "Example", "title": "Engineer"}])
+    db_session.add(CandidateStructuredProfile(
+        user_id="missing-evidence", structured_json=missing_data.model_dump_json()
+    ))
+    _user(db_session, "mixed-evidence")
+    stale_item = CareerEvidenceDraft(evidence_type="project", title="Launch  ", text="A launch")
+    mixed_data = _cv_data(
+        employment=[{"employer": "Example", "title": "Engineer"}],
+        evidence=[stale_item],
+    )
+    db_session.add(CandidateStructuredProfile(
+        user_id="mixed-evidence", structured_json=mixed_data.model_dump_json()
+    ))
+    from app.models.candidate_cv_ingestion import CandidateEvidenceRecord
+
+    db_session.add(CandidateEvidenceRecord(
+        user_id="mixed-evidence",
+        fingerprint=legacy_career_evidence_fingerprint(stale_item),
+        evidence_type=stale_item.evidence_type,
+        title=stale_item.title,
+        text=stale_item.text,
+        skills_json="[]",
+        provenance_json="[]",
+    ))
+    db_session.flush()
+
+    results = {
+        row.user_id: row
+        for row in CandidateLegacyCompatibilityInspector(db_session).inspect_users(
+            ["missing-evidence", "mixed-evidence"]
+        )
+    }
+    assert results["missing-evidence"].evidence_status is CandidateEvidenceCompatibilityStatus.MISSING
+    assert results["mixed-evidence"].evidence_status is CandidateEvidenceCompatibilityStatus.MISSING_AND_STALE
 
 
 def test_clarifications_and_revision_proposal_history_are_inspected_without_promotion(db_session):
