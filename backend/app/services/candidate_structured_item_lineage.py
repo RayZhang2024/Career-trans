@@ -20,6 +20,7 @@ from app.services.structured_profile_identity import (
     structured_item_lineage_key,
     structured_profile_item_fingerprint,
 )
+from app.services.structured_profile_comparison import StructuredProfileComparisonService
 
 
 class CandidateStructuredItemLineageConflict(ValueError):
@@ -93,7 +94,20 @@ class CandidateStructuredItemLineageService:
                     and predecessor_fingerprint is not None
                     and predecessor_fingerprint != item_fingerprint
                 ):
-                    raise ValueError("A reinforcement predecessor must have the exact current item fingerprint.")
+                    comparison = StructuredProfileComparisonService().compare(
+                        event.section, item, [predecessor]
+                    )
+                    if (
+                        comparison.relationship is not StructuredItemRelationship.REINFORCEMENT
+                        or comparison.current_item is None
+                        or comparison.target_fingerprint != predecessor_fingerprint
+                        or len(comparison.candidate_matches) != 1
+                        or comparison.candidate_matches[0].fingerprint != predecessor_fingerprint
+                    ):
+                        raise ValueError(
+                            "A reinforcement predecessor with a different exact fingerprint "
+                            "must be the unique normalized-equivalent comparator target."
+                        )
                 key = structured_item_lineage_key(
                     user_id=user_id,
                     section=event.section,

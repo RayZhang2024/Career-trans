@@ -160,6 +160,41 @@ def test_lineage_service_fails_closed_on_wrong_typed_item_and_source_kind():
         )
 
 
+def test_lineage_rejects_false_reinforcement_with_unrelated_predecessor(db_session):
+    user_id = _user(db_session)
+    event = _event(
+        "skills", Skill(name="Rust"), relationship=StructuredItemRelationship.REINFORCEMENT,
+        predecessor=Skill(name="Python"),
+    )
+    with pytest.raises(CandidateStructuredItemLineageConflict, match="normalized-equivalent"):
+        CandidateStructuredItemLineageService(db_session).stage(user_id, event)
+    assert CandidateStructuredItemLineageService(db_session).read_history(user_id) == []
+
+
+def test_normalized_reinforcement_keeps_deterministic_key_and_is_idempotent(db_session):
+    user_id = _user(db_session)
+    incoming = Skill(name="  PYTHON  ")
+    predecessor = Skill(name="Python")
+    event = _event(
+        "skills", incoming, source_ref="cv-draft-normalized",
+        relationship=StructuredItemRelationship.REINFORCEMENT,
+        predecessor=predecessor,
+    )
+    service = CandidateStructuredItemLineageService(db_session)
+
+    batch = service.stage_many(user_id, [event, event])
+    assert len(batch) == 1
+    first_key = batch[0].lineage_key
+    db_session.commit()
+    repeated = service.stage(user_id, event)
+    db_session.commit()
+
+    assert repeated.lineage_key == first_key
+    rows = service.read_history(user_id)
+    assert len(rows) == 1
+    assert rows[0].predecessor_item == predecessor
+
+
 def test_corrupt_persisted_item_or_predecessor_fingerprint_is_rejected(db_session):
     user_id = _user(db_session)
     service = CandidateStructuredItemLineageService(db_session)

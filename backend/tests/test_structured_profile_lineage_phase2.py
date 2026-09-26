@@ -119,13 +119,14 @@ def _confirm_revision(session, user_id, *, structured=None, profile=None):
     return confirmed
 
 
-def _adviser_source(session, user_id):
+def _adviser_source(session, user_id, *, skill="Rust"):
     clarification_id = "c" * 64
     interpretation = ClarificationInterpretation(
         answer_kind=ClarificationAnswerKind.CAREER_FACT,
         confirmed_context_summary="A synthetic confirmed career fact.",
         proposed_evidence=[ClarificationProposedEvidence(
-            fact_domain="career", evidence_type="skill", title="Rust", text="Used Rust.", skills=["Rust"]
+            fact_domain="career", evidence_type="skill", title=skill,
+            text=f"Used {skill}.", skills=[skill]
         )],
     )
     source = CandidateAdviserClarificationRecord(
@@ -146,8 +147,8 @@ def _adviser_source(session, user_id):
     return clarification_id
 
 
-def _transfer_skill(session, user_id, *, item, operation="add", target=None):
-    clarification_id = _adviser_source(session, user_id)
+def _transfer_skill(session, user_id, *, item, operation="add", target=None, source_skill="Rust"):
+    clarification_id = _adviser_source(session, user_id, skill=source_skill)
     proposal = CandidateAdviserProfileProposalService(session).materialize_from_confirmed_clarification(
         user_id,
         clarification_id,
@@ -186,6 +187,34 @@ def test_cv_confirmation_records_every_structured_section_from_draft_id(db_sessi
     assert {row.source_kind for row in rows} == {StructuredItemSourceKind.CV}
     assert {row.source_ref for row in rows} == {draft.id}
     assert {row.relationship for row in rows} == {StructuredItemRelationship.NEW}
+
+
+def test_cv_normalized_reinforcement_preserves_incoming_representation_and_predecessor(db_session):
+    user_id = _user(db_session)
+    previous = Skill(name="Python")
+    incoming = Skill(name="  PYTHON  ")
+    _seed_current(db_session, user_id, CandidateCVData(skills=[previous]))
+
+    draft = _new_cv(db_session, user_id, CandidateCVData(skills=[incoming]))
+    CVIngestionService(db_session).confirm(user_id, draft.id)
+
+    assert db_session.get(CandidateCVIngestionDraft, draft.id).state == "confirmed"
+    current_row = db_session.scalar(
+        select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
+    )
+    current = CandidateCVData.model_validate_json(current_row.structured_json)
+    assert current.skills == [incoming]
+    rows = _event_source(
+        _lineage_rows(db_session, user_id), StructuredProfileSection.SKILLS,
+        incoming, StructuredItemSourceKind.CV,
+    )
+    assert len(rows) == 1
+    assert rows[0].source_ref == draft.id
+    assert rows[0].relationship is StructuredItemRelationship.REINFORCEMENT
+    assert rows[0].predecessor_item == previous
+    assert rows[0].predecessor_fingerprint == structured_profile_item_fingerprint("skills", previous)
+    assert rows[0].item_fingerprint == structured_profile_item_fingerprint("skills", incoming)
+    assert rows[0].item_fingerprint != rows[0].predecessor_fingerprint
 
 
 def test_two_cv_sources_accumulate_reinforcement_without_duplicate_current_items_or_artifact_changes(db_session):
@@ -464,6 +493,31 @@ def test_manual_revision_exact_duplicate_growth_is_reinforcement(db_session):
     assert rows[0].predecessor_item == skill
 
 
+def test_manual_revision_normalized_reinforcement_preserves_exact_predecessor(db_session):
+    user_id = _user(db_session)
+    previous = Skill(name="Python")
+    incoming = Skill(name=" PYTHON ")
+    _seed_current(db_session, user_id, CandidateCVData(skills=[previous]))
+
+    confirmed = _confirm_revision(
+        db_session, user_id,
+        structured=EditableCandidateStructuredData(skills=[incoming]),
+    )
+
+    rows = _event_source(
+        _lineage_rows(db_session, user_id), StructuredProfileSection.SKILLS,
+        incoming, StructuredItemSourceKind.MANUAL_PROFILE,
+    )
+    assert confirmed.state == CandidateProfileRevisionState.CONFIRMED.value
+    assert len(rows) == 1
+    assert rows[0].source_ref == confirmed.id
+    assert rows[0].relationship is StructuredItemRelationship.REINFORCEMENT
+    assert rows[0].predecessor_item == previous
+    assert rows[0].predecessor_fingerprint == structured_profile_item_fingerprint("skills", previous)
+    assert rows[0].item_fingerprint == structured_profile_item_fingerprint("skills", incoming)
+    assert rows[0].item_fingerprint != rows[0].predecessor_fingerprint
+
+
 @pytest.mark.parametrize(
     "before,after,expected",
     [
@@ -604,6 +658,46 @@ def test_adviser_refinement_uses_actual_current_predecessor(db_session):
     assert lineage[0].relationship is StructuredItemRelationship.REFINEMENT
     assert lineage[0].predecessor_item == old
     assert lineage[0].predecessor_fingerprint == structured_profile_item_fingerprint("skills", old)
+
+
+def test_adviser_normalized_reinforcement_keeps_proposal_attribution(db_session):
+    user_id = _user(db_session)
+    previous = Skill(name="Python")
+    incoming = Skill(name=" PYTHON ")
+    _seed_current(db_session, user_id, CandidateCVData(skills=[previous]))
+    proposal, transfer = _transfer_skill(
+        db_session, user_id, item=incoming, source_skill=" PYTHON "
+    )
+
+    reviewed = CandidateProfileRevisionService(db_session).review(
+        user_id, transfer.profile_revision.id,
+        expected_revision=transfer.profile_revision.revision,
+    )
+    confirmed = CandidateProfileRevisionService(db_session).confirm(
+        user_id, transfer.profile_revision.id, expected_revision=reviewed.revision,
+    )
+
+    assert confirmed.state == CandidateProfileRevisionState.CONFIRMED.value
+    current_row = db_session.scalar(
+        select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
+    )
+    current = CandidateCVData.model_validate_json(current_row.structured_json)
+    assert current.skills == [previous, incoming]
+    rows = _event_source(
+        _lineage_rows(db_session, user_id), StructuredProfileSection.SKILLS,
+        incoming, StructuredItemSourceKind.CANDIDATE_ADVISER,
+    )
+    assert len(rows) == 1
+    assert rows[0].source_ref == proposal.id
+    assert rows[0].relationship is StructuredItemRelationship.REINFORCEMENT
+    assert rows[0].predecessor_item == previous
+    assert rows[0].predecessor_fingerprint == structured_profile_item_fingerprint("skills", previous)
+    assert rows[0].item_fingerprint == structured_profile_item_fingerprint("skills", incoming)
+    assert rows[0].item_fingerprint != rows[0].predecessor_fingerprint
+    assert not _event_source(
+        _lineage_rows(db_session, user_id), StructuredProfileSection.SKILLS,
+        incoming, StructuredItemSourceKind.MANUAL_PROFILE,
+    )
 
 
 def test_corrupt_adviser_revision_link_fails_closed_and_confirmation_rollback_preserves_transfer(db_session):
