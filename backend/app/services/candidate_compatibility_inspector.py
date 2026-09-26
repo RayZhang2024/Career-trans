@@ -40,6 +40,16 @@ def _type_affinity(column_type) -> type:
     return getattr(column_type, "_type_affinity", type(column_type))
 
 
+def _type_signature(column_type, dialect) -> str:
+    signature = "".join(
+        character.lower() for character in column_type.compile(dialect=dialect)
+        if character.isalnum()
+    )
+    # SQLite's DATE/TIMESTAMP declarations are storage-compatible aliases for
+    # SQLAlchemy DateTime columns and occur in historical hand-written DDL.
+    return "datetime" if signature in {"datetime", "timestamp"} else signature
+
+
 def _normal_sql(value: str) -> str:
     return "".join(character.lower() for character in value if character.isalnum())
 
@@ -71,7 +81,7 @@ class CandidatePhysicalSchemaInspector:
 
     def inspect(self) -> CandidateSchemaCompatibilityRead:
         inspector = inspect(self._bind)
-        tables = [self._inspect_table(inspector, name) for name in CANDIDATE_DOMAIN_TABLES]
+        tables = [self._inspect_table(inspector, name, self._bind.dialect) for name in CANDIDATE_DOMAIN_TABLES]
         if any(table.status is CandidateSchemaStatus.UNSUPPORTED_DRIFT for table in tables):
             status = CandidateSchemaStatus.UNSUPPORTED_DRIFT
         elif any(table.status is CandidateSchemaStatus.ADDITIVE_REPAIR_AVAILABLE for table in tables):
@@ -87,7 +97,7 @@ class CandidatePhysicalSchemaInspector:
         )
 
     @staticmethod
-    def _inspect_table(inspector, table_name: str) -> CandidateTableCompatibility:
+    def _inspect_table(inspector, table_name: str, dialect) -> CandidateTableCompatibility:
         table = Base.metadata.tables[table_name]
         if not inspector.has_table(table_name):
             return CandidateTableCompatibility(
@@ -135,7 +145,10 @@ class CandidatePhysicalSchemaInspector:
             # SQLite reports nullable=True for ordinary primary-key columns in
             # PRAGMA table_info even though the PK itself enforces identity.
             # Compare nullability only where the column is not part of the PK.
-            if _type_affinity(expected.type) is not _type_affinity(actual_type):
+            if (
+                _type_affinity(expected.type) is not _type_affinity(actual_type)
+                or _type_signature(expected.type, dialect) != _type_signature(actual_type, dialect)
+            ):
                 unsupported = True
                 diagnostics.append(f"Column {name} has an incompatible physical type.")
             if name not in expected_primary_key and bool(expected.nullable) != actual_nullable:
@@ -163,6 +176,18 @@ class CandidatePhysicalSchemaInspector:
         expected_indexes = {index.name: index for index in table.indexes if index.name}
         actual_indexes = {value["name"]: value for value in inspector.get_indexes(table_name)}
         missing_indexes = sorted(set(expected_indexes) - set(actual_indexes))
+        malformed_indexes = [
+            name for name, expected in expected_indexes.items()
+            if name in actual_indexes
+            and (
+                list(actual_indexes[name].get("column_names") or [])
+                != [column.name for column in expected.columns]
+                or bool(actual_indexes[name].get("unique")) != bool(expected.unique)
+            )
+        ]
+        if malformed_indexes:
+            unsupported = True
+            diagnostics.append("One or more existing indexes differ from the current candidate-domain definitions.")
         unsafe_missing_indexes = [
             name for name in missing_indexes if expected_indexes[name].unique
         ]

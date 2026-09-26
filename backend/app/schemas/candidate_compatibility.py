@@ -58,6 +58,26 @@ class CandidateSchemaCompatibilityRead(StrictRead):
     planned_actions: list[CandidateCompatibilityAction] = Field(default_factory=list)
 
 
+class CandidateSchemaRepairAction(StrEnum):
+    CREATE_TABLE = "create_table"
+    ADD_COLUMN = "add_column"
+    CREATE_INDEX = "create_index"
+
+
+class CandidateSchemaAppliedRepair(StrictRead):
+    action: CandidateSchemaRepairAction
+    table: str
+    column: str | None = None
+    index: str | None = None
+
+
+class CandidateSchemaRepairRead(StrictRead):
+    changed: bool
+    before: CandidateSchemaCompatibilityRead
+    after: CandidateSchemaCompatibilityRead
+    applied_repairs: list[CandidateSchemaAppliedRepair] = Field(default_factory=list)
+
+
 class CandidateLegacyIssueCode(StrEnum):
     PROFILE_ONLY_USER = "profile_only_user"
     UNCONFIRMED_CV_PRESENT = "unconfirmed_cv_present"
