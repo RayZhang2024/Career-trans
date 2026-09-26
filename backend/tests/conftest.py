@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
+from app import main as app_main
 from app.core.config import Settings
 from app.schemas.ai_settings import ReasoningEffort, UserAiPreferences
 from app.main import app
@@ -28,11 +29,15 @@ def db_session() -> Generator[Session, None, None]:
         expire_on_commit=False,
     )
     Base.metadata.create_all(bind=engine)
-
-    with TestingSessionLocal() as session:
-        yield session
-
-    Base.metadata.drop_all(bind=engine)
+    original_engine = app_main.engine
+    app_main.engine = engine
+    try:
+        with TestingSessionLocal() as session:
+            yield session
+    finally:
+        Base.metadata.drop_all(bind=engine)
+        engine.dispose()
+        app_main.engine = original_engine
 
 
 @pytest.fixture()
@@ -41,9 +46,16 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as test_client:
-        yield test_client
-    app.dependency_overrides.clear()
+    original_engine = app_main.engine
+    # Keep lifespan startup isolated from the developer's configured database;
+    # the request dependency and startup workflow share this in-memory fixture.
+    app_main.engine = db_session.get_bind()
+    try:
+        with TestClient(app) as test_client:
+            yield test_client
+    finally:
+        app.dependency_overrides.clear()
+        app_main.engine = original_engine
 
 
 @pytest.fixture()

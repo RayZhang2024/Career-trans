@@ -191,3 +191,29 @@ class CandidateCompatibilityPlan(StrictRead):
     schema_report: CandidateSchemaCompatibilityRead = Field(alias="schema")
     users: list[CandidateUserCompatibilityRead]
     summary: CandidateCompatibilitySummary
+
+
+class CandidateCompatibilityDatabaseState(StrEnum):
+    FRESH_UNINITIALIZED = "fresh_uninitialized"
+    RETAINED_WITH_USERS = "retained_with_users"
+    RETAINED_WITHOUT_USERS = "retained_without_users"
+
+
+class CandidateCompatibilityOperation(StrEnum):
+    INSPECT = "inspect"
+    APPLY = "apply"
+
+
+class CandidateCompatibilityRuntimeRead(StrictRead):
+    operation: CandidateCompatibilityOperation
+    database_state: CandidateCompatibilityDatabaseState
+    schema_before: CandidateSchemaCompatibilityRead | None = None
+    schema_after: CandidateSchemaCompatibilityRead | None = None
+    repair_changed: bool = False
+    repair_count: int = 0
+    user_count: int = 0
+    changed_count: int = 0
+    unresolved_count: int = 0
+    not_yet_confirmed_count: int = 0
+    dry_run: CandidateCompatibilityPlan | None = None
+    reconciliation: CandidateBatchReconciliationRead | None = None

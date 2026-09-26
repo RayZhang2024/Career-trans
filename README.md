@@ -438,6 +438,16 @@ Default local persistence:
 sqlite:///./career_agent.db
 ```
 
+On local SQLite startup, Career-trans inspects the retained candidate schema,
+applies only the reviewed additive compatibility repair, creates other current
+ORM tables after candidate-schema safety is established, then reconciles each
+existing user independently. Unresolved user records are reported without
+preventing startup. This compatibility workflow is SQLite-only; other database
+dialects retain the existing table-bootstrap behavior. Operators can review the
+offline report with `career-trans dev candidate-compatibility inspect`; the
+explicit repair workflow is `career-trans dev candidate-compatibility apply
+--yes`. Inspection does not write to the target database.
+
 Settings are loaded from environment variables and/or `backend/.env`.
 
 Common optional settings include:

@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,18 +7,31 @@ from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.core.config import configure_langsmith_environment, get_settings
-from app.core.database import Base, engine
+from app.core.database import engine
+from app.services.candidate_compatibility_runtime import run_candidate_compatibility_startup
 from app.services.semantic_runtime_attribution import RuntimeAttributionIntegrityError
 import app.models  # noqa: F401  # Ensures SQLAlchemy models are registered.
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_langsmith_environment(settings)
-    # V1 convenience. Replace with Alembic migrations before production deployment.
-    Base.metadata.create_all(bind=engine)
+    result = run_candidate_compatibility_startup(engine)
+    if result is not None:
+        logger.info(
+            "Candidate compatibility startup complete: users=%d changed=%d unresolved=%d",
+            result.user_count,
+            result.changed_count,
+            result.unresolved_count,
+        )
+        if result.unresolved_count:
+            logger.warning(
+                "Candidate compatibility left %d user record(s) unresolved.",
+                result.unresolved_count,
+            )
     yield
 
 

@@ -70,4 +70,40 @@ For a valid current or newly reconstructed structured Profile, the existing `Act
 
 Reconstruction, evidence materialization, and postflight verification commit together for that user or roll back together. Evidence-only reconciliation also uses the per-user outer transaction around the resolver savepoint. Successful postflight verifies valid structured data, complete active evidence, and the Phase 1 classification. Repeated reconciliation is idempotent; an already compatible user causes no DML.
 
-Phase 3 does not invoke semantic providers, CV confirmation, Profile revision or Adviser proposal workflows, or schema repair. It creates no CV overlap-review or CV baseline rows and no structured-item lineage; historical CV confirmation lacks the comparison context required for truthful lineage. Current Profile scalar fields, revisions, Adviser intake/assessments/proposals, existing lineage, clarification state, discovery/application/tracking artifacts, and inactive evidence remain historical state. The operational result reports user/status/action/count metadata and an optional selected CV draft ID, never profile or CV payload content. This phase adds no startup, API, or frontend execution path; operational orchestration remains for Phase 4.
+Phase 3 does not invoke semantic providers, CV confirmation, Profile revision or Adviser proposal workflows, or schema repair. It creates no CV overlap-review or CV baseline rows and no structured-item lineage; historical CV confirmation lacks the comparison context required for truthful lineage. Current Profile scalar fields, revisions, Adviser intake/assessments/proposals, existing lineage, clarification state, discovery/application/tracking artifacts, and inactive evidence remain historical state. The operational result reports user/status/action/count metadata and an optional selected CV draft ID, never profile or CV payload content. Phase 4 provides the bounded SQLite startup workflow and offline operator command described below.
+
+## Phase 4: SQLite runtime orchestration and operator CLI
+
+The runtime orchestrator composes the existing physical-schema inspector, the
+reviewed Phase 2 SQLite repair, the Phase 1 provider-free dry run, and the Phase
+3 per-user reconciliation. Its strict result reports database state, schema
+before/after, repair counts, and aggregate user outcomes; physical-schema
+failures raise a distinct blocked result while per-user failures remain
+unresolved user entries.
+
+`inspect()` is read-only. An empty database is reported as
+`fresh_uninitialized`; a retained database without `users` is reported as
+`retained_without_users`; and a retained compatible database includes a Phase
+1 per-user plan. It does not bootstrap tables, repair schema, or reconcile user
+data.
+
+On SQLite startup, an empty database is bootstrapped from current metadata. A
+retained database must have `users`; candidate schema repair runs before broad
+metadata table creation, then candidate-schema postflight runs before sorted
+user enumeration and Phase 3 reconciliation. Unsafe candidate schema blocks
+startup before broad table creation or data reconciliation. A user's unresolved
+result does not block startup. Startup logs only aggregate counts, never
+candidate data or user identifiers. Non-SQLite startup keeps its prior
+`Base.metadata.create_all` behavior and does not run candidate repair or
+reconciliation.
+
+Offline operations use the same orchestrator:
+
+```text
+career-trans dev candidate-compatibility inspect [--json] [--database-url URL]
+career-trans dev candidate-compatibility apply --yes [--json] [--database-url URL]
+```
+
+`inspect` opens an existing SQLite file read-only and reports a missing local
+file as fresh without creating it. `apply` requires the explicit `--yes` flag,
+and is limited to SQLite. Both commands operate offline and invoke no providers.
