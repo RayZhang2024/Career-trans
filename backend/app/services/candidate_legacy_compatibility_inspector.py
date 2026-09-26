@@ -130,6 +130,26 @@ class CandidateLegacyCompatibilityInspector:
                         count=len(active.stale_fingerprints),
                     ))
 
+            assessment_record_exists = self._session.scalar(select(
+                CandidateAdviserAssessmentRecord.id
+            ).where(CandidateAdviserAssessmentRecord.user_id == user_id)) is not None
+            if active.complete:
+                assessment_status = self._assessment_status(user_id)
+                if assessment_status != "unavailable":
+                    issues.append(CandidateLegacyIssue(
+                        code=CandidateLegacyIssueCode.ADVISER_ASSESSMENT_STATUS,
+                        detail="Persisted Adviser assessment is inspected read-only and is not rerun or confirmed.",
+                        count=1,
+                    ))
+            else:
+                assessment_status = "unavailable"
+                if assessment_record_exists:
+                    issues.append(CandidateLegacyIssue(
+                        code=CandidateLegacyIssueCode.ADVISER_ASSESSMENT_STATUS,
+                        detail="A persisted Adviser assessment exists, but its currentness is unavailable until active evidence is complete.",
+                        count=1,
+                    ))
+
             clarifications = self._session.scalars(
                 select(CandidateAdviserClarificationRecord).where(
                     CandidateAdviserClarificationRecord.user_id == user_id
@@ -160,14 +180,6 @@ class CandidateLegacyCompatibilityInspector:
                     code=CandidateLegacyIssueCode.UNCONFIRMED_CLARIFICATIONS_IGNORED,
                     detail="Unconfirmed clarifications are excluded from active factual evidence and structured authority.",
                     count=unconfirmed_clarification_count,
-                ))
-
-            assessment_status = self._assessment_status(user_id)
-            if assessment_status != "unavailable":
-                issues.append(CandidateLegacyIssue(
-                    code=CandidateLegacyIssueCode.ADVISER_ASSESSMENT_STATUS,
-                    detail="Persisted Adviser assessment is inspected read-only and is not rerun or confirmed.",
-                    count=1,
                 ))
 
             revisions = self._session.scalars(select(CandidateProfileRevisionRecord).where(
@@ -361,7 +373,7 @@ class CandidateLegacyCompatibilityInspector:
                 detail="Equally latest confirmed CV drafts contain different payloads; chronology cannot be inferred from their IDs.",
                 count=len(parsed),
                 related_ids=sorted(row.id for row, _ in parsed),
-                blocking=True,
+                blocking=strict,
             ))
             return None
         # The ID is used only to select a reproducible representative when the

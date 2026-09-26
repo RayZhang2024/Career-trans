@@ -4,7 +4,11 @@ from sqlalchemy import create_engine, event, inspect, text
 
 from app.core.database import Base
 from app.models import User  # noqa: F401
-from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateStructuredProfile
+from app.models.candidate_cv_ingestion import (
+    CandidateCVIngestionDraft,
+    CandidateEvidenceRecord,
+    CandidateStructuredProfile,
+)
 from app.models.candidate_profile import CandidateProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
 from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
@@ -17,10 +21,16 @@ from app.schemas.candidate_compatibility import (
 )
 from app.schemas.cv_ingestion import CandidateCVData, CareerEvidenceDraft
 from app.schemas.candidate_adviser import (
+    CandidateAdviserAssessmentContent,
+    CandidateAdviserIntake,
     ClarificationAnswerKind,
     ClarificationInterpretation,
 )
-from app.models.candidate_adviser import CandidateAdviserClarificationRecord
+from app.models.candidate_adviser import (
+    CandidateAdviserAssessmentRecord,
+    CandidateAdviserClarificationRecord,
+    CandidateAdviserIntakeRecord,
+)
 from app.models.user_job_discovery import DiscoveryRun
 from app.models.application_preparation import ApplicationPreparation
 from app.services.candidate_compatibility_inspector import CandidatePhysicalSchemaInspector
@@ -28,6 +38,8 @@ from app.services.candidate_legacy_compatibility_inspector import (
     CandidateCompatibilityDryRunService,
     CandidateLegacyCompatibilityInspector,
 )
+from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
+from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.career_evidence_fingerprint import legacy_career_evidence_fingerprint
 
 
@@ -45,6 +57,45 @@ def _cv_data(*, employment=(), evidence=()) -> CandidateCVData:
         employment=list(employment),
         evidence=list(evidence),
     )
+
+
+def _adviser_assessment_content() -> CandidateAdviserAssessmentContent:
+    insight = {
+        "text": "Synthetic persisted assessment.",
+        "source_references": [{"source_type": "intake", "reference": "career_direction"}],
+    }
+    return CandidateAdviserAssessmentContent.model_validate({
+        "professional_positioning": insight,
+        "transferable_strengths": [],
+        "development_gaps": [],
+        "role_hypotheses": [],
+        "transition_assessment": insight,
+        "open_questions": [],
+        "career_strategy_summary": insight,
+        "job_search_strategy_summary": insight,
+    })
+
+
+def _persist_adviser_intake_and_assessment(session, user_id: str, fingerprint: str):
+    intake = CandidateAdviserIntake(
+        career_direction="Synthetic career direction",
+        work_preferences=[],
+        constraints=[],
+        eligibility={},
+    )
+    session.add(CandidateAdviserIntakeRecord(
+        user_id=user_id,
+        intake_json=intake.model_dump_json(),
+    ))
+    record = CandidateAdviserAssessmentRecord(
+        user_id=user_id,
+        input_fingerprint=fingerprint,
+        status="confirmed",
+        assessment_json=_adviser_assessment_content().model_dump_json(),
+    )
+    session.add(record)
+    session.flush()
+    return record
 
 
 def _draft(session, user_id: str, state: str, data: CandidateCVData | None, *, draft_id: str, updated_at=None):
@@ -277,6 +328,70 @@ def test_invalid_confirmed_cv_and_ambiguous_latest_tie_fail_closed(db_session):
     assert by_id["tie"].structured_authority is CandidateStructuredAuthorityStatus.UNRESOLVED
 
 
+def test_current_structured_authority_wins_over_ambiguous_historical_cv_sources(db_session):
+    _user(db_session, "current-with-ambiguous-history")
+    current = _cv_data(employment=[{"employer": "Current Co", "title": "Lead"}])
+    db_session.add(CandidateStructuredProfile(
+        user_id="current-with-ambiguous-history", structured_json=current.model_dump_json()
+    ))
+    db_session.flush()
+    ActiveCandidateEvidenceResolver(db_session).resolve("current-with-ambiguous-history", current)
+    stamp = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    _draft(
+        db_session, "current-with-ambiguous-history", "confirmed",
+        _cv_data(employment=[{"employer": "Historical A", "title": "Engineer"}]),
+        draft_id="historical-a", updated_at=stamp,
+    )
+    _draft(
+        db_session, "current-with-ambiguous-history", "confirmed",
+        _cv_data(employment=[{"employer": "Historical B", "title": "Director"}]),
+        draft_id="historical-b", updated_at=stamp,
+    )
+    _user(db_session, "current-with-ambiguous-history-and-missing-evidence")
+    db_session.add(CandidateStructuredProfile(
+        user_id="current-with-ambiguous-history-and-missing-evidence",
+        structured_json=current.model_dump_json(),
+    ))
+    _draft(
+        db_session, "current-with-ambiguous-history-and-missing-evidence", "confirmed",
+        _cv_data(employment=[{"employer": "Historical A", "title": "Engineer"}]),
+        draft_id="historical-c", updated_at=stamp,
+    )
+    _draft(
+        db_session, "current-with-ambiguous-history-and-missing-evidence", "confirmed",
+        _cv_data(employment=[{"employer": "Historical B", "title": "Director"}]),
+        draft_id="historical-d", updated_at=stamp,
+    )
+    db_session.flush()
+
+    results = {
+        result.user_id: result
+        for result in CandidateLegacyCompatibilityInspector(db_session).inspect_users([
+            "current-with-ambiguous-history",
+            "current-with-ambiguous-history-and-missing-evidence",
+        ])
+    }
+    result = results["current-with-ambiguous-history"]
+    ambiguity = next(issue for issue in result.issues if issue.code.value == "unresolved_ambiguous_confirmed_sources")
+
+    assert result.structured_authority is CandidateStructuredAuthorityStatus.PRESERVE
+    assert result.status is CandidateCompatibilityStatus.ALREADY_COMPATIBLE
+    assert not ambiguity.blocking
+    assert CandidateCompatibilityAction.RECONSTRUCT_STRUCTURED_FROM_CONFIRMED_CV not in result.planned_actions
+    incomplete = results["current-with-ambiguous-history-and-missing-evidence"]
+    incomplete_ambiguity = next(
+        issue for issue in incomplete.issues
+        if issue.code.value == "unresolved_ambiguous_confirmed_sources"
+    )
+    assert incomplete.status is CandidateCompatibilityStatus.REPAIRABLE
+    assert incomplete.structured_authority is CandidateStructuredAuthorityStatus.PRESERVE
+    assert not incomplete_ambiguity.blocking
+    assert incomplete.planned_actions == [
+        CandidateCompatibilityAction.PRESERVE_CURRENT_STRUCTURED,
+        CandidateCompatibilityAction.RECONCILE_ACTIVE_EVIDENCE,
+    ]
+
+
 def test_malformed_user_does_not_abort_valid_user_or_cross_user_scope(db_session):
     _user(db_session, "valid-owner")
     _draft(db_session, "valid-owner", "confirmed", _cv_data(), draft_id="valid-source")
@@ -370,8 +485,6 @@ def test_legacy_evidence_bridge_is_classified_stale_not_rebuilt(db_session):
     item = CareerEvidenceDraft(evidence_type="project", title="Migration  ", text="Built a migration")
     data = _cv_data(evidence=[item])
     db_session.add(CandidateStructuredProfile(user_id="legacy-evidence", structured_json=data.model_dump_json()))
-    from app.models.candidate_cv_ingestion import CandidateEvidenceRecord
-
     db_session.add(CandidateEvidenceRecord(
         user_id="legacy-evidence",
         fingerprint=legacy_career_evidence_fingerprint(item),
@@ -406,8 +519,6 @@ def test_evidence_status_distinguishes_missing_and_missing_plus_stale(db_session
     db_session.add(CandidateStructuredProfile(
         user_id="mixed-evidence", structured_json=mixed_data.model_dump_json()
     ))
-    from app.models.candidate_cv_ingestion import CandidateEvidenceRecord
-
     db_session.add(CandidateEvidenceRecord(
         user_id="mixed-evidence",
         fingerprint=legacy_career_evidence_fingerprint(stale_item),
@@ -486,8 +597,57 @@ def test_clarifications_and_revision_proposal_history_are_inspected_without_prom
     assert CandidateCompatibilityAction.RECONSTRUCT_STRUCTURED_FROM_CONFIRMED_CV not in result.planned_actions
 
 
-def test_dry_run_is_provider_free_and_emits_no_dml_or_ddl(db_session, monkeypatch):
-    _user(db_session, "dry-run")
+def test_incomplete_evidence_makes_persisted_adviser_currentness_unavailable(db_session):
+    _user(db_session, "incomplete-adviser")
+    data = _cv_data(employment=[{"employer": "Example", "title": "Engineer"}])
+    db_session.add(CandidateStructuredProfile(
+        user_id="incomplete-adviser", structured_json=data.model_dump_json()
+    ))
+    db_session.flush()
+    persisted = _persist_adviser_intake_and_assessment(db_session, "incomplete-adviser", "a" * 64)
+    original = (persisted.status, persisted.input_fingerprint, persisted.assessment_json)
+
+    result = CandidateLegacyCompatibilityInspector(db_session).inspect_user("incomplete-adviser")
+
+    db_session.refresh(persisted)
+    assert result.evidence_status is CandidateEvidenceCompatibilityStatus.MISSING
+    assert result.adviser_assessment_status == "unavailable"
+    assert CandidateCompatibilityAction.RECONCILE_ACTIVE_EVIDENCE in result.planned_actions
+    assert any(
+        "currentness is unavailable until active evidence is complete" in issue.detail
+        for issue in result.issues
+    )
+    assert original == (persisted.status, persisted.input_fingerprint, persisted.assessment_json)
+
+
+def test_complete_evidence_assessment_currentness_is_provider_free_and_read_only(db_session, monkeypatch):
+    _user(db_session, "complete-adviser")
+    data = _cv_data(employment=[{"employer": "Example", "title": "Engineer"}])
+    db_session.add(CandidateStructuredProfile(
+        user_id="complete-adviser", structured_json=data.model_dump_json()
+    ))
+    db_session.flush()
+    ActiveCandidateEvidenceResolver(db_session).resolve("complete-adviser", data)
+    intake = CandidateAdviserIntake(
+        career_direction="Synthetic career direction",
+        work_preferences=[], constraints=[], eligibility={},
+    )
+    db_session.add(CandidateAdviserIntakeRecord(
+        user_id="complete-adviser", intake_json=intake.model_dump_json()
+    ))
+    db_session.flush()
+    fingerprint = CandidateAdviserService(db_session).input_fingerprint(
+        "complete-adviser", read_only=True
+    )
+    assessment = CandidateAdviserAssessmentRecord(
+        user_id="complete-adviser",
+        input_fingerprint=fingerprint,
+        status="confirmed",
+        assessment_json=_adviser_assessment_content().model_dump_json(),
+    )
+    db_session.add(assessment)
+    db_session.flush()
+    original = (assessment.status, assessment.input_fingerprint, assessment.assessment_json)
     statements: list[str] = []
 
     def capture(_conn, _cursor, statement, _parameters, _context, _many):
@@ -497,12 +657,19 @@ def test_dry_run_is_provider_free_and_emits_no_dml_or_ddl(db_session, monkeypatc
     event.listen(bind, "before_cursor_execute", capture)
 
     def provider_forbidden(*_args, **_kwargs):
-        raise AssertionError("compatibility inspection must not call providers")
+        raise AssertionError("compatibility dry run invoked semantic provider")
 
-    monkeypatch.setattr("app.services.candidate_adviser_service.CandidateAdviserService.get_assessment_read_only", provider_forbidden)
-    first = CandidateCompatibilityDryRunService(db_session).inspect(["dry-run"])
-    second = CandidateCompatibilityDryRunService(db_session).inspect(["dry-run"])
+    monkeypatch.setattr(CandidateAdviserService, "_semantic_agent", provider_forbidden)
+    monkeypatch.setattr(CandidateAdviserService, "_clarification_agent", provider_forbidden)
+    monkeypatch.setattr(ActiveCandidateEvidenceResolver, "resolve", provider_forbidden)
+    first = CandidateCompatibilityDryRunService(db_session).inspect(["complete-adviser"])
+    second = CandidateCompatibilityDryRunService(db_session).inspect(["complete-adviser"])
     event.remove(bind, "before_cursor_execute", capture)
+    db_session.refresh(assessment)
 
     assert first.model_dump(mode="json", by_alias=True) == second.model_dump(mode="json", by_alias=True)
+    result = first.users[0]
+    assert result.evidence_status is CandidateEvidenceCompatibilityStatus.COMPLETE
+    assert result.adviser_assessment_status == "confirmed"
+    assert original == (assessment.status, assessment.input_fingerprint, assessment.assessment_json)
     assert all(statement not in {"INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER", "CREATE", "DROP"} for statement in statements)
