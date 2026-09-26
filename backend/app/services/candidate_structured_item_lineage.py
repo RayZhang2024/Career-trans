@@ -10,6 +10,7 @@ from app.models.candidate_structured_item_lineage import CandidateStructuredItem
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.structured_profile import (
     StructuredItemRelationship,
+    StructuredProfileItem,
     StructuredProfileItemLineageInput,
     StructuredProfileLineageRead,
     StructuredProfileSection,
@@ -36,74 +37,143 @@ class CandidateStructuredItemLineageService:
         user_id: str,
         event: StructuredProfileItemLineageInput,
     ) -> StructuredProfileLineageRead:
+        result = self.stage(user_id, event)
+        self._session.commit()
+        persisted = self._session.scalar(
+            select(CandidateStructuredItemLineageRecord)
+            .where(CandidateStructuredItemLineageRecord.id == result.id)
+            .execution_options(populate_existing=True)
+        )
+        if persisted is None:
+            raise CandidateStructuredItemLineageConflict("The staged lineage event was not persisted.")
+        return self._read(persisted)
+
+    def stage(
+        self,
+        user_id: str,
+        event: StructuredProfileItemLineageInput,
+    ) -> StructuredProfileLineageRead:
+        """Stage one validated event in the caller's transaction; never commit."""
+        return self.stage_many(user_id, [event])[0]
+
+    def stage_many(
+        self,
+        user_id: str,
+        events: list[StructuredProfileItemLineageInput],
+    ) -> list[StructuredProfileLineageRead]:
+        """Stage validated events atomically into an existing caller-owned transaction."""
         if not user_id:
             raise ValueError("user_id is required.")
-        try:
-            event = StructuredProfileItemLineageInput.model_validate(event)
-            item = typed_structured_item(event.section, event.item)
-            predecessor = (
-                typed_structured_item(event.section, event.predecessor_item)
-                if event.predecessor_item is not None else None
+        prepared: list[
+            tuple[
+                str,
+                StructuredProfileItemLineageInput,
+                StructuredProfileItem,
+                StructuredProfileItem | None,
+                str,
+                str | None,
+            ]
+        ] = []
+        seen: set[str] = set()
+        for raw_event in events:
+            try:
+                event = StructuredProfileItemLineageInput.model_validate(raw_event)
+                item = typed_structured_item(event.section, event.item)
+                predecessor = (
+                    typed_structured_item(event.section, event.predecessor_item)
+                    if event.predecessor_item is not None else None
+                )
+                item_fingerprint = structured_profile_item_fingerprint(event.section, item)
+                predecessor_fingerprint = (
+                    structured_profile_item_fingerprint(event.section, predecessor)
+                    if predecessor is not None else None
+                )
+                if (
+                    event.relationship is StructuredItemRelationship.REINFORCEMENT
+                    and predecessor_fingerprint is not None
+                    and predecessor_fingerprint != item_fingerprint
+                ):
+                    raise ValueError("A reinforcement predecessor must have the exact current item fingerprint.")
+                key = structured_item_lineage_key(
+                    user_id=user_id,
+                    section=event.section,
+                    item_fingerprint=item_fingerprint,
+                    source_kind=event.source_kind.value,
+                    source_ref=event.source_ref,
+                    relationship=event.relationship.value,
+                    predecessor_fingerprint=predecessor_fingerprint,
+                )
+            except (ValidationError, TypeError, ValueError) as exc:
+                raise CandidateStructuredItemLineageConflict(str(exc)) from exc
+            if key not in seen:
+                prepared.append((key, event, item, predecessor, item_fingerprint, predecessor_fingerprint))
+                seen.add(key)
+
+        results: list[StructuredProfileLineageRead] = []
+        for key, event, item, predecessor, item_fingerprint, predecessor_fingerprint in prepared:
+            existing = self._session.scalar(
+                select(CandidateStructuredItemLineageRecord)
+                .where(
+                    CandidateStructuredItemLineageRecord.user_id == user_id,
+                    CandidateStructuredItemLineageRecord.lineage_key == key,
+                )
+                .execution_options(populate_existing=True)
             )
-            item_fingerprint = structured_profile_item_fingerprint(event.section, item)
-            predecessor_fingerprint = (
-                structured_profile_item_fingerprint(event.section, predecessor)
-                if predecessor is not None else None
-            )
-            if (
-                event.relationship is StructuredItemRelationship.REINFORCEMENT
-                and predecessor_fingerprint is not None
-                and predecessor_fingerprint != item_fingerprint
-            ):
-                raise ValueError("A reinforcement predecessor must have the exact current item fingerprint.")
-            key = structured_item_lineage_key(
+            if existing is not None:
+                results.append(self._read(existing))
+                continue
+
+            row = CandidateStructuredItemLineageRecord(
                 user_id=user_id,
-                section=event.section,
+                lineage_key=key,
+                section=event.section.value,
                 item_fingerprint=item_fingerprint,
+                item_json=json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False),
                 source_kind=event.source_kind.value,
                 source_ref=event.source_ref,
                 relationship=event.relationship.value,
                 predecessor_fingerprint=predecessor_fingerprint,
+                predecessor_item_json=(
+                    json.dumps(predecessor.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                    if predecessor is not None else None
+                ),
             )
-        except (ValidationError, TypeError, ValueError) as exc:
-            raise CandidateStructuredItemLineageConflict(str(exc)) from exc
+            try:
+                # The nested transaction isolates a uniqueness race from other
+                # canonical mutations already staged by the caller.
+                self._ensure_outer_sqlite_transaction()
+                with self._session.begin_nested():
+                    self._session.add(row)
+                    self._session.flush([row])
+            except IntegrityError:
+                winner = self._session.scalar(
+                    select(CandidateStructuredItemLineageRecord)
+                    .where(
+                        CandidateStructuredItemLineageRecord.user_id == user_id,
+                        CandidateStructuredItemLineageRecord.lineage_key == key,
+                    )
+                    .execution_options(populate_existing=True)
+                )
+                if winner is None:
+                    raise
+                results.append(self._read(winner))
+            else:
+                results.append(self._read(row))
+        return results
 
-        existing = self._session.scalar(select(CandidateStructuredItemLineageRecord).where(
-            CandidateStructuredItemLineageRecord.user_id == user_id,
-            CandidateStructuredItemLineageRecord.lineage_key == key,
-        ))
-        if existing is not None:
-            return self._read(existing)
+    def _ensure_outer_sqlite_transaction(self) -> None:
+        """Keep SQLite SAVEPOINTs nested in the caller's transaction.
 
-        row = CandidateStructuredItemLineageRecord(
-            user_id=user_id,
-            lineage_key=key,
-            section=event.section.value,
-            item_fingerprint=item_fingerprint,
-            item_json=json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False),
-            source_kind=event.source_kind.value,
-            source_ref=event.source_ref,
-            relationship=event.relationship.value,
-            predecessor_fingerprint=predecessor_fingerprint,
-            predecessor_item_json=(
-                json.dumps(predecessor.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-                if predecessor is not None else None
-            ),
-        )
-        self._session.add(row)
-        try:
-            self._session.commit()
-        except IntegrityError:
-            self._session.rollback()
-            winner = self._session.scalar(select(CandidateStructuredItemLineageRecord).where(
-                CandidateStructuredItemLineageRecord.user_id == user_id,
-                CandidateStructuredItemLineageRecord.lineage_key == key,
-            ))
-            if winner is None:
-                raise
-            return self._read(winner)
-        self._session.refresh(row)
-        return self._read(row)
+        The sqlite driver may not emit BEGIN for a logical SQLAlchemy transaction
+        until the first write. Releasing a SAVEPOINT created before that point
+        commits it, defeating the caller's ability to roll back staged events.
+        """
+        connection = self._session.connection()
+        if connection.dialect.name != "sqlite":
+            return
+        driver_connection = connection.connection.driver_connection
+        if not driver_connection.in_transaction:
+            connection.exec_driver_sql("BEGIN")
 
     def read_history(self, user_id: str) -> list[StructuredProfileLineageRead]:
         with self._session.no_autoflush:

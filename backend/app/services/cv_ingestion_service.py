@@ -14,6 +14,7 @@ from app.models.candidate_cv_ingestion import (
 )
 from app.schemas.candidate import CandidateContext, CandidateContextSummary, CareerEvidence
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionHistoryItem, CVIngestionHistoryRead, CVIngestionState, CandidateCVData, EvidenceProvenance, ExtractedCVDocument
+from app.schemas.structured_profile import StructuredItemSourceKind, StructuredProfileItemLineageInput
 from app.schemas.ai_settings import SemanticOperation
 from app.schemas.candidate_read_snapshot import CanonicalCandidateReadSnapshot
 from app.services.cv_file_extraction_service import CVFileExtractionService
@@ -25,6 +26,8 @@ from app.services.canonical_candidate_read_service import (
 )
 from app.services.llm_runtime import ResolvedRuntimeSnapshot
 from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, not_used_attribution, read_attribution
+from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
+from app.services.structured_profile_lineage_transitions import StructuredProfileLineageTransitionAnalyzer
 
 
 class CVIngestionService:
@@ -122,14 +125,26 @@ class CVIngestionService:
         return self._read(draft)
 
     def confirm(self, user_id: str, draft_id: str) -> int:
-        draft = self._draft(user_id, draft_id)
+        draft = self._draft(user_id, draft_id, for_update=True)
         if draft.state == CVIngestionState.CONFIRMED:
             return 0
         if draft.state != CVIngestionState.REVIEW_READY or not draft.merged_json:
             raise ValueError("CV ingestion draft is not ready for confirmation.")
         data = CandidateCVData.model_validate(json.loads(draft.merged_json))
         try:
-            profile = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+            profile = self._session.scalar(
+                select(CandidateStructuredProfile)
+                .where(CandidateStructuredProfile.user_id == user_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            before = (
+                CandidateCVData.model_validate_json(profile.structured_json)
+                if profile is not None else None
+            )
+            transitions = StructuredProfileLineageTransitionAnalyzer().analyze_complete_source(
+                before, data
+            )
             if profile is None:
                 profile = CandidateStructuredProfile(user_id=user_id, structured_json=json.dumps(data.model_dump(mode="json")))
                 self._session.add(profile)
@@ -142,6 +157,20 @@ class CVIngestionService:
             )
             active = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
             count = len([item for item in active if item.evidence_id not in existing_ids])
+            CandidateStructuredItemLineageService(self._session).stage_many(
+                user_id,
+                [
+                    StructuredProfileItemLineageInput(
+                        section=transition.section,
+                        item=transition.item,
+                        source_kind=StructuredItemSourceKind.CV,
+                        source_ref=draft.id,
+                        relationship=transition.relationship,
+                        predecessor_item=transition.predecessor_item,
+                    )
+                    for transition in transitions
+                ],
+            )
             draft.state = CVIngestionState.CONFIRMED
             self._session.commit()
             return count
@@ -149,8 +178,16 @@ class CVIngestionService:
             self._session.rollback()
             raise
 
-    def _draft(self, user_id: str, draft_id: str) -> CandidateCVIngestionDraft:
-        draft = self._session.scalar(select(CandidateCVIngestionDraft).where(CandidateCVIngestionDraft.id == draft_id, CandidateCVIngestionDraft.user_id == user_id))
+    def _draft(
+        self, user_id: str, draft_id: str, *, for_update: bool = False
+    ) -> CandidateCVIngestionDraft:
+        statement = select(CandidateCVIngestionDraft).where(
+            CandidateCVIngestionDraft.id == draft_id,
+            CandidateCVIngestionDraft.user_id == user_id,
+        )
+        if for_update:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        draft = self._session.scalar(statement)
         if draft is None:
             raise LookupError("CV ingestion draft not found.")
         return draft

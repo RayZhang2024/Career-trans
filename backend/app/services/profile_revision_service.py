@@ -5,16 +5,22 @@ import json
 from datetime import datetime, timezone
 from typing import Callable
 
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.orm import Session
 
 from app.models.candidate_cv_ingestion import CandidateStructuredProfile
+from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
 from app.models.candidate_profile import CandidateProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.schemas.cv_ingestion import CandidateCVData
+from app.schemas.candidate_adviser_profile_proposal import (
+    CandidateAdviserProfileProposalState,
+    CandidateAdviserProfileProposalUpdate,
+)
 from app.schemas.profile_revision import (
     CandidateProfileRevisionRead,
     CandidateProfileRevisionState,
@@ -22,6 +28,19 @@ from app.schemas.profile_revision import (
     EditableCandidateStructuredData,
     RevisionAuthority,
 )
+from app.schemas.structured_profile import (
+    StructuredItemSourceKind,
+    StructuredProfileItemLineageInput,
+    StructuredProfileSection,
+)
+from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
+from app.services.structured_profile_identity import structured_profile_item_fingerprint
+from app.services.structured_profile_lineage_transitions import (
+    StructuredItemLineageTransition,
+    StructuredProfileLineageTransitionAnalyzer,
+)
+
+_ADVISER_PROPOSAL_UPDATE = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
 
 class ProfileRevisionNotFound(LookupError):
@@ -269,11 +288,14 @@ class CandidateProfileRevisionService:
             raise ProfileRevisionConflict("Only a review-ready revision can be confirmed.")
 
         changed = self._changed_authorities(revision)
+        linked_adviser = self._linked_adviser_proposal(user_id, revision.id)
         # Lock and fingerprint only the authorities this proposal changes.
         # The full structured fingerprint includes semantic evidence, which is
         # preserved verbatim when constructing a changed structured authority.
         profile = self._profile(user_id, for_update="profile" in changed)
-        structured = self._structured(user_id, for_update="structured" in changed)
+        structured = self._structured(
+            user_id, for_update=("structured" in changed or linked_adviser is not None)
+        )
         full_structured = self._full_structured_data(structured)
         stale: list[RevisionAuthority] = []
         if "profile" in changed and profile_authority_fingerprint(
@@ -302,15 +324,16 @@ class CandidateProfileRevisionService:
                 for field in _PROFILE_FIELDS:
                     setattr(profile, field, getattr(proposal, field))
 
+            final_structured = full_structured
             if "structured" in changed:
-                proposal = EditableCandidateStructuredData.model_validate_json(
+                structured_proposal = EditableCandidateStructuredData.model_validate_json(
                     revision.proposed_structured_json
                 )
-                data = CandidateCVData(
-                    **proposal.model_dump(mode="python"),
+                final_structured = CandidateCVData(
+                    **structured_proposal.model_dump(mode="python"),
                     evidence=full_structured.evidence if full_structured is not None else [],
                 )
-                encoded = _canonical_json(data.model_dump(mode="json"))
+                encoded = _canonical_json(final_structured.model_dump(mode="json"))
                 if structured is None:
                     structured = CandidateStructuredProfile(
                         user_id=user_id, structured_json=encoded
@@ -318,7 +341,51 @@ class CandidateProfileRevisionService:
                     self._session.add(structured)
                 else:
                     structured.structured_json = encoded
-                ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
+                ActiveCandidateEvidenceResolver(self._session).resolve(user_id, final_structured)
+
+            analyzer = StructuredProfileLineageTransitionAnalyzer()
+            manual_transitions = (
+                analyzer.analyze_changed_resulting_items(full_structured, final_structured)
+                if "structured" in changed else []
+            )
+            adviser_transition: StructuredItemLineageTransition | None = None
+            adviser_fingerprint: str | None = None
+            if linked_adviser is not None and final_structured is not None:
+                adviser_record, adviser_update = linked_adviser
+                adviser_section = StructuredProfileSection(adviser_update.section)
+                adviser_fingerprint = structured_profile_item_fingerprint(
+                    adviser_section, adviser_update.item
+                )
+                survives = any(
+                    structured_profile_item_fingerprint(adviser_section, item) == adviser_fingerprint
+                    for item in getattr(final_structured, adviser_section.value)
+                )
+                if survives:
+                    adviser_transition = analyzer.analyze_item(
+                        full_structured, adviser_section, adviser_update.item
+                    )
+
+            events: list[StructuredProfileItemLineageInput] = []
+            if adviser_transition is not None and linked_adviser is not None:
+                adviser_record, _ = linked_adviser
+                events.append(self._lineage_event(
+                    adviser_transition,
+                    source_kind=StructuredItemSourceKind.CANDIDATE_ADVISER,
+                    source_ref=adviser_record.id,
+                ))
+            for transition in manual_transitions:
+                if adviser_transition is not None and transition.section is adviser_transition.section:
+                    transition_fingerprint = structured_profile_item_fingerprint(
+                        transition.section, transition.item
+                    )
+                    if transition_fingerprint == adviser_fingerprint:
+                        continue
+                events.append(self._lineage_event(
+                    transition,
+                    source_kind=StructuredItemSourceKind.MANUAL_PROFILE,
+                    source_ref=revision.id,
+                ))
+            CandidateStructuredItemLineageService(self._session).stage_many(user_id, events)
 
             revision.state = CandidateProfileRevisionState.CONFIRMED
             revision.active_user_id = None
@@ -335,6 +402,42 @@ class CandidateProfileRevisionService:
             self._session.rollback()
             raise
         return self._read(revision, user_id)
+
+    def _linked_adviser_proposal(self, user_id: str, revision_id: str):
+        """Validate any durable Adviser→revision link and its saved typed item."""
+        rows = self._session.scalars(
+            select(CandidateAdviserProfileProposalRecord)
+            .where(CandidateAdviserProfileProposalRecord.transferred_profile_revision_id == revision_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise ProfileRevisionConflict("The Adviser proposal link to this Profile revision is ambiguous.")
+        proposal = rows[0]
+        if (
+            proposal.user_id != user_id
+            or proposal.state != CandidateAdviserProfileProposalState.TRANSFERRED
+            or proposal.transferred_at is None
+        ):
+            raise ProfileRevisionConflict("The linked Adviser proposal is not a valid transferred source.")
+        try:
+            update = _ADVISER_PROPOSAL_UPDATE.validate_json(proposal.proposed_update_json)
+        except (ValidationError, TypeError) as exc:
+            raise ProfileRevisionConflict("The linked Adviser proposal has an invalid saved structured item.") from exc
+        return proposal, update
+
+    @staticmethod
+    def _lineage_event(transition, *, source_kind, source_ref):
+        return StructuredProfileItemLineageInput(
+            section=transition.section,
+            item=transition.item,
+            source_kind=source_kind,
+            source_ref=source_ref,
+            relationship=transition.relationship,
+            predecessor_item=transition.predecessor_item,
+        )
 
     def _read(
         self, revision: CandidateProfileRevisionRecord, user_id: str
