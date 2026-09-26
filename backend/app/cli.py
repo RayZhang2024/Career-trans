@@ -9,6 +9,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
+
 from app.cli_http import (
     CareerTransApiClient,
     CareerTransApiError,
@@ -28,6 +31,17 @@ from app.services.llm_usage_audit import (
     combine_normalized_trace_exports,
     normalize_trace_exports,
     summarize_trace_export,
+)
+from app.core.config import get_settings
+from app.core.database import _engine_kwargs
+from app.services.candidate_compatibility_runtime import (
+    CandidateCompatibilityRuntime,
+    CandidateCompatibilityRuntimeBlocked,
+)
+from app.schemas.candidate_compatibility import (
+    CandidateCompatibilityDatabaseState,
+    CandidateCompatibilityOperation,
+    CandidateCompatibilityRuntimeRead,
 )
 
 
@@ -70,6 +84,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional ranking diagnostics JSON; only safe numeric funnel counters are retained",
     )
     normalize.add_argument("--output", type=Path, help="Optional output JSON path (otherwise stdout)")
+
+    compatibility = dev_commands.add_parser(
+        "candidate-compatibility", help="Inspect or apply offline candidate compatibility"
+    )
+    compatibility_commands = compatibility.add_subparsers(dest="compatibility_command", required=True)
+    for operation in ("inspect", "apply"):
+        command = compatibility_commands.add_parser(operation)
+        command.add_argument("--database-url", help="Target database URL (defaults to configured DATABASE_URL)")
+        command.add_argument("--json", action="store_true", dest="as_json")
+        if operation == "apply":
+            command.add_argument("--yes", action="store_true", help="Approve the compatibility apply workflow")
 
     profile = commands.add_parser("profile", help="Inspect authenticated candidate profile state")
     profile_commands = profile.add_subparsers(dest="profile_command", required=True)
@@ -211,7 +236,65 @@ def _dev(args: argparse.Namespace) -> int:
         else:
             print(rendered)
         return 0
+    if args.dev_command == "candidate-compatibility":
+        return _candidate_compatibility(args)
     raise ValueError(f"Unsupported dev command: {args.dev_command}")
+
+
+def _candidate_compatibility(args: argparse.Namespace) -> int:
+    if args.compatibility_command == "apply" and not args.yes:
+        print("Apply requires --yes so it cannot run accidentally in an unattended shell.", file=sys.stderr)
+        return 2
+    database_url = args.database_url or get_settings().database_url
+    target_url = make_url(database_url)
+    if args.compatibility_command == "inspect" and target_url.get_backend_name() == "sqlite":
+        database = target_url.database
+        if database and database not in {":memory:"} and not database.startswith("file:"):
+            target = Path(database).resolve()
+            if not target.exists():
+                result = CandidateCompatibilityRuntimeRead(
+                    operation=CandidateCompatibilityOperation.INSPECT,
+                    database_state=CandidateCompatibilityDatabaseState.FRESH_UNINITIALIZED,
+                )
+                _print_compatibility_result(result, args.as_json)
+                return 0
+            target_url = target_url.set(
+                database=f"file:{target.as_posix()}",
+                query={**target_url.query, "mode": "ro", "uri": "true"},
+            )
+    engine = create_engine(target_url, **_engine_kwargs(database_url))
+    try:
+        runtime = CandidateCompatibilityRuntime(engine)
+        result = runtime.inspect() if args.compatibility_command == "inspect" else runtime.apply()
+        _print_compatibility_result(result, args.as_json)
+        return 0
+    except CandidateCompatibilityRuntimeBlocked as exc:
+        if args.as_json:
+            payload = {"error": str(exc)}
+            if exc.schema is not None:
+                payload["schema"] = exc.schema.model_dump(mode="json")
+            print(json.dumps(payload, indent=2, sort_keys=True), file=sys.stderr)
+        else:
+            print(f"Candidate compatibility blocked: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        engine.dispose()
+
+
+def _print_compatibility_result(result, as_json: bool) -> None:
+    if as_json:
+        print(result.model_dump_json(indent=2))
+        return
+    print(
+        f"{result.operation.value}: state={result.database_state.value} "
+        f"users={result.user_count} changed={result.changed_count} "
+        f"unresolved={result.unresolved_count} "
+        f"not_yet_confirmed={result.not_yet_confirmed_count}"
+    )
+    if result.schema_after is not None:
+        print(f"Candidate schema: {result.schema_after.status.value}")
+    elif result.schema_before is not None:
+        print(f"Candidate schema: {result.schema_before.status.value}")
 
 
 def _login(client: CareerTransApiClient, args: argparse.Namespace) -> int:
