@@ -8,7 +8,8 @@ from app.models.candidate_cv_ingestion import CandidateEvidenceRecord
 from app.schemas.cv_ingestion import CandidateCVData, CareerEvidenceDraft, EvidenceProvenance
 from app.schemas.job import JobProfile, JobRequirement
 from app.services.candidate_profile_compaction import top_evidence
-from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
+from app.services.cv_ingestion_service import CVIngestionService
 
 
 class _DetailedInterpreter:
@@ -137,7 +138,9 @@ def test_detailed_source_grounded_evidence_survives_confirmation_and_bounded_ret
     assert len(persisted) == 4
     assert all(json.loads(item.provenance_json)[0]["segment_ids"] for item in persisted)
 
-    context = PersistedCandidateContextLoader(db_session).load("user-1")
+    reader = CanonicalCandidateReadService(db_session)
+    context = reader.candidate_context(reader.read("user-1"), require_complete_evidence=True)
+    assert context is not None
     selected = top_evidence(
         context.evidence,
         JobProfile(

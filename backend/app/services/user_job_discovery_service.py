@@ -26,8 +26,10 @@ from app.schemas.user_job_discovery import (
     DiscoveryRunJobDetailRead,
 )
 from app.services.candidate_profile_compaction import candidate_career_profile, candidate_matching_profile, candidate_search_profile
-from app.services.canonical_candidate_read_service import CandidateEvidenceMaterializationIncomplete
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import (
+    CandidateEvidenceMaterializationIncomplete,
+    CanonicalCandidateReadService,
+)
 from app.services.job_presemantic_selection_service import JobPresemanticSelectionService
 from app.services.job_ranking_service import JobRankingService
 from app.services.posting_legitimacy_service import PostingLegitimacyService
@@ -112,17 +114,31 @@ class UserJobDiscoveryHistoryReadService:
 class UserJobDiscoveryService:
     """Persist run history and only reuse complete, still-current user evaluations."""
 
-    def __init__(self, session: Session, *, ranking_service: JobRankingService | None = None, settings: Settings | None = None, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        ranking_service: JobRankingService | None = None,
+        settings: Settings | None = None,
+        runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+        candidate_reader: CanonicalCandidateReadService | None = None,
+    ) -> None:
         self._session = session
         self._ranking_service = ranking_service
         self._settings = settings or get_settings()
         self._runtime_snapshot = runtime_snapshot or resolve_runtime_snapshot(self._settings)
+        self._candidate_reader = candidate_reader or CanonicalCandidateReadService(session)
 
     def start(self, user_id: str, request: DiscoveryRunCreateRequest) -> DiscoveryRunRead:
         if self._ranking_service is None:
             raise RuntimeError("Ranking service is required to create a discovery run.")
         try:
-            context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+            snapshot = self._candidate_reader.read(user_id)
+            context = self._candidate_reader.candidate_context(
+                snapshot,
+                require_structured_profile=True,
+                require_complete_evidence=True,
+            )
         except CandidateEvidenceMaterializationIncomplete as exc:
             raise ValueError("Current candidate evidence is not fully materialised.") from exc
         if context is None:
@@ -226,7 +242,12 @@ class UserJobDiscoveryService:
 
     def current_opportunities(self, user_id: str) -> UserOpportunityResponse:
         try:
-            context = PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
+            snapshot = self._candidate_reader.read(user_id)
+            context = self._candidate_reader.candidate_context(
+                snapshot,
+                require_structured_profile=True,
+                require_complete_evidence=True,
+            )
         except CandidateEvidenceMaterializationIncomplete:
             return UserOpportunityResponse()
         if context is None:
@@ -280,10 +301,18 @@ class UserJobDiscoveryService:
         self, user_id: str, job: DiscoveredJob, *, candidate_context: CandidateContext | None = None
     ) -> RankedJobOpportunity | None:
         """The shared #154 authority for a reusable complete evaluation."""
-        try:
-            context = candidate_context or PersistedCandidateContextLoader(self._session).load_confirmed(user_id)
-        except CandidateEvidenceMaterializationIncomplete:
-            return None
+        if candidate_context is not None:
+            context = candidate_context
+        else:
+            try:
+                snapshot = self._candidate_reader.read(user_id)
+                context = self._candidate_reader.candidate_context(
+                    snapshot,
+                    require_structured_profile=True,
+                    require_complete_evidence=True,
+                )
+            except CandidateEvidenceMaterializationIncomplete:
+                return None
         if context is None or not self._is_actionable(job):
             return None
         evaluation = self._reusable_evaluation(
@@ -301,7 +330,12 @@ class UserJobDiscoveryService:
 
     def _current_opportunity_items_read_only(self, user_id: str) -> list[UserOpportunityRead]:
         try:
-            context = PersistedCandidateContextLoader(self._session).load_confirmed_read_only(user_id)
+            snapshot = self._candidate_reader.read(user_id)
+            context = self._candidate_reader.candidate_context(
+                snapshot,
+                require_structured_profile=True,
+                require_complete_evidence=True,
+            )
         except CandidateEvidenceMaterializationIncomplete:
             return []
         if context is None:

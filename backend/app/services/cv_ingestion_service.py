@@ -13,18 +13,14 @@ from app.models.candidate_cv_ingestion import (
     CandidateStructuredProfile,
 )
 from app.models.candidate_cv_overlap_review import CandidateCVOverlapReviewRecord
-from app.schemas.candidate import CandidateContext, CandidateContextSummary, CareerEvidence
+from app.schemas.candidate import CareerEvidence
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionHistoryItem, CVIngestionHistoryRead, CVIngestionState, CandidateCVData, EvidenceProvenance, ExtractedCVDocument
 from app.schemas.structured_profile import StructuredItemSourceKind, StructuredProfileItemLineageInput
 from app.schemas.ai_settings import SemanticOperation
-from app.schemas.candidate_read_snapshot import CanonicalCandidateReadSnapshot
 from app.services.cv_file_extraction_service import CVFileExtractionService
 from app.services.cv_interpretation_service import CVSemanticInterpreter
 from app.services.cv_merge_service import CVMergeService
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
-from app.services.canonical_candidate_read_service import (
-    CanonicalCandidateReadService,
-)
 from app.services.llm_runtime import ResolvedRuntimeSnapshot
 from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, not_used_attribution, read_attribution
 from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
@@ -379,38 +375,3 @@ def _project_draft(draft: CandidateCVIngestionDraft) -> CVIngestionDraftRead:
         updated_at=draft.updated_at,
         runtime_attribution=attribution,
     )
-
-class PersistedCandidateContextLoader:
-    """Compatibility facade projecting the canonical read snapshot to CandidateContext."""
-
-    def __init__(self, session: Session) -> None:
-        self._session = session
-
-    def read_snapshot(self, user_id: str) -> CanonicalCandidateReadSnapshot:
-        return CanonicalCandidateReadService(self._session).read(user_id)
-
-    def load(self, user_id: str, *, read_only: bool = True) -> CandidateContext:
-        del read_only  # Retained for call compatibility; persisted reads are now always pure.
-        snapshot = self.read_snapshot(user_id)
-        context = CanonicalCandidateReadService.candidate_context(
-            snapshot, require_complete_evidence=True
-        )
-        assert context is not None
-        return context
-
-    def load_confirmed(self, user_id: str) -> CandidateContext | None:
-        """Return confirmed context only when its evidence set is fully materialised."""
-        snapshot = self.read_snapshot(user_id)
-        return CanonicalCandidateReadService.candidate_context(
-            snapshot,
-            require_structured_profile=True,
-            require_complete_evidence=True,
-        )
-
-    def load_confirmed_read_only(self, user_id: str) -> CandidateContext | None:
-        """Compatibility alias; all canonical context reads are side-effect-free."""
-        return self.load_confirmed(user_id)
-
-    def summary(self, user_id: str) -> CandidateContextSummary:
-        snapshot = self.read_snapshot(user_id)
-        return CanonicalCandidateReadService.summary(snapshot)

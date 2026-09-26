@@ -17,7 +17,12 @@ from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.models.user import User
 from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob
 from app.schemas.assessment import FitAssessment
-from app.schemas.candidate import CandidateContext, CareerEvidence, CareerEvidenceProvenance
+from app.schemas.candidate import (
+    CandidateContext,
+    CandidateEvidenceMaterializationStatus,
+    CareerEvidence,
+    CareerEvidenceProvenance,
+)
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.career_assessment import AlignmentConfidence, CareerAssessment
 from app.schemas.discovery import DiscoveredJobState
@@ -27,10 +32,11 @@ from app.schemas.job_ranking import (
 )
 from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
+from candidate_read_support import StaticCandidateReader, patch_candidate_context, snapshot_for_context
 import app.api.deps as deps_module
 import app.services.user_job_discovery_service as discovery_module
 
@@ -112,8 +118,7 @@ def _prepared(db_session, monkeypatch, *, count: int = 1, company: str | None = 
     jobs = [_job(index, company=company) for index in range(1, count + 1)]
     db_session.add_all([_user("owner"), _user("other"), *jobs])
     db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user_id: _context())
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user_id: _context())
+    patch_candidate_context(monkeypatch, _context())
     ranking = _Ranking()
     service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     run = service.start("owner", _request([job.id for job in jobs]))
@@ -131,29 +136,8 @@ def _clear_services() -> None:
     app.dependency_overrides.pop(get_job_ranking_service, None)
 
 
-def test_read_only_loader_matches_normal_fingerprint_without_sql_writes(db_session, monkeypatch) -> None:
-    db_session.add(_user("owner")); db_session.commit()
-    context = _context()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user_id: context)
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user_id: context)
-    observed: list[str] = []
-
-    def capture(_conn, _cursor, statement, *_args):
-        observed.append(statement)
-
-    event.listen(db_session.bind, "before_cursor_execute", capture)
-    try:
-        loader = PersistedCandidateContextLoader(db_session)
-        normal, read_only = loader.load_confirmed("owner"), loader.load_confirmed_read_only("owner")
-    finally:
-        event.remove(db_session.bind, "before_cursor_execute", capture)
-    assert normal is not None and read_only is not None
-    assert UserJobDiscoveryService.candidate_evaluation_fingerprint(normal) == UserJobDiscoveryService.candidate_evaluation_fingerprint(read_only)
-    assert not any(statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for statement in observed)
-
-
-def test_materialised_confirmed_loader_read_only_is_fingerprint_equivalent_and_write_free(db_session) -> None:
-    """Exercise the actual reconciliation-backed authority, not a mocked context."""
+def test_canonical_context_projection_has_stable_fingerprint_and_is_write_free(db_session) -> None:
+    """Exercise the actual canonical authority and strict downstream projection."""
     db_session.add(_user("materialised"))
     data = CandidateCVData.model_validate({
         "employment": [{"employer": "Example", "title": "Engineer", "description": "Built systems."}],
@@ -162,10 +146,15 @@ def test_materialised_confirmed_loader_read_only_is_fingerprint_equivalent_and_w
     })
     db_session.add(CandidateStructuredProfile(user_id="materialised", structured_json=data.model_dump_json()))
     db_session.commit()
-    loader = PersistedCandidateContextLoader(db_session)
     materialised = ActiveCandidateEvidenceResolver(db_session).resolve("materialised", data)
     db_session.commit()
-    normal = loader.load_confirmed("materialised")
+    reader = CanonicalCandidateReadService(db_session)
+    snapshot = reader.read("materialised")
+    normal = reader.candidate_context(
+        snapshot,
+        require_structured_profile=True,
+        require_complete_evidence=True,
+    )
     assert normal is not None and len(normal.evidence) == len(materialised)
     observed: list[str] = []
 
@@ -174,7 +163,12 @@ def test_materialised_confirmed_loader_read_only_is_fingerprint_equivalent_and_w
 
     event.listen(db_session.bind, "before_cursor_execute", capture)
     try:
-        read_only = loader.load_confirmed_read_only("materialised")
+        refreshed_snapshot = reader.read("materialised")
+        read_only = reader.candidate_context(
+            refreshed_snapshot,
+            require_structured_profile=True,
+            require_complete_evidence=True,
+        )
     finally:
         event.remove(db_session.bind, "before_cursor_execute", capture)
     assert read_only is not None
@@ -182,11 +176,27 @@ def test_materialised_confirmed_loader_read_only_is_fingerprint_equivalent_and_w
     assert not any(statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for statement in observed)
 
 
+def test_read_only_opportunities_are_empty_for_missing_or_incomplete_candidate(db_session) -> None:
+    db_session.add(_user("owner")); db_session.commit()
+    snapshots = (
+        snapshot_for_context(_context(), structured_profile_available=False),
+        snapshot_for_context(
+            _context(),
+            evidence_status=CandidateEvidenceMaterializationStatus.INCOMPLETE,
+        ),
+    )
+    for snapshot in snapshots:
+        reader = StaticCandidateReader(snapshot)
+        service = UserJobDiscoveryService(db_session, candidate_reader=reader)
+        assert service._current_opportunity_items_read_only("owner") == []
+        assert reader.read_user_ids == ["owner"]
+
+
 def test_jobs_dashboard_gets_are_provider_free_and_emit_no_sql_writes(client, db_session, monkeypatch) -> None:
     jobs, run, service, _ranking = _prepared(db_session, monkeypatch, count=2)
     _override_services(UserJobDiscoveryService(db_session))
-    # The read-only service must obtain context through this provider-free loader.
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user_id: _context())
+    # The read-only service must project the canonical provider-free snapshot.
+    patch_candidate_context(monkeypatch, _context())
     observed: list[str] = []
 
     def capture(_conn, _cursor, statement, *_args):
@@ -215,7 +225,7 @@ def test_real_read_dependency_gets_need_no_provider_credentials_or_semantic_fact
     monkeypatch.setenv("CAREER_TRANS_DEPLOYMENT_REVISION", "provider-free-read-test")
     jobs, run, _setup_service, _ranking = _prepared(db_session, monkeypatch, count=2)
     # Keep the dashboard fixture deterministic while exercising the real read-service dependency.
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user_id: _context())
+    patch_candidate_context(monkeypatch, _context())
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("LANGSMITH_API_KEY", "")
 
@@ -256,10 +266,7 @@ def test_real_read_dependency_gets_need_no_provider_credentials_or_semantic_fact
 def test_post_discovery_run_remains_ranking_backed(client, db_session, monkeypatch) -> None:
     jobs, _run, service, ranking = _prepared(db_session, monkeypatch)
     _override_services(service)
-    monkeypatch.setattr(
-        PersistedCandidateContextLoader, "load_confirmed",
-        lambda _self, _user_id: CandidateContext(profile_text="changed current profile"),
-    )
+    patch_candidate_context(monkeypatch, CandidateContext(profile_text="changed current profile"))
     try:
         response = client.post("/api/v1/jobs/discovery-runs", headers=_headers("owner"), json=_request([jobs[0].id]).model_dump(mode="json"))
     finally:
@@ -295,14 +302,14 @@ def test_current_detail_rejects_stale_fingerprints_and_content_hash(db_session, 
     jobs, run, service, _ranking = _prepared(db_session, monkeypatch)
     evaluation_id = run.jobs[0].evaluation_id
     assert service.current_opportunity_detail("owner", evaluation_id).job.title == jobs[0].title
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user_id: CandidateContext(profile_text="changed"))
+    patch_candidate_context(monkeypatch, CandidateContext(profile_text="changed"))
     try:
         service.current_opportunity_detail("owner", evaluation_id)
     except LookupError:
         pass
     else:
         raise AssertionError("A stale candidate fingerprint must not be current.")
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user_id: _context())
+    patch_candidate_context(monkeypatch, _context())
     jobs[0].content_hash = "f" * 64; db_session.commit()
     try:
         service.current_opportunity_detail("owner", evaluation_id)

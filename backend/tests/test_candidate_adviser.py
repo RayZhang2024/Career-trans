@@ -17,7 +17,8 @@ from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
 from app.services.candidate_adviser_references import candidate_adviser_reference_catalog
 from app.services.candidate_profile_compaction import candidate_career_profile, candidate_matching_profile, candidate_search_profile
-from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
+from app.services.cv_ingestion_service import CVIngestionService
 from app.schemas.cv_ingestion import CandidateCVData
 
 
@@ -252,7 +253,10 @@ def test_adviser_projection_enriches_search_and_career_but_not_matching(db_sessi
     service.save_intake(user_id, _intake())
     service.assess(user_id)
 
-    context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
+    reader = CanonicalCandidateReadService(db_session)
+    context = reader.candidate_context(
+        reader.read(user_id), require_structured_profile=True, require_complete_evidence=True
+    )
     assert context is not None
     assert context.eligibility.locations == ["United Kingdom"]
     assert "Move toward applied AI delivery." in context.career_strategy_text
@@ -261,7 +265,10 @@ def test_adviser_projection_enriches_search_and_career_but_not_matching(db_sessi
     assert "Source-grounded adviser summary." not in context.job_search_criteria_text
     assert service.confirm_assessment(user_id).status == "confirmed"
 
-    context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
+    reader = CanonicalCandidateReadService(db_session)
+    context = reader.candidate_context(
+        reader.read(user_id), require_structured_profile=True, require_complete_evidence=True
+    )
     assert context is not None
     assert "Source-grounded adviser summary." in context.career_strategy_text
     assert "Source-grounded adviser summary." in context.job_search_criteria_text
@@ -279,7 +286,10 @@ def test_confirmed_cv_without_adviser_intake_remains_usable(db_session) -> None:
     user_id = _user(db_session, "adviser-cv-only@example.com")
     _confirmed_cv(db_session, user_id)
 
-    context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
+    reader = CanonicalCandidateReadService(db_session)
+    context = reader.candidate_context(
+        reader.read(user_id), require_structured_profile=True, require_complete_evidence=True
+    )
 
     assert context is not None
     assert [item.title for item in context.evidence] == ["Platform delivery", "Engineer at Example"]

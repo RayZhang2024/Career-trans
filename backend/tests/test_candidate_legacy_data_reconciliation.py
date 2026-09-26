@@ -53,7 +53,7 @@ from app.services.career_evidence_fingerprint import (
     career_evidence_fingerprint,
     legacy_career_evidence_fingerprint,
 )
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.services.structured_profile_provenance_service import StructuredProfileProvenanceService
 
 
@@ -388,7 +388,12 @@ def test_confirmed_cv_reconstruction_preserves_payload_history_and_creates_no_li
     assert snapshot.readiness.structured_profile_available
     assert snapshot.readiness.evidence_materialization_status is CandidateEvidenceMaterializationStatus.COMPLETE
     assert snapshot.readiness.ready_for_candidate_context
-    assert PersistedCandidateContextLoader(db_session).load_confirmed_read_only("reconstruct") is not None
+    reader = CanonicalCandidateReadService(db_session)
+    assert reader.candidate_context(
+        reader.read("reconstruct"),
+        require_structured_profile=True,
+        require_complete_evidence=True,
+    ) is not None
     classified = CandidateLegacyCompatibilityInspector(db_session).inspect_user("reconstruct")
     assert classified.status is CandidateCompatibilityStatus.ALREADY_COMPATIBLE
     projection = StructuredProfileProvenanceService(db_session).read_current("reconstruct", data)
