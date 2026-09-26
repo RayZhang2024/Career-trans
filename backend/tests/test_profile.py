@@ -72,7 +72,7 @@ def test_profiles_are_isolated_between_users(client: TestClient) -> None:
     assert read_b.status_code == 404
 
 
-def test_strategy_profile_bootstrap_is_scoped_to_authenticated_user_and_does_not_create_cv_context(client) -> None:
+def test_legacy_profile_post_tombstone_does_not_mutate_any_user_profiles(client) -> None:
     token_a = register_and_login(client, "bootstrap-a@example.com")
     token_b = register_and_login(client, "bootstrap-b@example.com")
 
