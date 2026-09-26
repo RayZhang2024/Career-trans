@@ -220,7 +220,10 @@ class CandidateProfileRevisionService:
         if revision.state != CandidateProfileRevisionState.DRAFT:
             raise ProfileRevisionConflict("Only a draft revision can be reviewed.")
         changed = self._changed_authorities(revision)
-        stale = self._stale_authorities(revision, user_id, changed)
+        stale = self._stale_authorities(
+            revision, user_id, changed,
+            structured_dependency=self._has_linked_adviser_structured_dependency(revision, user_id),
+        )
         if stale:
             raise ProfileRevisionStale(
                 "The current authority changed after this revision was created: "
@@ -313,6 +316,13 @@ class CandidateProfileRevisionService:
         if "structured" in changed and structured_authority_fingerprint(
             full_structured
         ) != revision.base_structured_fingerprint:
+            stale.append("structured")
+        elif (
+            linked_adviser is not None
+            and revision.proposed_structured_json is not None
+            and structured_authority_fingerprint(full_structured)
+            != revision.base_structured_fingerprint
+        ):
             stale.append("structured")
         if stale:
             raise ProfileRevisionStale(
@@ -469,38 +479,51 @@ class CandidateProfileRevisionService:
         before: CandidateCVData | None,
         proposal: EditableCandidateStructuredData,
     ) -> None:
-        """Reject only new occurrences that duplicate an exact item still retained."""
+        """Reject added occurrences in same-fact groups without requiring legacy cleanup."""
         base = before or CandidateCVData()
         comparator = StructuredProfileComparisonService()
         for section in StructuredProfileSection:
             old_items = getattr(base, section.value)
             proposed_items = getattr(proposal, section.value)
-            old_counts: dict[str, int] = {}
-            proposed_counts: dict[str, int] = {}
-            for item in old_items:
-                fp = structured_profile_item_fingerprint(section, item)
-                old_counts[fp] = old_counts.get(fp, 0) + 1
-            for item in proposed_items:
-                fp = structured_profile_item_fingerprint(section, item)
-                proposed_counts[fp] = proposed_counts.get(fp, 0) + 1
-            retained = [
-                item for item in old_items
-                if proposed_counts.get(structured_profile_item_fingerprint(section, item), 0) > 0
-            ]
-            seen: dict[str, int] = {}
-            for item in proposed_items:
-                fp = structured_profile_item_fingerprint(section, item)
-                seen[fp] = seen.get(fp, 0) + 1
-                if seen[fp] <= old_counts.get(fp, 0):
-                    continue
-                if any(
-                    comparator.compare(section, item, [current]).relationship
-                    is StructuredItemRelationship.REINFORCEMENT
-                    for current in retained
-                ):
-                    raise ProfileRevisionConflict(
-                        "The Profile revision adds a same-fact duplicate. Remove the duplicate item before review or confirmation."
-                    )
+            all_items = [(False, item) for item in old_items] + [(True, item) for item in proposed_items]
+            parents = list(range(len(all_items)))
+            ranks = [0] * len(all_items)
+
+            def find(value: int) -> int:
+                while parents[value] != value:
+                    parents[value] = parents[parents[value]]
+                    value = parents[value]
+                return value
+
+            def union(left: int, right: int) -> None:
+                root_left, root_right = find(left), find(right)
+                if root_left == root_right:
+                    return
+                if ranks[root_left] < ranks[root_right]:
+                    root_left, root_right = root_right, root_left
+                parents[root_right] = root_left
+                if ranks[root_left] == ranks[root_right]:
+                    ranks[root_left] += 1
+
+            for left in range(len(all_items)):
+                for right in range(left + 1, len(all_items)):
+                    if comparator.compare(
+                        section, all_items[left][1], [all_items[right][1]]
+                    ).relationship is StructuredItemRelationship.REINFORCEMENT:
+                        union(left, right)
+
+            totals: dict[int, list[int]] = {}
+            for index, (is_proposed, _item) in enumerate(all_items):
+                counts = totals.setdefault(find(index), [0, 0, 0])
+                counts[1 if is_proposed else 0] += 1
+                counts[2] += 1
+            if any(
+                group_size > 1 and proposed_count > old_count
+                for old_count, proposed_count, group_size in totals.values()
+            ):
+                raise ProfileRevisionConflict(
+                    "The Profile revision adds a same-fact duplicate. Remove the duplicate item before review or confirmation."
+                )
 
     def _structured_comparison_projection(
         self, revision: CandidateProfileRevisionRecord, user_id: str
@@ -544,10 +567,13 @@ class CandidateProfileRevisionService:
         self, revision: CandidateProfileRevisionRecord, user_id: str
     ) -> CandidateProfileRevisionRead:
         changed = self._changed_authorities(revision)
+        adviser_dependency = self._has_linked_adviser_structured_dependency(revision, user_id)
         stale = (
             []
             if revision.state == CandidateProfileRevisionState.CONFIRMED
-            else self._stale_authorities(revision, user_id, changed)
+            else self._stale_authorities(
+                revision, user_id, changed, structured_dependency=adviser_dependency
+            )
         )
         return CandidateProfileRevisionRead(
             id=revision.id,
@@ -600,17 +626,32 @@ class CandidateProfileRevisionService:
         revision: CandidateProfileRevisionRecord,
         user_id: str,
         changed: list[RevisionAuthority],
+        *,
+        structured_dependency: bool = False,
     ) -> list[RevisionAuthority]:
         stale: list[RevisionAuthority] = []
         if "profile" in changed and profile_authority_fingerprint(
             self._profile(user_id, fresh=True)
         ) != revision.base_profile_fingerprint:
             stale.append("profile")
-        if "structured" in changed and structured_authority_fingerprint(
+        if ("structured" in changed or structured_dependency) and structured_authority_fingerprint(
             self._full_structured_data(self._structured(user_id, fresh=True))
         ) != revision.base_structured_fingerprint:
             stale.append("structured")
         return stale
+
+    def _has_linked_adviser_structured_dependency(
+        self, revision: CandidateProfileRevisionRecord, user_id: str
+    ) -> bool:
+        if revision.proposed_structured_json is None:
+            return False
+        return self._session.scalar(
+            select(CandidateAdviserProfileProposalRecord.id).where(
+                CandidateAdviserProfileProposalRecord.user_id == user_id,
+                CandidateAdviserProfileProposalRecord.transferred_profile_revision_id == revision.id,
+                CandidateAdviserProfileProposalRecord.state == CandidateAdviserProfileProposalState.TRANSFERRED,
+            )
+        ) is not None
 
     def _active_row(
         self, user_id: str, *, fresh: bool = False, for_update: bool = False

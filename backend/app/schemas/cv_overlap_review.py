@@ -39,6 +39,8 @@ class CVOverlapReviewPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_review_revision: int = Field(ge=0)
+    expected_base_structured_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_draft_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     resolutions: list[CVOverlapResolution] = Field(default_factory=list, max_length=500)
 
     @model_validator(mode="after")

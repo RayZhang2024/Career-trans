@@ -760,6 +760,106 @@ def test_transferred_revision_becomes_stale_after_current_structured_state_chang
         )
 
 
+@pytest.mark.parametrize("change_between_review_and_confirm", [False, True])
+def test_normalized_adviser_reinforcement_keeps_structured_dependency_fresh(tmp_path, change_between_review_and_confirm):
+    from app.core.database import Base
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / f'adviser-reinforcement-dependency-{change_between_review_and_confirm}.db'}"
+    )
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    try:
+        with sessions() as first:
+            user_id = _user(first, f"adviser-reinforcement-dependency-{change_between_review_and_confirm}@example.test")
+            _source(first, user_id)
+            _seed_structured_profile(first, user_id, CandidateCVData(skills=[Skill(name="Python")]))
+            proposal = CandidateAdviserProfileProposalService(first).materialize_from_confirmed_clarification(
+                user_id,
+                first.scalar(select(CandidateAdviserClarificationRecord.clarification_id).where(
+                    CandidateAdviserClarificationRecord.user_id == user_id
+                )),
+                _update(name=" PYTHON "),
+            )
+            transfer = CandidateAdviserProfileProposalService(first).transfer_to_profile_revision(
+                user_id, proposal.id, expected_revision=proposal.revision
+            )
+            revision_id = transfer.profile_revision.id
+            proposal_id = proposal.id
+            assert transfer.profile_revision.changed_authorities == []
+            assert transfer.profile_revision.proposed_structured.skills == [Skill(name="Python")]
+
+            if not change_between_review_and_confirm:
+                projection = CandidateProfileRevisionService(first).read_record(
+                    first.get(CandidateProfileRevisionRecord, revision_id), user_id
+                )
+                assert projection.stale_authorities == []
+
+        if change_between_review_and_confirm:
+            with sessions() as first, sessions() as second:
+                revision = first.get(CandidateProfileRevisionRecord, revision_id)
+                reviewed = CandidateProfileRevisionService(first).review(
+                    user_id, revision_id, expected_revision=revision.revision
+                )
+                current = second.scalar(select(CandidateStructuredProfile).where(
+                    CandidateStructuredProfile.user_id == user_id
+                ))
+                changed = CandidateCVData(skills=[Skill(name="Rust")])
+                current.structured_json = changed.model_dump_json()
+                ActiveCandidateEvidenceResolver(second).resolve(user_id, changed)
+                second.commit()
+                with pytest.raises(ProfileRevisionStale, match="structured"):
+                    CandidateProfileRevisionService(first).confirm(
+                        user_id, revision_id, expected_revision=reviewed.revision
+                    )
+                assert first.get(CandidateProfileRevisionRecord, revision_id).state == "review_ready"
+                assert CandidateAdviserProfileProposalService(first).get_for_user(
+                    user_id, proposal_id
+                ).state is CandidateAdviserProfileProposalState.TRANSFERRED
+                first.expire_all()
+                current_after = first.scalar(select(CandidateStructuredProfile).where(
+                    CandidateStructuredProfile.user_id == user_id
+                ))
+                assert CandidateCVData.model_validate_json(current_after.structured_json).skills == [Skill(name="Rust")]
+                assert not any(
+                    row.source_kind is StructuredItemSourceKind.CANDIDATE_ADVISER
+                    for row in CandidateStructuredItemLineageService(first).read_history(user_id)
+                )
+        else:
+            with sessions() as first, sessions() as second:
+                current = second.scalar(select(CandidateStructuredProfile).where(
+                    CandidateStructuredProfile.user_id == user_id
+                ))
+                changed = CandidateCVData(skills=[Skill(name="Rust")])
+                current.structured_json = changed.model_dump_json()
+                ActiveCandidateEvidenceResolver(second).resolve(user_id, changed)
+                second.commit()
+
+                service = CandidateProfileRevisionService(first)
+                revision = first.get(CandidateProfileRevisionRecord, revision_id)
+                projection = service.read_record(revision, user_id)
+                assert projection.changed_authorities == []
+                assert projection.stale_authorities == ["structured"]
+                with pytest.raises(ProfileRevisionStale, match="structured"):
+                    service.review(user_id, revision_id, expected_revision=revision.revision)
+                assert revision.state == "draft"
+                assert CandidateAdviserProfileProposalService(first).get_for_user(
+                    user_id, proposal_id
+                ).state is CandidateAdviserProfileProposalState.TRANSFERRED
+                first.expire_all()
+                current_after = first.scalar(select(CandidateStructuredProfile).where(
+                    CandidateStructuredProfile.user_id == user_id
+                ))
+                assert CandidateCVData.model_validate_json(current_after.structured_json).skills == [Skill(name="Rust")]
+                assert not any(
+                    row.source_kind is StructuredItemSourceKind.CANDIDATE_ADVISER
+                    for row in CandidateStructuredItemLineageService(first).read_history(user_id)
+                )
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_competing_transfer_sessions_observe_first_terminal_transition(tmp_path) -> None:
     from app.core.database import Base
 

@@ -68,6 +68,8 @@ def _save_choice(service, user_id, draft_id, item, action, target=None, revision
     )
     return service.update(user_id, draft_id, CVOverlapReviewPatch(
         expected_review_revision=current.revision if revision is None else revision,
+        expected_base_structured_fingerprint=current.base_structured_fingerprint,
+        expected_draft_fingerprint=current.draft_fingerprint,
         resolutions=[choice],
     ))
 
@@ -339,7 +341,11 @@ def test_review_api_is_provider_free_typed_and_persists_only_choices(client, db_
     assert body["items"][0]["incoming_item"]["name"] == "Python"
     patch = client.patch(
         f"/api/v1/cv-ingestion/{draft.id}/overlap-review", headers=headers,
-        json={"expected_review_revision": 0, "resolutions": [{
+        json={
+            "expected_review_revision": 0,
+            "expected_base_structured_fingerprint": body["base_structured_fingerprint"],
+            "expected_draft_fingerprint": body["draft_fingerprint"],
+            "resolutions": [{
             "item_key": body["items"][0]["item_key"], "action": "keep_current",
         }]},
     )
@@ -349,6 +355,105 @@ def test_review_api_is_provider_free_typed_and_persists_only_choices(client, db_
         select(CandidateStructuredProfile.id).where(CandidateStructuredProfile.user_id == user_id)
     )).structured_json == before
     assert CandidateStructuredItemLineageService(db_session).read_history(user_id) == []
+
+
+def test_review_api_rejects_stale_fingerprints_with_controlled_conflict(client, db_session):
+    credentials = {"email": "overlap-api-stale@example.com", "password": "phase-three-overlap-secret!"}
+    assert client.post("/api/v1/auth/register", json=credentials).status_code == 201
+    token = client.post("/api/v1/auth/login", json=credentials).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    user_id = db_session.scalar(select(User.id).where(User.email == credentials["email"]))
+    row = _current(db_session, user_id, CandidateCVData(skills=[Skill(name="Python", category="Language")]))
+    draft = _draft(db_session, user_id, CandidateCVData(skills=[Skill(name="Python", category="Data")]))
+    review = client.get(f"/api/v1/cv-ingestion/{draft.id}/overlap-review", headers=headers).json()
+    row.structured_json = CandidateCVData(skills=[Skill(name="Python", category="Platform")]).model_dump_json()
+    db_session.commit()
+    response = client.patch(
+        f"/api/v1/cv-ingestion/{draft.id}/overlap-review", headers=headers,
+        json={
+            "expected_review_revision": review["revision"],
+            "expected_base_structured_fingerprint": review["base_structured_fingerprint"],
+            "expected_draft_fingerprint": review["draft_fingerprint"],
+            "resolutions": [{"item_key": review["items"][0]["item_key"], "action": "keep_current"}],
+        },
+    )
+    assert response.status_code == 409
+    assert "stale" in response.json()["detail"].lower()
+    assert "Python" not in response.json()["detail"]
+    assert db_session.scalar(select(CandidateCVOverlapReviewRecord).where(
+        CandidateCVOverlapReviewRecord.draft_id == draft.id
+    )) is None
+
+
+@pytest.mark.parametrize("existing_sidecar", [False, True])
+def test_patch_fingerprint_binding_rejects_stale_get_and_allows_refreshed_recovery(tmp_path, existing_sidecar):
+    engine = create_engine(f"sqlite:///{tmp_path / f'cv-overlap-patch-{existing_sidecar}.db'}")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as first, Session(engine) as second:
+            user_id = _user(first, f"patch-fingerprint-{existing_sidecar}@example.test")
+            old = Skill(name="Python", category="Language")
+            current = _current(first, user_id, CandidateCVData(skills=[old]))
+            draft = _draft(first, user_id, CandidateCVData(skills=[Skill(name="Python", category="Data")]))
+            service = CVOverlapReviewService(first)
+            viewed = service.read(user_id, draft.id)
+            item = viewed.items[0]
+            if existing_sidecar:
+                saved = _save_choice(
+                    service, user_id, draft.id, item.item_key, Action.REPLACE_CURRENT,
+                    item.target_fingerprint,
+                )
+                viewed = saved
+                item = viewed.items[0]
+            old_choice = CVOverlapResolution(item_key=item.item_key, action=Action.KEEP_CURRENT)
+
+            concurrent = second.scalar(select(CandidateStructuredProfile).where(
+                CandidateStructuredProfile.user_id == user_id
+            ))
+            concurrent.structured_json = CandidateCVData(
+                skills=[Skill(name="Python", category="Platform")]
+            ).model_dump_json()
+            second.commit()
+
+            with pytest.raises(CVOverlapReviewStale):
+                service.update(user_id, draft.id, CVOverlapReviewPatch(
+                    expected_review_revision=viewed.revision,
+                    expected_base_structured_fingerprint=viewed.base_structured_fingerprint,
+                    expected_draft_fingerprint=viewed.draft_fingerprint,
+                    resolutions=[old_choice],
+                ))
+            sidecar = first.scalar(select(CandidateCVOverlapReviewRecord).where(
+                CandidateCVOverlapReviewRecord.draft_id == draft.id
+            ))
+            if existing_sidecar:
+                assert sidecar is not None and sidecar.revision == viewed.revision
+                original = json.loads(sidecar.resolutions_json)
+                assert original[0]["action"] == "replace_current"
+            else:
+                assert sidecar is None
+            assert CandidateCVData.model_validate_json(
+                first.scalar(select(CandidateStructuredProfile.structured_json).where(
+                    CandidateStructuredProfile.user_id == user_id
+                ))
+            ).skills == [Skill(name="Python", category="Platform")]
+
+            refreshed = service.read(user_id, draft.id)
+            assert refreshed.stale is existing_sidecar
+            assert refreshed.revision == viewed.revision
+            recovered = service.update(user_id, draft.id, CVOverlapReviewPatch(
+                expected_review_revision=refreshed.revision,
+                expected_base_structured_fingerprint=refreshed.base_structured_fingerprint,
+                expected_draft_fingerprint=refreshed.draft_fingerprint,
+                resolutions=[CVOverlapResolution(
+                    item_key=refreshed.items[0].item_key, action=Action.KEEP_CURRENT
+                )],
+            ))
+            assert recovered.stale is False
+            assert recovered.revision == refreshed.revision + 1
+            assert recovered.items[0].saved_resolution.action is Action.KEEP_CURRENT
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 def test_two_session_current_change_invalidates_saved_review(tmp_path):

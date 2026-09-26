@@ -130,6 +130,8 @@ def _confirm_cv(db_session, user_id: str, text: str) -> None:
     if resolutions:
         review_service.update(user_id, draft.id, CVOverlapReviewPatch(
             expected_review_revision=review.revision,
+            expected_base_structured_fingerprint=review.base_structured_fingerprint,
+            expected_draft_fingerprint=review.draft_fingerprint,
             resolutions=resolutions,
         ))
     ingestion.confirm(user_id, draft.id)

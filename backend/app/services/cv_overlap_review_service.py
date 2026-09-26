@@ -100,6 +100,14 @@ class CVOverlapReviewService:
         profile = self._profile(user_id)
         data = self._draft_data(draft)
         base = self._profile_data(profile)
+        base_fp, draft_fp = self._fingerprints(profile is not None, base, data)
+        if (
+            patch.expected_base_structured_fingerprint != base_fp
+            or patch.expected_draft_fingerprint != draft_fp
+        ):
+            raise CVOverlapReviewStale(
+                "CV overlap review is stale. Refresh the review and resolve overlaps against current information."
+            )
         analysis, _, duplicates = self._analyse(base, data)
         if duplicates:
             raise CVOverlapInvalidResolution("Edit the reviewed CV to remove same-fact duplicate items before resolving overlaps.")
@@ -109,7 +117,6 @@ class CVOverlapReviewService:
             raise CVOverlapReviewConflict(
                 f"Overlap review version conflict: expected {patch.expected_review_revision}, current is {expected}."
             )
-        base_fp, draft_fp = self._fingerprints(profile is not None, base, data)
         choices: dict[str, CVOverlapResolution] = {}
         if row is not None and row.base_structured_fingerprint == base_fp and row.draft_fingerprint == draft_fp:
             for value in json.loads(row.resolutions_json):

@@ -393,6 +393,8 @@ def test_cv_refinement_conflict_and_ambiguous_history(db_session, before, incomi
     selected_target = review_item.target_fingerprint or review_item.candidate_matches[0].fingerprint
     overlap_service.update(user_id, draft.id, CVOverlapReviewPatch(
         expected_review_revision=overlap.revision,
+        expected_base_structured_fingerprint=overlap.base_structured_fingerprint,
+        expected_draft_fingerprint=overlap.draft_fingerprint,
         resolutions=[CVOverlapResolution(
             item_key=review_item.item_key,
             action=CVOverlapResolutionAction.REPLACE_CURRENT,
@@ -536,6 +538,82 @@ def test_manual_revision_normalized_duplicate_growth_is_blocked(db_session):
     with pytest.raises(ProfileRevisionConflict, match="same-fact duplicate"):
         service.review(user_id, created.id, expected_revision=saved.revision)
     assert _lineage_rows(db_session, user_id) == []
+
+
+@pytest.mark.parametrize(
+    "before,after,suffix",
+    [
+        ([Skill(name="Python")], [Skill(name=" PYTHON "), Skill(name="python")], "replace"),
+        ([], [Skill(name="Python"), Skill(name=" PYTHON ")], "new"),
+    ],
+)
+def test_manual_revision_blocks_reinforcement_occurrence_growth_without_exact_retention(
+    db_session, before, after, suffix,
+):
+    user_id = _user(db_session, f"manual-growth-{suffix}@example.test")
+    before_data = CandidateCVData(skills=before)
+    _seed_current(db_session, user_id, before_data)
+    evidence_before = [
+        (row.id, row.fingerprint, row.provenance_json)
+        for row in db_session.scalars(select(CandidateEvidenceRecord).where(
+            CandidateEvidenceRecord.user_id == user_id
+        ))
+    ]
+    service = CandidateProfileRevisionService(db_session)
+    created = service.create_or_resume(user_id)
+    saved = service.save(
+        user_id, created.id, expected_revision=created.revision,
+        patch_fields={"proposed_structured"}, proposed_profile=None,
+        proposed_structured=EditableCandidateStructuredData(skills=after),
+    )
+    with pytest.raises(ProfileRevisionConflict, match="same-fact duplicate"):
+        service.review(user_id, created.id, expected_revision=saved.revision)
+    db_session.expire_all()
+    assert CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == user_id)
+    )) == before_data
+    active = db_session.get(CandidateProfileRevisionRecord, created.id)
+    assert active.id == created.id and active.state == CandidateProfileRevisionState.DRAFT.value
+    assert _lineage_rows(db_session, user_id) == []
+    evidence_after = [
+        (row.id, row.fingerprint, row.provenance_json)
+        for row in db_session.scalars(select(CandidateEvidenceRecord).where(
+            CandidateEvidenceRecord.user_id == user_id
+        ))
+    ]
+    assert evidence_after == evidence_before
+
+
+def test_manual_revision_allows_unchanged_legacy_duplicates_when_other_section_changes(db_session):
+    user_id = _user(db_session, "manual-legacy-duplicates@example.test")
+    legacy = Skill(name="Python")
+    _seed_current(db_session, user_id, CandidateCVData(skills=[legacy, legacy]))
+    service = CandidateProfileRevisionService(db_session)
+    created = service.create_or_resume(user_id)
+    saved = service.save(
+        user_id, created.id, expected_revision=created.revision,
+        patch_fields={"proposed_structured"}, proposed_profile=None,
+        proposed_structured=EditableCandidateStructuredData(
+            skills=[legacy, legacy], projects=[Project(name="New", description="Changed section")],
+        ),
+    )
+    reviewed = service.review(user_id, created.id, expected_revision=saved.revision)
+    assert reviewed.state == CandidateProfileRevisionState.REVIEW_READY.value
+
+
+def test_manual_revision_allows_reducing_legacy_same_fact_duplicates(db_session):
+    user_id = _user(db_session, "manual-reduce-legacy-duplicates@example.test")
+    legacy = Skill(name="Python")
+    _seed_current(db_session, user_id, CandidateCVData(skills=[legacy, legacy]))
+    confirmed = _confirm_revision(
+        db_session, user_id,
+        structured=EditableCandidateStructuredData(skills=[legacy]),
+    )
+    assert confirmed.state == CandidateProfileRevisionState.CONFIRMED.value
+    current = CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == user_id)
+    ))
+    assert current.skills == [legacy]
 
 
 def test_manual_normalized_representation_replacement_is_allowed_and_projected(db_session):
