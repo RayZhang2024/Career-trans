@@ -20,14 +20,6 @@ class CandidateProfileBase(BaseModel):
     portfolio_url: str | None = Field(default=None, max_length=500)
 
 
-class CandidateProfileCreate(CandidateProfileBase):
-    pass
-
-
-class CandidateProfileUpdate(CandidateProfileBase):
-    pass
-
-
 class CandidateProfileRead(CandidateProfileBase):
     model_config = ConfigDict(from_attributes=True)
 

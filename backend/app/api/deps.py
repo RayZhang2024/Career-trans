@@ -36,7 +36,6 @@ from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 from app.services.structured_ats_discovery_service import StructuredAtsDiscoveryService
 from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.canonical_candidate_read_service import (
     CandidateEvidenceMaterializationIncomplete,
     CanonicalCandidateReadService,
@@ -248,11 +247,6 @@ def get_user_cv_ingestion_service(
 def get_user_cv_ingestion_read_service(db: DbSession) -> CVIngestionReadService:
     """Historical CV reads must not resolve AI settings or provider runtime."""
     return CVIngestionReadService(db)
-
-
-def get_persisted_candidate_context_loader(db: DbSession) -> PersistedCandidateContextLoader:
-    """Request-scoped loader; user-specific contexts must never be globally cached."""
-    return PersistedCandidateContextLoader(db)
 
 
 def get_canonical_candidate_read_service(db: DbSession) -> CanonicalCandidateReadService:

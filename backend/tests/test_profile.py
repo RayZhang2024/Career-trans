@@ -1,4 +1,8 @@
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.models.candidate_profile import CandidateProfile
+from app.models.user import User
 
 
 def register_and_login(client: TestClient, email: str) -> str:
@@ -72,7 +76,46 @@ def test_profiles_are_isolated_between_users(client: TestClient) -> None:
     assert read_b.status_code == 404
 
 
-def test_strategy_profile_bootstrap_is_scoped_to_authenticated_user_and_does_not_create_cv_context(client) -> None:
+def test_profile_read_returns_existing_user_scoped_profile(client: TestClient, db_session) -> None:
+    token_a = register_and_login(client, "profile-owner@example.com")
+    token_b = register_and_login(client, "profile-other@example.com")
+    user_a = db_session.scalar(select(User).where(User.email == "profile-owner@example.com"))
+    assert user_a is not None
+
+    profile = CandidateProfile(
+        user_id=user_a.id,
+        headline="Data Engineer",
+        summary="Builds reliable data platforms.",
+        current_role="Senior Engineer",
+        location="London",
+        career_goal="Lead data platform work.",
+        job_search_criteria="Permanent engineering roles.",
+        display_name="Profile Owner",
+        preferred_email="owner@example.com",
+    )
+    db_session.add(profile)
+    db_session.commit()
+
+    owner_response = client.get("/api/v1/profile", headers=auth_header(token_a))
+    assert owner_response.status_code == 200
+    owner_profile = owner_response.json()
+    assert owner_profile["id"] == profile.id
+    assert owner_profile["user_id"] == user_a.id
+    assert owner_profile["headline"] == "Data Engineer"
+    assert owner_profile["summary"] == "Builds reliable data platforms."
+    assert owner_profile["current_role"] == "Senior Engineer"
+    assert owner_profile["location"] == "London"
+    assert owner_profile["career_goal"] == "Lead data platform work."
+    assert owner_profile["job_search_criteria"] == "Permanent engineering roles."
+    assert owner_profile["display_name"] == "Profile Owner"
+    assert owner_profile["preferred_email"] == "owner@example.com"
+
+    other_response = client.get("/api/v1/profile", headers=auth_header(token_b))
+    assert other_response.status_code == 404
+    assert other_response.json()["detail"] == "Profile not found."
+
+
+def test_legacy_profile_post_tombstone_does_not_mutate_any_user_profiles(client) -> None:
     token_a = register_and_login(client, "bootstrap-a@example.com")
     token_b = register_and_login(client, "bootstrap-b@example.com")
 

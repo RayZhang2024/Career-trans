@@ -14,7 +14,8 @@ from app.schemas.matching import RequirementMatchSet
 from app.schemas.ai_settings import UserAiSettingsReplace
 from app.services.ai_settings_service import AiSettingsService
 from app.services.candidate_profile_compaction import candidate_career_profile, candidate_search_profile
-from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
+from app.services.cv_ingestion_service import CVIngestionService
 
 
 def _auth(client, email: str) -> tuple[dict[str, str], str]:
@@ -45,13 +46,11 @@ def _confirm_context(db_session, email: str, *, evidence_title: str = "Platform 
     return user_id
 
 
-def test_confirmed_context_loader_preserves_all_evidence_and_never_falls_back(db_session, client) -> None:
+def test_canonical_context_preserves_all_evidence_and_never_falls_back(db_session, client) -> None:
     _, email_a = _auth(client, "persisted-a@example.com")
     _, email_b = _auth(client, "persisted-b@example.com")
     user_a = _confirm_context(db_session, email_a)
     user_b = db_session.scalar(select(User.id).where(User.email == email_b))
-    loader = PersistedCandidateContextLoader(db_session)
-
     db_session.add(
         CandidateProfile(
             user_id=user_a,
@@ -61,7 +60,13 @@ def test_confirmed_context_loader_preserves_all_evidence_and_never_falls_back(db
     )
     db_session.commit()
 
-    context = loader.load_confirmed(user_a)
+    reader = CanonicalCandidateReadService(db_session)
+    snapshot_a = reader.read(user_a)
+    context = reader.candidate_context(
+        snapshot_a,
+        require_structured_profile=True,
+        require_complete_evidence=True,
+    )
     assert context is not None
     assert [evidence.title for evidence in context.evidence] == [
         "Platform delivery", "Systems project", "Engineer at Example", "MSc at University"
@@ -74,7 +79,12 @@ def test_confirmed_context_loader_preserves_all_evidence_and_never_falls_back(db
     assert candidate_career_profile(context).career_strategy_text == context.career_strategy_text
     assert candidate_career_profile(context).job_search_criteria_text == context.job_search_criteria_text
     assert context.source_name is None
-    assert loader.load_confirmed(user_b) is None
+    snapshot_b = reader.read(user_b)
+    assert reader.candidate_context(
+        snapshot_b,
+        require_structured_profile=True,
+        require_complete_evidence=True,
+    ) is None
 
 
 def test_match_me_uses_only_current_users_confirmed_context(client, db_session) -> None:

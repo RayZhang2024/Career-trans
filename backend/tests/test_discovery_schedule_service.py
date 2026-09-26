@@ -1,4 +1,5 @@
 from datetime import datetime, time, timezone
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -6,8 +7,9 @@ import pytest
 from sqlalchemy import select
 
 from app.models.discovery_schedule import ScheduledDiscoveryExecution
+from candidate_read_support import patch_candidate_context
 from app.models.user import User
-from app.schemas.candidate import CandidateContext
+from app.schemas.candidate import CandidateContext, CandidateEvidenceMaterializationStatus
 from app.schemas.ai_settings import UserAiPreferences
 from app.core.config import Settings
 from app.schemas.discovery import JobListing, JobSearchQuery
@@ -19,6 +21,7 @@ from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobState
 from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.services.llm_runtime import resolve_runtime_snapshot
+from candidate_read_support import StaticCandidateReader, snapshot_for_context
 
 
 UTC = timezone.utc
@@ -65,10 +68,60 @@ def _claimed_runner(db_session, monkeypatch, *, payload, ats, agentic, user_runs
     user = _user(db_session, f"schedule-{uuid4()}@example.com")
     schedule = DiscoveryScheduleService(db_session).create(user.id, payload, datetime(2026, 9, 14, 8, tzinfo=UTC))
     runner = ScheduledDiscoveryExecutionService(db_session, structured_ats=ats, agentic_web_factory=lambda: agentic, user_runs=user_runs)
-    monkeypatch.setattr("app.services.scheduled_discovery_execution_service.PersistedCandidateContextLoader.load_confirmed", lambda *_: CandidateContext())
+    patch_candidate_context(monkeypatch, CandidateContext())
     claimed = runner.claim(schedule.id, TriggerKind.MANUAL, datetime(2026, 9, 14, 8, tzinfo=UTC))
     assert claimed is not None
     return runner, claimed
+
+
+@pytest.mark.parametrize(
+    ("structured_available", "evidence_status", "expected_reason"),
+    [
+        (False, CandidateEvidenceMaterializationStatus.COMPLETE, "candidate_not_ready"),
+        (True, CandidateEvidenceMaterializationStatus.INCOMPLETE, "candidate_evidence_incomplete"),
+    ],
+)
+def test_claimed_execution_skips_unready_candidate_before_acquisition(
+    db_session, structured_available, evidence_status, expected_reason
+) -> None:
+    user = _user(db_session, f"{expected_reason}@example.com")
+    payload = _payload(acquisition=AcquisitionConfig(
+        structured_ats=StructuredAtsScheduleConfig(enabled=True, providers=["greenhouse"]),
+        agentic_web=AgenticWebScheduleConfig(enabled=True),
+    ))
+    schedule = DiscoveryScheduleService(db_session).create(
+        user.id, payload, datetime(2026, 9, 14, 8, tzinfo=UTC)
+    )
+    calls: list[str] = []
+
+    def forbidden(name):
+        def fail(*_args, **_kwargs):
+            calls.append(name)
+            raise AssertionError(f"{name} must not run before candidate readiness.")
+        return fail
+
+    context = CandidateContext(profile_text="ready fixture")
+    reader = StaticCandidateReader(snapshot_for_context(
+        context,
+        structured_profile_available=structured_available,
+        evidence_status=evidence_status,
+    ))
+    runner = ScheduledDiscoveryExecutionService(
+        db_session,
+        structured_ats=SimpleNamespace(discover=forbidden("ats")),
+        agentic_web_factory=forbidden("agentic factory"),
+        user_runs_factory=forbidden("user runs factory"),
+        runtime_snapshot_resolver=forbidden("runtime resolver"),
+        candidate_reader=reader,
+    )
+    claimed = runner.claim(schedule.id, TriggerKind.MANUAL, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    assert claimed is not None and claimed.status == "running"
+    result = runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC))
+
+    assert result.status == "skipped"
+    assert json.loads(result.failure_summary_json) == {expected_reason: 1}
+    assert calls == []
+    assert reader.read_user_ids == [user.id]
 
 
 def test_dst_daily_wall_time_and_nonexistent_and_ambiguous_slots():
@@ -221,7 +274,7 @@ def test_scheduled_agentic_acquisition_and_evaluation_share_one_owner_snapshot(d
         user_runs_factory=lambda snapshot: evaluation_snapshots.append(snapshot) or Runs(),
         runtime_snapshot_resolver=resolve,
     )
-    monkeypatch.setattr("app.services.scheduled_discovery_execution_service.PersistedCandidateContextLoader.load_confirmed", lambda *_: CandidateContext())
+    patch_candidate_context(monkeypatch, CandidateContext())
     claimed = runner.claim(schedule.id, TriggerKind.MANUAL, datetime(2026, 9, 14, 8, tzinfo=UTC))
     assert claimed is not None
 
@@ -301,7 +354,7 @@ def test_missed_slot_coalescing_stale_recovery_and_snapshot_after_edit(db_sessio
     db_session.commit()
     received = []
     runner = ScheduledDiscoveryExecutionService(db_session, structured_ats=SimpleNamespace(discover=lambda request: received.append(request) or _ats_response()), agentic_web_factory=lambda: object(), user_runs=object())
-    monkeypatch.setattr("app.services.scheduled_discovery_execution_service.PersistedCandidateContextLoader.load_confirmed", lambda *_: CandidateContext())
+    patch_candidate_context(monkeypatch, CandidateContext())
     now = datetime(2026, 9, 5, 10, tzinfo=UTC)
     claimed = runner.claim(schedule.id, TriggerKind.SCHEDULED, now)
     assert claimed and claimed.scheduled_for == datetime(2026, 9, 5, 8, 30, tzinfo=UTC)

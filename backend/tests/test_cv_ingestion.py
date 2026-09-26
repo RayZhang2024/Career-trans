@@ -22,7 +22,8 @@ from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.candidate_adviser import ClarificationAnswerKind, ClarificationInterpretation
 from app.schemas.candidate_adviser_profile_proposal import SkillProposalUpdate
 from app.services.cv_file_extraction_service import CVFileExtractionService
-from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService, PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
+from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService
 from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.cv_merge_service import CVMergeService
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
@@ -307,8 +308,11 @@ def test_confirmed_evidence_and_context_are_isolated_per_user(client, db_session
         draft = service.upload(first_id, [("cv.json", "application/json", json.dumps(_json_cv()).encode())])
         service.interpret(first_id, draft.id)
         service.confirm(first_id, draft.id)
-        assert PersistedCandidateContextLoader(db_session).load(first_id).evidence
-        assert PersistedCandidateContextLoader(db_session).load(second_id).evidence == []
+        reader = CanonicalCandidateReadService(db_session)
+        first_context = reader.candidate_context(reader.read(first_id), require_complete_evidence=True)
+        second_context = reader.candidate_context(reader.read(second_id), require_complete_evidence=True)
+        assert first_context is not None and first_context.evidence
+        assert second_context is not None and second_context.evidence == []
         assert client.get(f"/api/v1/cv-ingestion/{draft.id}", headers=second_headers).status_code == 404
         assert first_headers
     finally:
@@ -322,7 +326,9 @@ def test_markdown_uses_semantic_interpreter_and_context_uses_confirmed_data(db_s
     service.interpret("user-1", draft.id)
     assert interpreter.calls == 1
     service.confirm("user-1", draft.id)
-    context = PersistedCandidateContextLoader(db_session).load("user-1")
+    reader = CanonicalCandidateReadService(db_session)
+    context = reader.candidate_context(reader.read("user-1"), require_complete_evidence=True)
+    assert context is not None
     assert context.skills_text == "Python"
     assert context.career_strategy_text == ""
 
@@ -469,7 +475,9 @@ def test_review_patch_is_owned_and_persists_only_after_confirm(client, db_sessio
         assert db_session.scalars(select(CandidateStructuredProfile)).all() == []
         assert client.post(f"/api/v1/cv-ingestion/{draft_id}/confirm", headers=owner).status_code == 200
         owner_id = db_session.scalar(select(User.id).where(User.email == "draft-owner@example.com"))
-        assert PersistedCandidateContextLoader(db_session).load(owner_id).skills_text == "Rust"
+        reader = CanonicalCandidateReadService(db_session)
+        context = reader.candidate_context(reader.read(owner_id), require_complete_evidence=True)
+        assert context is not None and context.skills_text == "Rust"
     finally:
         app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
 

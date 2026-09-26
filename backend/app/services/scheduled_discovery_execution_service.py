@@ -17,8 +17,10 @@ from app.schemas.discovery import JobSearchQuery
 from app.schemas.discovery_schedule import AcquisitionConfig, EvaluationConfig, ExecutionStatus, TriggerKind
 from app.schemas.structured_ats_discovery import StructuredAtsDiscoveryRequest
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
-from app.services.canonical_candidate_read_service import CandidateEvidenceMaterializationIncomplete
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import (
+    CandidateEvidenceMaterializationIncomplete,
+    CanonicalCandidateReadService,
+)
 from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.llm_runtime import ResolvedRuntimeSnapshot
@@ -51,6 +53,7 @@ class ScheduledDiscoveryExecutionService:
         user_runs: object | None = None,
         user_runs_factory: Callable[[ResolvedRuntimeSnapshot], object] | None = None,
         runtime_snapshot_resolver: Callable[[str], ResolvedRuntimeSnapshot] | None = None,
+        candidate_reader: CanonicalCandidateReadService | None = None,
     ) -> None:
         self._session = session
         self._structured_ats = structured_ats
@@ -58,6 +61,7 @@ class ScheduledDiscoveryExecutionService:
         self._user_runs = user_runs
         self._user_runs_factory = user_runs_factory
         self._runtime_snapshot_resolver = runtime_snapshot_resolver
+        self._candidate_reader = candidate_reader or CanonicalCandidateReadService(session)
 
     def process_due(self, now: datetime, limit: int) -> list[ScheduledDiscoveryExecution]:
         schedules = self._session.scalars(
@@ -140,7 +144,12 @@ class ScheduledDiscoveryExecutionService:
             raise LookupError("Claimed schedule execution is unavailable.")
         snapshot = json.loads(execution.config_snapshot_json)
         try:
-            context = PersistedCandidateContextLoader(self._session).load_confirmed(execution.user_id)
+            candidate_snapshot = self._candidate_reader.read(execution.user_id)
+            context = self._candidate_reader.candidate_context(
+                candidate_snapshot,
+                require_structured_profile=True,
+                require_complete_evidence=True,
+            )
         except CandidateEvidenceMaterializationIncomplete:
             return self._finish(execution, ExecutionStatus.SKIPPED, now, {}, {"candidate_evidence_incomplete": 1})
         if context is None:

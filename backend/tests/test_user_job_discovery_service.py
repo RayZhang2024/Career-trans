@@ -1,19 +1,31 @@
 from datetime import datetime, timedelta, timezone
 import json
 
+from sqlalchemy import select
+
 from app.models.discovered_job import DiscoveredJob
+from candidate_read_support import patch_candidate_context
 from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob, UserJobEvaluation
 from app.models.user import User
 from app.schemas.assessment import FitAssessment
-from app.schemas.candidate import CandidateContext, CareerEvidence, CareerEvidenceProvenance
+from app.schemas.candidate import (
+    CandidateContext,
+    CandidateEvidenceMaterializationStatus,
+    CareerEvidence,
+    CareerEvidenceProvenance,
+)
 from app.schemas.career_assessment import AlignmentConfidence, CareerAssessment
 from app.schemas.discovery import DiscoveredJobState, JobSearchQuery
 from app.schemas.job_ranking import JobArchetype, JobArchetypeAssessment, JobRankingResponse, JobRelevanceAssessment, PostingLegitimacy, PostingLegitimacyAssessment, RankedJobOpportunity
 from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
-from app.services.cv_ingestion_service import PersistedCandidateContextLoader
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
+from candidate_read_support import StaticCandidateReader, patch_candidate_context, snapshot_for_context
+from app.services.canonical_candidate_read_service import (
+    CandidateEvidenceMaterializationIncomplete,
+    CanonicalCandidateReadService,
+)
 from app.schemas.ai_settings import SemanticOperation
 from app.services.llm_runtime import JOB_EVALUATION_OPERATIONS
 from app.api.deps import get_user_job_discovery_service, get_user_job_discovery_read_service
@@ -61,8 +73,7 @@ def _user(user_id: str) -> User:
 
 def test_unchanged_job_is_new_to_user_then_reused_without_ranking(db_session, monkeypatch, runtime_snapshot_a) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking, runtime_snapshot=runtime_snapshot_a)
     first = service.start("user-a", _request(job.id))
     second = service.start("user-a", _request(job.id))
@@ -98,7 +109,7 @@ def test_unchanged_job_is_new_to_user_then_reused_without_ranking(db_session, mo
 
 def test_candidate_change_and_inactive_job_do_not_reuse(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    context = _context(); monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: context)
+    context = _context(); patch_candidate_context(monkeypatch, context)
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     service.start("user-a", _request(job.id))
     context.evidence[0].text = "Changed current evidence"
@@ -108,9 +119,100 @@ def test_candidate_change_and_inactive_job_do_not_reuse(db_session, monkeypatch)
     assert service.current_opportunities("user-a").opportunities == []
 
 
+def test_start_preserves_missing_profile_and_incomplete_evidence_errors_without_run_rows(db_session) -> None:
+    job = _job()
+    db_session.add_all([_user("user-a"), job])
+    db_session.commit()
+
+    missing_reader = StaticCandidateReader(
+        snapshot_for_context(_context(), structured_profile_available=False)
+    )
+    ranking = _Ranking()
+    missing_service = UserJobDiscoveryService(
+        db_session, ranking_service=ranking, candidate_reader=missing_reader
+    )
+    try:
+        missing_service.start("user-a", _request(job.id))
+    except ValueError as exc:
+        assert str(exc) == "Candidate profile is not ready."
+    else:
+        raise AssertionError("Missing structured Profile must retain its readiness error.")
+    assert db_session.scalars(select(DiscoveryRun)).all() == []
+    assert ranking.calls == 0
+
+    incomplete_reader = StaticCandidateReader(
+        snapshot_for_context(
+            _context(),
+            evidence_status=CandidateEvidenceMaterializationStatus.INCOMPLETE,
+        )
+    )
+    incomplete_service = UserJobDiscoveryService(
+        db_session, ranking_service=ranking, candidate_reader=incomplete_reader
+    )
+    try:
+        incomplete_service.start("user-a", _request(job.id))
+    except ValueError as exc:
+        assert str(exc) == "Current candidate evidence is not fully materialised."
+        assert isinstance(exc.__cause__, CandidateEvidenceMaterializationIncomplete)
+    else:
+        raise AssertionError("Incomplete evidence must retain its distinct readiness error.")
+    assert db_session.scalars(select(DiscoveryRun)).all() == []
+    assert ranking.calls == 0
+
+
+def test_current_opportunities_return_empty_for_missing_or_incomplete_candidate(db_session) -> None:
+    db_session.add(_user("user-a")); db_session.commit()
+    for snapshot in (
+        snapshot_for_context(_context(), structured_profile_available=False),
+        snapshot_for_context(
+            _context(),
+            evidence_status=CandidateEvidenceMaterializationStatus.INCOMPLETE,
+        ),
+    ):
+        reader = StaticCandidateReader(snapshot)
+        service = UserJobDiscoveryService(db_session, candidate_reader=reader)
+        assert service.current_opportunities("user-a").opportunities == []
+        assert reader.read_user_ids == ["user-a"]
+
+
+def test_supplied_context_bypasses_canonical_reader_for_current_evaluation(db_session) -> None:
+    job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
+    context = _context()
+    reader = StaticCandidateReader(snapshot_for_context(context))
+    service = UserJobDiscoveryService(
+        db_session, ranking_service=_Ranking(), candidate_reader=reader
+    )
+    service.start("user-a", _request(job.id))
+    reader.read_user_ids.clear()
+    fingerprint_before = service.candidate_evaluation_fingerprint(context)
+    result = service.current_evaluation_for_job("user-a", job, candidate_context=context)
+    # The fixture evaluation intentionally has no requirement-match detail, so
+    # the method rejects it after checking currentness. The supplied context is
+    # still used without consulting the reader.
+    assert result is None
+    assert reader.read_user_ids == []
+    assert service.candidate_evaluation_fingerprint(context) == fingerprint_before
+
+
+def test_current_evaluation_returns_none_for_missing_or_incomplete_candidate(db_session) -> None:
+    job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
+    snapshots = (
+        snapshot_for_context(_context(), structured_profile_available=False),
+        snapshot_for_context(
+            _context(),
+            evidence_status=CandidateEvidenceMaterializationStatus.INCOMPLETE,
+        ),
+    )
+    for snapshot in snapshots:
+        reader = StaticCandidateReader(snapshot)
+        service = UserJobDiscoveryService(db_session, candidate_reader=reader)
+        assert service.current_evaluation_for_job("user-a", job) is None
+        assert reader.read_user_ids == ["user-a"]
+
+
 def test_user_evaluation_and_run_are_isolated(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), _user("user-b"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     run_a = service.start("user-a", _request(job.id))
     run_b = service.start("user-b", _request(job.id))
@@ -127,7 +229,7 @@ def test_user_evaluation_and_run_are_isolated(db_session, monkeypatch) -> None:
 
 def test_contract_change_creates_new_immutable_evaluation(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     first = service.start("user-a", _request(job.id))
     monkeypatch.setenv("CAREER_TRANS_DEPLOYMENT_REVISION", "changed-contract")
@@ -139,7 +241,7 @@ def test_contract_change_creates_new_immutable_evaluation(db_session, monkeypatc
 
 def test_historical_run_keeps_original_immutable_opportunity_snapshot(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    context = _context(); monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: context)
+    context = _context(); patch_candidate_context(monkeypatch, context)
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     run_a = service.start("user-a", _request(job.id))
     original = run_a.jobs[0].opportunity.fit_assessment.fit_score
@@ -151,7 +253,7 @@ def test_historical_run_keeps_original_immutable_opportunity_snapshot(db_session
 
 def test_incompatible_current_geography_does_not_reuse_historical_evaluation(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     service.start("user-a", _request(job.id, location="London"))
     incompatible = service.start("user-a", _request(job.id, location="New York"))
@@ -162,7 +264,7 @@ def test_incompatible_current_geography_does_not_reuse_historical_evaluation(db_
 
 def test_reused_evaluation_respects_new_relevance_threshold_without_reranking(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     service.start("user-a", _request(job.id, threshold=.5))
     run = service.start("user-a", _request(job.id, threshold=.95))
@@ -176,7 +278,7 @@ def test_unexpected_ranking_exception_terminalizes_run_safely(db_session, monkey
         def rank(self, _request):
             raise RuntimeError("private provider detail")
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     service = UserJobDiscoveryService(db_session, ranking_service=BrokenRanking())
     try:
         service.start("user-a", _request(job.id))
@@ -191,8 +293,7 @@ def test_unexpected_ranking_exception_terminalizes_run_safely(db_session, monkey
 
 def test_authenticated_run_and_opportunity_routes_enforce_user_scope(client, db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), _user("user-b"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
     fastapi_app.dependency_overrides[get_user_job_discovery_service] = lambda: service
     fastapi_app.dependency_overrides[get_user_job_discovery_read_service] = lambda: service
@@ -219,8 +320,7 @@ def test_authenticated_run_and_opportunity_routes_enforce_user_scope(client, db_
 
 def test_read_models_revalidate_current_recency_without_mutating_historical_snapshot(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed_read_only", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
     run = service.start("user-a", _request(job.id))
     evaluation = db_session.get(UserJobEvaluation, run.jobs[0].evaluation_id)
@@ -267,7 +367,7 @@ def test_search_fingerprint_normalises_harmless_order() -> None:
 
 def test_historical_run_input_includes_execution_budgets(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
     run_a = service.start("user-a", _request(job.id, max_semantic=3, max_full=2, threshold=.8))
     service.start("user-a", _request(job.id, max_semantic=9, max_full=4, threshold=.5))
@@ -280,7 +380,7 @@ def test_historical_run_input_includes_execution_budgets(db_session, monkeypatch
 
 def test_job_content_change_creates_new_evaluation_and_preserves_old_run(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     old = service.start("user-a", _request(job.id))
     job.content_hash = "c" * 64; db_session.commit()
@@ -302,13 +402,26 @@ def test_candidate_fingerprint_ignores_source_name_but_tracks_stage_inputs() -> 
     assert UserJobDiscoveryService.candidate_evaluation_fingerprint(context) != baseline
 
 
+def test_canonical_projection_preserves_known_candidate_fingerprint() -> None:
+    snapshot = snapshot_for_context(_context())
+    context = CanonicalCandidateReadService.candidate_context(
+        snapshot,
+        require_structured_profile=True,
+        require_complete_evidence=True,
+    )
+    assert context is not None
+    assert UserJobDiscoveryService.candidate_evaluation_fingerprint(context) == (
+        "e7b847faec6feb43392d581e03eb3753fe8b8da3b0792f2ea7c4ff50689d463d"
+    )
+
+
 def test_mixed_reuse_and_unexpected_failure_is_partial_failed(db_session, monkeypatch) -> None:
     class BrokenRanking:
         def rank(self, _request):
             raise RuntimeError("private provider body")
     job_a, job_b = _job("1"), _job("2")
     db_session.add_all([_user("user-a"), job_a, job_b]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
     first_run = service.start("user-a", _request(job_a.id))
     prior_run_ids = {first_run.id}
@@ -328,7 +441,7 @@ def test_mixed_reuse_and_unexpected_failure_is_partial_failed(db_session, monkey
 def test_current_opportunities_ignore_historical_rank_for_deterministic_order(db_session, monkeypatch) -> None:
     jobs = [_job("1"), _job("2"), _job("3")]
     db_session.add_all([_user("user-a"), *jobs]); db_session.commit()
-    context = _context(); monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: context)
+    context = _context(); patch_candidate_context(monkeypatch, context)
     service = UserJobDiscoveryService(db_session, ranking_service=_Ranking())
     candidate, contract = service.candidate_evaluation_fingerprint(context), service.evaluation_contract_fingerprint()
     specs = [(Recommendation.CONSIDER, 99, 99), (Recommendation.APPLY, 60, 70), (Recommendation.APPLY, 80, 60)]
@@ -345,7 +458,7 @@ def test_current_opportunities_ignore_historical_rank_for_deterministic_order(db
 
 def test_duplicate_evaluation_materialisation_reconciles_to_existing_version(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    context = _context(); monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: context)
+    context = _context(); patch_candidate_context(monkeypatch, context)
     ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
     first = service.start("user-a", _request(job.id))
     existing_id = first.jobs[0].evaluation_id
@@ -367,7 +480,7 @@ def test_historical_evaluation_attribution_is_immutable_across_runtime_change_an
     from app.schemas.user_job_discovery import DiscoveryRunDetailRead, DiscoveryRunSummaryRead
 
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     service = UserJobDiscoveryService(db_session, ranking_service=_Ranking(), runtime_snapshot=runtime_snapshot_a)
     run = service.start("user-a", _request(job.id))
     evaluation = db_session.get(UserJobEvaluation, run.jobs[0].evaluation_id)
@@ -393,7 +506,7 @@ def test_historical_discovery_http_gets_are_provider_and_runtime_free(client, db
     from app.api import deps
 
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
-    monkeypatch.setattr(PersistedCandidateContextLoader, "load_confirmed", lambda _self, _user: _context())
+    patch_candidate_context(monkeypatch, _context())
     run = UserJobDiscoveryService(db_session, ranking_service=_Ranking()).start("user-a", _request(job.id))
     headers = {"Authorization": f"Bearer {create_access_token('user-a')}"}
 

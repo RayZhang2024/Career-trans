@@ -15,7 +15,8 @@ from app.services.candidate_adviser_compaction import compact_candidate_adviser_
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_profile_compaction import candidate_matching_profile
 from app.services.career_evidence_fingerprint import career_evidence_fingerprint, legacy_career_evidence_fingerprint
-from app.services.cv_ingestion_service import CVIngestionService, PersistedCandidateContextLoader
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
+from app.services.cv_ingestion_service import CVIngestionService
 from app.services.cv_merge_service import CVMergeService
 from app.schemas.job import JobProfile, JobRequirement
 
@@ -63,12 +64,16 @@ def test_corrected_profile_excludes_historical_evidence_from_context_and_adviser
     records = list(db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)))
     assert any(record.title == "A-only delivery" for record in records)  # historical storage remains intact
 
-    context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
+    reader = CanonicalCandidateReadService(db_session)
+    snapshot = reader.read(user_id)
+    context = reader.candidate_context(
+        snapshot, require_structured_profile=True, require_complete_evidence=True
+    )
     assert context is not None
     active_titles = [item.title for item in context.evidence]
     assert "B-current delivery" in active_titles
     assert "A-only delivery" not in active_titles
-    assert PersistedCandidateContextLoader(db_session).summary(user_id).evidence_count == len(context.evidence)
+    assert reader.summary(snapshot).evidence_count == len(context.evidence)
 
     input_data = CandidateAdviserService(db_session)._semantic_input(
         user_id,
@@ -202,7 +207,10 @@ def test_credential_evidence_merge_compaction_and_provider_projections(db_sessio
         }
     )
     _confirm(db_session, user_id, data)
-    context = PersistedCandidateContextLoader(db_session).load_confirmed(user_id)
+    reader = CanonicalCandidateReadService(db_session)
+    context = reader.candidate_context(
+        reader.read(user_id), require_structured_profile=True, require_complete_evidence=True
+    )
     assert context is not None
     credential = next(item for item in context.evidence if item.evidence_type == "credential")
     assert "issued 2024-01" in credential.text

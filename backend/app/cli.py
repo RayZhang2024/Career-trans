@@ -100,9 +100,6 @@ def build_parser() -> argparse.ArgumentParser:
     profile_commands = profile.add_subparsers(dest="profile_command", required=True)
     profile_commands.add_parser("context-summary", help="Show confirmed candidate-context readiness")
     profile_commands.add_parser("show", help="Show your persisted profile and career direction")
-    set_strategy = profile_commands.add_parser("set-strategy", help="Update your career goal and job-search criteria")
-    set_strategy.add_argument("--career-goal")
-    set_strategy.add_argument("--job-search-criteria")
 
     jobs = commands.add_parser("jobs", help="Run authenticated job-discovery workflows")
     jobs_commands = jobs.add_subparsers(dest="jobs_command", required=True)
@@ -362,25 +359,6 @@ def _profile(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             print(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
     elif args.profile_command == "show":
         _print_profile(client.get_profile())
-    elif args.profile_command == "set-strategy":
-        updates = {
-            key: value
-            for key, value in {
-                "career_goal": args.career_goal,
-                "job_search_criteria": args.job_search_criteria,
-            }.items()
-            if value is not None
-        }
-        if not updates:
-            raise ValueError("Provide --career-goal and/or --job-search-criteria.")
-        try:
-            client.get_profile()
-        except CareerTransApiError as exc:
-            if exc.status_code != 404:
-                raise
-            _print_profile(client.create_profile(updates))
-        else:
-            _print_profile(client.update_profile(updates))
     return 0
 
 
