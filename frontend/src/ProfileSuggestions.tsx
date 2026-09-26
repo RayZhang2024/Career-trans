@@ -6,6 +6,7 @@ import type {
   AdviserProfileProposalGenerationRead,
   AdviserProfileProposalTransferRead,
   AdviserProfileProposalUpdate,
+  AdviserProfileProposalOverlapResolutionRequest,
   CandidateAchievement,
   CandidateProject,
   CandidateSkill,
@@ -15,6 +16,7 @@ import type {
   ProfileRevision,
   StructuredProfileSection,
 } from "./api";
+import { relationshipLabel, structuredItemLabel, StructuredItemPresentation } from "./StructuredItemPresentation";
 import type { SessionApi } from "./api";
 
 type ConfirmedClarification = {
@@ -32,7 +34,7 @@ type Props = {
   confirmedClarification: ConfirmedClarification;
 };
 type HistoryState = "idle" | "loading" | "ready" | "unavailable";
-type Mutation = { kind: "generation" | "edit" | "reject" | "transfer" | "reload"; id: string } | null;
+type Mutation = { kind: "generation" | "edit" | "reject" | "transfer" | "reload" | "replace" | "resolve"; id: string } | null;
 
 const sections: Record<StructuredProfileSection, { label: string; noun: string }> = {
   employment: { label: "Employment", noun: "employment record" },
@@ -365,6 +367,7 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
     } finally { finishMutation(sequence); }
   };
   const transfer = async (proposal: AdviserProfileProposal) => {
+    if (proposal.overlap_resolution_stale) return;
     const sequence = beginMutation({ kind: "transfer", id: proposal.id });
     if (sequence === null) return;
     try {
@@ -388,6 +391,33 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
         refreshHistoryAfterMutation();
       } else setActionError("This suggestion could not be sent to the Profile workflow. Try again.");
     } finally { finishMutation(sequence); }
+  };
+  const replaceCurrent = async (proposal: AdviserProfileProposal, target: string) => {
+    const update: AdviserProfileProposalUpdate = { ...proposal.proposed_update, operation: "replace_exact", target_fingerprint: target } as AdviserProfileProposalUpdate;
+    const sequence = beginMutation({ kind: "replace", id: proposal.id }); if (sequence === null) return;
+    try {
+      const saved = await api.request<AdviserProfileProposal>(`/api/v1/candidate-adviser/profile-proposals/${encodeURIComponent(proposal.id)}`, { method: "PATCH", body: JSON.stringify({ expected_revision: proposal.revision, proposed_update: update }) });
+      if (sequence !== mutationSequence.current) return;
+      upsert([saved]); setNotice("Suggestion now targets that exact current item. Choose Use in Profile draft when you are ready."); refreshHistoryAfterMutation();
+    } catch (caught) { if (sequence === mutationSequence.current) { setActionError(caught instanceof ApiError && caught.status === 409 ? "This suggestion or current Profile changed. Refresh Profile suggestions and compare again." : "The replacement choice could not be saved. Refresh Profile suggestions and try again."); refreshHistoryAfterMutation(); } }
+    finally { finishMutation(sequence); }
+  };
+  const keepAsNew = async (proposal: AdviserProfileProposal) => {
+    if (!proposal.comparison_base_fingerprint) return;
+    const sequence = beginMutation({ kind: "resolve", id: proposal.id }); if (sequence === null) return;
+    const body: AdviserProfileProposalOverlapResolutionRequest = { expected_revision: proposal.revision, expected_comparison_base_fingerprint: proposal.comparison_base_fingerprint, action: "add_as_new" };
+    try {
+      const saved = await api.request<AdviserProfileProposal>(`/api/v1/candidate-adviser/profile-proposals/${encodeURIComponent(proposal.id)}/resolve-overlap`, { method: "POST", body: JSON.stringify(body) });
+      if (sequence !== mutationSequence.current) return;
+      upsert([saved]); setNotice("You chose to keep this as a separate Profile item. Review the Profile draft after sending it."); refreshHistoryAfterMutation();
+    } catch (caught) { if (sequence === mutationSequence.current) { setActionError(caught instanceof ApiError && caught.status === 409 ? "Your Profile changed after this comparison. Refresh Profile suggestions before choosing again." : "This overlap choice could not be saved. Refresh Profile suggestions and try again."); refreshHistoryAfterMutation(); } }
+    finally { finishMutation(sequence); }
+  };
+  const refreshComparison = async (proposal: AdviserProfileProposal) => {
+    const sequence = beginMutation({ kind: "reload", id: proposal.id }); if (sequence === null) return;
+    try { const saved = await api.request<AdviserProfileProposal>(`/api/v1/candidate-adviser/profile-proposals/${encodeURIComponent(proposal.id)}`); if (sequence === mutationSequence.current) { upsert([saved]); setNotice("Comparison refreshed from the saved suggestion."); } }
+    catch { if (sequence === mutationSequence.current) setActionError("This comparison could not be refreshed. Reload Profile suggestions and try again."); }
+    finally { finishMutation(sequence); }
   };
 
   const interpretation = confirmedClarification?.interpretation;
@@ -430,6 +460,21 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
         <div className="section-heading suggestion-heading"><div><h3 id={`suggestion-${proposal.id}`}>{section.label}</h3><p className="muted">{proposal.proposed_update.operation === "add" ? `Suggested new ${section.noun}` : `Suggested refinement to an existing ${section.noun}`}</p></div><span className={`suggestion-state suggestion-state-${proposal.state}`}>{proposal.state.replaceAll("_", " ")}</span></div>
         <p className="muted">Based on a confirmed Candidate Adviser clarification</p>
         <p>{proposalStateText(proposal.state)}</p>
+        {proposal.state === "pending" && proposal.comparison && <section className="proposal-overlap" aria-label="Profile comparison">
+          <h4><span className="relationship-badge">{relationshipLabel(proposal.comparison.relationship)}</span></h4>
+          {proposal.comparison.relationship === "new" && <p className="muted">New information — no overlapping current Profile item was found.</p>}
+          {proposal.comparison.relationship === "reinforcement" && <p className="muted">Same fact — Career-trans will keep one current item and record this Adviser suggestion as additional source support after you confirm the Profile draft.</p>}
+          {proposal.comparison.relationship === "refinement" && <p>The Adviser suggestion is a more detailed version of a current Profile item.</p>}
+          {proposal.comparison.relationship === "conflict" && <p>The suggestion conflicts with an existing Profile item. Choose whether this suggestion should replace that exact item, edit the suggestion, or reject it.</p>}
+          {proposal.comparison.relationship === "ambiguous" && <p>This suggestion may overlap multiple current Profile items. Choose a uniquely identifiable target or explicitly keep it separate.</p>}
+          {(proposal.comparison.relationship === "refinement" || proposal.comparison.relationship === "conflict") && proposal.comparison.current_item && <div className="overlap-sides"><StructuredItemPresentation section={proposal.comparison.section} item={proposal.comparison.current_item} label="Current Profile" /><StructuredItemPresentation section={proposal.comparison.section} item={proposal.proposed_update.item} label="Adviser suggestion" /></div>}
+          {proposal.comparison.relationship === "ambiguous" && <div className="overlap-candidates"><h4>Possible current items</h4>{(() => { const counts = new Map<string, number>(); proposal.comparison!.candidate_matches.forEach((match) => counts.set(match.fingerprint, (counts.get(match.fingerprint) ?? 0) + 1)); return proposal.comparison!.candidate_matches.map((match, index) => <article className="overlap-candidate" key={`${match.fingerprint}-${index}`}><StructuredItemPresentation section={proposal.comparison!.section} item={match.item} label={`Current item ${index + 1}`} />{counts.get(match.fingerprint) === 1 ? <button type="button" disabled={busy} aria-label={`Replace ${structuredItemLabel(proposal.comparison!.section, match.item)}`} onClick={() => void replaceCurrent(proposal, match.fingerprint)}>Replace this item</button> : <p className="muted">These current items cannot be uniquely targeted yet. You can keep the suggestion separate, edit it, or reject it.</p>}</article>); })()}</div>}
+          {proposal.comparison.relationship === "refinement" && proposal.comparison.target_fingerprint && <button type="button" className="button-secondary" disabled={busy} onClick={() => void replaceCurrent(proposal, proposal.comparison!.target_fingerprint!)}>Replace current item</button>}
+          {proposal.comparison.relationship === "conflict" && proposal.comparison.target_fingerprint && <button type="button" className="button-secondary" disabled={busy} onClick={() => void replaceCurrent(proposal, proposal.comparison!.target_fingerprint!)}>Replace current item</button>}
+          {proposal.comparison.relationship === "ambiguous" && proposal.overlap_resolution === null && <button type="button" className="button-secondary" disabled={busy || !proposal.comparison_base_fingerprint} onClick={() => void keepAsNew(proposal)}>Keep as separate new item</button>}
+        </section>}
+        {proposal.state === "pending" && proposal.overlap_resolution && <p className="notice" role="status">You chose to keep this as a separate Profile item. Review the Profile draft after sending it.</p>}
+        {proposal.state === "pending" && proposal.overlap_resolution_stale && <div className="profile-warning" role="alert"><p>Your earlier overlap choice is no longer current because the Profile changed.</p><button type="button" className="button-secondary" disabled={busy} onClick={() => void refreshComparison(proposal)}>Refresh comparison</button></div>}
         {changed ? <div className="suggestion-comparison"><ItemSummary label="Adviser suggestion" update={proposal.original_update} /><ItemSummary label="Your edited version" update={proposal.proposed_update} /></div> : <ItemSummary label="Proposed item" update={proposal.proposed_update} />}
         {isEditing && <ProposalEditor update={editValue} onChange={setEditValue} />}
         {proposal.state === "pending" && <div className="suggestion-actions">
@@ -438,7 +483,7 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
             <button className="button-secondary" disabled={busy} onClick={cancelEdit}>Cancel edit</button>
           </> : <>
             <button className="button-secondary" disabled={busy} onClick={() => updateEdit(proposal)}>Edit suggestion</button>
-            <button disabled={busy} onClick={() => void transfer(proposal)}>{mutation?.kind === "transfer" && mutation.id === proposal.id ? "Sending to Profile draft…" : "Use in Profile draft"}</button>
+            <button disabled={busy || Boolean(proposal.overlap_resolution_stale)} onClick={() => void transfer(proposal)}>{mutation?.kind === "transfer" && mutation.id === proposal.id ? "Sending to Profile draft…" : "Use in Profile draft"}</button>
             <button className="button-danger" disabled={busy} onClick={() => void reject(proposal)}>{mutation?.kind === "reject" && mutation.id === proposal.id ? "Rejecting…" : "Reject"}</button>
           </>}
         </div>}

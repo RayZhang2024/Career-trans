@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { type CandidateCVData, type CandidateEligibility, type CanonicalCandidateReadSnapshot, type OnboardingStatus, type PasswordPolicy } from "./api";
+import { type CandidateCVData, type CandidateEligibility, type CanonicalCandidateReadSnapshot, type OnboardingStatus, type PasswordPolicy, type SessionApi, type StructuredProfileCurrentItemProvenanceRead, type StructuredProfileLineageEventRead, type StructuredProfileProvenanceRead } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { CvPage } from "./CvPage";
 import { AdviserPage } from "./AdviserPage";
@@ -10,6 +10,7 @@ import { ApplicationsPage, ApplicationDetailPage } from "./ApplicationsPage";
 import { TrackingDetailPage, TrackingPage } from "./TrackingPage";
 import { AiSettingsPage } from "./AiSettingsPage";
 import { ProfileRevisionWorkflow } from "./ProfileRevisionWorkflow";
+import { structuredItemLabel, StructuredItemPresentation } from "./StructuredItemPresentation";
 import "./App.css";
 
 function AppShell({ children }: { children: React.ReactNode }) {
@@ -153,7 +154,45 @@ function CvInformation({ data }: { data: CandidateCVData | null }) {
   </section>;
 }
 
-function ProfileReadView({ snapshot }: { snapshot: CanonicalCandidateReadSnapshot }) {
+function sourceEvent(event: StructuredProfileLineageEventRead) {
+  const source = event.source;
+  return <article className="provenance-event" key={event.event_id}>
+    {source.available ? source.kind === "cv" ? <><p><strong>Confirmed from CV: {source.filenames.length ? source.filenames.join(", ") : "CV source"}</strong></p>{source.source_state && <p className="muted">Source state: {source.source_state}</p>}</>
+      : source.kind === "manual_profile" ? <p><strong>Added or changed through a Profile edit.</strong></p>
+        : <><p><strong>Supported through Candidate Adviser.</strong></p>{source.clarification_question && <p><strong>Clarification:</strong> {source.clarification_question}</p>}{source.proposal_item && <div><strong>Adviser suggestion:</strong><StructuredItemPresentation section={event.section} item={source.proposal_item} /></div>}</>
+      : <p className="muted">The original source record is no longer available. Known source category: {source.kind.replaceAll("_", " ")}.</p>}
+    {source.kind === "manual_profile" && source.confirmed_at && <p className="muted">Confirmed {new Date(source.confirmed_at).toLocaleDateString()}</p>}
+    <p className="muted">Relationship: {event.relationship.replaceAll("_", " ")}</p>
+  </article>;
+}
+
+function ProfileSourceHistory({ api, structured, refreshToken }: { api: Pick<SessionApi, "request">; structured: CandidateCVData | null; refreshToken: number }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
+  const [data, setData] = useState<StructuredProfileProvenanceRead | null>(null);
+  const generation = useRef(0);
+  const load = async () => {
+    const request = ++generation.current; setState("loading");
+    try { const found = await api.request<StructuredProfileProvenanceRead>("/api/v1/profile/structured-provenance"); if (request === generation.current) { setData(found); setState("ready"); } }
+    catch { if (request === generation.current) setState("unavailable"); }
+  };
+  useEffect(() => {
+    generation.current += 1; setData(null); setState("idle");
+    if (open) void load();
+  }, [refreshToken]);
+  const items = data?.items ?? [];
+  return <section className="card profile-source-history"><h2>Confirmed career information</h2><button className="button-secondary" type="button" onClick={() => { const next = !open; setOpen(next); if (next && state === "idle") void load(); }}>{open ? "Hide source history" : "Show source history"}</button>
+    {open && <>{state === "loading" && <p role="status">Loading source history…</p>}{state === "unavailable" && <div><p role="alert">Source history is unavailable. Your Profile information remains available.</p><button className="button-secondary" onClick={() => void load()}>Retry source history</button></div>}
+      {state === "ready" && structured && <div className="provenance-list">{items.map((entry: StructuredProfileCurrentItemProvenanceRead) => <details key={`${entry.section}-${entry.item_index}`} className="provenance-item"><summary>Source history · {entry.section.replaceAll("_", " ")} {entry.item_index + 1}: {structuredItemLabel(entry.section, entry.item)}</summary>
+        {!entry.source_history_available ? <p className="muted">Source history is unavailable for this older item.</p> : <>
+          <section className="provenance-group"><h4>Sources for this current item</h4>{entry.direct_events.length ? entry.direct_events.map(sourceEvent) : <p className="muted">No direct source events are available.</p>}</section>
+          {entry.history.length > 0 && <section className="provenance-group historical-provenance"><h4>Earlier versions and sources</h4>{entry.history.map(({ depth, lineage_event }) => <div className="provenance-history-event" key={`${depth}-${lineage_event.event_id}`}><p className="relationship-badge">{depth === 1 ? "Earlier version" : depth === 2 ? "Earlier source chain" : `Earlier source history · ${depth} steps back`}</p><StructuredItemPresentation section={lineage_event.section} item={lineage_event.item} label="Earlier version" />{sourceEvent(lineage_event)}</div>)}</section>}
+        </>}
+      </details>)}</div>}</>}
+  </section>;
+}
+
+function ProfileReadView({ snapshot, api, provenanceRefresh }: { snapshot: CanonicalCandidateReadSnapshot; api: Pick<SessionApi, "request">; provenanceRefresh: number }) {
   const profile = snapshot.profile;
   const intake = snapshot.adviser_intake;
   const pendingCv = snapshot.structured_profile !== null && (snapshot.readiness.latest_cv_draft_state === "uploaded" || snapshot.readiness.latest_cv_draft_state === "review_ready");
@@ -171,6 +210,7 @@ function ProfileReadView({ snapshot }: { snapshot: CanonicalCandidateReadSnapsho
     {!profile && !snapshot.structured_profile && <section className="card profile-section"><h2>Let’s build your career profile</h2><p>Add profile details and career information to help Career-trans understand your experience.</p><p><Link to="/cv">Start CV onboarding</Link></p></section>}
     {profile && <section className="card profile-section"><h2>Saved profile details</h2><p className="muted">Saved profile and application information; these details are not CV-confirmed facts.</p>{(profile.display_name || profile.headline || profile.current_role || profile.location) && <div className="profile-identity">{profile.display_name && <h3>{profile.display_name}</h3>}{profile.headline && <p>{profile.headline}</p>}{profile.current_role && <p>{profile.current_role}</p>}{profile.location && <p>{profile.location}</p>}</div>}{profile.summary && <div className="profile-prose"><h3>Summary</h3><p>{profile.summary}</p></div>}{(profile.preferred_email || profile.phone || profile.linkedin_url || profile.github_url || profile.portfolio_url) && <dl className="profile-detail-grid">{profile.preferred_email && <div><dt>Preferred email</dt><dd><a href={`mailto:${profile.preferred_email}`}>{profile.preferred_email}</a></dd></div>}{profile.phone && <div><dt>Phone</dt><dd><a href={`tel:${profile.phone}`}>{profile.phone}</a></dd></div>}{profile.linkedin_url && <ProfileUrl label="LinkedIn" value={profile.linkedin_url} />}{profile.github_url && <ProfileUrl label="GitHub" value={profile.github_url} />}{profile.portfolio_url && <ProfileUrl label="Portfolio" value={profile.portfolio_url} />}</dl>}</section>}
     <CvInformation data={snapshot.structured_profile} />
+    <ProfileSourceHistory api={api} structured={snapshot.structured_profile} refreshToken={provenanceRefresh} />
     {(profile?.career_goal || profile?.job_search_criteria || intake) && <section className="card profile-section"><h2>Career goals and current preferences</h2>{profile?.career_goal && <div><h3>Career goal</h3><p className="profile-prose">{profile.career_goal}</p></div>}{profile?.job_search_criteria && <div><h3>Job-search criteria</h3><p className="profile-prose">{profile.job_search_criteria}</p></div>}{intake?.career_direction && <div><h3>Career direction</h3><p className="profile-prose">{intake.career_direction}</p></div>}{intake && ([ ["Work preferences", intake.work_preferences], ["Constraints", intake.constraints], ["Trade-offs", intake.tradeoffs], ["Self-assessment", intake.self_assessment], ["Motivations", intake.motivations] ] as const).filter(([, items]) => items.length > 0).map(([label, items]) => <div key={label}><h3>{label}</h3><DetailList items={items} /></div>)}</section>}
     <EligibilityView eligibility={snapshot.eligibility} />
     <section className="card profile-section"><h2>{adviserLabel[snapshot.adviser_assessment_status]}</h2>{snapshot.adviser_assessment_status === "confirmed" && snapshot.adviser_assessment ? <div className="profile-adviser"><p>{snapshot.adviser_assessment.professional_positioning.text}</p><h3>Career strategy</h3><p>{snapshot.adviser_assessment.career_strategy_summary.text}</p><h3>Job-search strategy</h3><p>{snapshot.adviser_assessment.job_search_strategy_summary.text}</p></div> : snapshot.adviser_assessment_status === "review_ready" ? <p>The draft assessment is not shown as current. <Link to="/adviser">Review Career Adviser assessment</Link>.</p> : snapshot.adviser_assessment_status === "stale" ? <p>The saved assessment needs a fresh review. <Link to="/adviser">Revisit Career Adviser</Link>.</p> : snapshot.adviser_assessment_status === "unavailable" ? <p className="muted">Current Career Adviser information is unavailable.</p> : <p className="muted">No current assessment is available. <Link to="/adviser">Set up Career Adviser</Link>.</p>}</section>
@@ -185,6 +225,7 @@ export function ProfileHome() {
   const [snapshotLoading, setSnapshotLoading] = useState(true);
   const [statusError, setStatusError] = useState("");
   const [snapshotError, setSnapshotError] = useState("");
+  const [provenanceRefresh, setProvenanceRefresh] = useState(0);
   const statusRequest = useRef(0);
   const snapshotRequest = useRef(0);
   const loadStatus = async (): Promise<boolean> => {
@@ -226,9 +267,10 @@ export function ProfileHome() {
   }, []);
   const profileConfirmed = async (): Promise<boolean> => {
     const [current] = await Promise.all([loadSnapshot(), loadStatus()]);
+    setProvenanceRefresh((value) => value + 1);
     return current;
   };
-  return <AppShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Your career profile</h1><p className="muted">This is the information Career-trans currently uses for matching, job discovery and application preparation.</p></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area" aria-busy={snapshotLoading}><ProfileRevisionWorkflow snapshot={snapshot} onConfirmed={profileConfirmed} />{snapshot === undefined ? snapshotError ? <div className="card section-error"><p role="alert">{snapshotError}</p><button onClick={() => void loadSnapshot()}>Retry profile</button></div> : <p className="muted" role="status">Loading your career profile…</p> : <><div className="profile-refresh">{snapshotLoading && <p className="muted" role="status">Refreshing your career profile…</p>}<button className="button-secondary" onClick={() => void loadSnapshot()}>Refresh profile</button></div><ProfileReadView snapshot={snapshot} /></>}</section></main></AppShell>;
+  return <AppShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Your career profile</h1><p className="muted">This is the information Career-trans currently uses for matching, job discovery and application preparation.</p></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area" aria-busy={snapshotLoading}><ProfileRevisionWorkflow snapshot={snapshot} onConfirmed={profileConfirmed} />{snapshot === undefined ? snapshotError ? <div className="card section-error"><p role="alert">{snapshotError}</p><button onClick={() => void loadSnapshot()}>Retry profile</button></div> : <p className="muted" role="status">Loading your career profile…</p> : <><div className="profile-refresh">{snapshotLoading && <p className="muted" role="status">Refreshing your career profile…</p>}<button className="button-secondary" onClick={() => void loadSnapshot()}>Refresh profile</button></div><ProfileReadView snapshot={snapshot} api={api} provenanceRefresh={provenanceRefresh} /></>}</section></main></AppShell>;
 }
 
 export function App() { return <Routes><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/" element={<Protected><ProfileHome /></Protected>} /><Route path="/cv" element={<Protected><AppShell><CvPage /></AppShell></Protected>} /><Route path="/adviser" element={<Protected><AppShell><AdviserPage /></AppShell></Protected>} /><Route path="/jobs" element={<Protected><AppShell><JobsPage /></AppShell></Protected>} /><Route path="/jobs/searches" element={<Protected><AppShell><JobsSearchesPage /></AppShell></Protected>} /><Route path="/applications" element={<Protected><AppShell><ApplicationsPage /></AppShell></Protected>} /><Route path="/applications/:preparationId" element={<Protected><AppShell><ApplicationDetailPage /></AppShell></Protected>} /><Route path="/tracking" element={<Protected><AppShell><TrackingPage /></AppShell></Protected>} /><Route path="/tracking/:trackingId" element={<Protected><AppShell><TrackingDetailPage /></AppShell></Protected>} /><Route path="/settings" element={<Protected><Navigate to="/settings/ai" replace /></Protected>} /><Route path="/settings/ai" element={<Protected><AppShell><AiSettingsPage /></AppShell></Protected>} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>; }

@@ -13,6 +13,7 @@ import type {
   ProfileRevision,
   ProfileRevisionPatch,
 } from "./api";
+import { relationshipLabel } from "./StructuredItemPresentation";
 
 type Props = {
   snapshot: CanonicalCandidateReadSnapshot | undefined;
@@ -114,9 +115,16 @@ function CurrentProposedReview({ revision, snapshot }: { revision: ProfileRevisi
   const changedSections = revision.changed_authorities.includes("structured")
     ? structuredSections.filter(({ key }) => JSON.stringify(currentStructured?.[key] ?? []) !== JSON.stringify(proposedStructured?.[key] ?? []))
     : [];
+  const comparisons = [...(revision.structured_comparisons ?? [])];
+  const proposedRows = (section: StructuredKey) => (proposedStructured?.[section] ?? []).map((item, index) => {
+    const foundIndex = comparisons.findIndex((entry) => entry.comparison.section === section && JSON.stringify(entry.comparison.incoming_item) === JSON.stringify(item));
+    const found = foundIndex >= 0 ? comparisons.splice(foundIndex, 1)[0] : undefined;
+    return <li key={`${index}-${JSON.stringify(item)}`}>{structuredSummary(section, [item])[0] || "Not set"}{found && <span className="relationship-badge">{relationshipLabel(found.comparison.relationship)}</span>}{found && ["refinement", "conflict", "ambiguous"].includes(found.comparison.relationship) && <p className="muted">You edited this information directly. Confirming the Profile revision will make the proposed version current.</p>}{found?.comparison.relationship === "reinforcement" && <p className="muted">Same fact — representation updated.</p>}</li>;
+  });
+  const proposedBySection = new Map(changedSections.map(({ key }) => [key, proposedRows(key)]));
   return <div className="revision-review" aria-label="Current and proposed changes">
     {changedProfileFields.length > 0 && <section className="revision-review-section"><h3>Profile details</h3>{changedProfileFields.map(([key, label]) => <div className="revision-field-diff" key={key}><h4>{label}</h4><div className="revision-sides"><p><strong>Current</strong><span>{display(currentProfile?.[key])}</span></p><p><strong>Proposed</strong><span>{display(proposedProfile?.[key])}</span></p></div></div>)}</section>}
-    {changedSections.map(({ key, label }) => <section className="revision-review-section" key={key}><h3>{label}</h3><div className="revision-sides"><section><h4>Current</h4><ul>{structuredSummary(key, currentStructured?.[key] ?? []).length ? structuredSummary(key, currentStructured?.[key] ?? []).map((item, index) => <li key={`${index}-${item}`}>{item || "Not set"}</li>) : <li className="muted">None</li>}</ul></section><section><h4>Proposed</h4><ul>{structuredSummary(key, proposedStructured?.[key] ?? []).length ? structuredSummary(key, proposedStructured?.[key] ?? []).map((item, index) => <li key={`${index}-${item}`}>{item || "Not set"}</li>) : <li className="muted">None</li>}</ul></section></div></section>)}
+    {changedSections.map(({ key, label }) => <section className="revision-review-section" key={key}><h3>{label}</h3><div className="revision-sides"><section><h4>Current</h4><ul>{structuredSummary(key, currentStructured?.[key] ?? []).length ? structuredSummary(key, currentStructured?.[key] ?? []).map((item, index) => <li key={`${index}-${item}`}>{item || "Not set"}</li>) : <li className="muted">None</li>}</ul></section><section><h4>Proposed</h4><ul>{proposedBySection.get(key)?.length ? proposedBySection.get(key) : <li className="muted">None</li>}</ul></section></div></section>)}
   </div>;
 }
 
@@ -240,7 +248,9 @@ export function ProfileRevisionWorkflow({ snapshot, onConfirmed }: Props) {
       if (request === generation.current && action === actionGeneration.current) { setRevision(reviewed); hydrate(reviewed); setMode("review"); }
     } catch (error) {
       if (request === generation.current && action === actionGeneration.current) {
-        setActionError(error instanceof ApiError && error.status === 409 ? "The saved draft changed or is stale. Reload its latest status before continuing." : "Changes could not be reviewed. Try again.");
+        setActionError(error instanceof ApiError && error.status === 409 && error.detail?.toLowerCase().includes("same-fact duplicate")
+          ? "This draft adds a duplicate version of information already in the Profile. Edit the draft and remove the duplicate before review."
+          : error instanceof ApiError && error.status === 409 ? "The saved draft changed or is stale. Reload its latest status before continuing." : "Changes could not be reviewed. Try again.");
         void loadActiveRevision();
       }
     } finally {

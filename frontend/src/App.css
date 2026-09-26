@@ -255,3 +255,26 @@ h2 { font-size: 1.2rem; }
 @media (max-width: 640px) { .workspace { grid-template-columns: 1fr; } .workspace-header { align-items: flex-start; flex-direction: column; } .profile-fields { grid-template-columns: 1fr; } .field-wide { grid-column: auto; } .onboarding-list li { align-items: flex-start; flex-direction: column; } .onboarding-list span { text-align: left; } }
 @media (max-width: 640px) { .revision-sides { grid-template-columns: 1fr; } .revision-actions { align-items: stretch; flex-direction: column; } .revision-actions button { width: 100%; } .revision-panel > .section-heading { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 640px) { .suggestion-comparison, .proposal-editor-fields { grid-template-columns: minmax(0, 1fr); } .suggestion-actions { align-items: stretch; flex-direction: column; } .suggestion-actions button, .suggestion-actions .button-link { text-align: center; width: 100%; } .suggestion-heading { flex-direction: column; } .suggestion-generation, .suggestion-card { padding: 0.75rem; } }
+.relationship-badge { background: #e8ecf5; border-radius: 999px; color: #263755; display: inline-block; font-size: 0.82rem; font-weight: 700; margin: 0.2rem; padding: 0.2rem 0.65rem; }
+.overlap-panel, .overlap-item, .overlap-candidates, .overlap-candidate, .structured-item-presentation, .profile-source-history, .provenance-list, .provenance-group { display: grid; gap: 0.7rem; min-width: 0; overflow-wrap: anywhere; }
+.overlap-item, .overlap-candidate, .provenance-item, .provenance-event { border: 1px solid #d9e0ea; border-radius: 0.55rem; min-width: 0; padding: 0.8rem; }
+.overlap-item h3, .overlap-candidates h4 { margin: 0; }
+.overlap-sides { display: grid; gap: 0.7rem; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; }
+.overlap-sides > *, .provenance-item, .provenance-group { background: #f6f8fc; border-radius: 0.45rem; min-width: 0; padding: 0.75rem; }
+.overlap-candidate, .overlap-actions, .provenance-event { display: flex; flex-wrap: wrap; gap: 0.6rem; justify-content: space-between; min-width: 0; }
+.overlap-candidate > *, .overlap-actions > * { max-width: 100%; min-width: 0; }
+.structured-item-presentation p { overflow-wrap: anywhere; }
+.structured-item-presentation h4 { margin: 0; }
+.provenance-item summary { cursor: pointer; overflow-wrap: anywhere; }
+.provenance-item summary .structured-item-presentation { display: inline-grid; }
+.provenance-history-event { border-left: 0.2rem solid #8b9bb8; display: grid; gap: 0.6rem; margin: 0.4rem 0; min-width: 0; padding-left: 0.75rem; }
+.provenance-group h4 { margin: 0; }
+.provenance-event { display: block; }
+.provenance-event p + p { margin-top: 0.3rem; }
+.historical-provenance { border-left: 0.25rem solid #8997ae; }
+@media (max-width: 600px) {
+  .overlap-sides, .suggestion-comparison { grid-template-columns: minmax(0, 1fr); }
+  .overlap-actions, .overlap-candidate, .suggestion-actions { align-items: stretch; flex-direction: column; }
+  .overlap-actions button, .overlap-candidate button { width: 100%; }
+  .provenance-item, .provenance-event, .structured-item-presentation { overflow-wrap: anywhere; }
+}
