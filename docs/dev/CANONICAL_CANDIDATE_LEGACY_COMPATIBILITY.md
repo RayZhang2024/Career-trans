@@ -36,11 +36,11 @@ Per-user results are deterministic and fail closed. A user's malformed data is r
 
 ## Phase 1 boundary
 
-`CandidateCompatibilityDryRunService.inspect()` remains inspection-only. It performs no DML or DDL and never invokes schema repair. The explicit repair service is separate and has no startup hook, API endpoint, or frontend control.
+`CandidateCompatibilityDryRunService.inspect()` remains inspection-only. It performs no DML or DDL and never invokes schema repair. The explicit repair service has no API endpoint or frontend control; Phase 4 invokes it only through the bounded SQLite startup/offline runtime.
 
 ## Phase 2: explicit SQLite schema repair
 
-`CandidateSQLiteSchemaCompatibilityRepairService` is an internal, explicitly invoked schema-only operation for retained local SQLite databases. It is not called at startup. Non-SQLite engines are rejected. The service uses `CandidatePhysicalSchemaInspector` as its preflight and postflight authority and never opens an ORM session or examines candidate row contents.
+`CandidateSQLiteSchemaCompatibilityRepairService` is an internal schema-only operation for retained local SQLite databases. Phase 4 invokes it after physical preflight on SQLite startup or explicit offline apply. Non-SQLite engines are rejected. The service uses `CandidatePhysicalSchemaInspector` as its preflight and postflight authority and never opens an ORM session or examines candidate row contents.
 
 The reviewed missing-column allowlist is fixed:
 
@@ -70,7 +70,7 @@ For a valid current or newly reconstructed structured Profile, the existing `Act
 
 Reconstruction, evidence materialization, and postflight verification commit together for that user or roll back together. Evidence-only reconciliation also uses the per-user outer transaction around the resolver savepoint. Successful postflight verifies valid structured data, complete active evidence, and the Phase 1 classification. Repeated reconciliation is idempotent; an already compatible user causes no DML.
 
-Phase 3 does not invoke semantic providers, CV confirmation, Profile revision or Adviser proposal workflows, or schema repair. It creates no CV overlap-review or CV baseline rows and no structured-item lineage; historical CV confirmation lacks the comparison context required for truthful lineage. Current Profile scalar fields, revisions, Adviser intake/assessments/proposals, existing lineage, clarification state, discovery/application/tracking artifacts, and inactive evidence remain historical state. The operational result reports user/status/action/count metadata and an optional selected CV draft ID, never profile or CV payload content. Phase 4 provides the bounded SQLite startup workflow and offline operator command described below.
+Phase 3 does not invoke semantic providers, CV confirmation, Profile revision or Adviser proposal workflows, or schema repair. It creates no CV overlap-review or CV baseline rows and no structured-item lineage; historical CV confirmation lacks the comparison context required for truthful lineage. Current Profile scalar fields, revisions, Adviser intake/assessments/proposals, existing lineage, clarification state, discovery/application/tracking artifacts, and inactive evidence remain historical state. The operational result reports user/status/action/count metadata and an optional selected CV draft ID, never profile or CV payload content. The Phase 3 service has no startup hook of its own; Phase 4 invokes it through the bounded SQLite runtime described below.
 
 ## Phase 4: SQLite runtime orchestration and operator CLI
 

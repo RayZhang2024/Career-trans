@@ -875,6 +875,23 @@ No universal career strategy should be hard-coded.
 
 Early development may use SQLite where practical.
 
+### Retained SQLite candidate compatibility (Issue #210)
+
+Local SQLite startup runs a bounded compatibility workflow for retained
+databases: inspect and repair only the reviewed candidate-domain schema, create
+remaining current metadata tables after candidate schema is safe, then
+reconcile users independently. A truly empty database uses ordinary current
+metadata bootstrap. Physical drift outside the reviewed additive policy blocks
+startup before broad table creation; malformed or ambiguous user history stays
+unresolved without stopping other users. `not_yet_confirmed` users are reported
+separately and are not migration warnings.
+
+The offline `career-trans dev candidate-compatibility inspect` and
+`apply --yes` commands use the same SQLite-only runtime; inspect is read-only,
+while apply requires explicit approval. Non-SQLite application startup retains
+its ordinary `Base.metadata.create_all()` behavior. This is retained local
+SQLite compatibility, not a general production migration or Alembic system.
+
 ## Production
 
 Target:
