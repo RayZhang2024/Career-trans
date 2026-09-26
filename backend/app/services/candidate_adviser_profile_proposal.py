@@ -349,7 +349,15 @@ class CandidateAdviserProfileProposalService:
         record = self._owned_record(user_id, proposal_id)
         if record.state == CandidateAdviserProfileProposalState.REJECTED:
             return self._read(record)
+        if record.state == CandidateAdviserProfileProposalState.TRANSFERRED:
+            raise CandidateAdviserProfileProposalConflict(
+                "A transferred Adviser proposal cannot be rejected."
+            )
         self._expect_revision(record, expected_revision)
+        if record.state != CandidateAdviserProfileProposalState.PENDING:
+            raise CandidateAdviserProfileProposalConflict(
+                "Only a pending Adviser proposal can be rejected."
+            )
         record.state = CandidateAdviserProfileProposalState.REJECTED
         record.rejected_at = datetime.now(timezone.utc)
         record.revision += 1

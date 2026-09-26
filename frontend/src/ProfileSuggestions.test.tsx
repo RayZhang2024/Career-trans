@@ -120,6 +120,19 @@ it("renders returned proposals and preserves backend states", async () => {
   expect(screen.queryByText("a".repeat(64))).not.toBeInTheDocument();
 });
 
+it("keeps transferred and rejected proposal cards read-only", async () => {
+  const rejected = proposal({ id: "rejected", state: "rejected", revision: 2, rejected_at: createdAt });
+  const transferred = proposal({ id: "transferred", state: "transferred", revision: 2, transferred_at: createdAt, transferred_profile_revision_id: "revision-1" });
+  history([rejected, transferred]);
+  mount();
+  fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
+  expect(await screen.findByText("Rejected — your Profile was not changed.")).toBeInTheDocument();
+  expect(screen.getByText(/Sent to the Profile workflow/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Use in Profile draft" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Edit suggestion" })).not.toBeInTheDocument();
+});
+
 it.each([502, 503])("shows safe generation error copy for HTTP %i without provider details", async (status) => {
   request.mockResolvedValueOnce([]).mockRejectedValueOnce(new ApiError(status, "private provider response"));
   mount(clarification());

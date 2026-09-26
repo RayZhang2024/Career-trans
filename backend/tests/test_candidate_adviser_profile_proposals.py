@@ -589,6 +589,72 @@ def test_rejected_proposal_cannot_be_transferred(db_session) -> None:
     )) is None
 
 
+def test_transferred_proposal_cannot_be_rejected_or_mutated(db_session) -> None:
+    user_id = _user(db_session, "proposal-reject-transferred@example.com")
+    clarification_id = _source(db_session, user_id)
+    service = CandidateAdviserProfileProposalService(db_session)
+    proposal = service.materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="Transferred")
+    )
+    transferred = service.transfer_to_profile_revision(
+        user_id, proposal.id, expected_revision=proposal.revision
+    )
+    linked_revision_id = transferred.profile_revision.id
+    before = transferred.proposal
+
+    with pytest.raises(
+        CandidateAdviserProfileProposalConflict,
+        match="transferred Adviser proposal cannot be rejected",
+    ):
+        service.reject_pending(user_id, proposal.id, expected_revision=before.revision)
+
+    db_session.expire_all()
+    after = service.get_for_user(user_id, proposal.id)
+    linked_revision = db_session.get(CandidateProfileRevisionRecord, linked_revision_id)
+    assert after.state == CandidateAdviserProfileProposalState.TRANSFERRED
+    assert after.revision == before.revision
+    assert after.transferred_at == before.transferred_at
+    assert after.transferred_profile_revision_id == before.transferred_profile_revision_id
+    assert after.rejected_at is None
+    assert after.transferred_profile_revision_id == linked_revision.id
+    assert linked_revision.state == "draft"
+
+
+def test_http_reject_of_transferred_proposal_returns_conflict_and_preserves_history(client, db_session) -> None:
+    credentials = {"email": "proposal-reject-transferred-http@example.com", "password": "strong-password"}
+    assert client.post("/api/v1/auth/register", json=credentials).status_code == 201
+    token = client.post("/api/v1/auth/login", json=credentials).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    user = db_session.scalar(select(User).where(User.email == credentials["email"]))
+    clarification_id = _source(db_session, user.id)
+    service = CandidateAdviserProfileProposalService(db_session)
+    proposal = service.materialize_from_confirmed_clarification(
+        user.id, clarification_id, _update(name="HTTP transferred")
+    )
+    transfer = service.transfer_to_profile_revision(
+        user.id, proposal.id, expected_revision=proposal.revision
+    )
+
+    rejected = client.post(
+        f"/api/v1/candidate-adviser/profile-proposals/{proposal.id}/reject",
+        headers=headers,
+        json={"expected_revision": transfer.proposal.revision},
+    )
+    assert rejected.status_code == 409
+    history = client.get(
+        f"/api/v1/candidate-adviser/profile-proposals/{proposal.id}", headers=headers
+    )
+    assert history.status_code == 200
+    assert history.json()["state"] == "transferred"
+    db_session.expire_all()
+    stored = service.get_for_user(user.id, proposal.id)
+    assert stored.revision == transfer.proposal.revision
+    assert stored.transferred_at == transfer.proposal.transferred_at
+    assert stored.transferred_profile_revision_id == transfer.profile_revision.id
+    assert stored.rejected_at is None
+    assert db_session.get(CandidateProfileRevisionRecord, transfer.profile_revision.id).state == "draft"
+
+
 @pytest.mark.parametrize("invalidity", ["status", "interpretation", "answer_kind", "provenance"])
 def test_transfer_fails_closed_when_confirmed_source_is_invalidated(db_session, invalidity) -> None:
     user_id = _user(db_session, f"proposal-transfer-invalid-source-{invalidity}@example.com")
