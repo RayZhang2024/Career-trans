@@ -78,6 +78,34 @@ class CandidateSchemaRepairRead(StrictRead):
     applied_repairs: list[CandidateSchemaAppliedRepair] = Field(default_factory=list)
 
 
+class CandidateDataReconciliationAction(StrEnum):
+    RECONSTRUCTED_STRUCTURED_PROFILE = "reconstructed_structured_profile"
+    RECONCILED_ACTIVE_EVIDENCE = "reconciled_active_evidence"
+    NO_ACTION = "no_action"
+    UNRESOLVED = "unresolved"
+
+
+class CandidateUserReconciliationRead(StrictRead):
+    user_id: str
+    changed: bool
+    status_before: CandidateCompatibilityStatus | None = None
+    status_after: CandidateCompatibilityStatus | None = None
+    actions: list[CandidateDataReconciliationAction] = Field(default_factory=list)
+    structured_reconstructed: bool = False
+    evidence_reconciled: bool = False
+    evidence_count_before: int = Field(default=0, ge=0)
+    evidence_count_after: int = Field(default=0, ge=0)
+    blocking_issues: list[str] = Field(default_factory=list)
+    source_cv_draft_id: str | None = None
+
+
+class CandidateBatchReconciliationRead(StrictRead):
+    users: list[CandidateUserReconciliationRead] = Field(default_factory=list)
+    user_count: int = 0
+    changed_count: int = 0
+    unresolved_count: int = 0
+
+
 class CandidateLegacyIssueCode(StrEnum):
     PROFILE_ONLY_USER = "profile_only_user"
     UNCONFIRMED_CV_PRESENT = "unconfirmed_cv_present"
