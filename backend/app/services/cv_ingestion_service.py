@@ -2,7 +2,7 @@ import json
 from collections import Counter
 from collections.abc import Callable
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,8 +12,10 @@ from app.models.candidate_cv_ingestion import (
     CandidateEvidenceRecord,
     CandidateStructuredProfile,
 )
+from app.models.candidate_cv_overlap_review import CandidateCVOverlapReviewRecord
 from app.schemas.candidate import CandidateContext, CandidateContextSummary, CareerEvidence
 from app.schemas.cv_ingestion import CVIngestionDraftRead, CVIngestionHistoryItem, CVIngestionHistoryRead, CVIngestionState, CandidateCVData, EvidenceProvenance, ExtractedCVDocument
+from app.schemas.structured_profile import StructuredItemSourceKind, StructuredProfileItemLineageInput
 from app.schemas.ai_settings import SemanticOperation
 from app.schemas.candidate_read_snapshot import CanonicalCandidateReadSnapshot
 from app.services.cv_file_extraction_service import CVFileExtractionService
@@ -25,6 +27,8 @@ from app.services.canonical_candidate_read_service import (
 )
 from app.services.llm_runtime import ResolvedRuntimeSnapshot
 from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, not_used_attribution, read_attribution
+from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
+from app.services.cv_overlap_review_service import CVOverlapReviewService
 
 
 class CVIngestionService:
@@ -111,37 +115,74 @@ class CVIngestionService:
         return self._read(self._draft(user_id, draft_id))
 
     def edit_review(self, user_id: str, draft_id: str, corrected: CandidateCVData) -> CVIngestionDraftRead:
-        draft = self._draft(user_id, draft_id)
+        draft = self._draft(user_id, draft_id, for_update=True)
         if draft.state != CVIngestionState.REVIEW_READY:
             raise ValueError("Only a review-ready CV ingestion draft can be edited.")
         baseline = self._baseline_for_review(draft)
         self._validate_evidence_subset(corrected.evidence, baseline)
-        draft.merged_json = json.dumps(corrected.model_dump(mode="json"))
-        self._session.commit()
-        self._session.refresh(draft)
+        try:
+            draft.merged_json = json.dumps(corrected.model_dump(mode="json"))
+            self._session.execute(
+                delete(CandidateCVOverlapReviewRecord).where(
+                    CandidateCVOverlapReviewRecord.user_id == user_id,
+                    CandidateCVOverlapReviewRecord.draft_id == draft.id,
+                )
+            )
+            self._session.commit()
+            self._session.refresh(draft)
+        except Exception:
+            self._session.rollback()
+            raise
         return self._read(draft)
 
     def confirm(self, user_id: str, draft_id: str) -> int:
-        draft = self._draft(user_id, draft_id)
+        draft = self._draft(user_id, draft_id, for_update=True)
         if draft.state == CVIngestionState.CONFIRMED:
             return 0
         if draft.state != CVIngestionState.REVIEW_READY or not draft.merged_json:
             raise ValueError("CV ingestion draft is not ready for confirmation.")
         data = CandidateCVData.model_validate(json.loads(draft.merged_json))
         try:
-            profile = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+            profile = self._session.scalar(
+                select(CandidateStructuredProfile)
+                .where(CandidateStructuredProfile.user_id == user_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            resolved_data, transitions = CVOverlapReviewService(
+                self._session
+            ).resolve_for_confirmation(
+                user_id, draft, profile, data
+            )
             if profile is None:
-                profile = CandidateStructuredProfile(user_id=user_id, structured_json=json.dumps(data.model_dump(mode="json")))
+                profile = CandidateStructuredProfile(
+                    user_id=user_id,
+                    structured_json=json.dumps(resolved_data.model_dump(mode="json")),
+                )
                 self._session.add(profile)
             else:
-                profile.structured_json = json.dumps(data.model_dump(mode="json"))
+                profile.structured_json = json.dumps(resolved_data.model_dump(mode="json"))
             existing_ids = set(
                 self._session.scalars(
                     select(CandidateEvidenceRecord.id).where(CandidateEvidenceRecord.user_id == user_id)
                 )
             )
-            active = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
+            active = ActiveCandidateEvidenceResolver(self._session).resolve(user_id, resolved_data)
             count = len([item for item in active if item.evidence_id not in existing_ids])
+            CandidateStructuredItemLineageService(self._session).stage_many(
+                user_id,
+                [
+                    StructuredProfileItemLineageInput(
+                        section=transition.section,
+                        item=transition.item,
+                        source_kind=StructuredItemSourceKind.CV,
+                        source_ref=draft.id,
+                        relationship=transition.relationship,
+                        predecessor_item=transition.predecessor_item,
+                    )
+                    for transition in transitions
+                ],
+            )
             draft.state = CVIngestionState.CONFIRMED
             self._session.commit()
             return count
@@ -149,8 +190,16 @@ class CVIngestionService:
             self._session.rollback()
             raise
 
-    def _draft(self, user_id: str, draft_id: str) -> CandidateCVIngestionDraft:
-        draft = self._session.scalar(select(CandidateCVIngestionDraft).where(CandidateCVIngestionDraft.id == draft_id, CandidateCVIngestionDraft.user_id == user_id))
+    def _draft(
+        self, user_id: str, draft_id: str, *, for_update: bool = False
+    ) -> CandidateCVIngestionDraft:
+        statement = select(CandidateCVIngestionDraft).where(
+            CandidateCVIngestionDraft.id == draft_id,
+            CandidateCVIngestionDraft.user_id == user_id,
+        )
+        if for_update:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        draft = self._session.scalar(statement)
         if draft is None:
             raise LookupError("CV ingestion draft not found.")
         return draft

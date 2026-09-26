@@ -3,6 +3,7 @@ from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.schemas.cv_overlap_review import StructuredProfileChangeComparison
 
 from app.schemas.candidate_profile import CandidateProfileBase
 from app.schemas.cv_ingestion import (
@@ -52,6 +53,7 @@ class CandidateProfileRevisionRead(BaseModel):
     proposed_structured: EditableCandidateStructuredData | None
     changed_authorities: list[RevisionAuthority]
     stale_authorities: list[RevisionAuthority]
+    structured_comparisons: list[StructuredProfileChangeComparison] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     confirmed_at: datetime | None

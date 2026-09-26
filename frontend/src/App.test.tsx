@@ -22,7 +22,7 @@ function renderHome(snapshot: unknown = emptySnapshot(), active: unknown = null)
 
 const nullProfile = { display_name: null, headline: null, current_role: null, location: null, summary: null, career_goal: null, job_search_criteria: null, preferred_email: null, phone: null, linkedin_url: null, github_url: null, portfolio_url: null };
 const emptyStructured = { employment: [], education: [], credentials: [], skills: [], projects: [], achievements: [] };
-const revision = (overrides: Record<string, unknown> = {}) => ({ id: "revision-1", state: "draft", revision: 1, proposed_profile: null, proposed_structured: null, changed_authorities: [], stale_authorities: [], created_at: "", updated_at: "", confirmed_at: null, discarded_at: null, ...overrides });
+const revision = (overrides: Record<string, unknown> = {}) => ({ id: "revision-1", state: "draft", revision: 1, proposed_profile: null, proposed_structured: null, structured_comparisons: [], changed_authorities: [], stale_authorities: [], created_at: "", updated_at: "", confirmed_at: null, discarded_at: null, ...overrides });
 
 it("loads the candidate view from the canonical snapshot, never requiring the legacy profile read", async () => {
   renderHome();
@@ -266,6 +266,108 @@ it("loads a fresh canonical snapshot when navigating away from and back to Profi
   fireEvent.click(await screen.findByRole("link", { name: "Back to Profile" }));
   expect(await screen.findByText("Fresh view")).toBeInTheDocument();
   expect(reads).toBe(2);
+});
+
+it("loads Profile source history independently and keeps canonical Profile visible after failure and retry", async () => {
+  let provenanceReads = 0;
+  request.mockImplementation(async (path) => {
+    if (path === "/api/v1/profile/snapshot") return { ...emptySnapshot(), structured_profile: { ...emptyStructured, skills: [{ name: "Python", category: "Engineering" }], evidence: [] } };
+    if (path === "/api/v1/profile/revisions/active") return null;
+    if (path === "/api/v1/onboarding/status") return onboarding;
+    if (path === "/api/v1/profile/structured-provenance") { provenanceReads += 1; if (provenanceReads === 1) throw new Error("offline"); return { items: [] }; }
+    return {};
+  });
+  render(<MemoryRouter><ProfileHome /></MemoryRouter>);
+  expect(await screen.findByText("Python · Engineering")).toBeInTheDocument();
+  expect(request).not.toHaveBeenCalledWith("/api/v1/profile/structured-provenance");
+  fireEvent.click(screen.getByRole("button", { name: "Show source history" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Source history is unavailable");
+  expect(screen.getByText("Python · Engineering")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Retry source history" }));
+  await vi.waitFor(() => expect(provenanceReads).toBe(2));
+  expect(screen.getByText("Python · Engineering")).toBeInTheDocument();
+});
+
+it("separates direct Adviser/CV sources from predecessor history and preserves the saved Adviser wording", async () => {
+  const current = { name: "Python", category: "Engineering" };
+  const event = (id: string, item: typeof current, source: Record<string, unknown>, relationship: string) => ({ event_id: id, section: "skills", item_fingerprint: "f".repeat(64), item, source_kind: source.kind, relationship, predecessor_fingerprint: null, predecessor_item: null, created_at: "2025-01-01T00:00:00Z", source });
+  const adviserEvent = event("adviser", current, { kind: "candidate_adviser", source_id: "secret-id", source_clarification_id: "clarification-id", clarification_question: "Which platform did you deliver?", proposal_item: { name: " PYTHON ", category: "Engineering" }, transferred_at: "2025-01-01T00:00:00Z", available: true }, "reinforcement");
+  const cvEvent = event("cv", { name: " PYTHON ", category: "Engineering" }, { kind: "cv", source_id: "draft-private", filenames: ["resume.pdf"], source_state: "confirmed", source_created_at: null, source_updated_at: null, available: true }, "new");
+  request.mockImplementation(async (path) => {
+    if (path === "/api/v1/profile/snapshot") return { ...emptySnapshot(), structured_profile: { ...emptyStructured, skills: [current], evidence: [] } };
+    if (path === "/api/v1/profile/revisions/active") return null;
+    if (path === "/api/v1/onboarding/status") return onboarding;
+    if (path === "/api/v1/profile/structured-provenance") return { items: [{ section: "skills", item_index: 0, item: current, item_fingerprint: "not-display-this", direct_events: [adviserEvent], history: [{ depth: 2, lineage_event: cvEvent }], source_history_available: true }] };
+    return {};
+  });
+  render(<MemoryRouter><ProfileHome /></MemoryRouter>);
+  expect(await screen.findByText("Python · Engineering")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Show source history" }));
+  fireEvent.click(await screen.findByText(/Source history · skills 1/));
+  expect(await screen.findByText("Sources for this current item")).toBeInTheDocument();
+  expect(screen.getByText("Supported through Candidate Adviser.")).toBeInTheDocument();
+  expect(screen.getByText("Which platform did you deliver?")).toBeInTheDocument();
+  expect(screen.getAllByText((_, element) => element?.textContent?.includes(" PYTHON ") ?? false).length).toBeGreaterThan(0);
+  expect(screen.getByText("Earlier source chain")).toBeInTheDocument();
+  expect(screen.getByText("Confirmed from CV: resume.pdf")).toBeInTheDocument();
+  expect(screen.queryByText(/not-display-this|draft-private|secret-id|extracted text/i)).not.toBeInTheDocument();
+});
+
+it.each(["new", "reinforcement", "refinement", "conflict", "ambiguous"] as const)("shows explanatory %s relationship without adding a second Profile approval", async (relationship) => {
+  const currentSkill = { name: "Python", category: "Engineering" };
+  const proposedSkill = { name: "Python", category: "Cloud engineering" };
+  const active = revision({ state: "review_ready", proposed_structured: { ...emptyStructured, skills: [proposedSkill] }, changed_authorities: ["structured"], structured_comparisons: [{ item_key: "opaque-key", comparison: { section: "skills", relationship, incoming_item: proposedSkill, incoming_fingerprint: "raw-fingerprint", candidate_matches: [], target_fingerprint: null, current_item: null } }] });
+  renderHome({ ...emptySnapshot(), structured_profile: { ...emptyStructured, skills: [currentSkill], evidence: [] } }, active);
+  fireEvent.click(await screen.findByRole("button", { name: "Review changes" }));
+  expect(await screen.findByText(relationship === "new" ? "New information" : relationship === "reinforcement" ? "Same fact" : relationship === "refinement" ? "More detailed version" : relationship === "conflict" ? "Conflicting information" : "Possible duplicate")).toBeInTheDocument();
+  expect(screen.queryByText(/raw-fingerprint|opaque-key/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirm changes" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /choose|resolve/i })).not.toBeInTheDocument();
+});
+
+it("invalidates an in-flight source-history read after Profile confirmation", async () => {
+  let finishOld!: (value: unknown) => void;
+  let provenanceReads = 0;
+  let active: unknown = revision({ state: "review_ready", proposed_profile: { ...nullProfile, headline: "Confirmed headline" }, changed_authorities: ["profile"] });
+  const source = (filename: string) => ({ items: [{ section: "skills", item_index: 0, item: { name: "Python", category: "Engineering" }, item_fingerprint: "hidden", direct_events: [{ event_id: filename, section: "skills", item_fingerprint: "hidden", item: { name: "Python", category: "Engineering" }, source_kind: "cv", relationship: "new", predecessor_fingerprint: null, predecessor_item: null, created_at: "2026-01-01T00:00:00Z", source: { kind: "cv", source_id: "hidden-id", filenames: [filename], source_state: "confirmed", source_created_at: null, source_updated_at: null, available: true } }], history: [], source_history_available: true }] });
+  request.mockImplementation(async (path, options) => {
+    if (path === "/api/v1/profile/snapshot") return { ...emptySnapshot(), profile: { id: "p", user_id: "u", created_at: "", updated_at: "", headline: "Current" }, structured_profile: { ...emptyStructured, skills: [{ name: "Python", category: "Engineering" }], evidence: [] } };
+    if (path === "/api/v1/onboarding/status") return onboarding;
+    if (path === "/api/v1/profile/revisions/active") return active;
+    if (String(path).endsWith("/confirm") && (options as { method?: string })?.method === "POST") { active = null; return {}; }
+    if (path === "/api/v1/profile/structured-provenance") { provenanceReads += 1; if (provenanceReads === 1) return new Promise((resolve) => { finishOld = resolve; }); return source("after-confirm.pdf"); }
+    return {};
+  });
+  render(<MemoryRouter><ProfileHome /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", { name: "Show source history" }));
+  await vi.waitFor(() => expect(provenanceReads).toBe(1));
+  fireEvent.click(screen.getByRole("button", { name: "Review changes" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Confirm changes" }));
+  expect(await screen.findByText(/Profile changes confirmed/)).toBeInTheDocument();
+  await vi.waitFor(() => expect(provenanceReads).toBe(2));
+  expect(await screen.findByText("Confirmed from CV: after-confirm.pdf")).toBeInTheDocument();
+  await act(async () => finishOld(source("before-confirm.pdf")));
+  expect(screen.getByText("Confirmed from CV: after-confirm.pdf")).toBeInTheDocument();
+  expect(screen.queryByText("Confirmed from CV: before-confirm.pdf")).not.toBeInTheDocument();
+});
+
+it("labels unavailable and legacy Profile source history without inferring a source", async () => {
+  const unavailable = { section: "skills", item_index: 0, item: { name: "Python", category: "Engineering" }, item_fingerprint: "hidden", direct_events: [{ event_id: "missing", section: "skills", item_fingerprint: "hidden", item: { name: "Python", category: "Engineering" }, source_kind: "cv", relationship: "new", predecessor_fingerprint: null, predecessor_item: null, created_at: "2026-01-01T00:00:00Z", source: { kind: "cv", source_id: "hidden", filenames: ["old.pdf"], source_state: null, source_created_at: null, source_updated_at: null, available: false } }], history: [], source_history_available: true };
+  const legacy = { ...unavailable, item_index: 1, item: { name: "Go", category: "Engineering" }, direct_events: [], source_history_available: false };
+  request.mockImplementation(async (path) => {
+    if (path === "/api/v1/profile/snapshot") return { ...emptySnapshot(), structured_profile: { ...emptyStructured, skills: [{ name: "Python", category: "Engineering" }, { name: "Go", category: "Engineering" }], evidence: [] } };
+    if (path === "/api/v1/profile/revisions/active") return null;
+    if (path === "/api/v1/onboarding/status") return onboarding;
+    if (path === "/api/v1/profile/structured-provenance") return { items: [unavailable, legacy] };
+    return {};
+  });
+  render(<MemoryRouter><ProfileHome /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", { name: "Show source history" }));
+  fireEvent.click(await screen.findByText(/Source history · skills 1/));
+  expect(await screen.findByText(/original source record is no longer available/)).toBeInTheDocument();
+  fireEvent.click(screen.getByText(/Source history · skills 2/));
+  expect(screen.getByText(/Source history is unavailable for this older item/)).toBeInTheDocument();
+  expect(screen.queryByText(/inferred source/i)).not.toBeInTheDocument();
 });
 
 it("requires saved changes before review and shows deterministic current and proposed values", async () => {

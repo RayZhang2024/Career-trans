@@ -92,6 +92,7 @@ export type ProfileRevision = {
   revision: number;
   proposed_profile: EditableProfile | null;
   proposed_structured: EditableStructuredProfile | null;
+  structured_comparisons: StructuredProfileChangeComparison[];
   changed_authorities: RevisionAuthority[];
   stale_authorities: RevisionAuthority[];
   created_at: string;
@@ -105,6 +106,15 @@ export type ProfileRevisionPatch = ProfileRevisionAction & {
   proposed_structured?: EditableStructuredProfile | null;
 };
 export type StructuredProfileSection = "employment" | "education" | "credentials" | "skills" | "projects" | "achievements";
+export type StructuredItemRelationship = "new" | "reinforcement" | "refinement" | "conflict" | "ambiguous";
+export type StructuredProfileItem = Employment | Education | Credential | CandidateSkill | CandidateProject | CandidateAchievement;
+export type StructuredProfileItemMatch = { fingerprint: string; item: StructuredProfileItem };
+export type StructuredProfileComparisonResult = {
+  section: StructuredProfileSection; relationship: StructuredItemRelationship;
+  incoming_item: StructuredProfileItem; incoming_fingerprint: string;
+  candidate_matches: StructuredProfileItemMatch[]; target_fingerprint: string | null; current_item: StructuredProfileItem | null;
+};
+export type StructuredProfileChangeComparison = { item_key: string; comparison: StructuredProfileComparisonResult };
 export type AdviserProfileProposalOperation = "add" | "replace_exact";
 type AdviserProfileProposalUpdateBase =
   | { operation: "add"; target_fingerprint: null }
@@ -131,6 +141,17 @@ export type AdviserProfileProposal = {
   rejected_at: string | null;
   transferred_at: string | null;
   transferred_profile_revision_id: string | null;
+  comparison: StructuredProfileComparisonResult | null;
+  comparison_base_fingerprint: string | null;
+  overlap_resolution: AdviserProfileProposalOverlapResolution | null;
+  overlap_resolution_stale: boolean | null;
+};
+export type AdviserProfileProposalOverlapResolution = {
+  action: "add_as_new"; base_structured_fingerprint: string; incoming_fingerprint: string;
+  candidate_fingerprints: string[]; resolved_at: string;
+};
+export type AdviserProfileProposalOverlapResolutionRequest = {
+  expected_revision: number; expected_comparison_base_fingerprint: string; action: "add_as_new";
 };
 export type AdviserProfileProposalGenerationRead = { proposals: AdviserProfileProposal[] };
 export type AdviserProfileProposalTransferRead = {
@@ -244,6 +265,48 @@ export type CVIngestionHistoryItem = {
   id: string; state: CVIngestionState; created_at: string; updated_at: string; filenames: string[]; document_count: number;
 };
 export type CVIngestionHistoryRead = { items: CVIngestionHistoryItem[]; limit: number; truncated: boolean };
+export type CVOverlapResolutionAction = "replace_current" | "keep_current" | "add_as_new" | "skip_incoming";
+export type CVOverlapResolution = { item_key: string; action: CVOverlapResolutionAction; target_fingerprint: string | null };
+export type CVOverlapReviewItem = {
+  item_key: string; section: StructuredProfileSection; incoming_item: StructuredProfileItem; incoming_fingerprint: string;
+  relationship: StructuredItemRelationship; candidate_matches: StructuredProfileItemMatch[]; target_fingerprint: string | null;
+  current_item: StructuredProfileItem | null; saved_resolution: CVOverlapResolution | null; resolution_required: boolean;
+};
+export type CVOverlapIncomingDuplicate = {
+  section: StructuredProfileSection; first_item_key: string; duplicate_item_key: string;
+  first_item: StructuredProfileItem; duplicate_item: StructuredProfileItem;
+};
+export type CVOverlapReviewRead = {
+  draft_id: string; revision: number; base_structured_fingerprint: string; draft_fingerprint: string;
+  stale: boolean; items: CVOverlapReviewItem[]; incoming_duplicates: CVOverlapIncomingDuplicate[];
+};
+export type CVOverlapReviewPatch = {
+  expected_review_revision: number; expected_base_structured_fingerprint: string;
+  expected_draft_fingerprint: string; resolutions: CVOverlapResolution[];
+};
+export type CVStructuredProfileSource = {
+  kind: "cv"; source_id: string; filenames: string[]; source_state: string | null;
+  source_created_at: string | null; source_updated_at: string | null; available: boolean;
+};
+export type ManualProfileStructuredSource = { kind: "manual_profile"; source_id: string; confirmed_at: string | null; available: boolean };
+export type CandidateAdviserStructuredSource = {
+  kind: "candidate_adviser"; source_id: string; source_clarification_id: string | null;
+  clarification_question: string | null; proposal_item: StructuredProfileItem | null; transferred_at: string | null; available: boolean;
+};
+export type StructuredProfileResolvedSource = CVStructuredProfileSource | ManualProfileStructuredSource | CandidateAdviserStructuredSource;
+export type StructuredProfileLineageEventRead = {
+  event_id: string; section: StructuredProfileSection; item_fingerprint: string; item: StructuredProfileItem;
+  source_kind: "cv" | "manual_profile" | "candidate_adviser"; relationship: StructuredItemRelationship;
+  predecessor_fingerprint: string | null; predecessor_item: StructuredProfileItem | null; created_at: string;
+  source: StructuredProfileResolvedSource;
+};
+export type StructuredProfileHistoricalLineageEventRead = { depth: number; lineage_event: StructuredProfileLineageEventRead };
+export type StructuredProfileCurrentItemProvenanceRead = {
+  section: StructuredProfileSection; item_index: number; item: StructuredProfileItem; item_fingerprint: string;
+  direct_events: StructuredProfileLineageEventRead[]; history: StructuredProfileHistoricalLineageEventRead[];
+  source_history_available: boolean;
+};
+export type StructuredProfileProvenanceRead = { items: StructuredProfileCurrentItemProvenanceRead[] };
 export type HistoricalRunJobDetail = { discovered_job_id: string; evaluation_id: string | null; outcome: DiscoveryRunJobSummary["outcome"]; failure_stage: string | null; failure_kind: string | null; opportunity: RankedJobOpportunity | null; runtime_attribution: SemanticRuntimeAttribution | null };
 export type InboxProvenance = { runtime: string; source_ref: string | null; discovered_via: string | null; imported_at: string };
 export type InboxSummary = {

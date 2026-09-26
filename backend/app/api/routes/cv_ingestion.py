@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
 from app.api.deps import CurrentUser, DbSession, get_user_cv_ingestion_read_service, get_user_cv_ingestion_service
 from app.schemas.cv_ingestion import CandidateCVData, CVIngestionConfirmResponse, CVIngestionDraftRead, CVIngestionHistoryRead
+from app.schemas.cv_overlap_review import CVOverlapReviewPatch, CVOverlapReviewRead
 from app.providers.llm import (
     SemanticOutputError,
     SemanticProviderConfigurationError,
@@ -9,8 +10,33 @@ from app.providers.llm import (
     SemanticProviderUnavailableError,
 )
 from app.services.cv_ingestion_service import CVIngestionReadService, CVIngestionService
+from app.services.cv_overlap_review_service import CVOverlapReviewConflict, CVOverlapReviewService
 
 router = APIRouter(prefix="/cv-ingestion", tags=["cv-ingestion"])
+
+
+@router.get("/{draft_id}/overlap-review", response_model=CVOverlapReviewRead)
+def read_cv_overlap_review(
+    draft_id: str, current_user: CurrentUser, db: DbSession
+) -> CVOverlapReviewRead:
+    try:
+        return CVOverlapReviewService(db).read(current_user.id, draft_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CV ingestion draft not found.") from exc
+    except CVOverlapReviewConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.patch("/{draft_id}/overlap-review", response_model=CVOverlapReviewRead)
+def update_cv_overlap_review(
+    draft_id: str, payload: CVOverlapReviewPatch, current_user: CurrentUser, db: DbSession
+) -> CVOverlapReviewRead:
+    try:
+        return CVOverlapReviewService(db).update(current_user.id, draft_id, payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CV ingestion draft not found.") from exc
+    except CVOverlapReviewConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get("", response_model=CVIngestionHistoryRead)

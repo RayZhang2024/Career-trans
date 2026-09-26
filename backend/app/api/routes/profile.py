@@ -5,8 +5,11 @@ from app.api.deps import (
     DbSession,
     get_canonical_candidate_read_service,
 )
+from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.schemas.candidate import CandidateContextSummary
 from app.schemas.candidate_read_snapshot import CanonicalCandidateReadSnapshot
+from app.schemas.cv_ingestion import CandidateCVData
+from app.schemas.structured_profile_provenance import StructuredProfileProvenanceRead
 from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.schemas.candidate_profile import (
     CandidateProfileRead,
@@ -19,6 +22,8 @@ from app.schemas.profile_revision import (
 from app.services.profile_service import (
     get_profile_for_user,
 )
+from app.services.structured_profile_provenance_service import StructuredProfileProvenanceService
+from sqlalchemy import select
 from app.services.profile_revision_service import (
     CandidateProfileRevisionService,
     ProfileRevisionConflict,
@@ -26,6 +31,18 @@ from app.services.profile_revision_service import (
 )
 
 router = APIRouter(prefix="/profile", tags=["profile"])
+
+
+@router.get("/structured-provenance", response_model=StructuredProfileProvenanceRead)
+def read_structured_profile_provenance(
+    db: DbSession, current_user: CurrentUser
+) -> StructuredProfileProvenanceRead:
+    with db.no_autoflush:
+        row = db.scalar(select(CandidateStructuredProfile).where(
+            CandidateStructuredProfile.user_id == current_user.id
+        ))
+        current = CandidateCVData.model_validate_json(row.structured_json) if row is not None else None
+        return StructuredProfileProvenanceService(db).read_current(current_user.id, current)
 
 
 @router.get("/revisions/active", response_model=CandidateProfileRevisionRead | None)

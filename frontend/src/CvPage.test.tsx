@@ -21,6 +21,7 @@ type TestCVData = {
   evidence: Array<Record<string, unknown>>;
 };
 const mergedEmpty: TestCVData = { employment: [], education: [], credentials: [], skills: [], projects: [], achievements: [], evidence: [] };
+const emptyOverlap = (draftId = "draft-test") => ({ draft_id: draftId, revision: 0, base_structured_fingerprint: "a".repeat(64), draft_fingerprint: "b".repeat(64), stale: false, items: [], incoming_duplicates: [] });
 const statusWith = (id: string, state: "uploaded" | "review_ready" | "confirmed", candidate_context_ready = false) => ({
   ...noDraft,
   candidate_context_ready,
@@ -141,7 +142,9 @@ it("keeps semantic evidence read-only and blocks confirmation until exclusions a
   request
     .mockResolvedValueOnce(statusWith("draft-2", "review_ready", true))
     .mockResolvedValueOnce(draft)
-    .mockResolvedValueOnce({ ...draft, merged: { ...merged, evidence: [] } });
+    .mockResolvedValueOnce(emptyOverlap("draft-2"))
+    .mockResolvedValueOnce({ ...draft, merged: { ...merged, evidence: [] } })
+    .mockResolvedValueOnce(emptyOverlap("draft-2"));
   render(<CvPage />);
   expect(await screen.findByText(/From uploaded CV/)).toBeInTheDocument();
   expect(screen.queryByDisplayValue("Source-supported claim")).toBeNull();
@@ -176,7 +179,9 @@ it("shows CV review save pending state and success only after the PATCH resolves
   request
     .mockResolvedValueOnce(statusWith("draft-save", "review_ready"))
     .mockResolvedValueOnce(draft)
-    .mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+    .mockResolvedValueOnce(emptyOverlap("draft-save"))
+    .mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }))
+    .mockResolvedValueOnce(emptyOverlap("draft-save"));
   render(<CvPage />);
   await screen.findByRole("heading", { name: "Review your CV" });
   fireEvent.click(screen.getByRole("button", { name: "Add Credential" }));
@@ -184,7 +189,7 @@ it("shows CV review save pending state and success only after the PATCH resolves
 
   fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
   expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled();
-  expect(screen.getByRole("status")).toHaveTextContent("Saving CV changes…");
+  expect(screen.getByText("Saving CV changes…")).toHaveAttribute("role", "status");
   expect(screen.queryByText("CV changes saved.")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Saving…" }));
   expect(request.mock.calls.filter(([path, init]) => path === "/api/v1/cv-ingestion/draft-save" && init?.method === "PATCH")).toHaveLength(1);
@@ -208,6 +213,7 @@ it("locks every CV review mutation while save owns the snapshot and restores edi
   request
     .mockResolvedValueOnce(statusWith("draft-locked", "review_ready"))
     .mockResolvedValueOnce(draft)
+    .mockResolvedValueOnce(emptyOverlap("draft-locked"))
     .mockImplementationOnce(() => new Promise((_, reject) => { rejectSave = reject; }));
   render(<CvPage />);
   await screen.findByRole("heading", { name: "Review your CV" });
@@ -247,8 +253,10 @@ it("keeps a failed CV save dirty, accessible, and explicitly retryable", async (
   request
     .mockResolvedValueOnce(statusWith("draft-retry", "review_ready"))
     .mockResolvedValueOnce(draft)
+    .mockResolvedValueOnce(emptyOverlap("draft-retry"))
     .mockRejectedValueOnce(new Error("offline"))
-    .mockResolvedValueOnce({ ...draft, merged: mergedEmpty });
+    .mockResolvedValueOnce({ ...draft, merged: mergedEmpty })
+    .mockResolvedValueOnce(emptyOverlap("draft-retry"));
   render(<CvPage />);
   await screen.findByRole("heading", { name: "Review your CV" });
   fireEvent.click(screen.getByRole("button", { name: "Add Credential" }));
@@ -277,7 +285,9 @@ it("removes an ordinary structured item and saves the corrected review", async (
   request
     .mockResolvedValueOnce(statusWith("draft-remove", "review_ready"))
     .mockResolvedValueOnce(draft)
-    .mockResolvedValueOnce({ ...draft, merged: mergedEmpty });
+    .mockResolvedValueOnce(emptyOverlap("draft-remove"))
+    .mockResolvedValueOnce({ ...draft, merged: mergedEmpty })
+    .mockResolvedValueOnce(emptyOverlap("draft-remove"));
   render(<CvPage />);
   await screen.findByRole("heading", { name: "Review your CV" });
   fireEvent.click(screen.getByRole("button", { name: "Remove" }));
@@ -294,7 +304,9 @@ it("adds credentials with a valid constrained credential type before save", asyn
   request
     .mockResolvedValueOnce(statusWith("draft-3", "review_ready"))
     .mockResolvedValueOnce(draft)
-    .mockResolvedValueOnce({ ...draft, merged: { ...mergedEmpty, credentials: [{ name: "Synthetic Cert", credential_type: "certification", issuer: "", issued_date: "", expiry_date: "", status: "", description: "" }] } });
+    .mockResolvedValueOnce(emptyOverlap("draft-3"))
+    .mockResolvedValueOnce({ ...draft, merged: { ...mergedEmpty, credentials: [{ name: "Synthetic Cert", credential_type: "certification", issuer: "", issued_date: "", expiry_date: "", status: "", description: "" }] } })
+    .mockResolvedValueOnce(emptyOverlap("draft-3"));
   render(<CvPage />);
   await screen.findByRole("heading", { name: "Review your CV" });
 
@@ -380,6 +392,7 @@ it("requires explicit replacement confirmation before replacing an existing prof
   request
     .mockResolvedValueOnce(statusWith("draft-replacement", "review_ready", true))
     .mockResolvedValueOnce(review)
+    .mockResolvedValueOnce(emptyOverlap("draft-replacement"))
     .mockResolvedValueOnce({ draft_id: review.id, confirmed_evidence_count: 0 })
     .mockResolvedValueOnce(statusWith("draft-replacement", "confirmed", true))
     .mockResolvedValueOnce({ ...review, state: "confirmed" });
@@ -443,6 +456,7 @@ it("ignores stale history responses after a workflow transition and keeps the ne
     .mockResolvedValueOnce(reviewDraft)
     .mockResolvedValueOnce(statusWith("draft-race", "review_ready"))
     .mockResolvedValueOnce(reviewDraft)
+    .mockResolvedValueOnce(emptyOverlap("draft-race"))
     .mockResolvedValueOnce({ items: [historyRow("new-history.md", "review_ready")], limit: 20, truncated: false });
   render(<CvPage />);
   expect(await screen.findByRole("button", { name: "Interpret CV" })).toBeEnabled();
@@ -458,4 +472,147 @@ it("ignores stale history responses after a workflow transition and keeps the ne
   expect(screen.queryByText("old-history.md")).not.toBeInTheDocument();
   expect(screen.getByText(/review_ready · Latest draft/)).toBeInTheDocument();
   expect(screen.queryByText("Loading CV history…")).not.toBeInTheDocument();
+});
+
+const structured = { employer: "Northwind", title: "Engineer", start_date: "2020", end_date: null, location: "Remote", description: "Built resilient services." };
+const oneRefinement = (overrides: Record<string, unknown> = {}) => ({
+  ...emptyOverlap("overlap-draft"), revision: 3,
+  items: [{ item_key: "c".repeat(64), section: "employment", incoming_item: { ...structured, description: "Built resilient and secure services." }, incoming_fingerprint: "d".repeat(64), relationship: "refinement", candidate_matches: [{ fingerprint: "e".repeat(64), item: structured }], target_fingerprint: "e".repeat(64), current_item: structured, saved_resolution: null, resolution_required: true }],
+  ...overrides,
+});
+
+it("loads saved CV overlap, offers Current versus Reviewed CV decisions, and sends exact target fingerprints", async () => {
+  const draft = draftWith("overlap-draft", "review_ready", { ...mergedEmpty, employment: [structured] });
+  let patchBody: Record<string, unknown> | null = null;
+  request.mockImplementation(async (path, options) => {
+    if (path === "/api/v1/onboarding/status") return statusWith("overlap-draft", "review_ready");
+    if (path === "/api/v1/cv-ingestion/overlap-draft") return draft;
+    if (path === "/api/v1/cv-ingestion/overlap-draft/overlap-review" && !options) return oneRefinement();
+    if (path === "/api/v1/cv-ingestion/overlap-draft/overlap-review" && options?.method === "PATCH") {
+      patchBody = JSON.parse(String(options.body));
+      return oneRefinement({ revision: 4, items: oneRefinement().items.map((item) => ({ ...item, saved_resolution: { item_key: item.item_key, action: "replace_current", target_fingerprint: "e".repeat(64) }, resolution_required: false })) });
+    }
+    return {};
+  });
+  render(<CvPage />);
+  expect(await screen.findByText("More detailed version")).toBeInTheDocument();
+  expect(screen.getByText("Current Profile")).toBeInTheDocument();
+  expect(screen.getByText("Reviewed CV")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Use CV version" }));
+  await screen.findByText("Choice saved: replace current.");
+  expect(patchBody).toMatchObject({ expected_review_revision: 3, expected_base_structured_fingerprint: "a".repeat(64), expected_draft_fingerprint: "b".repeat(64), resolutions: [{ item_key: "c".repeat(64), action: "replace_current", target_fingerprint: "e".repeat(64) }] });
+  expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled();
+});
+
+it("hides saved overlap as out-of-date while CV edits are dirty and reloads after saving", async () => {
+  const draft = draftWith("dirty-overlap", "review_ready", mergedEmpty);
+  let comparisons = 0;
+  request.mockImplementation(async (path, options) => {
+    if (path === "/api/v1/onboarding/status") return statusWith("dirty-overlap", "review_ready");
+    if (path === "/api/v1/cv-ingestion/dirty-overlap" && !options) return draft;
+    if (path === "/api/v1/cv-ingestion/dirty-overlap/overlap-review") { comparisons += 1; return emptyOverlap("dirty-overlap"); }
+    if (path === "/api/v1/cv-ingestion/dirty-overlap" && options?.method === "PATCH") return draft;
+    return {};
+  });
+  render(<CvPage />);
+  await screen.findByRole("heading", { name: "Review your CV" });
+  await vi.waitFor(() => expect(comparisons).toBe(1));
+  fireEvent.click(screen.getByRole("button", { name: "Add Credential" }));
+  expect(screen.getByText("Save your CV edits before reviewing how they overlap your current Profile.")).toBeInTheDocument();
+  expect(screen.queryByText("New information — this CV item will be included when the CV is confirmed.")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await vi.waitFor(() => expect(comparisons).toBe(2));
+  expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled();
+});
+
+it("blocks CV confirmation for stale comparisons and duplicate incoming items", async () => {
+  const draft = draftWith("blocked-overlap", "review_ready", mergedEmpty);
+  const stale = oneRefinement({ stale: true, incoming_duplicates: [{ section: "employment", first_item_key: "1", duplicate_item_key: "2", first_item: structured, duplicate_item: structured }] });
+  request.mockImplementation(async (path) => path === "/api/v1/onboarding/status" ? statusWith("blocked-overlap", "review_ready") : path === "/api/v1/cv-ingestion/blocked-overlap" ? draft : path === "/api/v1/cv-ingestion/blocked-overlap/overlap-review" ? stale : {});
+  render(<CvPage />);
+  await screen.findByText(/same career fact more than once/);
+  expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeDisabled();
+  expect(screen.getAllByRole("alert").some((node) => node.textContent?.includes("older Profile or CV version"))).toBe(true);
+});
+
+it.each([["new", "New information"], ["reinforcement", "Same fact"]] as const)("shows %s CV item as informational and requires no overlap choice", async (relation, label) => {
+  const draft = draftWith("automatic-overlap", "review_ready", mergedEmpty);
+  const automatic = { ...emptyOverlap("automatic-overlap"), items: [{ item_key: "n".repeat(64), section: "skills", incoming_item: { name: "Rust", category: "language" }, incoming_fingerprint: "i".repeat(64), relationship: relation, candidate_matches: [], target_fingerprint: null, current_item: null, saved_resolution: null, resolution_required: false }] };
+  request.mockImplementation(async (path) => path === "/api/v1/onboarding/status" ? statusWith("automatic-overlap", "review_ready") : path === "/api/v1/cv-ingestion/automatic-overlap" ? draft : path === "/api/v1/cv-ingestion/automatic-overlap/overlap-review" ? automatic : {});
+  render(<CvPage />);
+  expect(await screen.findByText(label)).toBeInTheDocument();
+  if (relation === "new") expect(screen.getByText(/will be included when the CV is confirmed/)).toBeInTheDocument();
+  else expect(screen.getByText(/confirmation will result in one current item/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: /Use CV version|Keep current version/ })).not.toBeInTheDocument();
+});
+
+it("shows all ambiguous CV matches, disables duplicate fingerprints, and can resolve another exact candidate", async () => {
+  const draft = draftWith("ambiguous-overlap", "review_ready", mergedEmpty);
+  const incoming = { name: "Rust", category: "systems" };
+  const ambiguous = { ...emptyOverlap("ambiguous-overlap"), items: [{ item_key: "x".repeat(64), section: "skills", incoming_item: incoming, incoming_fingerprint: "y".repeat(64), relationship: "ambiguous", candidate_matches: [
+    { fingerprint: "z".repeat(64), item: { name: "Rust", category: "language" } },
+    { fingerprint: "z".repeat(64), item: { name: "Rust", category: "platform" } },
+    { fingerprint: "w".repeat(64), item: { name: "Rust", category: "runtime" } },
+  ], target_fingerprint: null, current_item: null, saved_resolution: null, resolution_required: true }] };
+  let body = "";
+  request.mockImplementation(async (path, options) => {
+    if (path === "/api/v1/onboarding/status") return statusWith("ambiguous-overlap", "review_ready");
+    if (path === "/api/v1/cv-ingestion/ambiguous-overlap" && !options) return draft;
+    if (path === "/api/v1/cv-ingestion/ambiguous-overlap/overlap-review" && !options) return ambiguous;
+    if (path === "/api/v1/cv-ingestion/ambiguous-overlap/overlap-review" && options?.method === "PATCH") { body = String(options.body); return { ...ambiguous, revision: 1, items: [{ ...ambiguous.items[0], saved_resolution: JSON.parse(body).resolutions[0], resolution_required: false }] }; }
+    return {};
+  });
+  render(<CvPage />);
+  expect(await screen.findByText("Current item 3")).toBeInTheDocument();
+  expect(screen.getAllByText(/cannot be uniquely targeted yet/)).toHaveLength(2);
+  expect(screen.getAllByRole("button", { name: "Replace Rust" })).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Replace Rust" }));
+  await screen.findByText(/Choice saved: replace current/);
+  expect(body).toContain('"action":"replace_current"');
+  expect(body).toContain('"target_fingerprint":"' + "w".repeat(64) + '"');
+  expect(screen.queryByText("w".repeat(64))).not.toBeInTheDocument();
+});
+
+it("turns stale CV choice conflicts into refreshable comparison state without losing the draft", async () => {
+  const draft = draftWith("stale-choice", "review_ready", mergedEmpty);
+  const first = oneRefinement({ draft_id: "stale-choice" });
+  let gets = 0;
+  request.mockImplementation(async (path, options) => {
+    if (path === "/api/v1/onboarding/status") return statusWith("stale-choice", "review_ready");
+    if (path === "/api/v1/cv-ingestion/stale-choice" && !options) return draft;
+    if (path === "/api/v1/cv-ingestion/stale-choice/overlap-review" && !options) { gets += 1; return gets === 1 ? first : emptyOverlap("stale-choice"); }
+    if (path === "/api/v1/cv-ingestion/stale-choice/overlap-review" && options?.method === "PATCH") throw new ApiError(409, "stale");
+    return {};
+  });
+  render(<CvPage />);
+  await screen.findByText("More detailed version");
+  fireEvent.click(screen.getByRole("button", { name: "Use CV version" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(/changed after this comparison was loaded/);
+  expect(screen.getByRole("heading", { name: "Review your CV" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh comparison" }));
+  await vi.waitFor(() => { expect(gets).toBe(2); expect(screen.getByRole("button", { name: "Confirm reviewed CV" })).toBeEnabled(); });
+});
+
+it("ignores the delayed pre-save CV comparison after saved-draft analysis returns", async () => {
+  const draft = draftWith("cv-analysis-race", "review_ready", mergedEmpty);
+  let finishOld!: (value: unknown) => void;
+  let comparisons = 0;
+  const old = oneRefinement({ draft_id: "cv-analysis-race" });
+  const fresh = { ...emptyOverlap("cv-analysis-race"), revision: 2, items: [{ item_key: "fresh-key", section: "skills", incoming_item: { name: "Rust", category: "language" }, incoming_fingerprint: "hidden", relationship: "new", candidate_matches: [], target_fingerprint: null, current_item: null, saved_resolution: null, resolution_required: false }] };
+  request.mockImplementation(async (path, options) => {
+    if (path === "/api/v1/onboarding/status") return statusWith("cv-analysis-race", "review_ready");
+    if (path === "/api/v1/cv-ingestion/cv-analysis-race" && !options) return draft;
+    if (path === "/api/v1/cv-ingestion/cv-analysis-race" && options?.method === "PATCH") return draft;
+    if (path === "/api/v1/cv-ingestion/cv-analysis-race/overlap-review" && !options) { comparisons += 1; return comparisons === 1 ? new Promise((resolve) => { finishOld = resolve; }) : fresh; }
+    return {};
+  });
+  render(<CvPage />);
+  await screen.findByRole("heading", { name: "Review your CV" });
+  fireEvent.click(screen.getByRole("button", { name: "Add Credential" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  expect(await screen.findByText("New information")).toBeInTheDocument();
+  await act(async () => finishOld(old));
+  expect(screen.getByText(/New information — this CV item will be included/)).toBeInTheDocument();
+  expect(screen.queryByText("More detailed version")).not.toBeInTheDocument();
 });

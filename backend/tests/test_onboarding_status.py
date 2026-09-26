@@ -18,8 +18,14 @@ from app.schemas.candidate_adviser import (
     ClarificationProposedEvidence,
 )
 from app.schemas.cv_ingestion import CandidateCVData
+from app.schemas.cv_overlap_review import (
+    CVOverlapResolution,
+    CVOverlapResolutionAction,
+    CVOverlapReviewPatch,
+)
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.services.candidate_adviser_service import CandidateAdviserService
+from app.services.cv_overlap_review_service import CVOverlapReviewService
 from app.services.cv_ingestion_service import CVIngestionService
 from tests.test_profile import auth_header, register_and_login
 
@@ -103,6 +109,31 @@ def _confirm_cv(db_session, user_id: str, text: str) -> None:
     ingestion = CVIngestionService(db_session)
     draft = ingestion.upload(user_id, [("cv.json", "application/json", json.dumps(data.model_dump(mode="json")).encode())])
     ingestion.interpret(user_id, draft.id)
+    review_service = CVOverlapReviewService(db_session)
+    review = review_service.read(user_id, draft.id)
+    resolutions = []
+    for item in review.items:
+        if not item.resolution_required:
+            continue
+        if item.relationship.value == "ambiguous":
+            resolutions.append(CVOverlapResolution(
+                item_key=item.item_key,
+                action=CVOverlapResolutionAction.REPLACE_CURRENT,
+                target_fingerprint=item.candidate_matches[0].fingerprint,
+            ))
+        else:
+            resolutions.append(CVOverlapResolution(
+                item_key=item.item_key,
+                action=CVOverlapResolutionAction.REPLACE_CURRENT,
+                target_fingerprint=item.target_fingerprint,
+            ))
+    if resolutions:
+        review_service.update(user_id, draft.id, CVOverlapReviewPatch(
+            expected_review_revision=review.revision,
+            expected_base_structured_fingerprint=review.base_structured_fingerprint,
+            expected_draft_fingerprint=review.draft_fingerprint,
+            resolutions=resolutions,
+        ))
     ingestion.confirm(user_id, draft.id)
 
 

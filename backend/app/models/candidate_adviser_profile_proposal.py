@@ -34,6 +34,7 @@ class CandidateAdviserProfileProposalRecord(Base):
     source_assessment_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     original_update_json: Mapped[str] = mapped_column(Text, nullable=False)
     proposed_update_json: Mapped[str] = mapped_column(Text, nullable=False)
+    overlap_resolution_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     transferred_profile_revision_id: Mapped[str | None] = mapped_column(
         ForeignKey("candidate_profile_revisions.id"), nullable=True
     )
