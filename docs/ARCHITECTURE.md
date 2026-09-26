@@ -258,6 +258,10 @@ Clarification confirmation remains provider-free and immediately reconciles conf
 
 The Adviser page exposes this lifecycle separately from assessment and clarification loading: users explicitly generate suggestions from a confirmed career/mixed clarification, review and edit the typed item, then reject it or send it to the Profile workflow. Proposal history remains inspectable across Adviser assessment changes. Transferred proposals remain historical records; the Profile page owns review and confirmation of the linked draft, and transfer itself does not change current Profile data.
 
+### Structured-item lineage and comparison foundation (Issue #209 Phase 1)
+
+`CandidateStructuredProfile.structured_json` remains the sole authority for current structured career information. The additive `CandidateStructuredItemLineageRecord` table stores prospective, immutable source/history snapshots keyed to an exact typed-item fingerprint; a lineage row never makes an item current, and legacy current items do not receive fabricated source records. `StructuredProfileComparisonService` is a provider-free, non-mutating classifier for new, reinforcement, refinement, conflict, and ambiguous comparisons. Phase 1 does not yet record lineage from CV confirmation, manual Profile revision confirmation, or Adviser proposal transfer, and does not expose lineage through the canonical read snapshot.
+
 ---
 
 # 8. Candidate Data Model

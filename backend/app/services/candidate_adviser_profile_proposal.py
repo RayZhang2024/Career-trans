@@ -31,14 +31,15 @@ from app.schemas.candidate_adviser_profile_proposal import (
     EmploymentProposalTarget,
     ProjectProposalTarget,
     SkillProposalTarget,
-    StructuredProfileSection,
 )
+from app.schemas.structured_profile import StructuredProfileSection
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.profile_revision import EditableCandidateStructuredData
 from app.services.profile_revision_service import (
     CandidateProfileRevisionService,
     ProfileRevisionConflict,
 )
+from app.services.structured_profile_identity import structured_profile_item_fingerprint
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
@@ -49,24 +50,6 @@ class CandidateAdviserProfileProposalNotFound(LookupError):
 
 class CandidateAdviserProfileProposalConflict(ValueError):
     """The proposal state or expected revision does not permit the operation."""
-
-
-def structured_profile_item_fingerprint(
-    section: StructuredProfileSection | str,
-    item: BaseModel,
-) -> str:
-    """Hash exact typed item identity, including its structured section."""
-    canonical_section = StructuredProfileSection(section).value
-    canonical = json.dumps(
-        {
-            "section": canonical_section,
-            "item": item.model_dump(mode="json"),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _canonical_json(value: object) -> str:

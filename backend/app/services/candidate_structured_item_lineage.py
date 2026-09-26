@@ -1,0 +1,167 @@
+import json
+from datetime import datetime
+
+from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.models.candidate_structured_item_lineage import CandidateStructuredItemLineageRecord
+from app.schemas.cv_ingestion import CandidateCVData
+from app.schemas.structured_profile import (
+    StructuredItemRelationship,
+    StructuredProfileItemLineageInput,
+    StructuredProfileLineageRead,
+    StructuredProfileSection,
+    typed_structured_item,
+)
+from app.services.structured_profile_identity import (
+    structured_item_lineage_key,
+    structured_profile_item_fingerprint,
+)
+
+
+class CandidateStructuredItemLineageConflict(ValueError):
+    """A purported historical item does not agree with its claimed identity."""
+
+
+class CandidateStructuredItemLineageService:
+    """Provider-free history storage/read service, separate from current authority."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def record(
+        self,
+        user_id: str,
+        event: StructuredProfileItemLineageInput,
+    ) -> StructuredProfileLineageRead:
+        if not user_id:
+            raise ValueError("user_id is required.")
+        try:
+            event = StructuredProfileItemLineageInput.model_validate(event)
+            item = typed_structured_item(event.section, event.item)
+            predecessor = (
+                typed_structured_item(event.section, event.predecessor_item)
+                if event.predecessor_item is not None else None
+            )
+            item_fingerprint = structured_profile_item_fingerprint(event.section, item)
+            predecessor_fingerprint = (
+                structured_profile_item_fingerprint(event.section, predecessor)
+                if predecessor is not None else None
+            )
+            if (
+                event.relationship is StructuredItemRelationship.REINFORCEMENT
+                and predecessor_fingerprint is not None
+                and predecessor_fingerprint != item_fingerprint
+            ):
+                raise ValueError("A reinforcement predecessor must have the exact current item fingerprint.")
+            key = structured_item_lineage_key(
+                user_id=user_id,
+                section=event.section,
+                item_fingerprint=item_fingerprint,
+                source_kind=event.source_kind.value,
+                source_ref=event.source_ref,
+                relationship=event.relationship.value,
+                predecessor_fingerprint=predecessor_fingerprint,
+            )
+        except (ValidationError, TypeError, ValueError) as exc:
+            raise CandidateStructuredItemLineageConflict(str(exc)) from exc
+
+        existing = self._session.scalar(select(CandidateStructuredItemLineageRecord).where(
+            CandidateStructuredItemLineageRecord.user_id == user_id,
+            CandidateStructuredItemLineageRecord.lineage_key == key,
+        ))
+        if existing is not None:
+            return self._read(existing)
+
+        row = CandidateStructuredItemLineageRecord(
+            user_id=user_id,
+            lineage_key=key,
+            section=event.section.value,
+            item_fingerprint=item_fingerprint,
+            item_json=json.dumps(item.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+            source_kind=event.source_kind.value,
+            source_ref=event.source_ref,
+            relationship=event.relationship.value,
+            predecessor_fingerprint=predecessor_fingerprint,
+            predecessor_item_json=(
+                json.dumps(predecessor.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                if predecessor is not None else None
+            ),
+        )
+        self._session.add(row)
+        try:
+            self._session.commit()
+        except IntegrityError:
+            self._session.rollback()
+            winner = self._session.scalar(select(CandidateStructuredItemLineageRecord).where(
+                CandidateStructuredItemLineageRecord.user_id == user_id,
+                CandidateStructuredItemLineageRecord.lineage_key == key,
+            ))
+            if winner is None:
+                raise
+            return self._read(winner)
+        self._session.refresh(row)
+        return self._read(row)
+
+    def read_history(self, user_id: str) -> list[StructuredProfileLineageRead]:
+        with self._session.no_autoflush:
+            rows = self._session.scalars(
+                select(CandidateStructuredItemLineageRecord)
+                .where(CandidateStructuredItemLineageRecord.user_id == user_id)
+                .order_by(CandidateStructuredItemLineageRecord.created_at, CandidateStructuredItemLineageRecord.id)
+                .execution_options(populate_existing=True)
+            ).all()
+        return [self._read(row) for row in rows]
+
+    def read_current(
+        self,
+        user_id: str,
+        data: CandidateCVData,
+    ) -> dict[StructuredProfileSection, list[StructuredProfileLineageRead]]:
+        """Attach history only to exact item fingerprints in supplied current state."""
+        result: dict[StructuredProfileSection, list[StructuredProfileLineageRead]] = {}
+        for section in StructuredProfileSection:
+            fingerprints = {
+                structured_profile_item_fingerprint(section, item)
+                for item in getattr(data, section.value)
+            }
+            if not fingerprints:
+                result[section] = []
+                continue
+            with self._session.no_autoflush:
+                rows = self._session.scalars(
+                    select(CandidateStructuredItemLineageRecord)
+                    .where(
+                        CandidateStructuredItemLineageRecord.user_id == user_id,
+                        CandidateStructuredItemLineageRecord.section == section.value,
+                        CandidateStructuredItemLineageRecord.item_fingerprint.in_(fingerprints),
+                    )
+                    .order_by(CandidateStructuredItemLineageRecord.created_at, CandidateStructuredItemLineageRecord.id)
+                    .execution_options(populate_existing=True)
+                ).all()
+            result[section] = [self._read(row) for row in rows]
+        return result
+
+    @staticmethod
+    def _read(row: CandidateStructuredItemLineageRecord) -> StructuredProfileLineageRead:
+        section = StructuredProfileSection(row.section)
+        item = typed_structured_item(section, json.loads(row.item_json))
+        predecessor = (
+            typed_structured_item(section, json.loads(row.predecessor_item_json))
+            if row.predecessor_item_json is not None else None
+        )
+        if structured_profile_item_fingerprint(section, item) != row.item_fingerprint:
+            raise CandidateStructuredItemLineageConflict("Persisted item snapshot does not match its fingerprint.")
+        if (predecessor is None) != (row.predecessor_fingerprint is None):
+            raise CandidateStructuredItemLineageConflict("Persisted predecessor snapshot and fingerprint disagree.")
+        if predecessor is not None and structured_profile_item_fingerprint(section, predecessor) != row.predecessor_fingerprint:
+            raise CandidateStructuredItemLineageConflict("Persisted predecessor does not match its fingerprint.")
+        return StructuredProfileLineageRead(
+            id=row.id, user_id=row.user_id, lineage_key=row.lineage_key,
+            section=section, item_fingerprint=row.item_fingerprint, item=item,
+            source_kind=row.source_kind, source_ref=row.source_ref,
+            relationship=row.relationship, predecessor_fingerprint=row.predecessor_fingerprint,
+            predecessor_item=predecessor, created_at=row.created_at or datetime.min,
+        )

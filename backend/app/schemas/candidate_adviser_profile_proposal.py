@@ -7,19 +7,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.cv_ingestion import Achievement, Credential, Education, Employment, Project, Skill
 from app.schemas.candidate_adviser import ClarificationProposedEvidence
 from app.schemas.profile_revision import CandidateProfileRevisionRead
+from app.schemas.structured_profile import StructuredProfileSection
 
 
 Fingerprint = str | None
 ProposalOperation = Literal["add", "replace_exact"]
-
-
-class StructuredProfileSection(StrEnum):
-    EMPLOYMENT = "employment"
-    EDUCATION = "education"
-    CREDENTIALS = "credentials"
-    SKILLS = "skills"
-    PROJECTS = "projects"
-    ACHIEVEMENTS = "achievements"
 
 
 class _ProposalUpdate(BaseModel):
