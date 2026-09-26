@@ -24,6 +24,7 @@ from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalRead,
     CandidateAdviserProfileProposalGenerationRead,
     CandidateAdviserProfileProposalTransferRead,
+    CandidateAdviserProfileProposalOverlapResolutionRequest,
 )
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_profile_proposal import (
@@ -190,6 +191,26 @@ def edit_profile_proposal(
             proposal_id,
             expected_revision=payload.expected_revision,
             proposed_update=payload.proposed_update,
+        )
+    except CandidateAdviserProfileProposalNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile proposal not found.") from exc
+    except CandidateAdviserProfileProposalConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/profile-proposals/{proposal_id}/resolve-overlap",
+    response_model=CandidateAdviserProfileProposalRead,
+)
+def resolve_profile_proposal_overlap(
+    proposal_id: str,
+    payload: CandidateAdviserProfileProposalOverlapResolutionRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> CandidateAdviserProfileProposalRead:
+    try:
+        return CandidateAdviserProfileProposalService(db).resolve_overlap(
+            current_user.id, proposal_id, payload
         )
     except CandidateAdviserProfileProposalNotFound as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile proposal not found.") from exc

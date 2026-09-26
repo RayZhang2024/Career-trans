@@ -26,12 +26,16 @@ from app.schemas.candidate_adviser import (
     ClarificationProposedEvidence,
 )
 from app.schemas.candidate_adviser_profile_proposal import (
+    EmploymentProposalUpdate,
     CandidateAdviserProfileProposalRead,
+    CandidateAdviserProfileProposalOverlapAction,
+    CandidateAdviserProfileProposalOverlapResolutionRequest,
     CandidateAdviserProfileProposalState,
     CandidateAdviserProfileProposalUpdate,
+    SkillProposalUpdate,
     StructuredProfileSection,
 )
-from app.schemas.cv_ingestion import CandidateCVData, Skill
+from app.schemas.cv_ingestion import CandidateCVData, Employment, Project, Skill
 from app.schemas.structured_profile import StructuredItemRelationship, StructuredItemSourceKind
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.services.candidate_adviser_profile_proposal import (
@@ -48,6 +52,8 @@ from app.services.profile_revision_service import (
     ProfileRevisionStale,
 )
 from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
+from app.services.profile_revision_service import structured_authority_fingerprint
+from tests.test_profile import auth_header, register_and_login
 
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
@@ -1233,3 +1239,270 @@ def test_transfer_http_endpoint_is_provider_free(client, db_session, monkeypatch
     assert response.status_code == 200, response.text
     assert response.json()["proposal"]["state"] == "transferred"
     assert response.json()["profile_revision"]["state"] == "draft"
+
+
+def _ambiguous_employment_proposal(session, email):
+    user_id = session.scalar(select(User.id).where(User.email == email))
+    if user_id is None:
+        user_id = _user(session, email)
+    _seed_structured_profile(session, user_id, CandidateCVData(employment=[
+        Employment(employer="Example", title="Engineer", start_date="2021"),
+        Employment(employer="Example", title="Manager", start_date="2021"),
+    ]))
+    clarification_id = _source(session, user_id)
+    proposal = CandidateAdviserProfileProposalService(session).materialize_from_confirmed_clarification(
+        user_id, clarification_id,
+        EmploymentProposalUpdate(
+            section="employment", operation="add",
+            item=Employment(employer="Example", title="Director", start_date="2021"),
+        ),
+    )
+    return user_id, proposal
+
+
+def test_pending_ambiguous_proposal_exposes_fresh_comparison_and_bound_add_as_new_choice(db_session):
+    user_id, proposal = _ambiguous_employment_proposal(db_session, "adviser-ambiguous-resolution@example.test")
+    service = CandidateAdviserProfileProposalService(db_session)
+    viewed = service.get_for_user(user_id, proposal.id)
+    current = CandidateCVData.model_validate_json(db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    )).structured_json)
+    assert viewed.comparison.relationship is StructuredItemRelationship.AMBIGUOUS
+    assert viewed.comparison_base_fingerprint == structured_authority_fingerprint(current)
+    assert viewed.overlap_resolution is None and viewed.overlap_resolution_stale is False
+
+    resolved = service.resolve_overlap(
+        user_id, proposal.id,
+        CandidateAdviserProfileProposalOverlapResolutionRequest(
+            expected_revision=viewed.revision,
+            expected_comparison_base_fingerprint=viewed.comparison_base_fingerprint,
+            action=CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW,
+        ),
+    )
+    assert resolved.revision == viewed.revision + 1
+    assert resolved.overlap_resolution is not None
+    assert resolved.overlap_resolution.incoming_fingerprint == viewed.comparison.incoming_fingerprint
+    assert resolved.overlap_resolution.candidate_fingerprints == [
+        value.fingerprint for value in viewed.comparison.candidate_matches
+    ]
+    assert resolved.overlap_resolution_stale is False
+
+
+@pytest.mark.parametrize(
+    "before,incoming,relationship",
+    [
+        ([], Skill(name="Python"), StructuredItemRelationship.NEW),
+        ([Skill(name="Python")], Skill(name=" PYTHON "), StructuredItemRelationship.REINFORCEMENT),
+        ([Skill(name="Python")], Skill(name="Python", category="Language"), StructuredItemRelationship.REFINEMENT),
+        ([Skill(name="Python", category="Language")], Skill(name="Python", category="Data"), StructuredItemRelationship.CONFLICT),
+    ],
+)
+def test_add_as_new_resolution_is_only_valid_for_ambiguous_comparison(db_session, before, incoming, relationship):
+    user_id = _user(db_session, f"adviser-add-as-new-{relationship.value}@example.test")
+    _seed_structured_profile(db_session, user_id, CandidateCVData(skills=before))
+    clarification = _source(db_session, user_id)
+    service = CandidateAdviserProfileProposalService(db_session)
+    proposal = service.materialize_from_confirmed_clarification(
+        user_id, clarification, SkillProposalUpdate(section="skills", operation="add", item=incoming)
+    )
+    viewed = service.get_for_user(user_id, proposal.id)
+    assert viewed.comparison.relationship is relationship
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="only for a currently ambiguous"):
+        service.resolve_overlap(
+            user_id, proposal.id,
+            CandidateAdviserProfileProposalOverlapResolutionRequest(
+                expected_revision=viewed.revision,
+                expected_comparison_base_fingerprint=viewed.comparison_base_fingerprint,
+                action=CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW,
+            ),
+        )
+    assert service.get_for_user(user_id, proposal.id).overlap_resolution is None
+
+
+def test_adviser_ambiguity_resolution_rejects_wrong_revision_stale_base_and_other_user(client, db_session, monkeypatch):
+    from app.api import deps
+
+    def no_provider(*args, **kwargs):
+        raise AssertionError("Adviser overlap resolution must not construct provider services")
+
+    monkeypatch.setattr(deps, "_build_candidate_adviser_service", no_provider)
+    monkeypatch.setattr(deps, "get_semantic_response_client", no_provider)
+    token = register_and_login(client, "resolution-owner-auth@example.com")
+    token_other = register_and_login(client, "resolution-other-auth@example.com")
+    headers = auth_header(token)
+    other_headers = auth_header(token_other)
+    user_id, proposal = _ambiguous_employment_proposal(db_session, "resolution-owner-auth@example.com")
+    service = CandidateAdviserProfileProposalService(db_session)
+    viewed = service.get_for_user(user_id, proposal.id)
+    wrong_revision = client.post(
+        f"/api/v1/candidate-adviser/profile-proposals/{proposal.id}/resolve-overlap",
+        headers=headers,
+        json={"expected_revision": viewed.revision + 1,
+              "expected_comparison_base_fingerprint": viewed.comparison_base_fingerprint,
+              "action": "add_as_new"},
+    )
+    assert wrong_revision.status_code == 409
+    stale_base = client.post(
+        f"/api/v1/candidate-adviser/profile-proposals/{proposal.id}/resolve-overlap",
+        headers=headers,
+        json={"expected_revision": viewed.revision,
+              "expected_comparison_base_fingerprint": "0" * 64,
+              "action": "add_as_new"},
+    )
+    assert stale_base.status_code == 409
+    missing = client.post(
+        f"/api/v1/candidate-adviser/profile-proposals/{proposal.id}/resolve-overlap",
+        headers=other_headers,
+        json={"expected_revision": viewed.revision,
+              "expected_comparison_base_fingerprint": viewed.comparison_base_fingerprint,
+              "action": "add_as_new"},
+    )
+    assert missing.status_code == 404
+    assert service.get_for_user(user_id, proposal.id).overlap_resolution is None
+    before = db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    )).structured_json
+    success = client.post(
+        f"/api/v1/candidate-adviser/profile-proposals/{proposal.id}/resolve-overlap",
+        headers=headers,
+        json={"expected_revision": viewed.revision,
+              "expected_comparison_base_fingerprint": viewed.comparison_base_fingerprint,
+              "action": "add_as_new"},
+    )
+    assert success.status_code == 200, success.text
+    assert success.json()["overlap_resolution_stale"] is False
+    assert db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    )).structured_json == before
+
+
+def test_adviser_overlap_resolution_edit_clears_but_reject_preserves_choice(db_session):
+    user_id, proposal = _ambiguous_employment_proposal(db_session, "adviser-resolution-edit@example.test")
+    service = CandidateAdviserProfileProposalService(db_session)
+    viewed = service.get_for_user(user_id, proposal.id)
+    chosen = service.resolve_overlap(
+        user_id, proposal.id,
+        CandidateAdviserProfileProposalOverlapResolutionRequest(
+            expected_revision=viewed.revision,
+            expected_comparison_base_fingerprint=viewed.comparison_base_fingerprint,
+            action=CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW,
+        ),
+    )
+    edited = service.edit_pending(
+        user_id, proposal.id, expected_revision=chosen.revision,
+        proposed_update=EmploymentProposalUpdate(
+            section="employment", operation="add",
+            item=Employment(employer="Example", title="Director of Engineering", start_date="2021"),
+        ),
+    )
+    assert edited.overlap_resolution is None
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="overlaps current Profile information"):
+        service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=edited.revision)
+    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )) is None
+    viewed_again = service.get_for_user(user_id, proposal.id)
+    chosen_again = service.resolve_overlap(
+        user_id, proposal.id,
+        CandidateAdviserProfileProposalOverlapResolutionRequest(
+            expected_revision=viewed_again.revision,
+            expected_comparison_base_fingerprint=viewed_again.comparison_base_fingerprint,
+            action=CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW,
+        ),
+    )
+    rejected = service.reject_pending(user_id, proposal.id, expected_revision=chosen_again.revision)
+    assert rejected.state is CandidateAdviserProfileProposalState.REJECTED
+    assert rejected.overlap_resolution == chosen_again.overlap_resolution
+    assert rejected.comparison is None and rejected.comparison_base_fingerprint is None
+
+
+@pytest.mark.parametrize("change_candidate_set", [False, True])
+def test_stale_adviser_add_as_new_choice_blocks_transfer_after_profile_change(db_session, change_candidate_set):
+    user_id, proposal = _ambiguous_employment_proposal(
+        db_session, f"adviser-resolution-stale-{change_candidate_set}@example.test"
+    )
+    service = CandidateAdviserProfileProposalService(db_session)
+    viewed = service.get_for_user(user_id, proposal.id)
+    resolved = service.resolve_overlap(
+        user_id, proposal.id,
+        CandidateAdviserProfileProposalOverlapResolutionRequest(
+            expected_revision=viewed.revision,
+            expected_comparison_base_fingerprint=viewed.comparison_base_fingerprint,
+            action=CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW,
+        ),
+    )
+    row = db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+    data = CandidateCVData.model_validate_json(row.structured_json)
+    if change_candidate_set:
+        data.employment[1] = Employment(employer="Example", title="Principal", start_date="2021")
+    else:
+        data.projects.append(Project(name="Unrelated", description="Current authority changed"))
+    row.structured_json = json.dumps(data.model_dump(mode="json"), sort_keys=True)
+    db_session.commit()
+    stale = service.get_for_user(user_id, proposal.id)
+    assert stale.overlap_resolution is not None and stale.overlap_resolution_stale is True
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="stale"):
+        service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=resolved.revision)
+    db_session.expire_all()
+    assert service.get_for_user(user_id, proposal.id).state is CandidateAdviserProfileProposalState.PENDING
+    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )) is None
+    assert CandidateStructuredItemLineageService(db_session).read_history(user_id) == []
+
+
+def test_resolved_ambiguous_add_transfers_as_new_without_canonical_mutation_then_confirms_truthful_lineage(db_session):
+    user_id, proposal = _ambiguous_employment_proposal(db_session, "adviser-resolution-transfer@example.test")
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    viewed = proposals.get_for_user(user_id, proposal.id)
+    resolved = proposals.resolve_overlap(
+        user_id, proposal.id,
+        CandidateAdviserProfileProposalOverlapResolutionRequest(
+            expected_revision=viewed.revision,
+            expected_comparison_base_fingerprint=viewed.comparison_base_fingerprint,
+            action=CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW,
+        ),
+    )
+    before = db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)).structured_json
+    transfer = proposals.transfer_to_profile_revision(user_id, proposal.id, expected_revision=resolved.revision)
+    assert transfer.profile_revision.proposed_structured.employment[-1].title == "Director"
+    assert db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)).structured_json == before
+    assert len(CandidateStructuredItemLineageService(db_session).read_history(user_id)) == 0
+    revisions = CandidateProfileRevisionService(db_session)
+    reviewed = revisions.review(user_id, transfer.profile_revision.id, expected_revision=transfer.profile_revision.revision)
+    confirmed = revisions.confirm(user_id, transfer.profile_revision.id, expected_revision=reviewed.revision)
+    assert confirmed.state == "confirmed"
+    current = CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == user_id)
+    ))
+    assert [item.title for item in current.employment] == ["Engineer", "Manager", "Director"]
+    event = next(row for row in CandidateStructuredItemLineageService(db_session).read_history(user_id)
+                 if row.source_kind is StructuredItemSourceKind.CANDIDATE_ADVISER)
+    assert event.relationship is StructuredItemRelationship.AMBIGUOUS
+    assert event.item == Employment(employer="Example", title="Director", start_date="2021")
+    assert event.predecessor_item is None
+
+
+def test_exact_target_patch_clears_ambiguous_add_as_new_and_remains_transferable(db_session):
+    user_id, proposal = _ambiguous_employment_proposal(db_session, "adviser-resolution-replace@example.test")
+    service = CandidateAdviserProfileProposalService(db_session)
+    viewed = service.get_for_user(user_id, proposal.id)
+    resolved = service.resolve_overlap(
+        user_id, proposal.id,
+        CandidateAdviserProfileProposalOverlapResolutionRequest(
+            expected_revision=viewed.revision,
+            expected_comparison_base_fingerprint=viewed.comparison_base_fingerprint,
+            action=CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW,
+        ),
+    )
+    target = viewed.comparison.candidate_matches[0]
+    replacement = EmploymentProposalUpdate(
+        section="employment", operation="replace_exact", target_fingerprint=target.fingerprint,
+        item=Employment(employer="Example", title="Director", start_date="2021"),
+    )
+    edited = service.edit_pending(
+        user_id, proposal.id, expected_revision=resolved.revision, proposed_update=replacement
+    )
+    assert edited.overlap_resolution is None
+    transfer = service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=edited.revision)
+    assert transfer.profile_revision.proposed_structured.employment[0].title == "Director"

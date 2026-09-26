@@ -164,6 +164,28 @@ class CandidateAdviserProfileProposalState(StrEnum):
     TRANSFERRED = "transferred"
 
 
+class CandidateAdviserProfileProposalOverlapAction(StrEnum):
+    ADD_AS_NEW = "add_as_new"
+
+
+class CandidateAdviserProfileProposalOverlapResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action: CandidateAdviserProfileProposalOverlapAction
+    base_structured_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    incoming_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_fingerprints: list[str]
+    resolved_at: datetime
+
+
+class CandidateAdviserProfileProposalOverlapResolutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    expected_comparison_base_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    action: CandidateAdviserProfileProposalOverlapAction
+
+
 class CandidateAdviserProfileProposalRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -180,6 +202,9 @@ class CandidateAdviserProfileProposalRead(BaseModel):
     transferred_at: datetime | None = None
     transferred_profile_revision_id: str | None = None
     comparison: StructuredProfileComparisonResult | None = None
+    comparison_base_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    overlap_resolution: CandidateAdviserProfileProposalOverlapResolution | None = None
+    overlap_resolution_stale: bool | None = None
 
 
 class CandidateAdviserProfileProposalGenerationRead(BaseModel):

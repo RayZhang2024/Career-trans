@@ -264,6 +264,8 @@ The Adviser page exposes this lifecycle separately from assessment and clarifica
 
 Phase 3 classifies source overlap before mutation. CV refinements, conflicts, and ambiguous overlaps require persisted explicit choices tied to fingerprints of both the current structured authority and reviewed draft; a changed authority or edited draft invalidates those choices. Exact and normalized reinforcement leave one canonical item, and normalized-equivalent duplicates inside one CV block confirmation until the draft is edited. Manual Profile revisions continue through the existing #207 review/confirm boundary, while same-fact duplicate growth is rejected and typed comparison metadata is exposed on the revision read. Adviser `add` reinforcement transfers without appending a duplicate; other overlapping `add` suggestions stay pending until explicitly retargeted. Exact-target Adviser replacement remains available. Canonical reads still exclude lineage, no historical rows are rewritten, and no frontend conflict-resolution UI is implemented yet.
 
+Phase 4A adds a separate provider-free read projection for current structured Profile provenance. Its source descriptors resolve prospective lineage records but do not enter canonical snapshots or downstream fingerprints. A pending ambiguous Adviser `add` may persist an explicit, current-authority-bound human `add_as_new` choice before transfer. No frontend conflict or provenance UX is implemented yet.
+
 ---
 
 # 8. Candidate Data Model
