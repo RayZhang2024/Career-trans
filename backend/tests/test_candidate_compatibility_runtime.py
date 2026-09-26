@@ -1,16 +1,22 @@
 import asyncio
+import logging
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base
 from app.models import User  # noqa: F401
+from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateStructuredProfile
+from app.models.candidate_profile import CandidateProfile
 from app.schemas.candidate_compatibility import (
+    CandidateCompatibilityStatus,
     CandidateCompatibilityDatabaseState,
     CandidateCompatibilityOperation,
     CandidateBatchReconciliationRead,
 )
+from app.schemas.cv_ingestion import CandidateCVData
 from app.services.candidate_compatibility_runtime import (
     CandidateCompatibilityRuntime,
     CandidateCompatibilityRuntimeBlocked,
@@ -21,6 +27,47 @@ from app.services.candidate_legacy_data_reconciliation import CandidateLegacyDat
 
 def _engine():
     return create_engine("sqlite://", poolclass=StaticPool)
+
+
+def _mixed_user_engine():
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory.begin() as session:
+        session.add_all([
+            User(id="a-reconstruct", email="a@example.test", password_hash="fixture"),
+            User(id="b-malformed", email="b@example.test", password_hash="fixture"),
+            User(id="c-not-confirmed", email="c@example.test", password_hash="fixture"),
+        ])
+        data = CandidateCVData.model_validate({
+            "employment": [{"employer": "Example", "title": "Engineer"}],
+        })
+        session.add_all([
+            CandidateCVIngestionDraft(
+                id="confirmed-cv",
+                user_id="a-reconstruct",
+                state="confirmed",
+                documents_json="[]",
+                merged_json=data.model_dump_json(),
+            ),
+            CandidateCVIngestionDraft(
+                id="malformed-cv",
+                user_id="b-malformed",
+                state="confirmed",
+                documents_json="[]",
+                merged_json="{",
+            ),
+            CandidateProfile(user_id="c-not-confirmed", headline="Keep this scalar profile"),
+        ])
+    return engine
+
+
+def _non_sqlite_engine():
+    engine = _engine()
+    engine.dialect.name = "postgresql"
+    connections = []
+    event.listen(engine, "connect", lambda *args: connections.append(True))
+    return engine, connections
 
 
 def test_inspect_empty_database_is_read_only_and_reports_fresh_state():
@@ -83,6 +130,65 @@ def test_apply_retained_users_repairs_candidate_schema_then_reconciles():
     assert result.unresolved_count == result.reconciliation.unresolved_count
 
 
+def test_mixed_user_apply_counts_reconciliation_statuses_and_preserves_not_confirmed_user():
+    engine = _mixed_user_engine()
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    result = CandidateCompatibilityRuntime(engine).apply()
+
+    assert result.user_count == 3
+    assert result.changed_count == 1
+    assert result.unresolved_count == 1
+    assert result.not_yet_confirmed_count == 1
+    by_id = {user.user_id: user for user in result.reconciliation.users}
+    assert by_id["a-reconstruct"].changed
+    assert by_id["b-malformed"].status_after is CandidateCompatibilityStatus.UNRESOLVED
+    assert by_id["c-not-confirmed"].status_after is CandidateCompatibilityStatus.NOT_YET_CONFIRMED
+    with factory() as session:
+        scalar = session.query(CandidateProfile).filter_by(user_id="c-not-confirmed").one()
+        assert scalar.headline == "Keep this scalar profile"
+        assert session.query(CandidateStructuredProfile).filter_by(user_id="c-not-confirmed").first() is None
+
+
+def test_startup_returns_and_logs_not_yet_confirmed_count(caplog, monkeypatch):
+    from app import main
+
+    engine = _mixed_user_engine()
+    monkeypatch.setattr(main, "engine", engine)
+    monkeypatch.setattr(main, "configure_langsmith_environment", lambda settings: None)
+    original_startup = main.run_candidate_compatibility_startup
+    observed = []
+
+    def startup(target_engine):
+        result = original_startup(target_engine)
+        observed.append(result)
+        return result
+
+    monkeypatch.setattr(main, "run_candidate_compatibility_startup", startup)
+    caplog.set_level(logging.INFO)
+
+    async def run_lifespan():
+        async with main.lifespan(main.app):
+            pass
+
+    asyncio.run(run_lifespan())
+    assert observed[0].not_yet_confirmed_count == 1
+    assert "users=3 changed=1 unresolved=1 not_yet_confirmed=1" in caplog.text
+    assert "c-not-confirmed" not in caplog.text
+    assert "left 1 user record(s) unresolved" in caplog.text
+
+
+def test_human_cli_summary_reports_not_yet_confirmed_count(capsys):
+    from app.cli import _print_compatibility_result
+
+    result = CandidateCompatibilityRuntime(_mixed_user_engine()).apply()
+    _print_compatibility_result(result, as_json=False)
+    assert (
+        "apply: state=retained_with_users users=3 changed=1 unresolved=1 not_yet_confirmed=1"
+        in capsys.readouterr().out
+    )
+
+
 def test_apply_stops_before_broad_create_all_on_unsupported_candidate_drift(monkeypatch):
     engine = _engine()
     with engine.begin() as connection:
@@ -113,6 +219,37 @@ def test_startup_non_sqlite_preserves_existing_create_all_path(monkeypatch):
     monkeypatch.setattr(Base.metadata, "create_all", lambda **kwargs: calls.append(kwargs))
     assert run_candidate_compatibility_startup(engine) is None
     assert calls == [{"bind": engine}]
+
+
+@pytest.mark.parametrize("operation", ["inspect", "apply"])
+def test_runtime_rejects_non_sqlite_without_connecting(operation):
+    engine, connections = _non_sqlite_engine()
+    runtime = CandidateCompatibilityRuntime(engine)
+    with pytest.raises(
+        CandidateCompatibilityRuntimeBlocked,
+        match="inspect/apply supports SQLite databases only",
+    ):
+        getattr(runtime, operation)()
+    assert connections == []
+
+
+@pytest.mark.parametrize(("operation", "approval"), [("inspect", []), ("apply", ["--yes"])])
+def test_cli_non_sqlite_operations_fail_without_connecting(monkeypatch, capsys, operation, approval):
+    import app.cli as cli
+
+    engine, connections = _non_sqlite_engine()
+    monkeypatch.setattr(cli, "create_engine", lambda *args, **kwargs: engine)
+    result = cli.main([
+        "dev",
+        "candidate-compatibility",
+        operation,
+        "--database-url",
+        "postgresql://offline.invalid/career_trans",
+        *approval,
+    ])
+    assert result == 2
+    assert "inspect/apply supports SQLite databases only" in capsys.readouterr().err
+    assert connections == []
 
 
 def test_startup_does_not_fail_for_unresolved_user_results(monkeypatch):

@@ -22,10 +22,11 @@ async def lifespan(_: FastAPI):
     result = run_candidate_compatibility_startup(engine)
     if result is not None:
         logger.info(
-            "Candidate compatibility startup complete: users=%d changed=%d unresolved=%d",
+            "Candidate compatibility startup complete: users=%d changed=%d unresolved=%d not_yet_confirmed=%d",
             result.user_count,
             result.changed_count,
             result.unresolved_count,
+            result.not_yet_confirmed_count,
         )
         if result.unresolved_count:
             logger.warning(

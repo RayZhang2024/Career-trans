@@ -288,7 +288,8 @@ def _print_compatibility_result(result, as_json: bool) -> None:
     print(
         f"{result.operation.value}: state={result.database_state.value} "
         f"users={result.user_count} changed={result.changed_count} "
-        f"unresolved={result.unresolved_count}"
+        f"unresolved={result.unresolved_count} "
+        f"not_yet_confirmed={result.not_yet_confirmed_count}"
     )
     if result.schema_after is not None:
         print(f"Candidate schema: {result.schema_after.status.value}")

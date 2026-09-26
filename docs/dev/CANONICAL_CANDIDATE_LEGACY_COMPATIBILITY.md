@@ -81,7 +81,10 @@ before/after, repair counts, and aggregate user outcomes; physical-schema
 failures raise a distinct blocked result while per-user failures remain
 unresolved user entries.
 
-`inspect()` is read-only. An empty database is reported as
+Both offline operations are SQLite-only; the runtime service rejects other
+dialects before connecting. Non-SQLite application startup retains ordinary
+`Base.metadata.create_all` behavior and does not run candidate repair or
+reconciliation. `inspect()` is read-only. An empty database is reported as
 `fresh_uninitialized`; a retained database without `users` is reported as
 `retained_without_users`; and a retained compatible database includes a Phase
 1 per-user plan. It does not bootstrap tables, repair schema, or reconcile user
@@ -93,9 +96,8 @@ metadata table creation, then candidate-schema postflight runs before sorted
 user enumeration and Phase 3 reconciliation. Unsafe candidate schema blocks
 startup before broad table creation or data reconciliation. A user's unresolved
 result does not block startup. Startup logs only aggregate counts, never
-candidate data or user identifiers. Non-SQLite startup keeps its prior
-`Base.metadata.create_all` behavior and does not run candidate repair or
-reconciliation.
+candidate data or user identifiers. Not-yet-confirmed users are reported
+separately from unresolved historical data; they are not migration errors.
 
 Offline operations use the same orchestrator:
 
@@ -105,5 +107,5 @@ career-trans dev candidate-compatibility apply --yes [--json] [--database-url UR
 ```
 
 `inspect` opens an existing SQLite file read-only and reports a missing local
-file as fresh without creating it. `apply` requires the explicit `--yes` flag,
-and is limited to SQLite. Both commands operate offline and invoke no providers.
+file as fresh without creating it. `apply` requires the explicit `--yes` flag.
+Both commands operate offline and invoke no providers.

@@ -11,6 +11,7 @@ from app.schemas.candidate_compatibility import (
     CandidateCompatibilityDatabaseState,
     CandidateCompatibilityOperation,
     CandidateCompatibilityRuntimeRead,
+    CandidateCompatibilityStatus,
     CandidateSchemaCompatibilityRead,
     CandidateSchemaStatus,
 )
@@ -47,6 +48,7 @@ class CandidateCompatibilityRuntime:
         )
 
     def inspect(self) -> CandidateCompatibilityRuntimeRead:
+        self._require_sqlite()
         table_names = set(inspect(self.engine).get_table_names())
         if not table_names:
             return CandidateCompatibilityRuntimeRead(
@@ -84,10 +86,7 @@ class CandidateCompatibilityRuntime:
         )
 
     def apply(self) -> CandidateCompatibilityRuntimeRead:
-        if self.engine.dialect.name != "sqlite":
-            raise CandidateCompatibilityRuntimeBlocked(
-                "Candidate compatibility apply supports SQLite databases only."
-            )
+        self._require_sqlite()
 
         table_names = set(inspect(self.engine).get_table_names())
         fresh = not table_names
@@ -136,8 +135,18 @@ class CandidateCompatibilityRuntime:
             user_count=batch.user_count,
             changed_count=batch.changed_count,
             unresolved_count=batch.unresolved_count,
+            not_yet_confirmed_count=sum(
+                result.status_after is CandidateCompatibilityStatus.NOT_YET_CONFIRMED
+                for result in batch.users
+            ),
             reconciliation=batch,
         )
+
+    def _require_sqlite(self) -> None:
+        if self.engine.dialect.name != "sqlite":
+            raise CandidateCompatibilityRuntimeBlocked(
+                "Candidate compatibility inspect/apply supports SQLite databases only."
+            )
 
     def _user_ids(self) -> list[str]:
         # Querying user IDs is postponed until a compatible candidate schema has
