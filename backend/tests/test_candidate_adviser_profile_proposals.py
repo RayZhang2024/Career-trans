@@ -32,6 +32,7 @@ from app.schemas.candidate_adviser_profile_proposal import (
     StructuredProfileSection,
 )
 from app.schemas.cv_ingestion import CandidateCVData, Skill
+from app.schemas.structured_profile import StructuredItemRelationship, StructuredItemSourceKind
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.services.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalConflict,
@@ -46,6 +47,7 @@ from app.services.profile_revision_service import (
     CandidateProfileRevisionService,
     ProfileRevisionStale,
 )
+from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
 
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
@@ -350,7 +352,7 @@ def test_transfer_replace_requires_one_exact_current_target(db_session, current_
     )) is None
 
 
-def test_transfer_add_rejects_exact_duplicate_in_current_section(db_session) -> None:
+def test_transfer_add_exact_reinforcement_keeps_one_current_item(db_session) -> None:
     user_id = _user(db_session, "proposal-transfer-duplicate@example.com")
     clarification_id = _source(db_session, user_id)
     _seed_structured_profile(db_session, user_id, CandidateCVData(skills=[Skill(name="Rust")]))
@@ -358,13 +360,28 @@ def test_transfer_add_rejects_exact_duplicate_in_current_section(db_session) -> 
     proposal = service.materialize_from_confirmed_clarification(
         user_id, clarification_id, _update(name="Rust")
     )
-    with pytest.raises(CandidateAdviserProfileProposalConflict, match="already exists"):
-        service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=1)
+    transfer = service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=1)
+    assert transfer.profile_revision.proposed_structured.skills == [Skill(name="Rust")]
+    reviewed = CandidateProfileRevisionService(db_session).review(
+        user_id, transfer.profile_revision.id, expected_revision=transfer.profile_revision.revision
+    )
+    confirmed = CandidateProfileRevisionService(db_session).confirm(
+        user_id, transfer.profile_revision.id, expected_revision=reviewed.revision
+    )
+    current = db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    ))
+    assert CandidateCVData.model_validate_json(current.structured_json).skills == [Skill(name="Rust")]
+    history = CandidateStructuredItemLineageService(db_session).read_history(user_id)
+    assert any(
+        value.source_kind is StructuredItemSourceKind.CANDIDATE_ADVISER
+        and value.source_ref == proposal.id
+        and value.relationship is StructuredItemRelationship.REINFORCEMENT
+        for value in history
+    )
+    assert confirmed.state == "confirmed"
     db_session.expire_all()
-    assert service.get_for_user(user_id, proposal.id).state == CandidateAdviserProfileProposalState.PENDING
-    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
-        CandidateProfileRevisionRecord.user_id == user_id
-    )) is None
+    assert service.get_for_user(user_id, proposal.id).state == CandidateAdviserProfileProposalState.TRANSFERRED
 
 
 def test_transfer_can_stage_structured_authority_when_none_existed(db_session) -> None:

@@ -28,13 +28,16 @@ from app.schemas.profile_revision import (
     EditableCandidateStructuredData,
     RevisionAuthority,
 )
+from app.schemas.cv_overlap_review import StructuredProfileChangeComparison
 from app.schemas.structured_profile import (
+    StructuredItemRelationship,
     StructuredItemSourceKind,
     StructuredProfileItemLineageInput,
     StructuredProfileSection,
 )
 from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
 from app.services.structured_profile_identity import structured_profile_item_fingerprint
+from app.services.structured_profile_comparison import StructuredProfileComparisonService
 from app.services.structured_profile_lineage_transitions import (
     StructuredItemLineageTransition,
     StructuredProfileLineageTransitionAnalyzer,
@@ -224,6 +227,11 @@ class CandidateProfileRevisionService:
                 + ", ".join(stale)
                 + ". Discard this revision and start again from current information."
             )
+        if "structured" in changed:
+            self._reject_reinforcement_duplicate_growth(
+                self._full_structured_data(self._structured(user_id, fresh=True)),
+                EditableCandidateStructuredData.model_validate_json(revision.proposed_structured_json),
+            )
         try:
             revision.state = CandidateProfileRevisionState.REVIEW_READY
             revision.revision += 1
@@ -312,6 +320,11 @@ class CandidateProfileRevisionService:
                 + ", ".join(stale)
                 + ". Discard this revision and start again from current information."
             )
+        if "structured" in changed:
+            self._reject_reinforcement_duplicate_growth(
+                full_structured,
+                EditableCandidateStructuredData.model_validate_json(revision.proposed_structured_json),
+            )
 
         try:
             if "profile" in changed:
@@ -356,13 +369,25 @@ class CandidateProfileRevisionService:
                 adviser_fingerprint = structured_profile_item_fingerprint(
                     adviser_section, adviser_update.item
                 )
-                survives = any(
-                    structured_profile_item_fingerprint(adviser_section, item) == adviser_fingerprint
-                    for item in getattr(final_structured, adviser_section.value)
-                )
-                if survives:
+                final_items = getattr(final_structured, adviser_section.value)
+                exact_survivor = next((
+                    item for item in final_items
+                    if structured_profile_item_fingerprint(adviser_section, item) == adviser_fingerprint
+                ), None)
+                supported_survivors = [
+                    item for item in final_items
+                    if StructuredProfileComparisonService().compare(
+                        adviser_section, adviser_update.item, [item]
+                    ).relationship is StructuredItemRelationship.REINFORCEMENT
+                ]
+                attributable_item = exact_survivor
+                if attributable_item is None and len(supported_survivors) == 1:
+                    # Phase 3 may suppress a normalized-equivalent Adviser add
+                    # from canonical state while retaining its source support.
+                    attributable_item = supported_survivors[0]
+                if attributable_item is not None:
                     adviser_transition = analyzer.analyze_item(
-                        full_structured, adviser_section, adviser_update.item
+                        full_structured, adviser_section, attributable_item
                     )
 
             events: list[StructuredProfileItemLineageInput] = []
@@ -439,6 +464,82 @@ class CandidateProfileRevisionService:
             predecessor_item=transition.predecessor_item,
         )
 
+    @staticmethod
+    def _reject_reinforcement_duplicate_growth(
+        before: CandidateCVData | None,
+        proposal: EditableCandidateStructuredData,
+    ) -> None:
+        """Reject only new occurrences that duplicate an exact item still retained."""
+        base = before or CandidateCVData()
+        comparator = StructuredProfileComparisonService()
+        for section in StructuredProfileSection:
+            old_items = getattr(base, section.value)
+            proposed_items = getattr(proposal, section.value)
+            old_counts: dict[str, int] = {}
+            proposed_counts: dict[str, int] = {}
+            for item in old_items:
+                fp = structured_profile_item_fingerprint(section, item)
+                old_counts[fp] = old_counts.get(fp, 0) + 1
+            for item in proposed_items:
+                fp = structured_profile_item_fingerprint(section, item)
+                proposed_counts[fp] = proposed_counts.get(fp, 0) + 1
+            retained = [
+                item for item in old_items
+                if proposed_counts.get(structured_profile_item_fingerprint(section, item), 0) > 0
+            ]
+            seen: dict[str, int] = {}
+            for item in proposed_items:
+                fp = structured_profile_item_fingerprint(section, item)
+                seen[fp] = seen.get(fp, 0) + 1
+                if seen[fp] <= old_counts.get(fp, 0):
+                    continue
+                if any(
+                    comparator.compare(section, item, [current]).relationship
+                    is StructuredItemRelationship.REINFORCEMENT
+                    for current in retained
+                ):
+                    raise ProfileRevisionConflict(
+                        "The Profile revision adds a same-fact duplicate. Remove the duplicate item before review or confirmation."
+                    )
+
+    def _structured_comparison_projection(
+        self, revision: CandidateProfileRevisionRecord, user_id: str
+    ) -> list[StructuredProfileChangeComparison]:
+        if revision.proposed_structured_json is None:
+            return []
+        current_record = self._structured(user_id, fresh=True)
+        before = self._full_structured_data(current_record)
+        editable = EditableCandidateStructuredData.model_validate_json(
+            revision.proposed_structured_json
+        )
+        after = CandidateCVData(
+            **editable.model_dump(mode="python"),
+            evidence=before.evidence if before is not None else [],
+        )
+        transitions = StructuredProfileLineageTransitionAnalyzer().analyze_changed_resulting_items(
+            before, after
+        )
+        comparator = StructuredProfileComparisonService()
+        occurrences: dict[tuple[StructuredProfileSection, str], int] = {}
+        result: list[StructuredProfileChangeComparison] = []
+        for transition in transitions:
+            fp = structured_profile_item_fingerprint(transition.section, transition.item)
+            key = (transition.section, fp)
+            occurrences[key] = occurrences.get(key, 0) + 1
+            item_key = hashlib.sha256(_canonical_json({
+                "section": transition.section.value,
+                "incoming_fingerprint": fp,
+                "occurrence": occurrences[key],
+            }).encode("utf-8")).hexdigest()
+            comparison = comparator.compare(
+                transition.section, transition.item,
+                getattr(before or CandidateCVData(), transition.section.value),
+            )
+            result.append(StructuredProfileChangeComparison(
+                item_key=item_key, comparison=comparison
+            ))
+        return result
+
     def _read(
         self, revision: CandidateProfileRevisionRecord, user_id: str
     ) -> CandidateProfileRevisionRead:
@@ -464,6 +565,9 @@ class CandidateProfileRevisionService:
             ),
             changed_authorities=changed,
             stale_authorities=stale,
+            structured_comparisons=self._structured_comparison_projection(
+                revision, user_id
+            ),
             created_at=revision.created_at,
             updated_at=revision.updated_at,
             confirmed_at=revision.confirmed_at,
@@ -499,11 +603,11 @@ class CandidateProfileRevisionService:
     ) -> list[RevisionAuthority]:
         stale: list[RevisionAuthority] = []
         if "profile" in changed and profile_authority_fingerprint(
-            self._profile(user_id)
+            self._profile(user_id, fresh=True)
         ) != revision.base_profile_fingerprint:
             stale.append("profile")
         if "structured" in changed and structured_authority_fingerprint(
-            self._full_structured_data(self._structured(user_id))
+            self._full_structured_data(self._structured(user_id, fresh=True))
         ) != revision.base_structured_fingerprint:
             stale.append("structured")
         return stale
@@ -549,21 +653,25 @@ class CandidateProfileRevisionService:
             )
 
     def _profile(
-        self, user_id: str, *, for_update: bool = False
+        self, user_id: str, *, for_update: bool = False, fresh: bool = False
     ) -> CandidateProfile | None:
         query = select(CandidateProfile).where(CandidateProfile.user_id == user_id)
         if for_update:
             query = query.with_for_update().execution_options(populate_existing=True)
+        elif fresh:
+            query = query.execution_options(populate_existing=True)
         return self._session.scalar(query)
 
     def _structured(
-        self, user_id: str, *, for_update: bool = False
+        self, user_id: str, *, for_update: bool = False, fresh: bool = False
     ) -> CandidateStructuredProfile | None:
         query = select(CandidateStructuredProfile).where(
             CandidateStructuredProfile.user_id == user_id
         )
         if for_update:
             query = query.with_for_update().execution_options(populate_existing=True)
+        elif fresh:
+            query = query.execution_options(populate_existing=True)
         return self._session.scalar(query)
 
     @staticmethod

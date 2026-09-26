@@ -8,6 +8,7 @@ from app.schemas.cv_ingestion import Achievement, Credential, Education, Employm
 from app.schemas.candidate_adviser import ClarificationProposedEvidence
 from app.schemas.profile_revision import CandidateProfileRevisionRead
 from app.schemas.structured_profile import StructuredProfileSection
+from app.schemas.structured_profile import StructuredProfileComparisonResult
 
 
 Fingerprint = str | None
@@ -178,6 +179,7 @@ class CandidateAdviserProfileProposalRead(BaseModel):
     rejected_at: datetime | None
     transferred_at: datetime | None = None
     transferred_profile_revision_id: str | None = None
+    comparison: StructuredProfileComparisonResult | None = None
 
 
 class CandidateAdviserProfileProposalGenerationRead(BaseModel):

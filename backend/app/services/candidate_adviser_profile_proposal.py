@@ -32,7 +32,7 @@ from app.schemas.candidate_adviser_profile_proposal import (
     ProjectProposalTarget,
     SkillProposalTarget,
 )
-from app.schemas.structured_profile import StructuredProfileSection
+from app.schemas.structured_profile import StructuredItemRelationship, StructuredProfileSection
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.profile_revision import EditableCandidateStructuredData
 from app.services.profile_revision_service import (
@@ -40,6 +40,7 @@ from app.services.profile_revision_service import (
     ProfileRevisionConflict,
 )
 from app.services.structured_profile_identity import structured_profile_item_fingerprint
+from app.services.structured_profile_comparison import StructuredProfileComparisonService
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
@@ -365,18 +366,19 @@ class CandidateAdviserProfileProposalService:
             }
             target_section = StructuredProfileSection(update.section)
             if update.operation == "add":
-                candidate_fingerprint = structured_profile_item_fingerprint(
-                    target_section, update.item
+                comparison = StructuredProfileComparisonService().compare(
+                    target_section, update.item, sections[target_section]
                 )
-                if any(
-                    structured_profile_item_fingerprint(target_section, item)
-                    == candidate_fingerprint
-                    for item in sections[target_section]
-                ):
+                if comparison.relationship is StructuredItemRelationship.NEW:
+                    sections[target_section].append(update.item)
+                elif comparison.relationship is StructuredItemRelationship.REINFORCEMENT:
+                    # Keep current truth as-is; normal #207 review/confirmation
+                    # is still required before Adviser lineage is recorded.
+                    pass
+                else:
                     raise CandidateAdviserProfileProposalConflict(
-                        "An exact matching structured item already exists; the proposal cannot be added."
+                        "This Adviser suggestion overlaps current Profile information. Edit it to target the intended item before transfer."
                     )
-                sections[target_section].append(update.item)
             else:
                 fingerprint = update.target_fingerprint
                 matches: list[tuple[StructuredProfileSection, int]] = []
@@ -515,10 +517,17 @@ class CandidateAdviserProfileProposalService:
     ) -> CandidateAdviserProfileProposalUpdate:
         return _UPDATE_ADAPTER.validate_python(update)
 
-    @staticmethod
     def _read(
-        record: CandidateAdviserProfileProposalRecord,
+        self, record: CandidateAdviserProfileProposalRecord,
     ) -> CandidateAdviserProfileProposalRead:
+        update = _UPDATE_ADAPTER.validate_json(record.proposed_update_json)
+        comparison = None
+        if record.state == CandidateAdviserProfileProposalState.PENDING:
+            current = self._structured_data(record.user_id, fresh=True)
+            comparison = StructuredProfileComparisonService().compare(
+                StructuredProfileSection(update.section), update.item,
+                getattr(current, update.section),
+            )
         return CandidateAdviserProfileProposalRead(
             id=record.id,
             state=record.state,
@@ -526,10 +535,11 @@ class CandidateAdviserProfileProposalService:
             source_clarification_id=record.source_clarification_id,
             source_assessment_fingerprint=record.source_assessment_fingerprint,
             original_update=_UPDATE_ADAPTER.validate_json(record.original_update_json),
-            proposed_update=_UPDATE_ADAPTER.validate_json(record.proposed_update_json),
+            proposed_update=update,
             created_at=record.created_at,
             updated_at=record.updated_at,
             rejected_at=record.rejected_at,
             transferred_at=record.transferred_at,
             transferred_profile_revision_id=record.transferred_profile_revision_id,
+            comparison=comparison,
         )

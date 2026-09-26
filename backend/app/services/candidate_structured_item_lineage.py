@@ -108,6 +108,22 @@ class CandidateStructuredItemLineageService:
                             "A reinforcement predecessor with a different exact fingerprint "
                             "must be the unique normalized-equivalent comparator target."
                         )
+                if (
+                    event.relationship is StructuredItemRelationship.AMBIGUOUS
+                    and predecessor is not None
+                ):
+                    comparison = StructuredProfileComparisonService().compare(
+                        event.section, item, [predecessor]
+                    )
+                    if (
+                        comparison.relationship is StructuredItemRelationship.NEW
+                        or comparison.current_item is None
+                        or comparison.target_fingerprint != predecessor_fingerprint
+                        or len(comparison.candidate_matches) != 1
+                    ):
+                        raise ValueError(
+                            "A selected ambiguous predecessor must be a deterministic overlap target."
+                        )
                 key = structured_item_lineage_key(
                     user_id=user_id,
                     section=event.section,

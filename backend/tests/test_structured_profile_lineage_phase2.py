@@ -25,6 +25,11 @@ from app.schemas.candidate_adviser import (
     ClarificationProposedEvidence,
 )
 from app.schemas.candidate_adviser_profile_proposal import SkillProposalUpdate
+from app.schemas.cv_overlap_review import (
+    CVOverlapResolution,
+    CVOverlapResolutionAction,
+    CVOverlapReviewPatch,
+)
 from app.schemas.cv_ingestion import (
     Achievement,
     CandidateCVData,
@@ -53,6 +58,7 @@ from app.services.candidate_adviser_profile_proposal import CandidateAdviserProf
 from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
 from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.services.cv_ingestion_service import CVIngestionService
+from app.services.cv_overlap_review_service import CVOverlapReviewService
 from app.services.profile_revision_service import CandidateProfileRevisionService, ProfileRevisionConflict
 from app.services.structured_profile_identity import structured_profile_item_fingerprint
 from app.services.user_job_discovery_service import UserJobDiscoveryService
@@ -380,7 +386,20 @@ def test_stage_reuses_event_committed_by_another_session(tmp_path):
 def test_cv_refinement_conflict_and_ambiguous_history(db_session, before, incoming, expected):
     user_id = _user(db_session, f"cv-{expected.value}@example.test")
     _seed_current(db_session, user_id, before)
-    draft, _ = _confirm_cv(db_session, user_id, incoming)
+    draft = _new_cv(db_session, user_id, incoming)
+    overlap_service = CVOverlapReviewService(db_session)
+    overlap = overlap_service.read(user_id, draft.id)
+    review_item = overlap.items[0]
+    selected_target = review_item.target_fingerprint or review_item.candidate_matches[0].fingerprint
+    overlap_service.update(user_id, draft.id, CVOverlapReviewPatch(
+        expected_review_revision=overlap.revision,
+        resolutions=[CVOverlapResolution(
+            item_key=review_item.item_key,
+            action=CVOverlapResolutionAction.REPLACE_CURRENT,
+            target_fingerprint=selected_target,
+        )],
+    ))
+    CVIngestionService(db_session).confirm(user_id, draft.id)
     incoming_section = next(section for section in StructuredProfileSection if getattr(incoming, section.value))
     item = getattr(incoming, incoming_section.value)[0]
     rows = _event_source(_lineage_rows(db_session, user_id), incoming_section, item, StructuredItemSourceKind.CV)
@@ -388,7 +407,9 @@ def test_cv_refinement_conflict_and_ambiguous_history(db_session, before, incomi
     assert rows[0].source_ref == draft.id
     assert rows[0].relationship is expected
     if expected is StructuredItemRelationship.AMBIGUOUS:
-        assert rows[0].predecessor_item is None and rows[0].predecessor_fingerprint is None
+        selected = next(match.item for match in review_item.candidate_matches if match.fingerprint == selected_target)
+        assert rows[0].predecessor_item == selected
+        assert rows[0].predecessor_fingerprint == selected_target
     else:
         old = getattr(before, incoming_section.value)[0]
         assert rows[0].predecessor_item == old
@@ -478,19 +499,70 @@ def test_scalar_only_revision_creates_no_structured_lineage(db_session):
     assert _lineage_rows(db_session, user_id) == []
 
 
-def test_manual_revision_exact_duplicate_growth_is_reinforcement(db_session):
+def test_manual_revision_exact_duplicate_growth_is_blocked(db_session):
     user_id = _user(db_session)
     skill = Skill(name="Python")
     _seed_current(db_session, user_id, CandidateCVData(skills=[skill]))
-    confirmed = _confirm_revision(
-        db_session, user_id,
-        structured=EditableCandidateStructuredData(skills=[skill, skill]),
+    service = CandidateProfileRevisionService(db_session)
+    created = service.create_or_resume(user_id)
+    saved = service.save(
+        user_id, created.id, expected_revision=created.revision,
+        patch_fields={"proposed_structured"}, proposed_profile=None,
+        proposed_structured=EditableCandidateStructuredData(skills=[skill, skill]),
     )
-    rows = _lineage_rows(db_session, user_id)
-    assert len(rows) == 1
-    assert rows[0].source_ref == confirmed.id
-    assert rows[0].relationship is StructuredItemRelationship.REINFORCEMENT
-    assert rows[0].predecessor_item == skill
+    with pytest.raises(ProfileRevisionConflict, match="same-fact duplicate"):
+        service.review(user_id, created.id, expected_revision=saved.revision)
+    assert CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == user_id)
+    )).skills == [skill]
+    assert _lineage_rows(db_session, user_id) == []
+
+
+def test_manual_revision_normalized_duplicate_growth_is_blocked(db_session):
+    user_id = _user(db_session)
+    previous = Skill(name="Python")
+    _seed_current(db_session, user_id, CandidateCVData(skills=[previous]))
+    service = CandidateProfileRevisionService(db_session)
+    created = service.create_or_resume(user_id)
+    proposed = EditableCandidateStructuredData(
+        skills=[previous, Skill(name=" PYTHON ")]
+    )
+    saved = service.save(
+        user_id, created.id, expected_revision=created.revision,
+        patch_fields={"proposed_structured"}, proposed_profile=None,
+        proposed_structured=proposed,
+    )
+    assert saved.structured_comparisons[0].comparison.relationship is StructuredItemRelationship.REINFORCEMENT
+    with pytest.raises(ProfileRevisionConflict, match="same-fact duplicate"):
+        service.review(user_id, created.id, expected_revision=saved.revision)
+    assert _lineage_rows(db_session, user_id) == []
+
+
+def test_manual_normalized_representation_replacement_is_allowed_and_projected(db_session):
+    user_id = _user(db_session)
+    previous = Skill(name="Python")
+    incoming = Skill(name=" PYTHON ")
+    _seed_current(db_session, user_id, CandidateCVData(skills=[previous]))
+    service = CandidateProfileRevisionService(db_session)
+    created = service.create_or_resume(user_id)
+    saved = service.save(
+        user_id, created.id, expected_revision=created.revision,
+        patch_fields={"proposed_structured"}, proposed_profile=None,
+        proposed_structured=EditableCandidateStructuredData(skills=[incoming]),
+    )
+    projection = saved.structured_comparisons[0].comparison
+    assert projection.section is StructuredProfileSection.SKILLS
+    assert projection.relationship is StructuredItemRelationship.REINFORCEMENT
+    assert projection.current_item == previous
+    reviewed = service.review(user_id, created.id, expected_revision=saved.revision)
+    confirmed = service.confirm(user_id, created.id, expected_revision=reviewed.revision)
+    assert confirmed.state == CandidateProfileRevisionState.CONFIRMED.value
+    assert CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == user_id)
+    )).skills == [incoming]
+    lineage = _lineage_rows(db_session, user_id)[0]
+    assert lineage.relationship is StructuredItemRelationship.REINFORCEMENT
+    assert lineage.predecessor_item == previous
 
 
 def test_manual_revision_normalized_reinforcement_preserves_exact_predecessor(db_session):
@@ -682,22 +754,158 @@ def test_adviser_normalized_reinforcement_keeps_proposal_attribution(db_session)
         select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id)
     )
     current = CandidateCVData.model_validate_json(current_row.structured_json)
-    assert current.skills == [previous, incoming]
+    assert current.skills == [previous]
     rows = _event_source(
         _lineage_rows(db_session, user_id), StructuredProfileSection.SKILLS,
-        incoming, StructuredItemSourceKind.CANDIDATE_ADVISER,
+        previous, StructuredItemSourceKind.CANDIDATE_ADVISER,
     )
     assert len(rows) == 1
     assert rows[0].source_ref == proposal.id
     assert rows[0].relationship is StructuredItemRelationship.REINFORCEMENT
     assert rows[0].predecessor_item == previous
-    assert rows[0].predecessor_fingerprint == structured_profile_item_fingerprint("skills", previous)
-    assert rows[0].item_fingerprint == structured_profile_item_fingerprint("skills", incoming)
-    assert rows[0].item_fingerprint != rows[0].predecessor_fingerprint
-    assert not _event_source(
-        _lineage_rows(db_session, user_id), StructuredProfileSection.SKILLS,
-        incoming, StructuredItemSourceKind.MANUAL_PROFILE,
+
+
+@pytest.mark.parametrize("before,incoming,expected", [
+    (Skill(name="Python"), Skill(name="Python", category="Language"), StructuredItemRelationship.REFINEMENT),
+    (Skill(name="Python", category="Language"), Skill(name="Python", category="Data"), StructuredItemRelationship.CONFLICT),
+    ([Skill(name="Python"), Skill(name="Python")], Skill(name="Python"), StructuredItemRelationship.AMBIGUOUS),
+])
+def test_adviser_add_overlap_is_provider_free_and_stays_pending(
+    db_session, before, incoming, expected
+):
+    user_id = _user(db_session, f"adviser-overlap-{expected.value}@example.test")
+    current_items = before if isinstance(before, list) else [before]
+    _seed_current(db_session, user_id, CandidateCVData(skills=current_items))
+    clarification_id = _adviser_source(db_session, user_id, skill=incoming.name)
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    proposal = proposals.materialize_from_confirmed_clarification(
+        user_id, clarification_id,
+        SkillProposalUpdate(section="skills", operation="add", item=incoming),
     )
+    read = proposals.get_for_user(user_id, proposal.id)
+    assert read.comparison is not None
+    assert read.comparison.relationship is expected
+    with pytest.raises(ValueError, match="overlaps current Profile information"):
+        proposals.transfer_to_profile_revision(user_id, proposal.id, expected_revision=proposal.revision)
+    assert proposals.get_for_user(user_id, proposal.id).state.value == "pending"
+    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )) is None
+    assert _lineage_rows(db_session, user_id) == []
+
+
+def test_adviser_add_is_reclassified_against_fresh_current_state_at_transfer(db_session):
+    user_id = _user(db_session)
+    clarification_id = _adviser_source(db_session, user_id, skill="Python")
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    proposal = proposals.materialize_from_confirmed_clarification(
+        user_id, clarification_id,
+        SkillProposalUpdate(section="skills", operation="add", item=Skill(name="Python")),
+    )
+    assert proposals.get_for_user(user_id, proposal.id).comparison.relationship is StructuredItemRelationship.NEW
+    _seed_current(
+        db_session, user_id,
+        CandidateCVData(skills=[Skill(name="Python", category="Language")]),
+    )
+    with pytest.raises(ValueError, match="overlaps current Profile information"):
+        proposals.transfer_to_profile_revision(user_id, proposal.id, expected_revision=proposal.revision)
+    assert proposals.get_for_user(user_id, proposal.id).state.value == "pending"
+    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )) is None
+
+
+def test_adviser_replace_exact_conflict_and_identical_target_behavior(db_session):
+    user_id = _user(db_session)
+    old = Skill(name="Python", category="Language")
+    _seed_current(db_session, user_id, CandidateCVData(skills=[old]))
+    proposal, transfer = _transfer_skill(
+        db_session, user_id,
+        item=Skill(name="Python", category="Data"),
+        operation="replace_exact",
+        target=structured_profile_item_fingerprint("skills", old),
+    )
+    service = CandidateProfileRevisionService(db_session)
+    reviewed = service.review(user_id, transfer.profile_revision.id,
+                              expected_revision=transfer.profile_revision.revision)
+    service.confirm(user_id, transfer.profile_revision.id, expected_revision=reviewed.revision)
+    lineage = _event_source(_lineage_rows(db_session, user_id), StructuredProfileSection.SKILLS,
+                            Skill(name="Python", category="Data"), StructuredItemSourceKind.CANDIDATE_ADVISER)
+    assert len(lineage) == 1 and lineage[0].relationship is StructuredItemRelationship.CONFLICT
+    assert lineage[0].predecessor_item == old
+
+    other_user = _user(db_session, "adviser-identical-target@example.test")
+    identical = Skill(name="Rust")
+    _seed_current(db_session, other_user, CandidateCVData(skills=[identical]))
+    same_proposal, same_transfer = _transfer_skill(
+        db_session, other_user, item=identical, operation="replace_exact",
+        target=structured_profile_item_fingerprint("skills", identical),
+    )
+    same_reviewed = service.review(other_user, same_transfer.profile_revision.id,
+                                   expected_revision=same_transfer.profile_revision.revision)
+    service.confirm(other_user, same_transfer.profile_revision.id,
+                    expected_revision=same_reviewed.revision)
+    assert CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == other_user)
+    )).skills == [identical]
+    same_lineage = _event_source(_lineage_rows(db_session, other_user), StructuredProfileSection.SKILLS,
+                                 identical, StructuredItemSourceKind.CANDIDATE_ADVISER)
+    assert len(same_lineage) == 1 and same_lineage[0].source_ref == same_proposal.id
+    assert same_lineage[0].relationship is StructuredItemRelationship.REINFORCEMENT
+
+
+def test_cv_then_adviser_normalized_add_retains_one_fact_and_both_sources(db_session):
+    user_id = _user(db_session)
+    cv, _ = _confirm_cv(db_session, user_id, CandidateCVData(skills=[Skill(name="Python")]))
+    proposal, transfer = _transfer_skill(
+        db_session, user_id, item=Skill(name=" PYTHON "), source_skill=" PYTHON "
+    )
+    assert transfer.profile_revision.proposed_structured.skills == [Skill(name="Python")]
+    service = CandidateProfileRevisionService(db_session)
+    reviewed = service.review(
+        user_id, transfer.profile_revision.id, expected_revision=transfer.profile_revision.revision
+    )
+    service.confirm(user_id, transfer.profile_revision.id, expected_revision=reviewed.revision)
+    assert CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == user_id)
+    )).skills == [Skill(name="Python")]
+    lineage = _lineage_rows(db_session, user_id)
+    python_sources = [
+        value for value in lineage
+        if value.item == Skill(name="Python")
+        and value.source_kind in {StructuredItemSourceKind.CV, StructuredItemSourceKind.CANDIDATE_ADVISER}
+    ]
+    assert {(value.source_kind, value.source_ref) for value in python_sources} == {
+        (StructuredItemSourceKind.CV, cv.id),
+        (StructuredItemSourceKind.CANDIDATE_ADVISER, proposal.id),
+    }
+
+
+def test_cv_then_adviser_conflicting_add_is_blocked_without_profile_revision(db_session):
+    user_id = _user(db_session)
+    cv, _ = _confirm_cv(
+        db_session, user_id,
+        CandidateCVData(skills=[Skill(name="Python", category="Language")]),
+    )
+    clarification_id = _adviser_source(db_session, user_id, skill="Python")
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    incoming = Skill(name="Python", category="Data")
+    proposal = proposals.materialize_from_confirmed_clarification(
+        user_id, clarification_id,
+        SkillProposalUpdate(section="skills", operation="add", item=incoming),
+    )
+    assert proposals.get_for_user(user_id, proposal.id).comparison.relationship is StructuredItemRelationship.CONFLICT
+    with pytest.raises(ValueError, match="overlaps current Profile information"):
+        proposals.transfer_to_profile_revision(user_id, proposal.id, expected_revision=proposal.revision)
+    assert CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == user_id)
+    )).skills == [Skill(name="Python", category="Language")]
+    assert proposals.get_for_user(user_id, proposal.id).state.value == "pending"
+    assert db_session.scalar(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )) is None
+    lineage = _lineage_rows(db_session, user_id)
+    assert len(lineage) == 1 and lineage[0].source_ref == cv.id
 
 
 def test_corrupt_adviser_revision_link_fails_closed_and_confirmation_rollback_preserves_transfer(db_session):

@@ -1,6 +1,7 @@
 from app.models.candidate_profile import CandidateProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
 from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateCVReviewBaseline, CandidateEvidenceRecord, CandidateStructuredProfile
+from app.models.candidate_cv_overlap_review import CandidateCVOverlapReviewRecord
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord, CandidateAdviserIntakeRecord
 from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
 from app.models.candidate_structured_item_lineage import CandidateStructuredItemLineageRecord
@@ -14,4 +15,4 @@ from app.models.application_tracking import ApplicationTrackingEvent, Applicatio
 from app.models.user_ai_settings import UserAiSettings
 from app.models.user import User
 
-__all__ = ["CandidateProfile", "CandidateProfileRevisionRecord", "CandidateCVIngestionDraft", "CandidateCVReviewBaseline", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CandidateAdviserProfileProposalRecord", "CandidateStructuredItemLineageRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "DiscoverySchedule", "ScheduledDiscoveryExecution", "ApplicationPreparation", "ApplicationTrackingRecord", "ApplicationTrackingEvent", "UserAiSettings", "User"]
+__all__ = ["CandidateProfile", "CandidateProfileRevisionRecord", "CandidateCVIngestionDraft", "CandidateCVReviewBaseline", "CandidateCVOverlapReviewRecord", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CandidateAdviserProfileProposalRecord", "CandidateStructuredItemLineageRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "DiscoverySchedule", "ScheduledDiscoveryExecution", "ApplicationPreparation", "ApplicationTrackingRecord", "ApplicationTrackingEvent", "UserAiSettings", "User"]

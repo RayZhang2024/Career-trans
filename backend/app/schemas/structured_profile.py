@@ -89,8 +89,10 @@ class StructuredProfileItemLineageInput(BaseModel):
             raise ValueError("A refinement requires a predecessor item.")
         if self.relationship is StructuredItemRelationship.CONFLICT and self.predecessor_item is None:
             raise ValueError("A conflict requires its prior item snapshot.")
-        if self.relationship is StructuredItemRelationship.AMBIGUOUS and self.predecessor_item is not None:
-            raise ValueError("An ambiguous comparison cannot select one predecessor.")
+        # Phase 3 can preserve the exact target explicitly chosen by the user
+        # after an ambiguous source review. The relationship still records the
+        # original comparison result; the optional predecessor records that
+        # selected target. Unresolved ambiguous comparisons still omit it.
         return self
 
 
