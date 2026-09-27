@@ -1,10 +1,15 @@
 from functools import lru_cache
 import os
+import re
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.schemas.ai_settings import ReasoningEffort
+
+
+_DEFAULT_CODEX_EXTERNAL_DISCOVERY_MODEL = "gpt-5.6-luna"
+_CODEX_MODEL_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
 class Settings(BaseSettings):
@@ -102,6 +107,13 @@ class Settings(BaseSettings):
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("AGENTIC_DISCOVERY_MODEL", "OPENAI_AGENTIC_DISCOVERY_MODEL", "agentic_discovery_model", "openai_agentic_discovery_model"),
     )
+    codex_external_discovery_model: str = Field(
+        default=_DEFAULT_CODEX_EXTERNAL_DISCOVERY_MODEL,
+        validation_alias=AliasChoices(
+            "CODEX_EXTERNAL_DISCOVERY_MODEL",
+            "codex_external_discovery_model",
+        ),
+    )
     openai_web_search_model: str = "gpt-5.6-luna"
 
     langsmith_tracing: bool | None = None
@@ -121,6 +133,22 @@ class Settings(BaseSettings):
     @staticmethod
     def configured_tokens(value: str) -> list[str]:
         return [token.strip() for token in value.split(",") if token.strip()]
+
+    @field_validator("codex_external_discovery_model", mode="before")
+    @classmethod
+    def _normalize_codex_external_discovery_model(cls, value: object) -> object:
+        if value is None:
+            return _DEFAULT_CODEX_EXTERNAL_DISCOVERY_MODEL
+        if not isinstance(value, str):
+            return value
+        model = value.strip()
+        if not model:
+            return _DEFAULT_CODEX_EXTERNAL_DISCOVERY_MODEL
+        if not _CODEX_MODEL_IDENTIFIER.fullmatch(model):
+            raise ValueError(
+                "CODEX_EXTERNAL_DISCOVERY_MODEL must be a non-empty Codex model identifier."
+            )
+        return model
 
     @property
     def openai_job_extraction_model(self) -> str:

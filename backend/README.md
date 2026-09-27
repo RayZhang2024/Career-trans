@@ -61,6 +61,20 @@ root-level Compose `.env`; `backend/.env` is not read automatically by
 Compose. No secret file is needed for credential-free startup, and those
 backend-only values are never made available to the frontend container.
 
+## Host-side Codex discovery model
+
+Native `career-trans jobs discover-external` and `career-trans jobs hunt` invoke
+the locally installed, ChatGPT-authenticated Codex CLI with the dedicated
+`CODEX_EXTERNAL_DISCOVERY_MODEL`. It defaults to `gpt-5.6-luna`; set
+`CODEX_EXTERNAL_DISCOVERY_MODEL=gpt-5.6-luna` in this directory's local `.env`
+to override it. Blank values use the built-in default, while malformed model
+identifiers fail configuration validation.
+
+This host-side model is independent of the global Codex coding model in the
+user's Codex configuration, Career-trans semantic/API model settings, and the
+frontend AI Settings page. It only selects the model for local Codex job
+discovery; it does not require `OPENAI_API_KEY`.
+
 ## Tests
 
 ```powershell

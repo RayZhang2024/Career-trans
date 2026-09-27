@@ -1,6 +1,7 @@
 """Bounded local Codex CLI adapter for external, non-authoritative job discovery."""
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ from app.schemas.external_discovery import (
     ExternalDiscoveredJob,
     ExternalDiscoverySearchContextResponse,
 )
+from app.core.config import Settings, get_settings
 from app.providers.openai_structured_output import (
     StrictStructuredOutputSchemaError,
     strict_schema_from_pydantic_model,
@@ -20,6 +22,18 @@ from app.providers.openai_structured_output import (
 
 
 _DIAGNOSTIC_TAIL_BYTES = 2_048
+_CAREER_TRANS_ENV_NAMES = frozenset({"database_url"})
+_CREDENTIAL_ENV_MARKERS = (
+    "api_key",
+    "api-key",
+    "token",
+    "secret",
+    "password",
+    "credential",
+    "authorization",
+    "bearer",
+    "auth",
+)
 _SECRET_PATTERNS = (
     # Covers standalone keys and common prefixed environment names such as
     # OPENAI_API_KEY and GITHUB_TOKEN.
@@ -63,10 +77,16 @@ class CodexExternalDiscoveryRunner:
         runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
         executable_lookup: Callable[[str], str | None] = shutil.which,
         timeout_seconds: int = 240,
+        model: str | None = None,
     ) -> None:
         self._runner = runner
         self._executable_lookup = executable_lookup
         self._timeout_seconds = timeout_seconds
+        self._model = (
+            get_settings().codex_external_discovery_model
+            if model is None
+            else Settings(_env_file=None, codex_external_discovery_model=model).codex_external_discovery_model
+        )
 
     def discover(self, context: ExternalDiscoverySearchContextResponse) -> list[ExternalDiscoveredJob]:
         executable = self._executable_lookup("codex")
@@ -97,6 +117,8 @@ class CodexExternalDiscoveryRunner:
             # command line avoids cmd.exe reparsing prompt metacharacters via its .cmd shim.
             command = [
                 executable,
+                "-m",
+                self._model,
                 "--search",
                 "exec",
                 "--output-schema",
@@ -116,6 +138,7 @@ class CodexExternalDiscoveryRunner:
                     timeout=self._timeout_seconds,
                     check=False,
                     shell=False,
+                    env=self._codex_subprocess_environment(),
                 )
             except subprocess.TimeoutExpired as exc:
                 raise CodexExternalDiscoveryError(
@@ -152,6 +175,22 @@ class CodexExternalDiscoveryRunner:
     def _output_schema() -> dict[str, object]:
         """Return the SDK-derived strict schema for the canonical output model."""
         return strict_schema_from_pydantic_model(CodexExternalDiscoveryOutput)
+
+    @staticmethod
+    def _codex_subprocess_environment() -> dict[str, str]:
+        """Keep OS/Codex runtime configuration while excluding Career-trans secrets."""
+        environment = os.environ.copy()
+        for name in list(environment):
+            normalized = name.casefold()
+            if normalized.startswith("codex_"):
+                continue
+            if (
+                normalized.startswith("career_trans_")
+                or normalized in _CAREER_TRANS_ENV_NAMES
+                or any(marker in normalized for marker in _CREDENTIAL_ENV_MARKERS)
+            ):
+                environment.pop(name, None)
+        return environment
 
     @staticmethod
     def _safe_diagnostic(value: bytes | str | None) -> str:

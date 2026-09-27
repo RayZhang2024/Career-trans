@@ -79,12 +79,18 @@ class _Client:
         }
 
 
-def _runner(monkeypatch, jobs: list[dict]) -> None:
+def _runner(monkeypatch, jobs: list[dict]) -> list[str]:
+    models = []
+
     class Runner:
+        def __init__(self, *, model):
+            models.append(model)
+
         def discover(self, _context):
             return [SimpleNamespace(model_dump=lambda mode: job) for job in jobs]
 
     monkeypatch.setattr(cli, "CodexExternalDiscoveryRunner", Runner)
+    return models
 
 
 def _run(
@@ -129,6 +135,21 @@ def test_hunt_reuses_ats_and_external_paths_and_ranks_only_new_updated(monkeypat
     assert any(call[0] == "ats" for call in client.calls)
     assert any(call[0] == "context" for call in client.calls)
     assert any(call[0] == "import" for call in client.calls)
+
+
+def test_hunt_uses_dedicated_codex_external_discovery_model(monkeypatch, capsys) -> None:
+    client = _Client()
+    codex_model = "dedicated-hunt-codex-model"
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: SimpleNamespace(codex_external_discovery_model=codex_model),
+    )
+    models = _runner(monkeypatch, [_job(source="agent_runtime", url="https://jobs.example.test/external")])
+
+    _run(monkeypatch, capsys, client)
+
+    assert models == [codex_model]
 
 
 def test_hunt_default_keeps_semantic_budget_at_ten_and_deep_analysis_at_five(monkeypatch, capsys) -> None:
@@ -358,6 +379,9 @@ def test_hunt_isolates_codex_and_ranking_failures(monkeypatch, capsys) -> None:
     client.ats = _ats((ats_job, "new"))
 
     class BrokenRunner:
+        def __init__(self, *, model):
+            assert model == cli.get_settings().codex_external_discovery_model
+
         def discover(self, _context):
             raise cli.CodexExternalDiscoveryError("local runtime unavailable")
 
