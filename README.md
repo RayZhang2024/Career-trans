@@ -547,8 +547,12 @@ but is not automatically a Compose environment source. Provider settings are
 never passed to the frontend image. The host `career-trans jobs
 discover-external` and `career-trans jobs hunt` commands continue to use the
 locally installed/authenticated Codex CLI and should target the published API
-URL (for example `--base-url http://127.0.0.1:8000`). Codex is intentionally
-not installed or configured inside Compose.
+URL (for example `--base-url http://127.0.0.1:8000`). These commands explicitly
+use `CODEX_EXTERNAL_DISCOVERY_MODEL` (default `gpt-5.6-luna`), optionally
+configured in the native backend `.env`. This host-side discovery model is
+separate from the global Codex coding model, Career-trans semantic/API models,
+and frontend AI Settings; it does not require `OPENAI_API_KEY`. Codex is
+intentionally not installed or configured inside Compose.
 
 ---
 

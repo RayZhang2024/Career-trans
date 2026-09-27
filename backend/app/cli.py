@@ -466,7 +466,9 @@ def _jobs(client: CareerTransApiClient, args: argparse.Namespace) -> int:
     context = ExternalDiscoverySearchContextResponse.model_validate(
         client.get_external_discovery_search_context(query)
     )
-    jobs = CodexExternalDiscoveryRunner().discover(context)
+    jobs = CodexExternalDiscoveryRunner(
+        model=get_settings().codex_external_discovery_model
+    ).discover(context)
     imported = _import_codex_discoveries(client, jobs, query)
     scope = "broad employer-agnostic" if not args.companies else "company-targeted"
     lifecycle = imported.get("lifecycle_counts", {})
@@ -514,7 +516,9 @@ def _hunt(client: CareerTransApiClient, args: argparse.Namespace) -> int:
             context = ExternalDiscoverySearchContextResponse.model_validate(
                 client.get_external_discovery_search_context(query)
             )
-            jobs = CodexExternalDiscoveryRunner().discover(context)
+            jobs = CodexExternalDiscoveryRunner(
+                model=get_settings().codex_external_discovery_model
+            ).discover(context)
             external = _import_codex_discoveries(client, jobs, query)
         except (CareerTransApiError, CareerTransConnectionError, CareerTransConfigurationError, CodexExternalDiscoveryError) as exc:
             failures.append(f"Codex acquisition failed: {exc}")

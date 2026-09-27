@@ -348,6 +348,9 @@ def test_cli_codex_external_discovery_imports_and_optionally_ranks(monkeypatch, 
     clients = _fake_client(monkeypatch)
 
     class FakeRunner:
+        def __init__(self, *, model):
+            assert model == "gpt-5.6-luna"
+
         def discover(self, context):
             assert context.search_profile.skills == ["Python"]
             from app.schemas.external_discovery import ExternalDiscoveredJob

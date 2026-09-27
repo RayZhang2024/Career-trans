@@ -15,6 +15,7 @@ def test_broad_discovery_has_no_adzuna_or_paid_search_api_configuration() -> Non
 
 def test_companyless_discover_external_is_broad_codex_path_without_ranking(monkeypatch, capsys) -> None:
     clients = []
+    runner_models = []
 
     class _Client:
         def __init__(self, _base_url, _token) -> None:
@@ -40,6 +41,9 @@ def test_companyless_discover_external_is_broad_codex_path_without_ranking(monke
             }
 
     class _Runner:
+        def __init__(self, *, model):
+            runner_models.append(model)
+
         def discover(self, context):
             assert context.query.keywords == ["AI Engineer"]
             return [
@@ -54,6 +58,11 @@ def test_companyless_discover_external_is_broad_codex_path_without_ranking(monke
 
     monkeypatch.setattr(cli, "CareerTransApiClient", _Client)
     monkeypatch.setattr(cli, "CodexExternalDiscoveryRunner", _Runner)
+    monkeypatch.setattr(
+        cli,
+        "get_settings",
+        lambda: Settings(_env_file=None, codex_external_discovery_model="discover-external-model"),
+    )
     assert cli.main(["--token", "token", "jobs", "discover-external", "--keyword", "AI Engineer", "--location", "London"]) == 0
 
     assert clients[0].calls[0] == (
@@ -62,6 +71,7 @@ def test_companyless_discover_external_is_broad_codex_path_without_ranking(monke
     )
     assert clients[0].calls[1][0] == "import_discovered"
     assert clients[0].calls[1][1]["runtime"] == "codex"
+    assert runner_models == ["discover-external-model"]
     output = capsys.readouterr().out
     assert "broad employer-agnostic" in output
     assert "bounded_out=1" in output

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+import app.services.codex_external_discovery_service as codex_service
+from app.core.config import Settings
 from app.schemas.external_discovery import CodexExternalDiscoveryOutput, ExternalDiscoverySearchContextResponse
 from app.services.codex_external_discovery_service import (
     CodexExternalDiscoveryError,
@@ -45,8 +47,15 @@ def _valid_output() -> dict[str, object]:
     }
 
 
-def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_output_file() -> None:
+def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_output_file(monkeypatch) -> None:
     commands = []
+    monkeypatch.setattr(codex_service, "get_settings", lambda: Settings(_env_file=None))
+    monkeypatch.setenv("CODEX_HOME", "C:\\user-codex-home")
+    monkeypatch.setenv("OPENAI_API_KEY", "career-trans-openai-secret")
+    monkeypatch.setenv("CAREER_TRANS_TOKEN", "career-trans-bearer-secret")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "career-trans-langsmith-secret")
+    monkeypatch.setenv("AUTHORIZATION", "Bearer career-trans-authorization-secret")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///career-trans-private.db")
 
     def runner(command, **kwargs):
         commands.append((command, kwargs))
@@ -64,7 +73,7 @@ def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_outpu
 
     assert jobs[0].title == "Engineer"
     command, kwargs = commands[0]
-    assert command[0:4] == ["codex", "--search", "exec", "--output-schema"]
+    assert command[0:6] == ["codex", "-m", "gpt-5.6-luna", "--search", "exec", "--output-schema"]
     assert "--output-last-message" in command
     schema_path = _argument_path(command, "--output-schema")
     output_path = _argument_path(command, "--output-last-message")
@@ -81,6 +90,31 @@ def test_codex_runner_tolerates_non_utf8_console_diagnostics_and_validates_outpu
     assert kwargs["check"] is False
     assert kwargs["text"] is False
     assert kwargs["shell"] is False
+    assert kwargs["env"]["CODEX_HOME"] == "C:\\user-codex-home"
+    assert "OPENAI_API_KEY" not in kwargs["env"]
+    assert "CAREER_TRANS_TOKEN" not in kwargs["env"]
+    assert "LANGSMITH_API_KEY" not in kwargs["env"]
+    assert "AUTHORIZATION" not in kwargs["env"]
+    assert "DATABASE_URL" not in kwargs["env"]
+
+
+def test_codex_runner_explicit_model_override_precedes_search_flag() -> None:
+    commands = []
+
+    def runner(command, **_kwargs):
+        commands.append(command)
+        _argument_path(command, "--output-last-message").write_text(
+            json.dumps(_valid_output()), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    CodexExternalDiscoveryRunner(
+        runner=runner,
+        executable_lookup=lambda _: "codex",
+        model="host-discovery-v2",
+    ).discover(_context())
+
+    assert commands[0][:5] == ["codex", "-m", "host-discovery-v2", "--search", "exec"]
 
 
 def test_codex_runner_fails_safely_for_unavailable_failed_timed_out_or_invalid_output() -> None:
