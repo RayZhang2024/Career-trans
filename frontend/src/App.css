@@ -19,6 +19,9 @@ h2 { font-size: 1.2rem; }
 .site-nav { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; }
 .site-nav a { color: #fff; font-weight: 600; text-decoration: none; }
 .site-nav a[aria-current="page"] { text-decoration: underline; text-underline-offset: 0.25rem; }
+.profile-secondary-nav { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; margin: 0 auto; max-width: 70rem; padding: 0.85rem 1rem 0; }
+.profile-secondary-nav a { color: #263755; font-weight: 650; text-decoration: none; }
+.profile-secondary-nav a[aria-current="page"] { color: #1747b8; text-decoration: underline; text-underline-offset: 0.25rem; }
 .auth-page, .page-status { margin: 0 auto; max-width: 34rem; padding: 3rem 1rem; }
 .page-status { text-align: center; }
 .card { background: #fff; border: 1px solid #dce1eb; border-radius: 0.8rem; box-shadow: 0 0.5rem 1.5rem rgb(20 35 70 / 0.06); padding: clamp(1rem, 3vw, 1.75rem); }
