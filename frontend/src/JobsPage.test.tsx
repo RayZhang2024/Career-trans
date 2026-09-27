@@ -112,7 +112,7 @@ describe("Issue #171 Jobs workspace", () => {
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: "Prepare application" })[0]);
     const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
     expect(await within(form).findByRole("alert")).toHaveTextContent("application display name is required");
-    expect(within(form).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/");
+    expect(within(form).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
     expect(within(form).queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
     expect(posts).toBe(0);
   });
@@ -169,7 +169,7 @@ describe("Issue #171 Jobs workspace", () => {
     await within(form).findByRole("button", { name: "Create preparation" });
     fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
     expect(await within(form).findByRole("alert")).toHaveTextContent("application display name is required");
-    expect(within(form).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/");
+    expect(within(form).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
     expect(within(form).queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
     fireEvent.submit(form);
     expect(posts).toBe(1);
@@ -330,7 +330,7 @@ describe("Issue #171 Jobs workspace", () => {
   it("blocks evaluation before candidate context is ready and links to Profile", async () => {
     renderJobs(fakeFetch({ "/api/v1/onboarding/status": () => json({ ...ready, candidate_context_ready: false }) }));
     expect(await screen.findByRole("heading", { name: "Complete your Profile first" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Review Profile" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "Review Profile" })).toHaveAttribute("href", "/profile");
     fireEvent.click(screen.getByRole("button", { name: "Recent vacancies" }));
     expect(screen.queryByRole("heading", { name: "Evaluate selected actionable jobs" })).not.toBeInTheDocument();
   });
