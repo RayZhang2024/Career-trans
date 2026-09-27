@@ -138,7 +138,7 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
         const profileReady = profileResult.status === "fulfilled" && Boolean(profileResult.value.display_name?.trim());
         setProfileState(profileMissing ? "missing" : profileReady ? "ready" : "error");
         setPrerequisitesUnconfirmed(!refreshedReadiness?.candidate_context_ready || !profileReady);
-        if (candidateNotReady) setError(<>A confirmed candidate CV is required before preparing an application. <Link to="/cv">Continue CV onboarding</Link>.</>);
+        if (candidateNotReady) setError(<>A confirmed candidate CV is required before preparing an application. <Link to="/profile/cv">Continue CV onboarding</Link>.</>);
         else if (profileMissing) setError(<>An application display name is required. <Link to="/">Update your profile</Link>.</>);
         else if (onboardingResult.status !== "fulfilled" || profileResult.status !== "fulfilled") setError("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.");
         else setError("Career-trans could not prepare this application because the current candidate or application data conflicts with the request.");
@@ -150,10 +150,10 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
 
   return <section className="preparation-panel" aria-label={`Prepare application for ${opportunity.title}`}>
     <button type="button" className="button-secondary" aria-expanded={open} disabled={!open && (ready !== true || unavailable)} onClick={() => { setOpen((value) => !value); if (!open && profileState === "unchecked") void checkDisplayName(); }}>{open ? "Close preparation options" : "Prepare application"}</button>
-    {ready !== true && <p className="muted">{ready === false ? <>Confirm a CV before preparing an application. <Link to="/cv">CV onboarding for application preparation</Link>.</> : "Candidate readiness is being confirmed. Preparation is unavailable until it can be verified."}</p>}
+    {ready !== true && <p className="muted">{ready === false ? <>Confirm a CV before preparing an application. <Link to="/profile/cv">CV onboarding for application preparation</Link>.</> : "Candidate readiness is being confirmed. Preparation is unavailable until it can be verified."}</p>}
     {open && <form className="card preparation-form" aria-label={`Prepare application for ${opportunity.title}`} onSubmit={(event) => void submit(event)}>
       <h4>Prepare for {opportunity.title}</h4>
-      {ready !== true && !error && <p role="alert">{ready === false ? <>A confirmed candidate CV is required before preparing an application. <Link to="/cv">Continue CV onboarding</Link>.</> : "Candidate readiness could not be confirmed. New preparation is unavailable until it can be verified."}</p>}
+      {ready !== true && !error && <p role="alert">{ready === false ? <>A confirmed candidate CV is required before preparing an application. <Link to="/profile/cv">Continue CV onboarding</Link>.</> : "Candidate readiness could not be confirmed. New preparation is unavailable until it can be verified."}</p>}
       {profileState === "checking" && <p role="status">Checking application identity…</p>}
       {profileState === "missing" && !error && <p role="alert">An application display name is required. <Link to="/">Update your profile</Link>.</p>}
       {profileState === "error" && <p role="alert">Profile readiness could not be confirmed. {ready === true && <button type="button" className="button-secondary" onClick={() => void checkDisplayName()}>Retry profile check</button>}</p>}

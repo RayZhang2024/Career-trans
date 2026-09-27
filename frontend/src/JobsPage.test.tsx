@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import type { ApplicationPreparation, DiscoveryRunDetail, DiscoveryRunSummary, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, RankedJobOpportunity, User, UserOpportunitySummary } from "./api";
 import { App } from "./App";
 import { AuthProvider } from "./auth";
@@ -26,6 +26,7 @@ const historyDetail: HistoricalRunJobDetail = { discovered_job_id: "job-0", eval
 const json = (body: unknown, status = 200) => new Response(body === undefined ? "" : JSON.stringify(body), { status });
 type Handler = (url: URL, init?: RequestInit) => Response | Promise<Response>;
 const page = (items: unknown[], truncated = false) => ({ items, limit: 20, truncated });
+const profileSnapshot = () => ({ profile: null, structured_profile: null, active_evidence: [], adviser_intake: null, eligibility: { work_authorisation: [], security_clearances: [], locations: [] }, adviser_assessment: null, adviser_assessment_status: "not_available", readiness: { structured_profile_available: false, ready_for_candidate_context: false, evidence_materialization_status: "not_applicable", expected_evidence_count: 0, materialized_evidence_count: 0, missing_evidence_count: 0, stale_evidence_count: 0, latest_cv_draft_state: null } });
 function fakeFetch(overrides: Record<string, Handler> = {}) {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), window.location.origin);
@@ -35,6 +36,8 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     if (path === "/api/v1/users/me") return Promise.resolve(json(user));
     if (path === "/api/v1/onboarding/status") return Promise.resolve(json(ready));
     if (path === "/api/v1/profile") return Promise.resolve(json({ id: "profile", user_id: user.id, display_name: "Current Person", created_at: "", updated_at: "" }));
+    if (path === "/api/v1/profile/snapshot") return Promise.resolve(json(profileSnapshot()));
+    if (path === "/api/v1/profile/revisions/active") return Promise.resolve(json(null));
     if (path === "/api/v1/jobs/opportunities") return Promise.resolve(json(page([op("alpha", "Alpha", 99), op("beta", "Beta", 1)])));
     if (path === "/api/v1/jobs/discovery-runs") return Promise.resolve(json(page([run()])));
     if (path === "/api/v1/jobs/inbox") return Promise.resolve(json(page([inboxItem("actionable"), inboxItem("blocked", false)])));
@@ -50,6 +53,7 @@ function renderJobs(fetch = fakeFetch(), path = "/jobs") {
   vi.stubGlobal("fetch", fetch);
   return { ...render(<MemoryRouter initialEntries={[path]}><AuthProvider><App /></AuthProvider></MemoryRouter>), fetch };
 }
+function RouteLocation() { const location = useLocation(); const action = useNavigationType(); return <output aria-label="Route location">{location.pathname}:{action}</output>; }
 function requestPaths(fetch: ReturnType<typeof fakeFetch>) { return fetch.mock.calls.map(([input]) => { const url = new URL(String(input), window.location.origin); return `${url.pathname}${url.search}`; }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 async function loaded() { await screen.findByRole("heading", { name: "Current ranked opportunities" }); await screen.findByText("Alpha"); }
@@ -66,7 +70,7 @@ afterEach(cleanup);
 describe("Issue #171 Jobs workspace", () => {
   it("loads all bounded summaries on the protected direct /jobs route and preserves backend order", async () => {
     const { fetch } = renderJobs(); await loaded();
-    expect(await screen.findByRole("link", { name: "Jobs" })).toHaveAttribute("href", "/jobs");
+    expect(await screen.findByRole("link", { name: "Job Search" })).toHaveAttribute("href", "/jobs");
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=20");
     expect(requestPaths(fetch)).not.toContain("/api/v1/applications");
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs?limit=20");
@@ -150,7 +154,7 @@ describe("Issue #171 Jobs workspace", () => {
     await within(form).findByRole("button", { name: "Create preparation" });
     fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
     expect(await within(form).findByRole("alert")).toHaveTextContent("confirmed candidate CV is required");
-    expect(within(form).getByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/cv");
+    expect(within(form).getByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/profile/cv");
     expect(screen.getByRole("button", { name: "Close preparation options" })).toBeEnabled();
     expect(within(form).getByRole("button", { name: "Create preparation" })).toBeDisabled();
     fireEvent.submit(form);
@@ -694,5 +698,62 @@ describe("Issue #171 Jobs workspace", () => {
     expect(screen.getByLabelText("Search themes (soft prioritisation; not eligibility filters)")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Remote policy" })).toBeInTheDocument();
     expect(screen.getByText(/does not start internet discovery/)).toBeInTheDocument();
+  });
+});
+
+describe("Issue #230 route and shell foundation", () => {
+  it("protects Home and sends unauthenticated visitors to sign in", async () => {
+    const fetch = fakeFetch();
+    vi.stubGlobal("fetch", fetch);
+    render(<MemoryRouter initialEntries={["/home"]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(requestPaths(fetch)).not.toContain("/api/v1/onboarding/status");
+  });
+
+  it("renders Home links and uses only the provider-free readiness endpoint", async () => {
+    const { fetch } = renderJobs(fakeFetch(), "/home");
+    expect(await screen.findByRole("heading", { name: "Home" })).toBeInTheDocument();
+    expect(await screen.findByText("Your confirmed profile context is ready for the workspace.")).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Workspace" });
+    expect(within(nav).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["Home", "/home"], ["Profile", "/profile"], ["Job Search", "/jobs"], ["Applications", "/applications"], ["Tracking", "/tracking"], ["Settings", "/settings/ai"],
+    ]);
+    expect(within(nav).getByRole("link", { name: "Home" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Career-trans" })).toHaveAttribute("href", "/home");
+    expect(requestPaths(fetch).filter((path) => path === "/api/v1/onboarding/status")).toHaveLength(1);
+    expect(requestPaths(fetch)).not.toEqual(expect.arrayContaining([
+      "/api/v1/profile/snapshot", "/api/v1/applications", "/api/v1/jobs/opportunities?limit=20", "/api/v1/tracking",
+    ]));
+  });
+
+  it("shows a recoverable readiness error on Home", async () => {
+    let attempts = 0;
+    const fetch = fakeFetch({ "/api/v1/onboarding/status": () => { attempts += 1; return attempts === 1 ? json(undefined, 503) : json(ready); } });
+    renderJobs(fetch, "/home");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Readiness is unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Retry readiness" }));
+    expect(await screen.findByText("Your confirmed profile context is ready for the workspace.")).toBeInTheDocument();
+    expect(attempts).toBe(2);
+  });
+
+  it("keeps root and unknown paths as replace redirects to the Profile workspace", async () => {
+    for (const path of ["/", "/unknown"]) {
+      cleanup();
+      sessionStorage.setItem(TOKEN, "test-token");
+      vi.stubGlobal("fetch", fakeFetch());
+      render(<MemoryRouter initialEntries={[path]}><AuthProvider><App /><RouteLocation /></AuthProvider></MemoryRouter>);
+      expect(await screen.findByRole("heading", { name: "Your career profile" })).toBeInTheDocument();
+      expect(screen.getByLabelText("Route location")).toHaveTextContent("/profile:REPLACE");
+    }
+  });
+
+  it.each(["/profile/cv", "/cv"]) ("preserves the CV workflow at %s", async (path) => {
+    renderJobs(fakeFetch({ "/api/v1/onboarding/status": () => json({ ...ready, candidate_context_ready: false, latest_cv_draft: null }) }), path);
+    expect(await screen.findByRole("heading", { name: "Upload your CV" })).toBeInTheDocument();
+  });
+
+  it.each(["/profile/adviser", "/adviser"]) ("preserves the Adviser workflow at %s", async (path) => {
+    renderJobs(fakeFetch({ "/api/v1/onboarding/status": () => json({ ...ready, candidate_context_ready: false }) }), path);
+    expect(await screen.findByRole("heading", { name: "Complete your CV first" })).toBeInTheDocument();
   });
 });

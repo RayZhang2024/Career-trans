@@ -74,7 +74,7 @@ describe("AuthProvider routed lifecycle", () => {
     const readyStatus = { ...status, candidate_context_ready: true, latest_cv_draft: { id: "draft", state: "confirmed", created_at: "", updated_at: "" } };
     vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/onboarding/status": () => response(readyStatus) }));
     renderApp();
-    expect(await screen.findByRole("link", { name: "Start Career Adviser" })).toHaveAttribute("href", "/adviser");
+    expect(await screen.findByRole("link", { name: "Start Career Adviser" })).toHaveAttribute("href", "/profile/adviser");
   });
 
   it("keeps protected UI in checking state without a login flicker", async () => {
@@ -283,7 +283,7 @@ describe("AuthProvider routed lifecycle", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "person@example.test" } });
     fireEvent.change(passwordInput(), { target: { value: "valid-password" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    await screen.findByRole("heading", { name: "Your career profile" });
+    await screen.findByRole("heading", { name: "Home" });
     expect(sessionStorage.getItem(TOKEN)).toBe("new-token");
   });
 
@@ -310,7 +310,7 @@ describe("AuthProvider routed lifecycle", () => {
     fireEvent.submit(form);
     expect(fetch.mock.calls.filter(([url]) => new URL(url, window.location.origin).pathname === "/api/v1/auth/login")).toHaveLength(1);
     await act(async () => { resolveLogin(response({ access_token: "new-token" })); });
-    expect(await screen.findByRole("heading", { name: "Your career profile" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Home" })).toBeInTheDocument();
   });
 
   it("shows registration pending feedback and prevents duplicate registration requests", async () => {
@@ -585,7 +585,7 @@ describe("AuthProvider routed lifecycle", () => {
     renderApp();
     const cvLinks = await screen.findAllByRole("link", { name: "Continue CV onboarding" });
     expect(cvLinks.length).toBeGreaterThanOrEqual(1);
-    expect(cvLinks.every((link) => link.getAttribute("href") === "/cv")).toBe(true);
+    expect(cvLinks.every((link) => link.getAttribute("href") === "/profile/cv")).toBe(true);
     expect(screen.getByText("Complete CV first").closest("li")).toBeInTheDocument();
   });
 });

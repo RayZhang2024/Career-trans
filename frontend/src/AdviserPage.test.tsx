@@ -15,7 +15,7 @@ const unanswered = (id = "question", priority_index = 0) => ({ clarification_id:
 it("gates direct Adviser access before confirmed candidate context without Adviser calls", async () => {
   request.mockResolvedValueOnce(status(false)); render(<MemoryRouter><AdviserPage /></MemoryRouter>);
   expect(await screen.findByRole("heading", { name: "Complete your CV first" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Go to CV onboarding" })).toHaveAttribute("href", "/cv");
+  expect(screen.getByRole("link", { name: "Go to CV onboarding" })).toHaveAttribute("href", "/profile/cv");
   expect(request).toHaveBeenCalledTimes(1);
 });
 
