@@ -20,13 +20,33 @@ from app.providers.openai_structured_output import (
 
 
 _DIAGNOSTIC_TAIL_BYTES = 2_048
-_MAX_DIAGNOSTIC_CHARS = 1_024
 _SECRET_PATTERNS = (
     # Covers standalone keys and common prefixed environment names such as
     # OPENAI_API_KEY and GITHUB_TOKEN.
     re.compile(r"(?i)\b(?:[a-z][a-z0-9_-]*[_-])?(?:api[_-]?key|token|authorization|password|secret)\b\s*[:=]\s*[^\s,;]+"),
     re.compile(r"(?i)\bbearer\s+[a-z0-9._~-]+"),
     re.compile(r"\b(?:sk|lsv2|gho)_[A-Za-z0-9_-]+"),
+)
+_SAFE_DIAGNOSTIC_CLASSIFIERS = (
+    (
+        re.compile(
+            r"(?im)^\s*(?:codex(?:\s+exec)?\s*:\s*)?(?:error:\s*)?"
+            r"(?:model|deployment)\b.{0,100}\b(?:not found|unavailable|not available|not supported)\b[^\r\n]*$"
+        ),
+        "Codex could not use the configured model. Check the local Codex model setting and retry.",
+    ),
+    (
+        re.compile(r"(?im)^\s*(?:codex(?:\s+exec)?\s*:\s*)?(?:error:\s*)?(?:rate limit|too many requests|http 429|status 429)\b[^\r\n]*$"),
+        "Codex reported a rate limit. Wait briefly, then retry.",
+    ),
+    (
+        re.compile(r"(?im)^\s*(?:codex(?:\s+exec)?\s*:\s*)?(?:error:\s*)?(?:connection refused|could not connect|connection timed out|network unavailable)\b[^\r\n]*$"),
+        "Codex could not connect to its service. Check connectivity and retry.",
+    ),
+    (
+        re.compile(r"(?im)^\s*(?:codex(?:\s+exec)?\s*:\s*)?(?:error:\s*)?(?:unauthorized|authentication failed|not authenticated|http 401|status 401)\b[^\r\n]*$"),
+        "Codex reported an authentication issue. Check local Codex authentication and retry.",
+    ),
 )
 
 
@@ -135,18 +155,24 @@ class CodexExternalDiscoveryRunner:
 
     @staticmethod
     def _safe_diagnostic(value: bytes | str | None) -> str:
-        """Expose a small, sanitized terminal tail without making it part of the result contract."""
+        """Map recognized safe errors to fixed text; never return raw subprocess text."""
         if not value:
             return ""
         if isinstance(value, bytes):
             text = value[-_DIAGNOSTIC_TAIL_BYTES:].decode("utf-8", errors="replace")
         else:
             text = value[-_DIAGNOSTIC_TAIL_BYTES:]
-        # Codex should not echo the supplied task, but never surface one if it does.
-        text = re.sub(r"(?is)\b(?:career-trans\s+)?(?:context|prompt|input)\s*:\s*.*", "[redacted task]", text)
+        had_secret = False
         for pattern in _SECRET_PATTERNS:
-            text = pattern.sub("[REDACTED]", text)
-        return " ".join(text.split())[-_MAX_DIAGNOSTIC_CHARS:]
+            text, count = pattern.subn("[REDACTED]", text)
+            had_secret = had_secret or count > 0
+        for pattern, safe_message in _SAFE_DIAGNOSTIC_CLASSIFIERS:
+            if pattern.search(text):
+                return f"{safe_message} [REDACTED]" if had_secret else safe_message
+        # Even a completely unknown suffix may be a fragment of serialized task
+        # context. Return only a fixed redaction marker if secrets were detected;
+        # otherwise let discover() use its generic actionable error.
+        return "[REDACTED]" if had_secret else ""
 
     @staticmethod
     def _prompt(context: ExternalDiscoverySearchContextResponse) -> str:
