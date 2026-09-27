@@ -24,6 +24,7 @@ class CandidateCompatibilityAction(StrEnum):
     ADD_MISSING_SCHEMA_COLUMN = "add_missing_schema_column"
     CREATE_MISSING_SCHEMA_TABLE = "create_missing_schema_table"
     ADD_MISSING_SCHEMA_INDEX = "add_missing_schema_index"
+    RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE = "reconstruct_historical_adviser_proposal_table"
     PRESERVE_CURRENT_STRUCTURED = "preserve_current_structured"
     RECONSTRUCT_STRUCTURED_FROM_CONFIRMED_CV = "reconstruct_structured_from_confirmed_cv"
     RECONCILE_ACTIVE_EVIDENCE = "reconcile_active_evidence"
@@ -62,6 +63,7 @@ class CandidateSchemaRepairAction(StrEnum):
     CREATE_TABLE = "create_table"
     ADD_COLUMN = "add_column"
     CREATE_INDEX = "create_index"
+    RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE = "reconstruct_historical_adviser_proposal_table"
 
 
 class CandidateSchemaAppliedRepair(StrictRead):

@@ -73,6 +73,97 @@ def _constraint_signature(constraint) -> tuple:
     return ()
 
 
+def _is_historical_adviser_proposal_table(inspector, table_name: str, dialect) -> bool:
+    """Recognize only the pre-transfer proposal layout reviewed for SQLite repair."""
+    if dialect.name != "sqlite" or table_name != "candidate_adviser_profile_proposals":
+        return False
+    table = Base.metadata.tables[table_name]
+    transfer_columns = {"transferred_profile_revision_id", "transferred_at"}
+    optional_overlap_column = "overlap_resolution_json"
+    expected_columns = {
+        name for name in table.columns.keys()
+        if name not in transfer_columns | {optional_overlap_column}
+    }
+    actual = {column["name"]: column for column in inspector.get_columns(table_name)}
+    if set(actual) not in (expected_columns, expected_columns | {optional_overlap_column}):
+        return False
+    for name, column in actual.items():
+        expected = table.columns[name]
+        if (
+            _type_affinity(column["type"]) is not _type_affinity(expected.type)
+            or _type_signature(column["type"], dialect) != _type_signature(expected.type, dialect)
+        ):
+            return False
+        if name not in {"id"} and bool(column.get("nullable", True)) != bool(expected.nullable):
+            return False
+    if inspector.get_pk_constraint(table_name).get("constrained_columns") != ["id"]:
+        return False
+
+    expected_constraints = {
+        signature for constraint in table.constraints
+        if (signature := _constraint_signature(constraint))
+        and not (
+            signature[0] == "check"
+            or (signature[0] == "foreign_key" and signature[1][0][0] == "transferred_profile_revision_id")
+        )
+    }
+    actual_constraints: set[tuple] = set()
+    actual_constraints.update(
+        ("unique", tuple(value.get("column_names") or []))
+        for value in inspector.get_unique_constraints(table_name)
+    )
+    actual_constraints.update(
+        ("foreign_key", tuple(zip(
+            value.get("constrained_columns") or [],
+            [value.get("referred_table")] * len(value.get("constrained_columns") or []),
+            value.get("referred_columns") or [],
+            [str(value.get("options", {}).get("ondelete")).lower() if value.get("options", {}).get("ondelete") else None] * len(value.get("constrained_columns") or []),
+        )))
+        for value in inspector.get_foreign_keys(table_name)
+    )
+    checks = inspector.get_check_constraints(table_name)
+    if len(checks) != 1 or (
+        checks[0].get("name") != "ck_candidate_adviser_profile_proposals_state"
+        or _normal_sql(checks[0].get("sqltext") or "") != "stateinpendingrejected"
+    ):
+        return False
+    actual_constraints.update(
+        ("check", value.get("name"), _normal_sql(value.get("sqltext") or ""))
+        for value in checks
+    )
+    if actual_constraints != expected_constraints | {
+        ("check", "ck_candidate_adviser_profile_proposals_state", "stateinpendingrejected")
+    }:
+        return False
+
+    expected_indexes = {index.name: index for index in table.indexes if index.name}
+    actual_indexes = {value["name"]: value for value in inspector.get_indexes(table_name)}
+    if set(actual_indexes) != set(expected_indexes):
+        return False
+    if any(
+        list(actual_indexes[name].get("column_names") or []) != [column.name for column in index.columns]
+        or bool(actual_indexes[name].get("unique")) != bool(index.unique)
+        for name, index in expected_indexes.items()
+    ):
+        return False
+
+    # A known historical table has no attached triggers; don't rebuild around
+    # unknown database behavior that the model cannot represent.
+    bind = inspector.bind
+    if isinstance(bind, Engine):
+        with bind.connect() as connection:
+            triggers = connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?",
+                (table_name,),
+            ).all()
+    else:
+        triggers = bind.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?",
+            (table_name,),
+        ).all()
+    return not triggers
+
+
 class CandidatePhysicalSchemaInspector:
     """Read-only SQLite/database catalog inspection; never queries ORM rows."""
 
@@ -229,15 +320,28 @@ class CandidatePhysicalSchemaInspector:
             unsupported = True
             diagnostics.append("One or more required uniqueness, ownership, or state constraints are absent.")
 
+        historical_proposal_shape = _is_historical_adviser_proposal_table(
+            inspector, table_name, dialect
+        )
+        if historical_proposal_shape:
+            unsupported = False
+            repairable = True
+            diagnostics.append(
+                "Recognized pre-transfer Adviser proposal schema; a transactional row-preserving reconstruction is available."
+            )
+
         if unsupported:
             status = CandidateSchemaStatus.UNSUPPORTED_DRIFT
             actions = [CandidateCompatibilityAction.MANUAL_RESOLUTION_REQUIRED]
         elif repairable:
             status = CandidateSchemaStatus.ADDITIVE_REPAIR_AVAILABLE
-            actions = []
-            if missing:
+            actions = (
+                [CandidateCompatibilityAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE]
+                if historical_proposal_shape else []
+            )
+            if missing and not historical_proposal_shape:
                 actions.append(CandidateCompatibilityAction.ADD_MISSING_SCHEMA_COLUMN)
-            if missing_indexes:
+            if missing_indexes and not historical_proposal_shape:
                 actions.append(CandidateCompatibilityAction.ADD_MISSING_SCHEMA_INDEX)
             if not actions:
                 actions.append(CandidateCompatibilityAction.NO_ACTION)

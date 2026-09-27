@@ -6,6 +6,7 @@ from app.core.database import Base
 from app.models import User  # noqa: F401
 from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft
 from app.schemas.candidate_compatibility import (
+    CandidateCompatibilityAction,
     CandidateSchemaRepairAction,
     CandidateSchemaStatus,
 )
@@ -150,6 +151,64 @@ def _create_pre_overlap_proposal_history(engine):
         """))
         connection.execute(text("CREATE INDEX ix_candidate_adviser_profile_proposals_user_id ON candidate_adviser_profile_proposals(user_id)"))
         connection.execute(text("CREATE INDEX ix_candidate_adviser_profile_proposals_source_clarification_id ON candidate_adviser_profile_proposals(source_clarification_id)"))
+
+
+def _create_pre_transfer_proposal_history(engine, *, include_overlap=True):
+    overlap = "overlap_resolution_json TEXT," if include_overlap else ""
+    with engine.begin() as connection:
+        connection.execute(text(f"""
+            CREATE TABLE candidate_adviser_profile_proposals (
+                id VARCHAR(36) NOT NULL,
+                user_id VARCHAR(36) NOT NULL,
+                proposal_key VARCHAR(64) NOT NULL,
+                state VARCHAR(16) NOT NULL,
+                revision INTEGER NOT NULL,
+                source_clarification_id VARCHAR(64) NOT NULL,
+                source_assessment_fingerprint VARCHAR(64) NOT NULL,
+                original_update_json TEXT NOT NULL,
+                proposed_update_json TEXT NOT NULL,
+                {overlap}
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                rejected_at DATETIME,
+                CONSTRAINT pk_candidate_adviser_profile_proposals PRIMARY KEY (id),
+                CONSTRAINT uq_candidate_adviser_profile_proposals_user_key UNIQUE (user_id, proposal_key),
+                CONSTRAINT ck_candidate_adviser_profile_proposals_state
+                    CHECK (state IN ('pending', 'rejected')),
+                CONSTRAINT fk_candidate_adviser_profile_proposals_user
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """))
+        connection.execute(text("CREATE INDEX ix_candidate_adviser_profile_proposals_user_id ON candidate_adviser_profile_proposals(user_id)"))
+        connection.execute(text("CREATE INDEX ix_candidate_adviser_profile_proposals_source_clarification_id ON candidate_adviser_profile_proposals(source_clarification_id)"))
+
+
+def _insert_historical_proposals(engine, states=("pending", "rejected")):
+    has_overlap = "overlap_resolution_json" in {
+        column["name"] for column in inspect(engine).get_columns("candidate_adviser_profile_proposals")
+    }
+    with engine.begin() as connection:
+        for index, state in enumerate(states):
+            overlap_value = ", :overlap" if has_overlap else ""
+            connection.execute(text(f"""
+                INSERT INTO candidate_adviser_profile_proposals (
+                    id, user_id, proposal_key, state, revision, source_clarification_id,
+                    source_assessment_fingerprint, original_update_json, proposed_update_json,
+                    {"overlap_resolution_json," if has_overlap else ""} created_at, updated_at, rejected_at
+                ) VALUES (
+                    :id, 'legacy-user', :key, :state, :revision, :clarification,
+                    :fingerprint, :original, :proposed{overlap_value}, :created, :updated, :rejected
+                )
+            """), {
+                "id": f"historical-{index}", "key": f"proposal-key-{index}",
+                "state": state, "revision": index + 4,
+                "clarification": f"clarification-{index}", "fingerprint": f"fingerprint-{index}",
+                "original": f'{{"original":{index}}}', "proposed": f'{{"proposed":{index}}}',
+                "overlap": f'{{"overlap":{index}}}' if has_overlap else None,
+                "created": f"2026-01-0{index + 1} 12:00:00",
+                "updated": f"2026-02-0{index + 1} 13:00:00",
+                "rejected": f"2026-03-0{index + 1} 14:00:00" if state == "rejected" else None,
+            })
 
 
 def _create_proposal_rows(engine):
@@ -411,6 +470,131 @@ def test_pre_overlap_adviser_proposals_add_null_resolution_without_changing_life
     assert _rows(engine, "candidate_adviser_profile_proposals", ["overlap_resolution_json"] * 1) == [(None,), (None,), (None,)]
     assert result.after.status is CandidateSchemaStatus.COMPATIBLE
     assert {row[1] for row in before} == {"pending", "rejected", "transferred"}
+
+
+def test_exact_pre_transfer_empty_proposal_table_is_reconstructed_and_is_idempotent():
+    engine = _engine()
+    _users_table(engine)
+    _insert_user(engine)
+    _create_pre_transfer_proposal_history(engine, include_overlap=False)
+    before = CandidatePhysicalSchemaInspector(engine).inspect()
+    proposal = next(table for table in before.tables if table.table == "candidate_adviser_profile_proposals")
+    assert proposal.status is CandidateSchemaStatus.ADDITIVE_REPAIR_AVAILABLE
+    assert proposal.planned_actions == [CandidateCompatibilityAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE]
+
+    result = CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+    assert result.after.status is CandidateSchemaStatus.COMPATIBLE
+    assert any(
+        repair.action is CandidateSchemaRepairAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE
+        for repair in result.applied_repairs
+    )
+    assert CandidatePhysicalSchemaInspector(engine).inspect().status is CandidateSchemaStatus.COMPATIBLE
+    assert _rows(engine, "candidate_adviser_profile_proposals", ["id"]) == []
+    assert CandidateSQLiteSchemaCompatibilityRepairService(engine).repair().changed is False
+
+
+@pytest.mark.parametrize("state", ["pending", "rejected"])
+def test_pre_transfer_pending_and_rejected_proposals_are_preserved(state):
+    engine = _engine()
+    _users_table(engine)
+    _insert_user(engine)
+    _create_pre_transfer_proposal_history(engine)
+    _insert_historical_proposals(engine, (state,))
+    old_columns = [
+        "id", "user_id", "proposal_key", "state", "revision", "source_clarification_id",
+        "source_assessment_fingerprint", "original_update_json", "proposed_update_json",
+        "overlap_resolution_json", "created_at", "updated_at", "rejected_at",
+    ]
+    before = _rows(engine, "candidate_adviser_profile_proposals", old_columns)
+
+    CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+
+    assert _rows(engine, "candidate_adviser_profile_proposals", old_columns) == before
+    assert _rows(engine, "candidate_adviser_profile_proposals", ["transferred_profile_revision_id", "transferred_at"]) == [(None, None)]
+    assert CandidatePhysicalSchemaInspector(engine).inspect().status is CandidateSchemaStatus.COMPATIBLE
+
+
+def test_pre_transfer_multiple_rows_preserve_all_data_and_restore_current_constraints():
+    engine = _engine()
+    _users_table(engine)
+    _insert_user(engine)
+    _create_pre_transfer_proposal_history(engine)
+    _insert_historical_proposals(engine, ("pending", "rejected", "pending"))
+    columns = [
+        "id", "user_id", "proposal_key", "state", "revision", "source_clarification_id",
+        "source_assessment_fingerprint", "original_update_json", "proposed_update_json",
+        "overlap_resolution_json", "created_at", "updated_at", "rejected_at",
+    ]
+    before = _rows(engine, "candidate_adviser_profile_proposals", columns)
+
+    result = CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+
+    assert _rows(engine, "candidate_adviser_profile_proposals", columns) == before
+    assert len(_rows(engine, "candidate_adviser_profile_proposals", ["id"])) == 3
+    assert _rows(engine, "candidate_adviser_profile_proposals", ["transferred_profile_revision_id", "transferred_at"]) == [(None, None)] * 3
+    proposal = next(table for table in result.after.tables if table.table == "candidate_adviser_profile_proposals")
+    assert proposal.status is CandidateSchemaStatus.COMPATIBLE
+    assert set(index["name"] for index in inspect(engine).get_indexes("candidate_adviser_profile_proposals")) == {
+        "ix_candidate_adviser_profile_proposals_user_id",
+        "ix_candidate_adviser_profile_proposals_source_clarification_id",
+    }
+    assert any(
+        fk.get("constrained_columns") == ["transferred_profile_revision_id"]
+        and fk.get("referred_table") == "candidate_profile_revisions"
+        for fk in inspect(engine).get_foreign_keys("candidate_adviser_profile_proposals")
+    )
+
+
+def test_current_proposal_schema_repair_is_noop():
+    engine = _engine()
+    Base.metadata.create_all(engine)
+    result = CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+    assert result.before.status is result.after.status is CandidateSchemaStatus.COMPATIBLE
+    assert result.changed is False
+    assert result.applied_repairs == []
+
+
+def test_unrecognized_transfer_history_column_drift_remains_blocked():
+    engine = _engine()
+    _users_table(engine)
+    _insert_user(engine)
+    _create_pre_transfer_proposal_history(engine)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE candidate_adviser_profile_proposals ADD COLUMN unexplained TEXT"))
+    before = CandidatePhysicalSchemaInspector(engine).inspect()
+    proposal = next(table for table in before.tables if table.table == "candidate_adviser_profile_proposals")
+    assert proposal.status is CandidateSchemaStatus.UNSUPPORTED_DRIFT
+    with pytest.raises(CandidateSchemaCompatibilityRepairBlocked):
+        CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+
+
+def test_failed_pre_transfer_reconstruction_rolls_back_with_original_rows_intact():
+    engine = _engine()
+    _users_table(engine)
+    _insert_user(engine)
+    _create_pre_transfer_proposal_history(engine)
+    _insert_historical_proposals(engine, ("pending", "rejected"))
+    old_columns = [
+        "id", "user_id", "proposal_key", "state", "revision", "source_clarification_id",
+        "source_assessment_fingerprint", "original_update_json", "proposed_update_json",
+        "overlap_resolution_json", "created_at", "updated_at", "rejected_at",
+    ]
+    before = _rows(engine, "candidate_adviser_profile_proposals", old_columns)
+
+    class _FailAfterProposalSwap(CandidateSQLiteSchemaCompatibilityRepairService):
+        def _apply_operation(self, connection, operation):
+            result = super()._apply_operation(connection, operation)
+            if operation.action is CandidateSchemaRepairAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE:
+                raise RuntimeError("injected post-swap validation failure")
+            return result
+
+    with pytest.raises(CandidateSchemaCompatibilityRepairFailed):
+        _FailAfterProposalSwap(engine).repair()
+    assert _rows(engine, "candidate_adviser_profile_proposals", old_columns) == before
+    assert "transferred_profile_revision_id" not in {
+        column["name"] for column in inspect(engine).get_columns("candidate_adviser_profile_proposals")
+    }
+    assert CandidatePhysicalSchemaInspector(engine).inspect().status is CandidateSchemaStatus.ADDITIVE_REPAIR_AVAILABLE
 
 
 def test_missing_candidate_tables_created_in_metadata_order_and_verified_empty():
