@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 
-from sqlalchemy import Engine, inspect
+from sqlalchemy import Engine, MetaData, inspect
 from sqlalchemy.engine import Connection
-from sqlalchemy.schema import CreateIndex
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.core.database import Base
 from app.schemas.candidate_compatibility import (
+    CandidateCompatibilityAction,
     CandidateSchemaAppliedRepair,
     CandidateSchemaCompatibilityRead,
     CandidateSchemaRepairAction,
@@ -173,11 +174,28 @@ class CandidateSQLiteSchemaCompatibilityRepairService:
             for table_name in ordered_missing_tables
         )
 
+        proposal_read = table_reads.get("candidate_adviser_profile_proposals")
+        if (
+            proposal_read is not None
+            and CandidateCompatibilityAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE
+            in proposal_read.planned_actions
+        ):
+            operations.append(_RepairOperation(
+                CandidateSchemaRepairAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE,
+                "candidate_adviser_profile_proposals",
+            ))
+
         column_operations: list[_RepairOperation] = []
         index_operations: list[_RepairOperation] = []
         for table_name in CANDIDATE_DOMAIN_TABLES:
             table_read = table_reads[table_name]
             if not table_read.table_exists:
+                continue
+            if (
+                table_name == "candidate_adviser_profile_proposals"
+                and CandidateCompatibilityAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE
+                in table_read.planned_actions
+            ):
                 continue
             metadata_table = Base.metadata.tables[table_name]
             allowed_columns = ALLOWED_NULLABLE_COLUMNS.get(table_name, frozenset())
@@ -225,6 +243,9 @@ class CandidateSQLiteSchemaCompatibilityRepairService:
 
     def _apply_operation(self, connection: Connection, operation: _RepairOperation) -> None:
         table = Base.metadata.tables[operation.table]
+        if operation.action is CandidateSchemaRepairAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE:
+            self._reconstruct_historical_proposal_table(connection, table)
+            return
         if operation.action is CandidateSchemaRepairAction.CREATE_TABLE:
             Base.metadata.create_all(connection, tables=[table], checkfirst=True)
             return
@@ -246,3 +267,67 @@ class CandidateSQLiteSchemaCompatibilityRepairService:
             connection.execute(CreateIndex(index))
             return
         raise ValueError(f"Unsupported planned schema action: {operation.action!r}")
+
+    @staticmethod
+    def _reconstruct_historical_proposal_table(connection: Connection, table) -> None:
+        table_name = table.name
+        temp_name = f"_{table_name}_transfer_repair"
+        preparer = connection.dialect.identifier_preparer
+        quoted_table = preparer.quote(table_name)
+        quoted_temp = preparer.quote(temp_name)
+        actual_columns = {column["name"] for column in inspect(connection).get_columns(table_name)}
+        new_column_names = [column.name for column in table.columns if column.name not in actual_columns]
+        expected_added = {
+            "overlap_resolution_json",
+            "transferred_profile_revision_id",
+            "transferred_at",
+        }
+        if not set(new_column_names).issubset(expected_added):
+            raise RuntimeError("Historical proposal reconstruction encountered unrecognized columns.")
+
+        old_columns = [column.name for column in table.columns if column.name in actual_columns]
+        old_projection = ", ".join(preparer.quote(name) for name in old_columns)
+        before_rows = connection.exec_driver_sql(
+            f"SELECT {old_projection} FROM {quoted_table} ORDER BY {preparer.quote('id')}"
+        ).all()
+        before_count = len(before_rows)
+
+        temporary_metadata = MetaData()
+        Base.metadata.tables["users"].to_metadata(temporary_metadata)
+        Base.metadata.tables["candidate_profile_revisions"].to_metadata(temporary_metadata)
+        temporary = table.to_metadata(temporary_metadata, name=temp_name)
+        connection.execute(CreateTable(temporary))
+        target_names = [column.name for column in table.columns]
+        selected = [
+            preparer.quote(name) if name in actual_columns else "NULL"
+            for name in target_names
+        ]
+        target_projection = ", ".join(preparer.quote(name) for name in target_names)
+        connection.exec_driver_sql(
+            f"INSERT INTO {quoted_temp} ({target_projection}) "
+            f"SELECT {', '.join(selected)} FROM {quoted_table}"
+        )
+
+        copied_rows = connection.exec_driver_sql(
+            f"SELECT {target_projection} FROM {quoted_temp} ORDER BY {preparer.quote('id')}"
+        ).all()
+        expected_rows = [
+            tuple(row[old_columns.index(name)] if name in actual_columns else None for name in target_names)
+            for row in before_rows
+        ]
+        if len(copied_rows) != before_count or copied_rows != expected_rows:
+            raise RuntimeError("Historical proposal reconstruction failed row-count or preservation validation.")
+
+        connection.exec_driver_sql(f"DROP TABLE {quoted_table}")
+        connection.exec_driver_sql(
+            f"ALTER TABLE {quoted_temp} RENAME TO {quoted_table}"
+        )
+        for index in table.indexes:
+            connection.execute(CreateIndex(index))
+
+        # Keep the copied row count check adjacent to the swap as a second guard.
+        after_count = connection.exec_driver_sql(
+            f"SELECT COUNT(*) FROM {quoted_table}"
+        ).scalar_one()
+        if after_count != before_count:
+            raise RuntimeError("Historical proposal row count changed during table swap.")

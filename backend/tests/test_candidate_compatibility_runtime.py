@@ -130,6 +130,65 @@ def test_apply_retained_users_repairs_candidate_schema_then_reconciles():
     assert result.unresolved_count == result.reconciliation.unresolved_count
 
 
+def test_startup_repairs_exact_pre_transfer_proposal_schema_and_preserves_rows():
+    engine = _engine()
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE users (id VARCHAR(36) PRIMARY KEY)"))
+        connection.execute(text("INSERT INTO users (id) VALUES ('legacy-user')"))
+        connection.execute(text("""
+            CREATE TABLE candidate_adviser_profile_proposals (
+                id VARCHAR(36) NOT NULL,
+                user_id VARCHAR(36) NOT NULL,
+                proposal_key VARCHAR(64) NOT NULL,
+                state VARCHAR(16) NOT NULL,
+                revision INTEGER NOT NULL,
+                source_clarification_id VARCHAR(64) NOT NULL,
+                source_assessment_fingerprint VARCHAR(64) NOT NULL,
+                original_update_json TEXT NOT NULL,
+                proposed_update_json TEXT NOT NULL,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                rejected_at DATETIME,
+                CONSTRAINT pk_candidate_adviser_profile_proposals PRIMARY KEY (id),
+                CONSTRAINT uq_candidate_adviser_profile_proposals_user_key UNIQUE (user_id, proposal_key),
+                CONSTRAINT ck_candidate_adviser_profile_proposals_state CHECK (state IN ('pending', 'rejected')),
+                CONSTRAINT fk_candidate_adviser_profile_proposals_user
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """))
+        connection.execute(text("CREATE INDEX ix_candidate_adviser_profile_proposals_user_id ON candidate_adviser_profile_proposals(user_id)"))
+        connection.execute(text("CREATE INDEX ix_candidate_adviser_profile_proposals_source_clarification_id ON candidate_adviser_profile_proposals(source_clarification_id)"))
+        connection.execute(text("""
+            INSERT INTO candidate_adviser_profile_proposals (
+                id, user_id, proposal_key, state, revision, source_clarification_id,
+                source_assessment_fingerprint, original_update_json, proposed_update_json,
+                created_at, updated_at
+            ) VALUES (
+                'kept-proposal', 'legacy-user', 'kept-key', 'pending', 9, 'source-1',
+                'source-fingerprint', '{"old": true}', '{"new": true}',
+                '2026-01-01 00:00:00', '2026-01-02 00:00:00'
+            )
+        """))
+
+    result = CandidateCompatibilityRuntime(engine).apply()
+
+    assert result.schema_after.status.value == "compatible"
+    assert result.repair_changed
+    with engine.connect() as connection:
+        row = connection.execute(text("""
+            SELECT id, user_id, proposal_key, state, revision, source_clarification_id,
+                   source_assessment_fingerprint, original_update_json, proposed_update_json,
+                   created_at, updated_at, rejected_at, overlap_resolution_json,
+                   transferred_profile_revision_id, transferred_at
+            FROM candidate_adviser_profile_proposals WHERE id = 'kept-proposal'
+        """)).one()
+    assert tuple(row) == (
+        "kept-proposal", "legacy-user", "kept-key", "pending", 9, "source-1",
+        "source-fingerprint", '{"old": true}', '{"new": true}',
+        "2026-01-01 00:00:00", "2026-01-02 00:00:00", None, None, None, None,
+    )
+
+
 def test_mixed_user_apply_counts_reconciliation_statuses_and_preserves_not_confirmed_user():
     engine = _mixed_user_engine()
     factory = sessionmaker(bind=engine, expire_on_commit=False)
