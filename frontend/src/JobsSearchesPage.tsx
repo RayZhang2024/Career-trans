@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import type {
   DiscoveryScheduleAcquisition,
   DiscoveryScheduleCreate,
@@ -14,13 +14,15 @@ import type {
   StructuredAtsScheduleConfig,
 } from "./api";
 import { ApiError, useAuth } from "./auth";
+import { SearchIntentEditor } from "./SearchIntentEditor";
+import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
+import { DiscoveryScheduleChangedError, DiscoveryScheduleStaleError, runSavedDiscoveryNow } from "./discoveryRunNow";
 
 type ListState = { phase: "loading" | "loaded" | "error"; items?: DiscoveryScheduleRead[]; error?: string };
 type ScopeMode = "unfiltered" | "filtered" | "legacy-mixed";
 type Draft = {
   name: string; enabled: boolean; cadence: "daily" | "weekly"; timezone: string; localTime: string; weekdays: number[];
-  keywords: string; locations: string; remotePolicy: "any" | "exclude_remote" | "legacy_true";
-  excludedCompanies: string; excludedTitleTerms: string; employmentTypes: string;
+  searchIntent: SearchIntent;
   atsEnabled: boolean; atsScopeMode: ScopeMode; atsCompanies: string; atsProviders: string[]; atsMaxSources: string; atsMaxResults: string;
   agenticEnabled: boolean; agenticMaxQueries: string; agenticResultsPerQuery: string; agenticMaxPages: string; agenticMaxJobs: string;
   maxSemanticCandidates: string; maxFullAnalyses: string; minRelevanceScore: string;
@@ -32,23 +34,23 @@ type SemanticAdvisory = "loading" | "ready" | "problem" | "unknown";
 type HistoryState = { phase: "loading" | "loaded" | "error"; items?: ScheduledExecutionRead[]; error?: string };
 type ListRefreshOutcome = { kind: "refreshed" } | { kind: "failed" } | { kind: "superseded" } | { kind: "session_stale" };
 type HistoryRefreshOutcome = { kind: "refreshed" } | { kind: "failed" } | { kind: "stale" } | { kind: "superseded" } | { kind: "session_stale" };
+type SearchIntentHandoff = { searchIntent: SearchIntent; scheduleId?: string };
 
 const providers = ["greenhouse", "ashby", "lever", "smartrecruiters", "recruitee"] as const;
 const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 const emptyList: ListState = { phase: "loading" };
 const trimLines = (value: string) => value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-const sameArray = (left: string[] | number[], right: string[] | number[]) => left.length === right.length && left.every((value, index) => value === right[index]);
 const numeric = (value: string) => Number(value);
 const browserTimezone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } };
 const isStaleSessionWork = (cause: unknown) => cause instanceof DOMException && cause.name === "AbortError" || cause instanceof ApiError && cause.status === 401;
 const readableKey = (key: string) => key.replaceAll("_", " ");
-const readableStatus = (status: ScheduledExecutionRead["status"]) => ({ running: "Running", completed: "Completed", partial_failed: "Partially failed", failed: "Failed", skipped: "Skipped" })[status];
+const readableStatus = (status: ScheduledExecutionRead["status"]) => ({ running: "Running", completed: "Completed", partial_failed: "Partially failed", failed: "Failed", skipped: "Skipped" })[status] ?? "Unknown";
 const displayTime = (value: string | null) => value ? new Date(value).toLocaleString() : "Not recorded";
 
 function blankDraft(): Draft {
   return {
     name: "", enabled: false, cadence: "daily", timezone: browserTimezone(), localTime: "09:00:00", weekdays: [],
-    keywords: "", locations: "", remotePolicy: "any", excludedCompanies: "", excludedTitleTerms: "", employmentTypes: "",
+    searchIntent: emptySearchIntent(),
     atsEnabled: false, atsScopeMode: "unfiltered", atsCompanies: "", atsProviders: [], atsMaxSources: "20", atsMaxResults: "100",
     agenticEnabled: false, agenticMaxQueries: "6", agenticResultsPerQuery: "10", agenticMaxPages: "12", agenticMaxJobs: "20",
     maxSemanticCandidates: "10", maxFullAnalyses: "5", minRelevanceScore: "0.5",
@@ -61,9 +63,7 @@ function toDraft(value: DiscoveryScheduleRead): Draft {
   const mode: ScopeMode = ats.all_resolved_sources && hasFilters ? "legacy-mixed" : ats.all_resolved_sources ? "unfiltered" : "filtered";
   return {
     name: value.name, enabled: value.enabled, cadence: value.schedule.cadence, timezone: value.schedule.timezone,
-    localTime: value.schedule.local_time, weekdays: [...value.schedule.weekdays], keywords: value.query.keywords.join("\n"),
-    locations: value.query.locations.join("\n"), remotePolicy: value.query.remote_ok === true ? "legacy_true" : value.query.remote_ok === false ? "exclude_remote" : "any",
-    excludedCompanies: value.query.excluded_companies.join("\n"), excludedTitleTerms: value.query.excluded_title_terms.join("\n"), employmentTypes: value.query.employment_types.join("\n"),
+    localTime: value.schedule.local_time, weekdays: [...value.schedule.weekdays], searchIntent: searchIntentFromQuery(value.query),
     atsEnabled: ats.enabled, atsScopeMode: mode, atsCompanies: ats.companies.join("\n"), atsProviders: [...ats.providers], atsMaxSources: String(ats.max_sources), atsMaxResults: String(ats.max_results),
     agenticEnabled: value.acquisition.agentic_web.enabled, agenticMaxQueries: String(value.acquisition.agentic_web.max_search_queries),
     agenticResultsPerQuery: String(value.acquisition.agentic_web.max_search_results_per_query), agenticMaxPages: String(value.acquisition.agentic_web.max_pages_to_open), agenticMaxJobs: String(value.acquisition.agentic_web.max_discovered_jobs),
@@ -82,12 +82,7 @@ function scheduleSpec(draft: Draft): DiscoveryScheduleSpec {
   return { cadence: draft.cadence, timezone: draft.timezone.trim(), local_time: draft.localTime, weekdays: draft.cadence === "weekly" ? [...draft.weekdays].sort((a, b) => a - b) : [] };
 }
 
-function queryFromDraft(draft: Draft): DiscoveryScheduleQuery {
-  return {
-    keywords: trimLines(draft.keywords), locations: trimLines(draft.locations), remote_ok: draft.remotePolicy === "exclude_remote" ? false : draft.remotePolicy === "legacy_true" ? true : null,
-    companies: [], excluded_companies: trimLines(draft.excludedCompanies), excluded_title_terms: trimLines(draft.excludedTitleTerms), employment_types: trimLines(draft.employmentTypes), max_results: 50,
-  };
-}
+function queryFromDraft(draft: Draft): DiscoveryScheduleQuery { return searchIntentToQuery(draft.searchIntent); }
 
 function acquisitionFromDraft(draft: Draft, existing?: DiscoveryScheduleAcquisition): DiscoveryScheduleAcquisition {
   const oldAts = existing?.structured_ats;
@@ -130,12 +125,7 @@ function buildPatch(fresh: DiscoveryScheduleRead, draft: Draft, dirty: Set<Draft
 
   const nextQuery = { ...fresh.query };
   const candidateQuery = queryFromDraft(draft);
-  if (dirty.has("keywords") && !sameArray(candidateQuery.keywords, fresh.query.keywords)) nextQuery.keywords = candidateQuery.keywords;
-  if (dirty.has("locations") && !sameArray(candidateQuery.locations, fresh.query.locations)) nextQuery.locations = candidateQuery.locations;
-  if (dirty.has("remotePolicy") && candidateQuery.remote_ok !== fresh.query.remote_ok) nextQuery.remote_ok = candidateQuery.remote_ok;
-  if (dirty.has("excludedCompanies") && !sameArray(candidateQuery.excluded_companies, fresh.query.excluded_companies)) nextQuery.excluded_companies = candidateQuery.excluded_companies;
-  if (dirty.has("excludedTitleTerms") && !sameArray(candidateQuery.excluded_title_terms, fresh.query.excluded_title_terms)) nextQuery.excluded_title_terms = candidateQuery.excluded_title_terms;
-  if (dirty.has("employmentTypes") && !sameArray(candidateQuery.employment_types, fresh.query.employment_types)) nextQuery.employment_types = candidateQuery.employment_types;
+  if (dirty.has("searchIntent")) Object.assign(nextQuery, candidateQuery);
   if (JSON.stringify(nextQuery) !== JSON.stringify(fresh.query)) patch.query = nextQuery;
 
   const nextAts = { ...fresh.acquisition.structured_ats };
@@ -169,7 +159,7 @@ function validate(draft: Draft, preserveLegacyMixed: boolean): string | null {
   const name = draft.name.trim();
   if (!name) return "Enter a configuration name.";
   if (name.length > 200) return "Configuration names can be at most 200 characters.";
-  if (!trimLines(draft.keywords).length) return "Add at least one prioritisation theme.";
+  if (!draft.searchIntent.themes.length) return "Add at least one search theme.";
   if (!draft.atsEnabled && !draft.agenticEnabled) return "Choose at least one acquisition channel before saving.";
   if (draft.atsEnabled && draft.atsScopeMode === "filtered" && !trimLines(draft.atsCompanies).length && !draft.atsProviders.length) return "Choose at least one company or provider filter for filtered resolved sources.";
   if (draft.atsEnabled && draft.atsScopeMode === "legacy-mixed" && !preserveLegacyMixed) return "Choose an explicit Structured ATS source-scope mode before changing this legacy/mixed scope.";
@@ -196,6 +186,8 @@ function channelSummary(value: DiscoveryScheduleRead): string {
 
 export function JobsSearchesPage() {
   const { api } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [list, setList] = useState<ListState>(emptyList);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [createPending, setCreatePending] = useState(false);
@@ -209,6 +201,7 @@ export function JobsSearchesPage() {
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyBySchedule, setHistoryBySchedule] = useState<Record<string, HistoryState>>({});
   const [message, setMessageState] = useState("");
+  const [handoff, setHandoff] = useState<SearchIntentHandoff | null>(null);
   const messageAuthority = useRef(0);
   const setMessage = (value: string) => {
     messageAuthority.current += 1;
@@ -310,14 +303,24 @@ export function JobsSearchesPage() {
     return () => { alive.current = false; viewGeneration.current += 1; listGeneration.current += 1; editorGeneration.current += 1; };
   }, [api]);
 
-  const openCreate = () => { editorGeneration.current += 1; editorSelection.current = null; setError(""); setMessage(""); setEditor({ id: null, loading: false, draft: blankDraft(), dirty: new Set() }); };
-  const openEdit = async (scheduleId: string) => {
+  const openCreate = (intent?: SearchIntent) => {
+    editorGeneration.current += 1; editorSelection.current = null; setError(""); setMessage("");
+    const draft = blankDraft();
+    if (intent) draft.searchIntent = intent;
+    setEditor({ id: null, loading: false, draft, dirty: new Set() });
+  };
+  const openEdit = async (scheduleId: string, modifiedIntent?: SearchIntent) => {
     const generation = ++editorGeneration.current;
     editorSelection.current = scheduleId;
     setEditor({ id: scheduleId, loading: true, draft: blankDraft(), dirty: new Set() }); setError(""); setMessage("");
     try {
       const baseline = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(scheduleId)}`);
-      if (alive.current && generation === editorGeneration.current) setEditor({ id: scheduleId, loading: false, baseline, draft: toDraft(baseline), dirty: new Set() });
+      if (alive.current && generation === editorGeneration.current) {
+        const draft = toDraft(baseline);
+        const dirty = new Set<DraftKey>();
+        if (modifiedIntent && !searchIntentEquals(modifiedIntent, draft.searchIntent)) { draft.searchIntent = modifiedIntent; dirty.add("searchIntent"); }
+        setEditor({ id: scheduleId, loading: false, baseline, draft, dirty });
+      }
     } catch (cause) {
       if (!alive.current || generation !== editorGeneration.current) return;
       if (isStaleSessionWork(cause)) return;
@@ -325,6 +328,20 @@ export function JobsSearchesPage() {
       setEditor((current) => current?.id === scheduleId ? { ...current, loading: false, error: "This saved configuration could not be loaded." } : current);
     }
   };
+  useEffect(() => {
+    const state = location.state as Partial<SearchIntentHandoff> | null;
+    if (!state?.searchIntent || !Array.isArray(state.searchIntent.themes)) return;
+    setHandoff({ searchIntent: state.searchIntent, scheduleId: typeof state.scheduleId === "string" ? state.scheduleId : undefined });
+    void navigate(location.pathname, { replace: true, state: null });
+  }, [location, navigate]);
+  useEffect(() => {
+    if (!handoff || list.phase !== "loaded") return;
+    const pending = handoff;
+    setHandoff(null);
+    if (pending.scheduleId && list.items?.some((item) => item.id === pending.scheduleId)) void openEdit(pending.scheduleId, pending.searchIntent);
+    else if (!pending.scheduleId) openCreate(pending.searchIntent);
+    else setMessage("The selected saved discovery is no longer available. You can start a new saved discovery with this SearchIntent.");
+  }, [handoff, list.phase, list.items]);
   const toggleHistory = (scheduleId: string) => {
     if (historySelection.current === scheduleId) { historySelection.current = null; setSelectedHistoryId(null); return; }
     historySelection.current = scheduleId; setSelectedHistoryId(scheduleId); void refreshHistory(scheduleId);
@@ -340,11 +357,22 @@ export function JobsSearchesPage() {
     const beginReconciliation = () => setReconcilingScheduleIds((old) => new Set(old).add(id));
     try {
       let execution: ScheduledExecutionRead;
+      let freshSchedule = schedule;
       try {
-        execution = await api.request<ScheduledExecutionRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}/run-now`, { method: "POST" });
+        const result = await runSavedDiscoveryNow(api, schedule);
+        freshSchedule = result.schedule;
+        execution = result.execution;
       } catch (cause) {
         if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || isStaleSessionWork(cause)) return;
         settleRunRequest();
+        if (cause instanceof DiscoveryScheduleChangedError) {
+          setList((old) => old.items ? { ...old, phase: "loaded", items: old.items.map((item) => item.id === id ? cause.fresh : item) } : old);
+          setMessage(`The saved configuration for ${schedule.name} changed before Run now started. Review the refreshed configuration and run again; any unsaved SearchIntent remains in the editor.`);
+          return;
+        }
+        if (cause instanceof DiscoveryScheduleStaleError) {
+          beginReconciliation(); await clearStaleSchedule(id, sessionGeneration); return;
+        }
         if (cause instanceof ApiError && cause.status === 404) {
           beginReconciliation(); await clearStaleSchedule(id, sessionGeneration); return;
         }
@@ -379,6 +407,7 @@ export function JobsSearchesPage() {
       if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
       settleRunRequest();
       beginReconciliation();
+      setList((old) => old.items ? { ...old, phase: "loaded", items: old.items.map((item) => item.id === id ? freshSchedule : item) } : old);
       setRunResults((old) => ({ ...old, [id]: execution }));
       const [listOutcome, historyOutcome] = await Promise.all([refreshListOutcome(), refreshHistory(id)]);
       if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
@@ -442,7 +471,7 @@ export function JobsSearchesPage() {
     const id = current.id;
     setEditor((old) => old?.id === id ? { ...old, pending: true, error: undefined } : old);
     try {
-      const requiresFreshRead = [...current.dirty].some((key) => ["cadence", "timezone", "localTime", "weekdays", "keywords", "locations", "remotePolicy", "excludedCompanies", "excludedTitleTerms", "employmentTypes", "atsEnabled", "atsScopeMode", "atsCompanies", "atsProviders", "atsMaxSources", "atsMaxResults", "agenticEnabled", "agenticMaxQueries", "agenticResultsPerQuery", "agenticMaxPages", "agenticMaxJobs", "maxSemanticCandidates", "maxFullAnalyses", "minRelevanceScore"].includes(key));
+      const requiresFreshRead = [...current.dirty].some((key) => ["cadence", "timezone", "localTime", "weekdays", "searchIntent", "atsEnabled", "atsScopeMode", "atsCompanies", "atsProviders", "atsMaxSources", "atsMaxResults", "agenticEnabled", "agenticMaxQueries", "agenticResultsPerQuery", "agenticMaxPages", "agenticMaxJobs", "maxSemanticCandidates", "maxFullAnalyses", "minRelevanceScore"].includes(key));
       let fresh = current.baseline!;
       if (requiresFreshRead) fresh = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}`);
       const patch = buildPatch(fresh, current.draft, current.dirty);
@@ -521,14 +550,7 @@ export function JobsSearchesPage() {
           <label htmlFor="schedule-timezone">IANA timezone</label><input id="schedule-timezone" value={draft.timezone} onChange={(event) => change("timezone", event.target.value)} disabled={value.pending || createPending} />
           <p className="muted">The backend chooses the authoritative next due time. Daylight-saving gaps are skipped; repeated local times use the first occurrence.</p>
         </fieldset>
-        <fieldset className="schedule-fieldset"><legend>Search criteria</legend><label htmlFor="schedule-keywords">Prioritisation themes (one per line)</label><textarea id="schedule-keywords" value={draft.keywords} onChange={(event) => change("keywords", event.target.value)} disabled={value.pending || createPending} /><p className="muted">Themes prioritise structured ATS candidates softly; they are not exact web-search terms or eligibility filters. Profile-driven web discovery builds strategy from confirmed candidate context, not from these literal saved themes.</p>
-          <label htmlFor="schedule-locations">Eligibility locations (one complete location per line)</label><textarea id="schedule-locations" value={draft.locations} onChange={(event) => change("locations", event.target.value)} disabled={value.pending || createPending} />
-          <label htmlFor="schedule-remote">Remote policy</label><select id="schedule-remote" value={draft.remotePolicy} onChange={(event) => change("remotePolicy", event.target.value as Draft["remotePolicy"])} disabled={value.pending || createPending}><option value="any">No remote restriction</option><option value="exclude_remote">Exclude remote jobs</option>{draft.remotePolicy === "legacy_true" && <option value="legacy_true">No remote restriction — legacy stored value preserved</option>}</select>
-          <label htmlFor="schedule-excluded-companies">Excluded companies (one per line)</label><textarea id="schedule-excluded-companies" value={draft.excludedCompanies} onChange={(event) => change("excludedCompanies", event.target.value)} disabled={value.pending || createPending} />
-          <label htmlFor="schedule-excluded-titles">Excluded title terms (one per line)</label><textarea id="schedule-excluded-titles" value={draft.excludedTitleTerms} onChange={(event) => change("excludedTitleTerms", event.target.value)} disabled={value.pending || createPending} />
-          <label htmlFor="schedule-employment-types">Employment types (one per line)</label><textarea id="schedule-employment-types" value={draft.employmentTypes} onChange={(event) => change("employmentTypes", event.target.value)} disabled={value.pending || createPending} />
-          <p className="muted">New configurations keep positive query companies empty and use query max results 50. These are separate from channel-specific result limits.</p>
-        </fieldset>
+        <SearchIntentEditor intent={draft.searchIntent} onChange={(next) => change("searchIntent", next)} disabled={value.pending || createPending} idPrefix="schedule-search-intent" />
         <fieldset className="schedule-fieldset"><legend>Acquisition channels</legend><p className="muted">Choose at least one channel explicitly. Saving is configuration-only and does not check readiness. Running a saved discovery requires confirmed candidate context and the required server-side providers.</p>
           <label className="check-line"><input type="checkbox" checked={draft.atsEnabled} onChange={(event) => change("atsEnabled", event.target.checked)} disabled={value.pending || createPending} /> Structured ATS — already-resolved career sources</label>
           <p className="muted">This channel reads the resolved career-source registry. A company filter does not resolve a source; no matching resolved source can yield zero jobs without proving the employer has no open roles.</p>
@@ -566,7 +588,7 @@ export function JobsSearchesPage() {
   };
 
   return <main className="jobs-searches-page">
-    <header className="workspace-header searches-header"><div><p className="eyebrow">Jobs workspace</p><h1>Saved discovery configurations</h1><p className="muted">Configure saved searches, manually run persisted configurations, and review execution history.</p><Link to="/jobs">Back to Jobs workspace</Link></div><button type="button" onClick={openCreate}>New saved discovery</button></header>
+    <header className="workspace-header searches-header"><div><p className="eyebrow">Jobs workspace</p><h1>Saved discovery configurations</h1><p className="muted">Configure saved searches, manually run persisted configurations, and review execution history.</p><Link to="/jobs">Back to Jobs workspace</Link></div><button type="button" onClick={() => openCreate()}>New saved discovery</button></header>
     {message && <p className="notice" role="status">{message}</p>}{error && <p role="alert">{error}</p>}
     <section className="readiness-notices" aria-label="Execution readiness">
       {candidateReadiness === "loading" && <p className="muted" role="status">Checking confirmed candidate context…</p>}
@@ -597,7 +619,7 @@ export function JobsSearchesPage() {
           {stale && <p className="notice">This saved discovery is no longer available. Refresh the list to resolve its current state.</p>}
           {schedule.enabled && <p>Next due: {schedule.next_run_at ? formatNextRun(schedule.next_run_at, schedule.schedule.timezone) : "Next due time is unavailable."}</p>}
           {schedule.last_execution_at && <p>Last recorded execution completion: {new Date(schedule.last_execution_at).toLocaleString()}</p>}
-          <p>Prioritisation themes: {schedule.query.keywords.join(" · ")}</p><p>Eligibility locations: {schedule.query.locations.length ? schedule.query.locations.join(" · ") : "Any"} · Remote policy: {schedule.query.remote_ok === false ? "Exclude remote" : schedule.query.remote_ok === true ? "No remote restriction — legacy stored value preserved" : "No remote restriction"}</p>
+          <p>Prioritisation themes: {schedule.query.keywords.join(" · ")}</p><p>Locations (search criteria): {schedule.query.locations.length ? schedule.query.locations.join(" · ") : "Any"} · Remote policy: {schedule.query.remote_ok === false ? "Exclude remote" : schedule.query.remote_ok === true ? "No remote restriction — legacy stored value preserved" : "No remote restriction"}</p>
           <p>Acquisition: {channelSummary(schedule)}</p><p>Evaluation budgets: {schedule.evaluation.max_semantic_candidates} semantic candidates · {schedule.evaluation.max_full_analyses} full analyses · minimum relevance {schedule.evaluation.min_relevance_score}</p>
           {schedule.enabled
             ? <p className="muted">Recurrence is configured for this saved discovery. Automatic due execution requires the Career-trans scheduler operator and required server-side providers to be available in the deployment.</p>

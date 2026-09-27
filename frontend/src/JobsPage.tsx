@@ -1,17 +1,18 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, UserOpportunitySummary } from "./api";
+import { Link, useNavigate } from "react-router-dom";
+import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, UserOpportunitySummary } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
+import { SearchIntentEditor } from "./SearchIntentEditor";
+import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
+import { DiscoveryScheduleChangedError, DiscoveryScheduleStaleError, runSavedDiscoveryNow } from "./discoveryRunNow";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
-type Tab = "opportunities" | "runs" | "inbox";
+type Tab = "find" | "opportunities" | "runs" | "inbox";
 const WINDOW = 20;
 const MAX_WINDOW = 100;
 const emptyPage = <T,>(): SectionState<T> => ({ phase: "loading" });
 const titleCase = (value: string) => value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-const splitTerms = (value: string) => value.split(/[\n,]/).map((part) => part.trim()).filter(Boolean);
-const splitLocations = (value: string) => value.split(/\r?\n/).map((part) => part.trim()).filter(Boolean);
 const nextWindow = (current: number) => Math.min(MAX_WINDOW, current + WINDOW);
 const numberLabel = (value: number) => Number.isInteger(value) ? String(value) : value.toFixed(1);
 
@@ -126,7 +127,7 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
       } else if (reason.status === 404) {
         setUnavailable(true);
         const refreshed = await onUnavailable();
-        if (alive.current && requestGeneration === generation.current) setError(refreshed ? "This opportunity is no longer available. The current shortlist was refreshed." : "This opportunity is no longer available. The shortlist refresh could not be confirmed.");
+        if (alive.current && requestGeneration === generation.current) setError(refreshed ? "This opportunity is no longer available. The current opportunity view was refreshed." : "This opportunity is no longer available. The opportunity refresh could not be confirmed.");
       } else if (reason.status === 409) {
         setPrerequisitesUnconfirmed(true);
         const [onboardingResult, profileResult] = await Promise.allSettled([api.request<OnboardingStatus>("/api/v1/onboarding/status"), api.request<Profile>("/api/v1/profile")]);
@@ -172,14 +173,16 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
 
 export function JobsPage() {
   const { api, user } = useAuth();
+  const navigate = useNavigate();
   const [onboarding, setOnboarding] = useState<SectionState<OnboardingStatus>>({ phase: "loading" });
   const [opportunities, setOpportunities] = useState<SectionState<BoundedResponse<UserOpportunitySummary>>>({ phase: "loading" });
   const [runs, setRuns] = useState<SectionState<BoundedResponse<DiscoveryRunSummary>>>({ phase: "loading" });
   const [inbox, setInbox] = useState<SectionState<BoundedResponse<InboxSummary>>>({ phase: "loading" });
+  const [savedSchedules, setSavedSchedules] = useState<SectionState<DiscoveryScheduleRead[]>>({ phase: "loading" });
   const [opportunityLimit, setOpportunityLimit] = useState(WINDOW);
   const [runLimit, setRunLimit] = useState(WINDOW);
   const [inboxLimit, setInboxLimit] = useState(WINDOW);
-  const [tab, setTab] = useState<Tab>("opportunities");
+  const [tab, setTab] = useState<Tab>("find");
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<SectionState<DiscoveryRunDetail>>({ phase: "loading" });
   const [selectedHistorical, setSelectedHistorical] = useState<string | null>(null);
@@ -188,16 +191,18 @@ export function JobsPage() {
   const [currentDetail, setCurrentDetail] = useState<SectionState<RankedJobOpportunity>>({ phase: "loading" });
   const [staleNotice, setStaleNotice] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [keywords, setKeywords] = useState("");
-  const [locations, setLocations] = useState("");
-  const [remotePolicy, setRemotePolicy] = useState<"any" | "exclude_remote">("any");
+  const [searchIntent, setSearchIntent] = useState<SearchIntent>(emptySearchIntent());
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
+  const [findMessage, setFindMessage] = useState("");
+  const [findError, setFindError] = useState("");
+  const [findRunning, setFindRunning] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [evaluationSnapshot, setEvaluationSnapshot] = useState<{ titles: string[]; query: CreateDiscoveryRun["query"] } | null>(null);
   const [evaluationMessage, setEvaluationMessage] = useState("");
   const [evaluationError, setEvaluationError] = useState("");
   const submitLock = useRef(false);
   const alive = useRef(false);
-  const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0 });
+  const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, savedSchedules: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0 });
   const userKey = user?.id ?? "";
 
   const loadOnboarding = async () => {
@@ -238,7 +243,7 @@ export function JobsPage() {
       return false;
     }
   };
-  const loadInbox = async (limit = inboxLimit) => {
+  const loadInbox = async (limit = inboxLimit): Promise<boolean> => {
     const request = ++generations.current.inbox;
     setInbox((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
     try {
@@ -247,14 +252,29 @@ export function JobsPage() {
         setInbox({ phase: "loaded", data });
         const actionableIds = new Set(data.items.filter((item) => item.actionable).map((item) => item.discovered_job_id));
         setSelectedIds((current) => new Set(Array.from(current).filter((id) => actionableIds.has(id))));
+        return true;
       }
+      return false;
     } catch {
       if (alive.current && request === generations.current.inbox) setInbox((previous) => ({ phase: "error", data: previous.data, error: "Recent imported vacancies are unavailable." }));
+      return false;
+    }
+  };
+  const loadSavedSchedules = async (): Promise<boolean> => {
+    const request = ++generations.current.savedSchedules;
+    setSavedSchedules((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
+    try {
+      const data = await api.request<DiscoveryScheduleRead[]>("/api/v1/jobs/discovery-schedules");
+      if (alive.current && request === generations.current.savedSchedules) { setSavedSchedules({ phase: "loaded", data }); return true; }
+      return false;
+    } catch {
+      if (alive.current && request === generations.current.savedSchedules) setSavedSchedules((previous) => ({ phase: "error", data: previous.data, error: "Saved discovery configurations are unavailable." }));
+      return false;
     }
   };
   useEffect(() => {
     alive.current = true;
-    void loadOnboarding(); void loadOpportunities(WINDOW); void loadRuns(WINDOW); void loadInbox(WINDOW);
+    void loadOnboarding(); void loadOpportunities(WINDOW); void loadRuns(WINDOW); void loadInbox(WINDOW); void loadSavedSchedules();
     return () => { alive.current = false; for (const key of Object.keys(generations.current) as Array<keyof typeof generations.current>) generations.current[key] += 1; };
   }, [api, userKey]);
 
@@ -267,8 +287,8 @@ export function JobsPage() {
     } catch (error) {
       if (!alive.current || request !== generations.current.currentDetail) return;
       if (error instanceof ApiError && error.status === 404) {
-        setSelectedCurrent(null); setCurrentDetail({ phase: "error", error: "This opportunity is no longer current. The shortlist has been refreshed." });
-        setStaleNotice("This opportunity is no longer current. The shortlist has been refreshed.");
+        setSelectedCurrent(null); setCurrentDetail({ phase: "error", error: "This opportunity is no longer current. The current opportunity view has been refreshed." });
+        setStaleNotice("This opportunity is no longer current. The current opportunity view has been refreshed.");
         void loadOpportunities(WINDOW); setOpportunityLimit(WINDOW);
       } else setCurrentDetail({ phase: "error", error: "Opportunity detail is unavailable." });
     }
@@ -298,24 +318,48 @@ export function JobsPage() {
     if (!item.actionable) return;
     setSelectedIds((current) => { const next = new Set(current); if (next.has(item.discovered_job_id)) next.delete(item.discovered_job_id); else next.add(item.discovered_job_id); return next; });
   };
+  const selectedSchedule = savedSchedules.data?.find((schedule) => schedule.id === selectedScheduleId);
+  const selectedScheduleIntent = selectedSchedule ? searchIntentFromQuery(selectedSchedule.query) : null;
+  const selectedScheduleDirty = !!selectedScheduleIntent && !searchIntentEquals(searchIntent, selectedScheduleIntent);
+  const handoffSearchIntent = () => navigate("/jobs/searches", { state: { searchIntent, ...(selectedSchedule ? { scheduleId: selectedSchedule.id } : {}) } });
+  const runSelectedSchedule = async () => {
+    const schedule = selectedSchedule;
+    if (!schedule || !ready || selectedScheduleDirty || findRunning) return;
+    setFindRunning(true); setFindMessage(""); setFindError("");
+    try {
+      const { schedule: fresh, execution } = await runSavedDiscoveryNow(api, schedule);
+      setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === fresh.id ? fresh : item) } : old);
+      if (execution.status === "completed" || execution.status === "partial_failed") {
+        const refreshed = await loadInbox(WINDOW);
+        setTab("inbox");
+        setFindMessage(`Run now ${execution.status === "partial_failed" ? "completed with partial failures" : "completed"}. Recent vacancies ${refreshed ? "were refreshed" : "could not be confirmed as refreshed"}. Review recent vacancies. The exact execution result set is available in discovery-run history.`);
+      } else setFindMessage(`Run now returned ${execution.status}. Recent vacancies were not presented as an exact execution result set.`);
+    } catch (cause) {
+      if (cause instanceof DiscoveryScheduleChangedError) {
+        setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === cause.fresh.id ? cause.fresh : item) } : old);
+        setFindMessage("The saved configuration changed before Run now started. Review the refreshed configuration and run again; the current SearchIntent draft was preserved.");
+      } else if (cause instanceof DiscoveryScheduleStaleError || cause instanceof ApiError && cause.status === 404) {
+        const refreshed = await loadSavedSchedules();
+        setFindError(refreshed ? "The selected saved configuration is no longer available. Choose another configuration." : "The selected saved configuration is no longer available, and its refresh could not be confirmed.");
+        setSelectedScheduleId(null);
+      } else if (cause instanceof ApiError) setFindError(`Run now was rejected by the server (HTTP ${cause.status}). No execution success was confirmed.`);
+      else setFindError("The Run now request was interrupted. Career-trans cannot confirm what execution state resulted. Review discovery-run history and recent vacancies.");
+    } finally { if (alive.current) setFindRunning(false); }
+  };
   const submitEvaluation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (submitLock.current || submitting || !onboarding.data?.candidate_context_ready || selectedIds.size === 0 || splitTerms(keywords).length === 0) return;
-    const query: CreateDiscoveryRun["query"] = {
-      keywords: splitTerms(keywords), locations: splitLocations(locations),
-      remote_ok: remotePolicy === "exclude_remote" ? false : null,
-      companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50,
-    };
+    if (submitLock.current || submitting || !onboarding.data?.candidate_context_ready || selectedIds.size === 0 || searchIntent.themes.length === 0) return;
+    const query = searchIntentToQuery(searchIntent);
     const ids = Array.from(selectedIds);
     const titles = inbox.data?.items.filter((item) => selectedIds.has(item.discovered_job_id)).map((item) => item.title) ?? [];
     const payload: CreateDiscoveryRun = { query, discovered_job_ids: ids, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 };
     submitLock.current = true; setSubmitting(true); setEvaluationSnapshot({ titles, query }); setEvaluationMessage(""); setEvaluationError("");
     try {
       await api.request<DiscoveryRunCreated>("/api/v1/jobs/discovery-runs", { method: "POST", body: JSON.stringify(payload) });
-      setEvaluationMessage("Evaluation completed. Refreshing recent runs and the current shortlist…");
+      setEvaluationMessage("Evaluation completed. Refreshing recent runs and current opportunities…");
       setSelectedIds(new Set()); setOpportunityLimit(WINDOW);
       const [runsRefreshed, opportunitiesRefreshed] = await Promise.all([loadRuns(runLimit), loadOpportunities(WINDOW, true)]);
-      setEvaluationMessage(`Evaluation completed. Recent runs ${runsRefreshed ? "were refreshed" : "could not be confirmed as refreshed"}; the current shortlist ${opportunitiesRefreshed ? "was refreshed" : "could not be confirmed as refreshed"}.`);
+      setEvaluationMessage(`Evaluation completed. Recent runs ${runsRefreshed ? "were refreshed" : "could not be confirmed as refreshed"}; current opportunities ${opportunitiesRefreshed ? "were refreshed" : "could not be confirmed as refreshed"}.`);
     } catch (error) {
       const runsRefreshed = await loadRuns(runLimit);
       setEvaluationError(error instanceof ApiError
@@ -331,7 +375,7 @@ export function JobsPage() {
 
   return <main className="jobs-page">
     <header className="workspace-header jobs-header"><div><p className="eyebrow">Career workspace</p><h1>Jobs</h1><p className="muted">Review current evaluations, run history, and recent imported public vacancies.</p><Link to="/jobs/searches">Manage saved discovery configurations</Link></div></header>
-    <nav className="jobs-tabs" aria-label="Jobs sections">{(["opportunities", "runs", "inbox"] as Tab[]).map((item) => <button type="button" key={item} aria-pressed={tab === item} onClick={() => setTab(item)}>{item === "opportunities" ? "Opportunities" : item === "runs" ? "Discovery runs" : "Recent vacancies"}</button>)}</nav>
+    <nav className="jobs-tabs" aria-label="Jobs sections">{(["find", "opportunities", "runs", "inbox"] as Tab[]).map((item) => <button type="button" key={item} aria-pressed={tab === item} onClick={() => setTab(item)}>{item === "find" ? "Find jobs" : item === "opportunities" ? "Opportunities" : item === "runs" ? "Discovery runs" : "Recent vacancies"}</button>)}</nav>
     <section className="jobs-prerequisite card" aria-label="Candidate readiness">
       {onboarding.phase === "loading" && !onboarding.data ? <p role="status">Checking candidate readiness…</p> : onboarding.data ? <>
         {!ready && <><h2>Complete your Profile first</h2><p>Confirm structured career information in Profile or confirm a CV to create the candidate context used for evaluation.</p><Link to="/profile">Review Profile</Link></>}
@@ -342,11 +386,22 @@ export function JobsPage() {
     {evaluationMessage && <p className="notice" role="status">{evaluationMessage}</p>}{evaluationError && <p className="notice" role="status">{evaluationError}</p>}{staleNotice && <p className="notice" role="status">{staleNotice}</p>}
     {evaluationSnapshot && <section className="card evaluation-snapshot"><h2>{submitting ? "Evaluation in progress" : "Submitted evaluation"}</h2>{submitting && <p role="status">Evaluating selected jobs… this may take several minutes.</p>}<p>Selected jobs: {evaluationSnapshot.titles.join(", ") || "Selection submitted"}</p><p>Search themes: {evaluationSnapshot.query.keywords.join(", ")} · locations: {evaluationSnapshot.query.locations.join(", ") || "Any"} · remote policy: {evaluationSnapshot.query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p></section>}
     <div className="jobs-content">
-      {tab === "opportunities" && <section aria-labelledby="opportunities-heading" className="jobs-section"><div className="section-heading"><div><h2 id="opportunities-heading">Current ranked opportunities</h2><p className="muted">Ordered by the current backend shortlist. Posting recency is a signal, not proof the vacancy is live.</p></div><button type="button" className="button-secondary" onClick={() => void loadOpportunities()}>Refresh</button></div>
+      {tab === "find" && <section aria-labelledby="find-jobs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="find-jobs-heading">Find jobs</h2><p className="muted">Build a SearchIntent for discovery and prioritisation. Search context is not eligibility, evidence, or proof of fit.</p></div></div>
+        {savedSchedules.phase === "loading" && !savedSchedules.data && <p className="muted" role="status">Loading saved configurations…</p>}
+        {savedSchedules.phase === "error" && !savedSchedules.data && <p className="notice" role="status">Saved configurations are unavailable. You can still prepare a transient SearchIntent.</p>}
+        <label htmlFor="saved-search-selection">Saved search configuration</label><select id="saved-search-selection" aria-label="Saved search configuration" value={selectedScheduleId ?? ""} onChange={(event) => { const id = event.target.value || null; setSelectedScheduleId(id); const schedule = savedSchedules.data?.find((item) => item.id === id); if (schedule) setSearchIntent(searchIntentFromQuery(schedule.query)); setFindMessage(""); setFindError(""); }}><option value="">Use a transient SearchIntent</option>{savedSchedules.data?.map((schedule) => <option value={schedule.id} key={schedule.id}>{schedule.name}</option>)}</select>
+        <SearchIntentEditor intent={searchIntent} onChange={(next) => { setSearchIntent(next); setFindMessage(""); setFindError(""); }} idPrefix="find-search-intent" disabled={findRunning || submitting} />
+        {selectedSchedule && <div className="card"><p><strong>Persisted channels:</strong> {selectedSchedule.acquisition.structured_ats.enabled ? "Structured ATS" : ""}{selectedSchedule.acquisition.structured_ats.enabled && selectedSchedule.acquisition.agentic_web.enabled ? " · " : ""}{selectedSchedule.acquisition.agentic_web.enabled ? "Profile-driven bounded server-side web discovery" : ""}</p><p className="muted">Candidate readiness controls whether the persisted schedule can run. Semantic configuration is advisory and is not provider readiness.</p>{selectedScheduleDirty && <p className="notice">This SearchIntent differs from the persisted saved configuration. Hand it off to Saved searches to review and save; it is explicitly dirty.</p>}</div>}
+        {findMessage && <p className="notice" role="status">{findMessage}</p>}{findError && <p className="notice" role="status">{findError}</p>}
+        <div className="card-actions"><button type="button" onClick={handoffSearchIntent}>{selectedSchedule ? "Review or save configuration" : "Save or configure search"}</button>{selectedSchedule && <button type="button" className="button-secondary" onClick={() => void runSelectedSchedule()} disabled={!ready || selectedScheduleDirty || findRunning}>{findRunning ? "Running…" : "Run now"}</button>}</div>
+        {!ready && <p className="muted">Run now requires confirmed candidate context. A transient SearchIntent can still be reviewed or saved.</p>}
+        <section className="card" aria-label="Host Codex guidance"><h3>Run with Codex on this device</h3><p>SearchIntent is not automatically transferred to local Codex. Codex runs locally outside the browser and the current CLI supports only a subset of this search context.</p><p>Excluded companies, excluded title terms, and employment types are not claimed to be applied by that local workflow. Imported bounded results may appear in shared Recent vacancies; a run not completed here is not a completed run with zero results.</p></section>
+      </section>}
+      {tab === "opportunities" && <section aria-labelledby="opportunities-heading" className="jobs-section"><div className="section-heading"><div><h2 id="opportunities-heading">Current ranked opportunities</h2><p className="muted">Ordered by current backend analyses. Posting recency is a signal, not proof the vacancy is live.</p></div><button type="button" className="button-secondary" onClick={() => void loadOpportunities()}>Refresh</button></div>
         <StateMessage state={opportunities} empty={false} onRetry={() => void loadOpportunities()}>
           {!confirmedWindow.length && noRuns && <p className="muted">No jobs have been evaluated yet.</p>}
           {!confirmedWindow.length && hasHistoricalRuns && opportunities.phase === "loaded" && <p className="muted">No current evaluated opportunities. Historical runs are available below.</p>}
-          {!!confirmedWindow.length && <ol className="opportunity-list">{confirmedWindow.map((item, index) => <li className="card opportunity-card" key={item.discovered_job_id}><div className="opportunity-top"><div><p className="recommendation-label">{item.recommendation.toUpperCase()}</p><h3>{item.title}</h3><p>{[item.company, item.location, item.work_arrangement].filter(Boolean).join(" · ")}</p></div><span className="ordinal">{index + 1}</span></div><dl className="metric-grid"><div><dt>Fit</dt><dd>{numberLabel(item.fit_score)}</dd></div><div><dt>Career alignment</dt><dd>{numberLabel(item.career_alignment_score)} · {titleCase(item.career_alignment_confidence)}</dd></div><div><dt>Relevance</dt><dd>{numberLabel(item.relevance_score * 100)}%</dd></div><div><dt>Role archetype</dt><dd>{titleCase(item.archetype)}</dd></div></dl><p><strong>Posting recency signal:</strong> {titleCase(item.posting_recency.legitimacy)} — {item.posting_recency.reasoning}</p><div className="card-actions"><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a><button type="button" className="button-secondary" aria-expanded={selectedCurrent === item.evaluation_id} onClick={() => selectedCurrent === item.evaluation_id ? (generations.current.currentDetail += 1, setSelectedCurrent(null)) : void openCurrent(item.evaluation_id)}>{selectedCurrent === item.evaluation_id ? "Close detail" : "View detail"}</button></div><OpportunityPreparation opportunity={item} ready={onboarding.data?.candidate_context_ready} onUnavailable={async () => { const refreshed = await loadOpportunities(WINDOW); setOpportunityLimit(WINDOW); setStaleNotice(refreshed ? "This opportunity is no longer available. The current shortlist was refreshed." : "This opportunity is no longer available. The shortlist refresh could not be confirmed."); return refreshed; }} onReadinessRefresh={acceptOnboardingAuthority} />{selectedCurrent === item.evaluation_id && <StateMessage state={currentDetail} empty={false} onRetry={() => void openCurrent(item.evaluation_id)}>{currentDetail.data && <OpportunityDetail opportunity={currentDetail.data} />}</StateMessage>}</li>)}</ol>}
+          {!!confirmedWindow.length && <ol className="opportunity-list">{confirmedWindow.map((item, index) => <li className="card opportunity-card" key={item.discovered_job_id}><div className="opportunity-top"><div><p className="recommendation-label">{item.recommendation.toUpperCase()}</p><h3>{item.title}</h3><p>{[item.company, item.location, item.work_arrangement].filter(Boolean).join(" · ")}</p></div><span className="ordinal">{index + 1}</span></div><dl className="metric-grid"><div><dt>Fit</dt><dd>{numberLabel(item.fit_score)}</dd></div><div><dt>Career alignment</dt><dd>{numberLabel(item.career_alignment_score)} · {titleCase(item.career_alignment_confidence)}</dd></div><div><dt>Relevance</dt><dd>{numberLabel(item.relevance_score * 100)}%</dd></div><div><dt>Role archetype</dt><dd>{titleCase(item.archetype)}</dd></div></dl><p><strong>Posting recency signal:</strong> {titleCase(item.posting_recency.legitimacy)} — {item.posting_recency.reasoning}</p><div className="card-actions"><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a><button type="button" className="button-secondary" aria-expanded={selectedCurrent === item.evaluation_id} onClick={() => selectedCurrent === item.evaluation_id ? (generations.current.currentDetail += 1, setSelectedCurrent(null)) : void openCurrent(item.evaluation_id)}>{selectedCurrent === item.evaluation_id ? "Close detail" : "View detail"}</button></div><OpportunityPreparation opportunity={item} ready={onboarding.data?.candidate_context_ready} onUnavailable={async () => { const refreshed = await loadOpportunities(WINDOW); setOpportunityLimit(WINDOW); setStaleNotice(refreshed ? "This opportunity is no longer available. The current opportunity view was refreshed." : "This opportunity refresh could not be confirmed."); return refreshed; }} onReadinessRefresh={acceptOnboardingAuthority} />{selectedCurrent === item.evaluation_id && <StateMessage state={currentDetail} empty={false} onRetry={() => void openCurrent(item.evaluation_id)}>{currentDetail.data && <OpportunityDetail opportunity={currentDetail.data} />}</StateMessage>}</li>)}</ol>}
           {opportunities.data?.truncated && (opportunityLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(opportunityLimit); setOpportunityLimit(next); void loadOpportunities(next); }}>Show more current opportunities</button> : <p className="muted">Showing the first 100 current opportunities available through this view.</p>)}
         </StateMessage>
       </section>}
@@ -360,7 +415,7 @@ export function JobsPage() {
             <ul className="inbox-list">{inbox.data.items.map((item) => <li className={`card inbox-card${selectedIds.has(item.discovered_job_id) ? " is-selected" : ""}`} key={item.discovered_job_id}><label className="selection-label"><input type="checkbox" checked={selectedIds.has(item.discovered_job_id)} disabled={!item.actionable || !ready || submitting} onChange={() => toggleJob(item)} aria-label={`Select ${item.title}`} /><span>{item.title}</span></label><p>{[item.company, item.location, item.work_arrangement, item.employment_type].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Lifecycle: {titleCase(item.state)} · Verification: {titleCase(item.verification_status)} · {item.actionable ? "Actionable" : "Not actionable"}</p>{item.verification_reason && <p>Verification note: {titleCase(item.verification_reason)}</p>}<p>Last seen: {new Date(item.last_seen_at).toLocaleString()}</p>{item.provenance.length > 0 && <p>Recent provenance: {item.provenance.map((source) => `${source.runtime}${source.discovered_via ? ` · ${source.discovered_via}` : ""}`).join("; ")}</p>}<a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></li>)}</ul>
             {inbox.data.truncated && (inboxLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(inboxLimit); setInboxLimit(next); void loadInbox(next); }}>Show more recent vacancies</button> : <p className="muted">Showing the first 100 recent vacancies available through this view.</p>)}
           </>}
-          {ready && <form className="card evaluation-form" onSubmit={(event) => void submitEvaluation(event)}><h3>Evaluate selected actionable jobs</h3><p className="muted">This evaluates persisted vacancies. It does not start internet discovery.</p><label htmlFor="job-keywords">Search themes (soft prioritisation; not eligibility filters)</label><textarea id="job-keywords" value={keywords} onChange={(event) => setKeywords(event.target.value)} placeholder="AI Engineer, Applied AI Engineer" disabled={submitting} /><p className="muted">Enter at least one theme to create the structured query.</p><label htmlFor="job-locations">Location eligibility (one location per line)</label><textarea id="job-locations" value={locations} onChange={(event) => setLocations(event.target.value)} placeholder={'London, United Kingdom\nOxford, United Kingdom'} disabled={submitting} /><p className="muted">Enter one complete location per line; commas within a location are preserved.</p><label htmlFor="remote-policy">Remote policy</label><select id="remote-policy" value={remotePolicy} onChange={(event) => setRemotePolicy(event.target.value as typeof remotePolicy)} disabled={submitting}><option value="any">No remote restriction</option><option value="exclude_remote">Exclude remote jobs</option></select><button type="submit" disabled={submitting || selectedIds.size === 0 || splitTerms(keywords).length === 0}>{submitting ? "Evaluating…" : `Evaluate ${selectedIds.size || "selected"} jobs`}</button>{!selectedIds.size && <p className="muted">Select one or more actionable vacancies to continue.</p>}</form>}
+          {ready && <form className="card evaluation-form" onSubmit={(event) => void submitEvaluation(event)}><h3>Evaluate selected actionable jobs</h3><p className="muted">This evaluates persisted vacancies with the same explicit SearchIntent used by Find jobs. It does not start internet discovery.</p><SearchIntentEditor intent={searchIntent} onChange={setSearchIntent} idPrefix="inbox-search-intent" disabled={submitting} /><p><strong>SearchIntent:</strong> {searchIntent.themes.join(", ") || "Not set"} · locations: {searchIntent.locations.join(", ") || "Any"} · remote policy: {searchIntent.remotePolicy === "exclude_remote" ? "Exclude remote jobs" : searchIntent.remotePolicy === "legacy_true" ? "No remote restriction (legacy stored value)" : "No remote restriction"}</p><p className="muted">SearchIntent is discovery context, not eligibility or evidence. <button type="button" className="button-secondary" onClick={() => setTab("find")}>Edit SearchIntent in Find jobs</button></p><button type="submit" disabled={submitting || selectedIds.size === 0 || searchIntent.themes.length === 0}>{submitting ? "Evaluating…" : `Evaluate ${selectedIds.size || "selected"} jobs`}</button>{!searchIntent.themes.length && <p className="muted">Set an explicit SearchIntent in Find jobs before evaluating.</p>}{!selectedIds.size && <p className="muted">Select one or more actionable vacancies to continue.</p>}</form>}
         </StateMessage>
       </section>}
     </div>
