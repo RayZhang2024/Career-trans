@@ -741,7 +741,7 @@ describe("Issue #189 Settings → AI Models", () => {
   it("renders non-table responsive override cards and preserves existing workspace navigation", async () => {
     renderSettings(fetcher().mock);
     await waitForSettings();
-    for (const name of ["Profile", "CV", "Career Adviser", "Jobs", "Applications", "Tracking", "Saved searches", "Settings"]) {
+    for (const name of ["Home", "Profile", "Job Search", "Applications", "Tracking", "Settings"]) {
       expect(screen.getAllByRole("link", { name }).length).toBeGreaterThan(0);
     }
     openAdvanced();

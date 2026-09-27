@@ -571,7 +571,7 @@ export function JobsSearchesPage() {
     <section className="readiness-notices" aria-label="Execution readiness">
       {candidateReadiness === "loading" && <p className="muted" role="status">Checking confirmed candidate context…</p>}
       {candidateReadiness === "ready" && <p className="muted">Confirmed candidate context is available for execution.</p>}
-      {candidateReadiness === "not_ready" && <p className="notice">Run now requires confirmed candidate context. Complete or confirm your CV first: <Link to="/cv">Go to CV</Link>. Saved configuration and execution history remain available.</p>}
+      {candidateReadiness === "not_ready" && <p className="notice">Run now requires confirmed candidate context. Complete or confirm your CV first: <Link to="/profile/cv">Go to CV</Link>. Saved configuration and execution history remain available.</p>}
       {candidateReadiness === "unknown" && <p className="notice">Candidate readiness could not be confirmed. Run now is unavailable until confirmed candidate context can be verified. Saved configuration and execution history remain available.</p>}
       {semanticAdvisory === "loading" && <p className="muted">Checking semantic configuration (advisory only)…</p>}
       {semanticAdvisory === "ready" && <p className="muted">Semantic configuration check reports a configured semantic setup. This does not guarantee this saved discovery will execute successfully.</p>}

@@ -73,13 +73,13 @@ it("handles profile-only, structured-only, empty, and empty optional domains", a
   renderHome({ ...emptySnapshot(), structured_profile: { employment: [{ employer: "Only Co", title: "Analyst", start_date: null, end_date: null, location: null, description: "" }], education: [], credentials: [], skills: [], projects: [], achievements: [], evidence: [] } });
   expect(await screen.findByText("Analyst at Only Co")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Edit profile" })).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/cv");
+  expect(screen.getByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/profile/cv");
 });
 
 it("shows the empty state, a pending CV notice, and never mixes draft content into confirmed CV facts", async () => {
   const { unmount } = renderHome();
   expect(await screen.findByText("Let’s build your career profile")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Start CV onboarding" })).toHaveAttribute("href", "/cv");
+  expect(screen.getByRole("link", { name: "Start CV onboarding" })).toHaveAttribute("href", "/profile/cv");
   unmount();
   renderHome({ ...emptySnapshot(), structured_profile: { employment: [{ employer: "Current Co", title: "Current role", start_date: null, end_date: null, location: null, description: "Current confirmed facts." }], education: [], credentials: [], skills: [], projects: [], achievements: [], evidence: [] }, readiness: { ...emptySnapshot().readiness, structured_profile_available: true, latest_cv_draft_state: "review_ready" } });
   expect(await screen.findByText(/Your current structured career information remains in use/)).toBeInTheDocument();
@@ -91,7 +91,7 @@ it.each(["uploaded", "review_ready"] as const)("keeps confirmed CV facts visible
   renderHome({ ...emptySnapshot(), structured_profile: { employment: [{ employer: "Current Co", title: "Current confirmed role", start_date: null, end_date: null, location: null, description: "Confirmed details only." }], education: [], credentials: [], skills: [], projects: [], achievements: [], evidence: [] }, readiness: { ...emptySnapshot().readiness, structured_profile_available: true, latest_cv_draft_state: state } });
   expect(await screen.findByText(/newer CV update is awaiting review/)).toBeInTheDocument();
   expect(screen.getByText("Current confirmed role at Current Co")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Review CV update" })).toHaveAttribute("href", "/cv");
+  expect(screen.getByRole("link", { name: "Review CV update" })).toHaveAttribute("href", "/profile/cv");
 });
 
 it("shows pending manual Profile changes and a pending CV update together", async () => {
@@ -111,11 +111,11 @@ it("shows Adviser review and stale states without displaying draft assessment co
   const { unmount } = renderHome(draft);
   expect(await screen.findByText(/draft assessment is not shown as current/)).toBeInTheDocument();
   expect(screen.queryByText("Do not show this draft")).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Review Career Adviser assessment" })).toHaveAttribute("href", "/adviser");
+  expect(screen.getByRole("link", { name: "Review Career Adviser assessment" })).toHaveAttribute("href", "/profile/adviser");
   unmount();
   renderHome({ ...emptySnapshot(), adviser_assessment_status: "stale" });
   expect(await screen.findByText(/reassessment needed/i)).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Revisit Career Adviser" })).toHaveAttribute("href", "/adviser");
+  expect(screen.getByRole("link", { name: "Revisit Career Adviser" })).toHaveAttribute("href", "/profile/adviser");
 });
 
 it("warns with safe materialisation counts when evidence is incomplete", async () => {

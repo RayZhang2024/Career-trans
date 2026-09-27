@@ -77,7 +77,7 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(await screen.findByRole("link", { name: "Manage saved discovery configurations" })).toHaveAttribute("href", "/jobs/searches");
     fireEvent.click(screen.getByRole("link", { name: "Manage saved discovery configurations" }));
     expect(await screen.findByRole("heading", { name: "Saved discovery configurations" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Saved searches" })).toHaveAttribute("href", "/jobs/searches");
+    expect(screen.getByRole("link", { name: "Job Search" })).toHaveAttribute("href", "/jobs");
     expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules").length).toBeGreaterThan(0);
   });
 
@@ -530,7 +530,7 @@ describe("Issue #176 manual execution and history", () => {
     });
     await loaded();
     expect(await screen.findByText(/Run now requires confirmed candidate context/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Go to CV" })).toHaveAttribute("href", "/cv");
+    expect(screen.getByRole("link", { name: "Go to CV" })).toHaveAttribute("href", "/profile/cv");
     expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Edit" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "View execution history" }));
