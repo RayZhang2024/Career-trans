@@ -41,6 +41,55 @@ from app.services.semantic_runtime_attribution import available_attribution, can
 _CONTRACT_VERSION = "user-discovery-run-v1"
 
 
+def evaluation_contract_fingerprint_for_runtime(runtime_snapshot: ResolvedRuntimeSnapshot) -> str:
+    return _fingerprint({
+        "contract": _CONTRACT_VERSION,
+        "revision": _application_revision(),
+        "runtime": runtime_snapshot.fingerprint_projection(JOB_EVALUATION_OPERATIONS),
+    })
+
+
+def reusable_current_evaluation(
+    session: Session,
+    user_id: str,
+    job: DiscoveredJob,
+    *,
+    candidate_reader: CanonicalCandidateReadService,
+    runtime_snapshot: ResolvedRuntimeSnapshot,
+    candidate_context: CandidateContext | None = None,
+) -> UserJobEvaluation | None:
+    """Shared authority for whether a stored evaluation is current for a job."""
+    context = candidate_context
+    if context is None:
+        try:
+            snapshot = candidate_reader.read(user_id)
+            context = candidate_reader.candidate_context(
+                snapshot,
+                require_structured_profile=True,
+                require_complete_evidence=True,
+            )
+        except CandidateEvidenceMaterializationIncomplete:
+            return None
+    if context is None or not is_public_job_actionable(job):
+        return None
+    candidate = UserJobDiscoveryService.candidate_evaluation_fingerprint(context)
+    contract = evaluation_contract_fingerprint_for_runtime(runtime_snapshot)
+    evaluation = session.scalar(select(UserJobEvaluation).where(
+        UserJobEvaluation.user_id == user_id,
+        UserJobEvaluation.discovered_job_id == job.id,
+        UserJobEvaluation.job_content_hash == job.content_hash,
+        UserJobEvaluation.candidate_evaluation_fingerprint == candidate,
+        UserJobEvaluation.evaluation_contract_fingerprint == contract,
+    ))
+    if evaluation is None:
+        return None
+    try:
+        result = RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)
+    except ValueError:
+        return None
+    return evaluation if result.job_profile is not None and result.requirement_matches else None
+
+
 class UserJobDiscoveryHistoryReadService:
     """Settings-independent projections for persisted discovery history."""
 
@@ -301,23 +350,9 @@ class UserJobDiscoveryService:
         self, user_id: str, job: DiscoveredJob, *, candidate_context: CandidateContext | None = None
     ) -> RankedJobOpportunity | None:
         """The shared #154 authority for a reusable complete evaluation."""
-        if candidate_context is not None:
-            context = candidate_context
-        else:
-            try:
-                snapshot = self._candidate_reader.read(user_id)
-                context = self._candidate_reader.candidate_context(
-                    snapshot,
-                    require_structured_profile=True,
-                    require_complete_evidence=True,
-                )
-            except CandidateEvidenceMaterializationIncomplete:
-                return None
-        if context is None or not self._is_actionable(job):
-            return None
-        evaluation = self._reusable_evaluation(
-            user_id, job, self.candidate_evaluation_fingerprint(context),
-            self.evaluation_contract_fingerprint(),
+        evaluation = reusable_current_evaluation(
+            self._session, user_id, job, candidate_reader=self._candidate_reader,
+            runtime_snapshot=self._runtime_snapshot, candidate_context=candidate_context,
         )
         if evaluation is None:
             return None
@@ -403,11 +438,7 @@ class UserJobDiscoveryService:
         })
 
     def evaluation_contract_fingerprint(self) -> str:
-        revision = _application_revision()
-        return _fingerprint({
-            "contract": _CONTRACT_VERSION, "revision": revision,
-            "runtime": self._runtime_snapshot.fingerprint_projection(JOB_EVALUATION_OPERATIONS),
-        })
+        return evaluation_contract_fingerprint_for_runtime(self._runtime_snapshot)
 
     def _reusable_evaluation(self, user_id: str, job: DiscoveredJob, candidate: str, contract: str) -> UserJobEvaluation | None:
         return self._session.scalar(select(UserJobEvaluation).where(

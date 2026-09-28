@@ -3,6 +3,7 @@ import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, ScheduledExecutionRead, UserOpportunitySummary } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
+import JobWorkspacePage, { type JobWorkspaceSection } from "./JobWorkspacePage";
 import { JobsSearchesPage } from "./JobsSearchesPage";
 import { SearchIntentEditor } from "./SearchIntentEditor";
 import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
@@ -35,15 +36,27 @@ type FindRunOutcome =
   | { kind: "post_rejected"; scheduleName: string; status: number };
 
 type JobSearchView = "find" | "saved" | "inbox" | "recommended" | "shortlisted" | "history" | "unknown";
+type JobSearchRoute = { kind: "search"; view: JobSearchView } | { kind: "workspace"; discoveredJobId: string; section: JobWorkspaceSection } | { kind: "unknown" };
+const RESERVED_JOB_ROUTE_SEGMENTS = new Set(["find", "inbox", "history", "opportunities", "searches"]);
 
-function jobSearchView(pathname: string): JobSearchView {
-  if (pathname === "/jobs/find" || pathname === "/jobs") return "find";
-  if (pathname === "/jobs/find/saved") return "saved";
-  if (pathname === "/jobs/inbox") return "inbox";
-  if (pathname === "/jobs/opportunities/recommended") return "recommended";
-  if (pathname === "/jobs/opportunities/shortlisted") return "shortlisted";
-  if (pathname === "/jobs/history") return "history";
-  return "unknown";
+function safeDecodeRouteSegment(value: string): string | null {
+  try { return decodeURIComponent(value); } catch { return null; }
+}
+
+function parseJobSearchRoute(pathname: string): JobSearchRoute {
+  if (pathname === "/jobs/find" || pathname === "/jobs") return { kind: "search", view: "find" };
+  if (pathname === "/jobs/find/saved") return { kind: "search", view: "saved" };
+  if (pathname === "/jobs/inbox") return { kind: "search", view: "inbox" };
+  if (pathname === "/jobs/opportunities/recommended") return { kind: "search", view: "recommended" };
+  if (pathname === "/jobs/opportunities/shortlisted") return { kind: "search", view: "shortlisted" };
+  if (pathname === "/jobs/history") return { kind: "search", view: "history" };
+  const match = pathname.match(/^\/jobs\/([^/]+)(?:\/(fit|application|tracking))?$/);
+  if (match) {
+    const discoveredJobId = safeDecodeRouteSegment(match[1]);
+    if (discoveredJobId === null || RESERVED_JOB_ROUTE_SEGMENTS.has(discoveredJobId.trim().toLowerCase())) return { kind: "unknown" };
+    return { kind: "workspace", discoveredJobId, section: (match[2] ?? "overview") as JobWorkspaceSection };
+  }
+  return { kind: "unknown" };
 }
 
 function JobSearchNavigation({ view }: { view: JobSearchView }) {
@@ -77,12 +90,18 @@ function IndexedRequirements({ title, indexes, requirements }: { title: string; 
   return <section><h4>{title}</h4><ul>{indexes.map((index, position) => <li key={`${position}-${index}`}>{Number.isInteger(index) && index >= 0 && index < requirements.length ? requirements[index].text : <span className="muted">Requirement reference unavailable.</span>}</li>)}</ul></section>;
 }
 
-function OpportunityDetail({ opportunity, historical = false }: { opportunity: RankedJobOpportunity; historical?: boolean }) {
+export type OpportunityDetailMode = "current" | "historical" | "unknown";
+
+export function OpportunityDetail({ opportunity, historical = false, mode }: { opportunity: RankedJobOpportunity; historical?: boolean; mode?: OpportunityDetailMode }) {
+  const presentation = mode ?? (historical ? "historical" : "current");
+  const isHistorical = presentation === "historical";
+  const isUnknown = presentation === "unknown";
   const profile = opportunity.job_profile;
   const requirements = profile?.requirements ?? [];
-  return <article className="job-detail" aria-label={historical ? "Historical evaluation detail" : "Current opportunity detail"}>
-    <h3>{historical ? "Historical evaluation snapshot" : "Opportunity detail"}</h3>
-    {historical && <p className="notice">This is historical evaluation state. It does not describe the vacancy or recommendation as current.</p>}
+  return <article className="job-detail" aria-label={isHistorical ? "Historical evaluation detail" : isUnknown ? "Evaluation applicability unavailable" : "Current opportunity detail"}>
+    <h3>{isHistorical ? "Historical evaluation snapshot" : isUnknown ? "Persisted evaluation snapshot" : "Opportunity detail"}</h3>
+    {isHistorical && <p className="notice">This is historical evaluation state. It does not describe the vacancy or recommendation as current.</p>}
+    {isUnknown && <p className="notice">Applicability unavailable. Currentness could not be established, so this snapshot is not claimed as current or historical.</p>}
     <section><h4>Recommendation</h4><p><strong>{opportunity.recommendation_assessment.recommendation.toUpperCase()}</strong> — {opportunity.recommendation_assessment.reasoning}</p><TextList label="Key strengths" items={opportunity.recommendation_assessment.key_strengths} /><TextList label="Trade-offs" items={opportunity.recommendation_assessment.key_tradeoffs} /><IndexedRequirements title="Recommendation hard blockers" indexes={opportunity.recommendation_assessment.hard_blockers} requirements={requirements} /></section>
     <section><h4>Fit assessment</h4><p>Fit score: {numberLabel(opportunity.fit_assessment.fit_score)}</p><IndexedRequirements title="Fit strengths" indexes={opportunity.fit_assessment.strengths} requirements={requirements} /><IndexedRequirements title="Hard blockers" indexes={opportunity.fit_assessment.hard_blockers} requirements={requirements} />
       {!!opportunity.fit_assessment.gaps.length && <><h4>Gaps</h4><ul>{opportunity.fit_assessment.gaps.map((gap, index) => <li key={`${gap.requirement_index}-${index}`}><strong>{titleCase(gap.gap_type)} · {titleCase(gap.severity)}</strong>: {Number.isInteger(gap.requirement_index) && gap.requirement_index >= 0 && gap.requirement_index < requirements.length ? requirements[gap.requirement_index].text : <span className="muted">Requirement reference unavailable.</span>} — {gap.reason}</li>)}</ul></>}
@@ -93,7 +112,7 @@ function OpportunityDetail({ opportunity, historical = false }: { opportunity: R
       const match = opportunity.requirement_matches.find((item) => item.requirement_index === index);
       return <li key={`${index}-${requirement.text}`}><strong>{requirement.text}</strong> <span className="muted">({titleCase(requirement.importance)} · {titleCase(requirement.category)})</span>{match ? <p>{titleCase(match.match_type)} · {numberLabel(match.score * 100)} — {match.reasoning}</p> : <p className="muted">No match detail available.</p>}</li>;
     })}</ul>}{opportunity.requirement_matches.some((item) => !Number.isInteger(item.requirement_index) || item.requirement_index < 0 || item.requirement_index >= requirements.length) && <p className="muted">Requirement reference unavailable.</p>}</section>
-    <section><h4>{historical ? "Historical posting recency signal" : "Posting recency signal"}</h4><p>{titleCase(opportunity.legitimacy.legitimacy)} — {opportunity.legitimacy.reasoning}</p></section>
+    <section><h4>{isHistorical ? "Historical posting recency signal" : isUnknown ? "Persisted posting recency signal" : "Posting recency signal"}</h4><p>{titleCase(opportunity.legitimacy.legitimacy)} — {opportunity.legitimacy.reasoning}</p></section>
   </article>;
 }
 
@@ -207,12 +226,20 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
   </section>;
 }
 
+function ExactEvaluationResult({ run, fallbackQuery }: { run: DiscoveryRunCreated; fallbackQuery?: CreateDiscoveryRun["query"] }) {
+  const query = (run.run_input?.query && typeof run.run_input.query === "object" ? run.run_input.query : fallbackQuery ?? {}) as Record<string, unknown>;
+  const jobs = run.jobs ?? [];
+  const listValue = (key: string) => Array.isArray(query[key]) ? query[key].map(String).join(", ") || "Any" : "Any";
+  return <section className="card evaluation-result" aria-label="Analysis just completed"><h2>Analysis just completed</h2><p><strong>Run:</strong> {run.id} · <strong>Status:</strong> {titleCase(run.status ?? "completed")}</p><p>Started {run.started_at ? new Date(run.started_at).toLocaleString() : "Time unavailable"}{run.completed_at ? ` · completed ${new Date(run.completed_at).toLocaleString()}` : ""}</p><p>Search themes: {listValue("keywords")} · locations: {listValue("locations")} · remote policy: {query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p><h3>Exact returned results</h3><ol>{jobs.map((row) => <li key={row.discovered_job_id}><p><strong>Outcome:</strong> {row.outcome ? outcomeLabels[row.outcome] : "Returned result"}</p>{row.evaluation_id && <p><strong>Evaluation:</strong> {row.evaluation_id}</p>}{row.opportunity ? <><p><strong>Recommendation:</strong> {row.opportunity.recommendation_assessment.recommendation.toUpperCase()}</p><p>{row.opportunity.job.title} · {row.opportunity.job.company ?? "Company not provided"}</p></> : <p className="muted">No successful evaluation result was returned for this row.</p>}<div className="card-actions"><Link className="button-secondary" to={`/jobs/${encodeURIComponent(row.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" to={`/jobs/history?run=${encodeURIComponent(run.id)}&job=${encodeURIComponent(row.discovered_job_id)}`}>Open exact run result</Link>{row.opportunity && <><Link className="button-secondary" to={`/jobs/${encodeURIComponent(row.discovered_job_id)}/fit`}>Open Fit</Link><a href={row.opportunity.job.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></>}</div></li>)}</ol></section>;
+}
+
 
 export function JobsPage() {
   const { api, user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const view = jobSearchView(location.pathname);
+  const route = parseJobSearchRoute(location.pathname);
+  const view: JobSearchView = route.kind === "search" ? route.view : route.kind === "workspace" ? "unknown" : "unknown";
   const [onboarding, setOnboarding] = useState<SectionState<OnboardingStatus>>({ phase: "loading" });
   const [opportunities, setOpportunities] = useState<SectionState<BoundedResponse<UserOpportunitySummary>>>({ phase: "loading" });
   const [runs, setRuns] = useState<SectionState<BoundedResponse<DiscoveryRunSummary>>>({ phase: "loading" });
@@ -237,6 +264,7 @@ export function JobsPage() {
   const [findRunning, setFindRunning] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [evaluationSnapshot, setEvaluationSnapshot] = useState<{ titles: string[]; query: CreateDiscoveryRun["query"] } | null>(null);
+  const [exactEvaluation, setExactEvaluation] = useState<DiscoveryRunCreated | null>(null);
   const [evaluationMessage, setEvaluationMessage] = useState("");
   const [evaluationError, setEvaluationError] = useState("");
   const submitLock = useRef(false);
@@ -252,7 +280,7 @@ export function JobsPage() {
     if (previousUserKey.current && previousUserKey.current !== userKey) {
       setOnboarding(emptyPage()); setOpportunities(emptyPage()); setRuns(emptyPage()); setInbox(emptyPage()); setSavedSchedules(emptyPage());
       setSelectedIds(new Set()); setSearchIntent(emptySearchIntent()); setSelectedScheduleId(null); setSelectedRun(null); setSelectedHistorical(null); setSelectedCurrent(null);
-      setRunDetail(emptyPage()); setHistoricalDetail(emptyPage()); setCurrentDetail(emptyPage()); setEvaluationSnapshot(null); setEvaluationMessage(""); setEvaluationError(""); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
+      setRunDetail(emptyPage()); setHistoricalDetail(emptyPage()); setCurrentDetail(emptyPage()); setEvaluationSnapshot(null); setExactEvaluation(null); setEvaluationMessage(""); setEvaluationError(""); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
     }
     previousUserKey.current = userKey;
   }, [userKey]);
@@ -491,9 +519,10 @@ export function JobsPage() {
     const ids = Array.from(selectedIds);
     const titles = inbox.data?.items.filter((item) => selectedIds.has(item.discovered_job_id)).map((item) => item.title) ?? [];
     const payload: CreateDiscoveryRun = { query, discovered_job_ids: ids, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 };
-    submitLock.current = true; setSubmitting(true); setEvaluationSnapshot({ titles, query }); setEvaluationMessage(""); setEvaluationError("");
+    submitLock.current = true; setSubmitting(true); setEvaluationSnapshot({ titles, query }); setExactEvaluation(null); setEvaluationMessage(""); setEvaluationError("");
     try {
-      await api.request<DiscoveryRunCreated>("/api/v1/jobs/discovery-runs", { method: "POST", body: JSON.stringify(payload) });
+      const result = await api.request<DiscoveryRunCreated>("/api/v1/jobs/discovery-runs", { method: "POST", body: JSON.stringify(payload) });
+      setExactEvaluation(result);
       setEvaluationMessage("Evaluation completed. Refreshing recent runs and current opportunities…");
       setSelectedIds(new Set()); setOpportunityLimit(WINDOW);
       const [runsRefreshed, opportunitiesRefreshed] = await Promise.all([loadRuns(runLimit), loadOpportunities(WINDOW, true)]);
@@ -510,10 +539,11 @@ export function JobsPage() {
   const noRuns = runs.data?.items.length === 0 && runs.phase === "loaded";
   const confirmedWindow = opportunities.data?.items ?? [];
 
-  if (view === "unknown") { navigate("/jobs/find", { replace: true }); return null; }
+  if (route.kind === "unknown") { navigate("/jobs/find", { replace: true }); return null; }
   return <main className="jobs-page">
     <header className="workspace-header jobs-header"><div><p className="eyebrow">Career workspace</p><h1>Job Search</h1><p className="muted">Find, evaluate, and review job discovery information in one route family.</p>{view !== "saved" && <Link to="/jobs/find/saved">Manage saved discovery configurations</Link>}</div></header>
     <JobSearchNavigation view={view} />
+    {route.kind === "workspace" ? <JobWorkspacePage discoveredJobId={route.discoveredJobId} section={route.section} /> : <>
     {view === "saved" && <JobsSearchesPage />}
     {view !== "saved" && <>
     {(view === "find" || view === "inbox" || view === "recommended") && <section className="jobs-prerequisite card" aria-label="Candidate readiness">
@@ -524,7 +554,9 @@ export function JobsPage() {
       </> : <div><p role="alert">Candidate readiness is unavailable. Evaluation controls remain hidden until it can be confirmed.</p><button type="button" className="button-secondary" onClick={() => void loadOnboarding()}>Retry readiness</button></div>}
     </section>}
     {evaluationMessage && <p className="notice" role="status">{evaluationMessage}</p>}{evaluationError && <p className="notice" role="status">{evaluationError}</p>}{staleNotice && <p className="notice" role="status">{staleNotice}</p>}
-    {evaluationSnapshot && <section className="card evaluation-snapshot"><h2>{submitting ? "Evaluation in progress" : "Submitted evaluation"}</h2>{submitting && <p role="status">Evaluating selected jobs… this may take several minutes.</p>}<p>Selected jobs: {evaluationSnapshot.titles.join(", ") || "Selection submitted"}</p><p>Search themes: {evaluationSnapshot.query.keywords.join(", ")} · locations: {evaluationSnapshot.query.locations.join(", ") || "Any"} · remote policy: {evaluationSnapshot.query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p></section>}
+    {evaluationSnapshot && submitting && <section className="card evaluation-snapshot"><h2>Evaluation in progress</h2><p role="status">Evaluating selected jobs… this may take several minutes.</p><p>Selected jobs: {evaluationSnapshot.titles.join(", ") || "Selection submitted"}</p><p>Search themes: {evaluationSnapshot.query.keywords.join(", ")} · locations: {evaluationSnapshot.query.locations.join(", ") || "Any"} · remote policy: {evaluationSnapshot.query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p></section>}
+    {exactEvaluation && <ExactEvaluationResult run={exactEvaluation} fallbackQuery={evaluationSnapshot?.query} />}
+    {evaluationSnapshot && !submitting && <section className="card evaluation-snapshot"><h2>Submitted evaluation</h2><p>Selected jobs: {evaluationSnapshot.titles.join(", ") || "Selection submitted"}</p><p>Search themes: {evaluationSnapshot.query.keywords.join(", ")} · locations: {evaluationSnapshot.query.locations.join(", ") || "Any"} · remote policy: {evaluationSnapshot.query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p></section>}
     <div className="jobs-content">
       {view === "find" && <section aria-labelledby="find-jobs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="find-jobs-heading">Find jobs</h2><p className="muted">Build a SearchIntent for discovery and prioritisation. Search context is not eligibility, evidence, or proof of fit.</p></div></div>
         {savedSchedules.phase === "loading" && !savedSchedules.data && <p className="muted" role="status">Loading saved configurations…</p>}
@@ -551,7 +583,7 @@ export function JobsPage() {
       {view === "recommended" && <section aria-labelledby="opportunities-heading" className="jobs-section"><OpportunitiesNavigation view={view} /><div className="section-heading"><div><h2 id="opportunities-heading">Recommended / Current analyses</h2><p className="muted">Ordered by current backend analyses. Posting recency is a signal, not proof the vacancy is live.</p></div><button type="button" className="button-secondary" onClick={() => void loadOpportunities()}>Refresh</button></div>
         <StateMessage state={opportunities} empty={false} onRetry={() => void loadOpportunities()}>
           {!confirmedWindow.length && opportunities.phase === "loaded" && <><p className="muted">No current evaluated opportunities.</p><Link to="/jobs/history">View Search history</Link></>}
-          {!!confirmedWindow.length && <ol className="opportunity-list">{confirmedWindow.map((item, index) => <li className="card opportunity-card" key={item.discovered_job_id}><div className="opportunity-top"><div><p className="recommendation-label">{item.recommendation.toUpperCase()}</p><h3>{item.title}</h3><p>{[item.company, item.location, item.work_arrangement].filter(Boolean).join(" · ")}</p></div><span className="ordinal">{index + 1}</span></div><dl className="metric-grid"><div><dt>Fit</dt><dd>{numberLabel(item.fit_score)}</dd></div><div><dt>Career alignment</dt><dd>{numberLabel(item.career_alignment_score)} · {titleCase(item.career_alignment_confidence)}</dd></div><div><dt>Relevance</dt><dd>{numberLabel(item.relevance_score * 100)}%</dd></div><div><dt>Role archetype</dt><dd>{titleCase(item.archetype)}</dd></div></dl><p><strong>Posting recency signal:</strong> {titleCase(item.posting_recency.legitimacy)} — {item.posting_recency.reasoning}</p><div className="card-actions"><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a><button type="button" className="button-secondary" aria-expanded={selectedCurrent === item.evaluation_id} onClick={() => selectedCurrent === item.evaluation_id ? (generations.current.currentDetail += 1, setSelectedCurrent(null)) : void openCurrent(item.evaluation_id)}>{selectedCurrent === item.evaluation_id ? "Close detail" : "View detail"}</button></div><OpportunityPreparation opportunity={item} ready={onboarding.data?.candidate_context_ready} onUnavailable={async () => { const refreshed = await loadOpportunities(WINDOW); setOpportunityLimit(WINDOW); setStaleNotice(refreshed ? "This opportunity is no longer available. The current opportunity view was refreshed." : "This opportunity refresh could not be confirmed."); return refreshed; }} onReadinessRefresh={acceptOnboardingAuthority} />{selectedCurrent === item.evaluation_id && <StateMessage state={currentDetail} empty={false} onRetry={() => void openCurrent(item.evaluation_id)}>{currentDetail.data && <OpportunityDetail opportunity={currentDetail.data} />}</StateMessage>}</li>)}</ol>}
+          {!!confirmedWindow.length && <ol className="opportunity-list">{confirmedWindow.map((item, index) => <li className="card opportunity-card" key={item.discovered_job_id}><div className="opportunity-top"><div><p className="recommendation-label">{item.recommendation.toUpperCase()}</p><h3>{item.title}</h3><p>{[item.company, item.location, item.work_arrangement].filter(Boolean).join(" · ")}</p></div><span className="ordinal">{index + 1}</span></div><dl className="metric-grid"><div><dt>Fit</dt><dd>{numberLabel(item.fit_score)}</dd></div><div><dt>Career alignment</dt><dd>{numberLabel(item.career_alignment_score)} · {titleCase(item.career_alignment_confidence)}</dd></div><div><dt>Relevance</dt><dd>{numberLabel(item.relevance_score * 100)}%</dd></div><div><dt>Role archetype</dt><dd>{titleCase(item.archetype)}</dd></div></dl><p><strong>Posting recency signal:</strong> {titleCase(item.posting_recency.legitimacy)} — {item.posting_recency.reasoning}</p><div className="card-actions"><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a><button type="button" className="button-secondary" aria-expanded={selectedCurrent === item.evaluation_id} onClick={() => selectedCurrent === item.evaluation_id ? (generations.current.currentDetail += 1, setSelectedCurrent(null)) : void openCurrent(item.evaluation_id)}>{selectedCurrent === item.evaluation_id ? "Close detail" : "View detail"}</button></div><OpportunityPreparation opportunity={item} ready={onboarding.data?.candidate_context_ready} onUnavailable={async () => { const refreshed = await loadOpportunities(WINDOW); setOpportunityLimit(WINDOW); setStaleNotice(refreshed ? "This opportunity is no longer available. The current opportunity view was refreshed." : "This opportunity refresh could not be confirmed."); return refreshed; }} onReadinessRefresh={acceptOnboardingAuthority} />{selectedCurrent === item.evaluation_id && <StateMessage state={currentDetail} empty={false} onRetry={() => void openCurrent(item.evaluation_id)}>{currentDetail.data && <OpportunityDetail opportunity={currentDetail.data} />}</StateMessage>}</li>)}</ol>}
           {opportunities.data?.truncated && (opportunityLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(opportunityLimit); setOpportunityLimit(next); void loadOpportunities(next); }}>Show more current opportunities</button> : <p className="muted">Showing the first 100 current opportunities available through this view.</p>)}
         </StateMessage>
       </section>}
@@ -563,7 +595,7 @@ export function JobsPage() {
         <StateMessage state={inbox} empty={false} onRetry={() => void loadInbox()}>
           {inbox.phase === "loaded" && inbox.data?.items.length === 0 && <p className="muted">No recently imported public vacancies are available.</p>}
           {!!inbox.data?.items.length && <>
-            <ul className="inbox-list">{inbox.data.items.map((item) => <li className={`card inbox-card${selectedIds.has(item.discovered_job_id) ? " is-selected" : ""}`} key={item.discovered_job_id}><label className="selection-label"><input type="checkbox" checked={selectedIds.has(item.discovered_job_id)} disabled={!item.actionable || !ready || submitting} onChange={() => toggleJob(item)} aria-label={`Select ${item.title}`} /><span>{item.title}</span></label><p>{[item.company, item.location, item.work_arrangement, item.employment_type].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Lifecycle: {titleCase(item.state)} · Verification: {titleCase(item.verification_status)} · {item.actionable ? "Actionable" : "Not actionable"}</p>{item.verification_reason && <p>Verification note: {titleCase(item.verification_reason)}</p>}<p>Last seen: {new Date(item.last_seen_at).toLocaleString()}</p>{item.provenance.length > 0 && <p>Recent provenance: {item.provenance.map((source) => `${source.runtime}${source.discovered_via ? ` · ${source.discovered_via}` : ""}`).join("; ")}</p>}<a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></li>)}</ul>
+            <ul className="inbox-list">{inbox.data.items.map((item) => <li className={`card inbox-card${selectedIds.has(item.discovered_job_id) ? " is-selected" : ""}`} key={item.discovered_job_id}><label className="selection-label"><input type="checkbox" checked={selectedIds.has(item.discovered_job_id)} disabled={!item.actionable || !ready || submitting} onChange={() => toggleJob(item)} aria-label={`Select ${item.title}`} /><span>{item.title}</span></label><p>{[item.company, item.location, item.work_arrangement, item.employment_type].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Lifecycle: {titleCase(item.state)} · Verification: {titleCase(item.verification_status)} · {item.actionable ? "Actionable" : "Not actionable"}</p>{item.verification_reason && <p>Verification note: {titleCase(item.verification_reason)}</p>}<p>Last seen: {new Date(item.last_seen_at).toLocaleString()}</p>{item.provenance.length > 0 && <p>Recent provenance: {item.provenance.map((source) => `${source.runtime}${source.discovered_via ? ` · ${source.discovered_via}` : ""}`).join("; ")}</p>}<div className="card-actions"><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></div></li>)}</ul>
             {inbox.data.truncated && (inboxLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(inboxLimit); setInboxLimit(next); void loadInbox(next); }}>Show more recent vacancies</button> : <p className="muted">Showing the first 100 recent vacancies available through this view.</p>)}
           </>}
           {ready && <form className="card evaluation-form" onSubmit={(event) => void submitEvaluation(event)}><h3>Evaluate selected actionable jobs</h3><p className="muted">This evaluates persisted vacancies with the same explicit SearchIntent used by Find jobs. It does not start internet discovery.</p><p><strong>SearchIntent:</strong> {searchIntent.themes.join(", ") || "Not set"} · locations: {searchIntent.locations.join(", ") || "Any"} · remote policy: {searchIntent.remotePolicy === "exclude_remote" ? "Exclude remote jobs" : searchIntent.remotePolicy === "legacy_true" ? "No remote restriction (legacy stored value)" : "No remote restriction"}</p><p className="muted">SearchIntent is discovery context, not eligibility or evidence. <Link className="button-secondary" to="/jobs/find">Edit SearchIntent in Find jobs</Link></p><button type="submit" disabled={submitting || selectedIds.size === 0 || searchIntent.themes.length === 0}>{submitting ? "Evaluating…" : `Evaluate ${selectedIds.size || "selected"} jobs`}</button>{!searchIntent.themes.length && <p className="muted">Set an explicit SearchIntent in Find jobs before evaluating.</p>}{!selectedIds.size && <p className="muted">Select one or more actionable vacancies to continue.</p>}</form>}
@@ -571,6 +603,7 @@ export function JobsPage() {
       </section>}
       {view === "shortlisted" && <section aria-labelledby="shortlisted-heading" className="jobs-section"><OpportunitiesNavigation view={view} /><h2 id="shortlisted-heading">Shortlisted</h2><div className="card"><p>Saved shortlist decisions are not available yet. This view is a non-authoritative placeholder until a dedicated shortlist authority exists.</p><Link className="button-secondary" to="/jobs/opportunities/recommended">Open Recommended / Current analyses</Link></div></section>}
     </div>
+    </>}
     </>}
   </main>;
 }
@@ -588,5 +621,5 @@ function RunSnapshot({ run }: { run: DiscoveryRunSummary }) {
 
 function RunRows({ run, onHistorical, selectedHistorical, historicalDetail, onRetryHistorical }: { run: DiscoveryRunDetail; onHistorical: (jobId: string) => void; selectedHistorical: string | null; historicalDetail: SectionState<HistoricalRunJobDetail>; onRetryHistorical: (jobId: string) => void }) {
   const isRunning = run.status === "running";
-  return <section className="run-rows"><h4>{isRunning ? "Evaluation in progress" : "Per-job outcomes"}</h4>{isRunning && <p className="notice">Per-job values may still be provisional while this evaluation is running.</p>}<ul>{run.jobs.map((row) => { const key = `${run.id}:${row.discovered_job_id}`; return <li key={key}><p><strong>{isRunning && row.outcome === "analysis_failed" ? "In progress" : outcomeLabels[row.outcome]}</strong>{!isRunning && row.failure_kind ? ` · ${titleCase(row.failure_kind)}` : ""}</p>{row.opportunity && <p>{row.opportunity.title} · {row.opportunity.company ?? "Company not provided"}</p>}<button type="button" className="button-secondary" onClick={() => onHistorical(row.discovered_job_id)} aria-expanded={selectedHistorical === key}>Historical detail</button>{selectedHistorical === key && <StateMessage state={historicalDetail} empty={false} onRetry={() => onRetryHistorical(row.discovered_job_id)}>{historicalDetail.data && <>{historicalDetail.data.opportunity && <OpportunityDetail opportunity={historicalDetail.data.opportunity} historical />}<RuntimeAttributionPanel attribution={historicalDetail.data.runtime_attribution} boundary="evaluation" />{!historicalDetail.data.opportunity && <p>Historical outcome: {outcomeLabels[historicalDetail.data.outcome]}. No evaluation snapshot exists for this row.</p>}</>}</StateMessage>}</li>; })}</ul></section>;
+  return <section className="run-rows"><h4>{isRunning ? "Evaluation in progress" : "Per-job outcomes"}</h4>{isRunning && <p className="notice">Per-job values may still be provisional while this evaluation is running.</p>}<ul>{run.jobs.map((row) => { const key = `${run.id}:${row.discovered_job_id}`; return <li key={key}><p><strong>{isRunning && row.outcome === "analysis_failed" ? "In progress" : outcomeLabels[row.outcome]}</strong>{!isRunning && row.failure_kind ? ` · ${titleCase(row.failure_kind)}` : ""}</p>{row.opportunity && <p>{row.opportunity.title} · {row.opportunity.company ?? "Company not provided"}</p>}<div className="card-actions"><Link className="button-secondary" to={`/jobs/${encodeURIComponent(row.discovered_job_id)}`}>Open workspace</Link>{row.opportunity && <Link className="button-secondary" to={`/jobs/${encodeURIComponent(row.discovered_job_id)}/fit`}>View Fit</Link>}<button type="button" className="button-secondary" onClick={() => onHistorical(row.discovered_job_id)} aria-expanded={selectedHistorical === key}>Historical detail</button></div>{selectedHistorical === key && <StateMessage state={historicalDetail} empty={false} onRetry={() => onRetryHistorical(row.discovered_job_id)}>{historicalDetail.data && <>{historicalDetail.data.opportunity && <OpportunityDetail opportunity={historicalDetail.data.opportunity} historical />}<RuntimeAttributionPanel attribution={historicalDetail.data.runtime_attribution} boundary="evaluation" />{!historicalDetail.data.opportunity && <p>Historical outcome: {outcomeLabels[historicalDetail.data.outcome]}. No evaluation snapshot exists for this row.</p>}</>}</StateMessage>}</li>; })}</ul></section>;
 }
