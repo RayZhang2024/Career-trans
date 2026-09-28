@@ -24,6 +24,7 @@ from app.api.deps import (
     get_user_job_discovery_service,
     get_user_job_discovery_read_service,
     get_user_job_discovery_history_read_service,
+    get_user_job_workspace_read_service,
     get_discovery_schedule_service,
     get_scheduled_discovery_execution_service,
 )
@@ -62,6 +63,7 @@ from app.schemas.user_job_discovery import (
     UserOpportunitySummaryResponse, DiscoveryRunSummaryResponse,
     DiscoveryRunDetailRead, DiscoveryRunJobDetailRead,
 )
+from app.schemas.job_workspace import JobWorkspaceRead
 from app.schemas.discovery_schedule import DiscoveryScheduleCreate, DiscoverySchedulePatch, DiscoveryScheduleRead, ScheduledExecutionRead
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
@@ -80,11 +82,26 @@ from app.services.opportunity_inbox_service import OpportunityInboxService
 from app.services.job_detail_enrichment_service import JobDetailEnrichmentService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
+from app.services.user_job_workspace_service import UserJobWorkspaceReadService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@router.get("/workspaces/{discovered_job_id}", response_model=JobWorkspaceRead)
+def get_job_workspace(
+    discovered_job_id: str,
+    current_user: CurrentUser,
+    provenance_limit: int = Query(default=20, ge=1, le=100),
+    evaluation_limit: int = Query(default=20, ge=1, le=100),
+    service: UserJobWorkspaceReadService = Depends(get_user_job_workspace_read_service),
+) -> JobWorkspaceRead:
+    try:
+        return service.read(current_user.id, discovered_job_id, provenance_limit=provenance_limit, evaluation_limit=evaluation_limit)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job workspace not found.") from exc
 
 
 @router.post("/discovery-schedules", response_model=DiscoveryScheduleRead, status_code=status.HTTP_201_CREATED)

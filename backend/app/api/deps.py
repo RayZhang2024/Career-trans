@@ -48,6 +48,7 @@ from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
+from app.services.user_job_workspace_service import UserJobWorkspaceReadService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
 from app.services.application_tracking_service import ApplicationTrackingService
@@ -710,6 +711,15 @@ def get_user_job_discovery_read_service(
 def get_user_job_discovery_history_read_service(db: DbSession) -> UserJobDiscoveryHistoryReadService:
     """Historical run reads are independent of current runtime configuration."""
     return UserJobDiscoveryHistoryReadService(db)
+
+
+def get_user_job_workspace_read_service(db: DbSession) -> UserJobWorkspaceReadService:
+    """Workspace reads are provider-free; runtime resolution is deferred to current-fit projection."""
+    return UserJobWorkspaceReadService(
+        db,
+        candidate_reader=CanonicalCandidateReadService(db),
+        runtime_snapshot_resolver=lambda user_id: AiSettingsService(db).snapshot_for_user(user_id),
+    )
 
 
 def get_application_preparation_service(

@@ -356,7 +356,25 @@ export type ScheduledExecutionRead = {
   completed_at: string | null;
 };
 export type LLMConfigurationCheck = { ready: boolean };
-export type DiscoveryRunCreated = DiscoveryRunSummary & { search_input_fingerprint: string; candidate_evaluation_fingerprint: string; evaluation_contract_fingerprint: string; jobs: Array<DiscoveryRunJobSummary & { opportunity: RankedJobOpportunity | null }> };
+export type DiscoveryRunCreatedJob = Omit<DiscoveryRunJobSummary, "opportunity"> & { opportunity: RankedJobOpportunity | null };
+export type DiscoveryRunCreated = DiscoveryRunSummary & { search_input_fingerprint: string; candidate_evaluation_fingerprint: string; evaluation_contract_fingerprint: string; jobs: DiscoveryRunCreatedJob[] };
+
+export type JobWorkspace = {
+  job: {
+    id: string; title: string; company: string | null; location: string | null; url: string;
+    description: string | null; posted_at: string | null; work_arrangement: string | null;
+    employment_type: string | null; detail_authority: string; verification_status: string;
+    verification_reason: string | null; state: string; actionable: boolean;
+    first_seen_at: string; last_seen_at: string; last_changed_at: string;
+  };
+  provenance: { items: Array<{ id: string; runtime: string; source_ref: string | null; discovered_via: string | null; imported_at: string }>; limit: number; truncated: boolean };
+  current_fit: { status: "current" | "none" | "unavailable"; reason: string | null; evaluation: JobWorkspaceEvaluation | null };
+  evaluations: { items: JobWorkspaceEvaluation[]; limit: number; truncated: boolean };
+};
+export type JobWorkspaceEvaluation = {
+  id: string; created_at: string; applicability: "current" | "historical" | "unknown";
+  opportunity: RankedJobOpportunity; runtime_attribution: SemanticRuntimeAttribution | null;
+};
 
 export type ApplicationSourceRef = { source_type: string; source_ref: string; value?: string | null };
 export type ApplicationEvidenceSnapshotStatus = "available" | "legacy_unavailable";

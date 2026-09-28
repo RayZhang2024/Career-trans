@@ -1152,4 +1152,37 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
     expect(screen.getByRole("checkbox", { name: "Select Inbox actionable" })).not.toBeChecked();
   });
+
+  it("keeps Job Search mounted while navigating the canonical job workspace sections", async () => {
+    const workspace = { job: { id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" }, provenance: { items: [], limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false } };
+    const fetch = fakeFetch({ "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
+    renderJobs(fetch, "/jobs/actionable");
+    await screen.findByRole("heading", { name: "Workspace role" });
+    expect(screen.getByRole("navigation", { name: "Job Search sections" })).toBeInTheDocument();
+    const workspaceNav = screen.getByRole("navigation", { name: "Job workspace sections" });
+    expect(within(workspaceNav).getAllByRole("link").filter((link) => link.getAttribute("aria-current") === "page")).toHaveLength(1);
+    fireEvent.click(within(workspaceNav).getByRole("link", { name: "Fit" }));
+    await screen.findByRole("heading", { name: "Current Fit" });
+    expect(screen.getByRole("link", { name: "Job Search" })).toHaveClass("active");
+    expect(fetch.mock.calls.filter(([input]) => String(input).includes("/api/v1/jobs/workspaces/actionable")).length).toBe(1);
+  });
+
+  it("retains the exact successful Inbox analysis result across workspace navigation", async () => {
+    const workspace = { job: { id: "actionable", title: "Exact returned role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: null, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" }, provenance: { items: [], limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false } };
+    const exactRun = { ...run("run-exact"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "actionable", evaluation_id: "eval-exact", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Exact returned role") }] };
+    const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun), "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Exact analysis" } });
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    await screen.findByRole("heading", { name: "Analysis just completed" });
+    fireEvent.click(screen.getAllByRole("link", { name: "Open workspace" })[0]);
+    await screen.findByRole("heading", { name: "Exact returned role" });
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" }));
+    await screen.findByRole("heading", { name: "Inbox" });
+    expect(screen.getByRole("heading", { name: "Analysis just completed" })).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "View Fit" }).some((link) => link.getAttribute("href") === "/jobs/actionable/fit")).toBe(true);
+  });
 });
