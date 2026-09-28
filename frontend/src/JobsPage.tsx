@@ -26,8 +26,9 @@ type FindRunOutcome =
   | { kind: "execution"; scheduleName: string; status: ScheduledExecutionRead["status"]; inboxRefresh?: boolean }
   | { kind: "changed"; scheduleName: string }
   | { kind: "stale"; scheduleName: string }
-  | { kind: "already_running"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<BoundedResponse<DiscoveryRunSummary>> }
-  | { kind: "uncertain"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<BoundedResponse<DiscoveryRunSummary>> }
+  | { kind: "preflight_unavailable"; scheduleName: string }
+  | { kind: "already_running"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
+  | { kind: "uncertain"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
   | { kind: "rejected"; scheduleName: string; status: number };
 
 function StateMessage<T>({ state, empty, children, onRetry }: { state: SectionState<T>; empty: boolean; children: React.ReactNode; onRetry: () => void }) {
@@ -210,7 +211,7 @@ export function JobsPage() {
   const [evaluationError, setEvaluationError] = useState("");
   const submitLock = useRef(false);
   const alive = useRef(false);
-  const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, savedSchedules: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0 });
+  const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, savedSchedules: 0, scheduleHistory: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0 });
   const userKey = user?.id ?? "";
 
   const loadOnboarding = async () => {
@@ -268,19 +269,17 @@ export function JobsPage() {
       return false;
     }
   };
-  const reconcileFindHistory = async (): Promise<DiscoveryRunReconciliation<BoundedResponse<DiscoveryRunSummary>>> => {
-    const request = ++generations.current.runs;
+  const reconcileFindHistory = async (scheduleId: string): Promise<DiscoveryRunReconciliation<ScheduledExecutionRead[]>> => {
+    const request = ++generations.current.scheduleHistory;
     try {
-      const data = await api.request<BoundedResponse<DiscoveryRunSummary>>(`/api/v1/jobs/discovery-runs?limit=${runLimit}`);
+      const data = await api.request<ScheduledExecutionRead[]>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(scheduleId)}/executions`);
       if (!alive.current) return { kind: "session_stale" };
-      if (request !== generations.current.runs) return { kind: "superseded" };
-      setRuns({ phase: "loaded", data });
+      if (request !== generations.current.scheduleHistory) return { kind: "superseded" };
       return { kind: "refreshed", value: data };
     } catch (error) {
       if (!alive.current) return { kind: "session_stale" };
-      if (request !== generations.current.runs) return { kind: "superseded" };
+      if (request !== generations.current.scheduleHistory) return { kind: "superseded" };
       if (error instanceof ApiError && error.status === 404) return { kind: "stale" };
-      setRuns((previous) => ({ phase: "error", data: previous.data, error: "Discovery run history is unavailable." }));
       return { kind: "failed" };
     }
   };
@@ -351,22 +350,31 @@ export function JobsPage() {
     if (!schedule || !ready || selectedScheduleDirty || findRunning) return;
     setFindRunning(true); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
     try {
-      const result = await runSavedDiscoveryNowWithReconciliation(api, schedule, { reconcile: reconcileFindHistory });
+      const result = await runSavedDiscoveryNowWithReconciliation(api, schedule, { reconcile: () => reconcileFindHistory(schedule.id) });
       if (!alive.current) return;
       if (result.kind === "changed") {
         setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === result.schedule.id ? result.schedule : item) } : old);
+        setSearchIntent(searchIntentFromQuery(result.schedule.query));
         setFindRunOutcome({ kind: "changed", scheduleName: schedule.name });
-        setFindMessage("The saved configuration changed before Run now started. Review the refreshed configuration and run again; the current SearchIntent draft was preserved.");
+        setFindMessage("The saved configuration changed before Run now started. The SearchIntent and persisted channels were refreshed; review them and explicitly run again. No execution was submitted.");
       } else if (result.kind === "stale") {
         const refreshed = await loadSavedSchedules();
         setFindRunOutcome({ kind: "stale", scheduleName: schedule.name });
         setFindError(refreshed ? "The selected saved configuration is no longer available. Choose another configuration." : "The selected saved configuration is no longer available, and its refresh could not be confirmed.");
         setSelectedScheduleId(null);
+      } else if (result.kind === "preflight_unavailable") {
+        setFindRunOutcome({ kind: "preflight_unavailable", scheduleName: schedule.name });
+        setFindError("Could not confirm the current saved configuration. Run now was not submitted.");
       } else if (result.kind === "rejected") {
         setFindRunOutcome({ kind: "rejected", scheduleName: schedule.name, status: result.status });
         setFindError(`Run now was rejected by the server (HTTP ${result.status}). No execution success was confirmed.`);
       } else if (result.kind === "already_running" || result.kind === "uncertain") {
-        setFindRunOutcome({ kind: result.kind, scheduleName: schedule.name, reconciliation: result.reconciliation });
+        if (result.reconciliation.kind === "stale") {
+          const refreshed = await loadSavedSchedules();
+          setSelectedScheduleId(null);
+          setFindRunOutcome({ kind: "stale", scheduleName: schedule.name });
+          setFindError(refreshed ? "The selected saved configuration is no longer available. Choose another configuration." : "The selected saved configuration is no longer available, and its refresh could not be confirmed.");
+        } else setFindRunOutcome({ kind: result.kind, scheduleName: schedule.name, reconciliation: result.reconciliation });
       } else {
         setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === result.schedule.id ? result.schedule : item) } : old);
         let inboxRefresh: boolean | undefined;
@@ -423,12 +431,13 @@ export function JobsPage() {
         {savedSchedules.phase === "error" && !savedSchedules.data && <p className="notice" role="status">Saved configurations are unavailable. You can still prepare a transient SearchIntent.</p>}
         <label htmlFor="saved-search-selection">Saved search configuration</label><select id="saved-search-selection" aria-label="Saved search configuration" value={selectedScheduleId ?? ""} onChange={(event) => { const id = event.target.value || null; setSelectedScheduleId(id); const schedule = savedSchedules.data?.find((item) => item.id === id); if (schedule) setSearchIntent(searchIntentFromQuery(schedule.query)); setFindMessage(""); setFindError(""); }}><option value="">Use a transient SearchIntent</option>{savedSchedules.data?.map((schedule) => <option value={schedule.id} key={schedule.id}>{schedule.name}</option>)}</select>
         <SearchIntentEditor intent={searchIntent} onChange={(next) => { setSearchIntent(next); setFindMessage(""); setFindError(""); }} idPrefix="find-search-intent" disabled={findRunning || submitting} />
-        {selectedSchedule && <div className="card"><p><strong>Persisted channels:</strong> {selectedSchedule.acquisition.structured_ats.enabled ? "Structured ATS" : ""}{selectedSchedule.acquisition.structured_ats.enabled && selectedSchedule.acquisition.agentic_web.enabled ? " · " : ""}{selectedSchedule.acquisition.agentic_web.enabled ? "Profile-driven bounded server-side web discovery" : ""}</p><p className="muted">Candidate readiness controls whether the persisted schedule can run. Semantic configuration is advisory and is not provider readiness.</p>{selectedScheduleDirty && <p className="notice">This SearchIntent differs from the persisted saved configuration. Hand it off to Saved searches to review and save; it is explicitly dirty.</p>}</div>}
+        {selectedSchedule && <div className="card"><p><strong>Persisted channels:</strong> {selectedSchedule.acquisition.structured_ats.enabled ? "Structured ATS" : ""}{selectedSchedule.acquisition.structured_ats.enabled && selectedSchedule.acquisition.agentic_web.enabled ? " · " : ""}{selectedSchedule.acquisition.agentic_web.enabled ? "Profile-driven bounded server-side web discovery" : ""}</p><p><strong>Evaluation:</strong> {selectedSchedule.evaluation.max_semantic_candidates} semantic candidates · {selectedSchedule.evaluation.max_full_analyses} full analyses · minimum relevance {selectedSchedule.evaluation.min_relevance_score}</p><p className="muted">Candidate readiness controls whether the persisted schedule can run. Semantic configuration is advisory and is not provider readiness.</p>{selectedScheduleDirty && <p className="notice">This SearchIntent differs from the persisted saved configuration. Hand it off to Saved searches to review and save; it is explicitly dirty.</p>}</div>}
         {findMessage && <p className="notice" role="status">{findMessage}</p>}{findError && <p className="notice" role="status">{findError}</p>}
         {findRunOutcome && <section className="card" aria-label="Run now result"><h3>Run now result</h3>
           {findRunOutcome.kind === "execution" && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {titleCase(findRunOutcome.status)}</p>{(findRunOutcome.status === "completed" || findRunOutcome.status === "partial_failed") && <><p>Recent vacancies refresh: {findRunOutcome.inboxRefresh ? "refreshed" : "could not be confirmed as refreshed"}.</p><p className="muted">Recent vacancies is a shared persisted slice, not an exact execution result set.</p><button type="button" className="button-secondary" onClick={() => setTab("inbox")}>Review recent vacancies</button></>}</>}
           {findRunOutcome.kind === "changed" && <p role="status">The saved configuration changed before execution started. No execution was submitted.</p>}
           {findRunOutcome.kind === "stale" && <p role="status">The saved configuration is no longer available. No execution was submitted.</p>}
+          {findRunOutcome.kind === "preflight_unavailable" && <p role="status">Could not confirm the current saved configuration. Run now was not submitted.</p>}
           {findRunOutcome.kind === "rejected" && <p role="status">The server rejected Run now with HTTP {findRunOutcome.status}. No execution success was confirmed.</p>}
           {(findRunOutcome.kind === "already_running" || findRunOutcome.kind === "uncertain") && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {findRunOutcome.kind === "already_running" ? "Already running" : "Uncertain"}</p><p>Execution history reconciliation: {findRunOutcome.reconciliation.kind === "refreshed" ? "refreshed" : findRunOutcome.reconciliation.kind === "stale" ? "saved configuration was no longer available" : findRunOutcome.reconciliation.kind === "superseded" ? "superseded by a newer refresh" : findRunOutcome.reconciliation.kind === "session_stale" ? "session became stale" : "could not be confirmed as refreshed"}.</p>{findRunOutcome.kind === "uncertain" && <p className="muted">Career-trans cannot confirm from the interrupted response whether a new execution was created.</p>}</>}
         </section>}

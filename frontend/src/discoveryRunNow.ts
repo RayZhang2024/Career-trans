@@ -7,6 +7,7 @@ export type DiscoveryRunNowResult<T> =
   | { kind: "started"; schedule: DiscoveryScheduleRead; execution: ScheduledExecutionRead }
   | { kind: "changed"; schedule: DiscoveryScheduleRead }
   | { kind: "stale" }
+  | { kind: "preflight_unavailable" }
   | { kind: "already_running"; reconciliation: DiscoveryRunReconciliation<T> }
   | { kind: "rejected"; status: number }
   | { kind: "uncertain"; reconciliation: DiscoveryRunReconciliation<T> };
@@ -42,9 +43,7 @@ export async function runSavedDiscoveryNowWithReconciliation<T>(
   } catch (cause) {
     if (cause instanceof ApiError && cause.status === 404) return { kind: "stale" };
     if (cause instanceof ApiError) return { kind: "rejected", status: cause.status };
-    if (cause instanceof DOMException && cause.name === "AbortError") return { kind: "uncertain", reconciliation: { kind: "session_stale" } };
-    options.onReconcileStart?.("uncertain");
-    return { kind: "uncertain", reconciliation: await reconcileSafely(options) };
+    return { kind: "preflight_unavailable" };
   }
   if (executionConfigKey(fresh) !== executionConfigKey(displayed)) return { kind: "changed", schedule: fresh };
   try {

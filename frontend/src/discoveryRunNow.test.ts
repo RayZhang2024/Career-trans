@@ -50,4 +50,29 @@ describe("saved discovery Run now controller", () => {
     const uncertain = await runSavedDiscoveryNowWithReconciliation(interrupted, displayed, { reconcile: async () => ({ kind: "failed" as const }) });
     expect(uncertain).toEqual({ kind: "uncertain", reconciliation: { kind: "failed" } });
   });
+
+  it("keeps preflight transport failure distinct from POST uncertainty", async () => {
+    const displayed = schedule();
+    const reconcile = vi.fn(async () => ({ kind: "refreshed" as const }));
+    const preflight = { request: vi.fn().mockRejectedValueOnce(new TypeError("offline")) };
+    await expect(runSavedDiscoveryNowWithReconciliation(preflight, displayed, { reconcile })).resolves.toEqual({ kind: "preflight_unavailable" });
+    expect(preflight.request).toHaveBeenCalledTimes(1);
+    expect(reconcile).not.toHaveBeenCalled();
+
+    const interrupted = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new TypeError("offline")) };
+    await expect(runSavedDiscoveryNowWithReconciliation(interrupted, displayed, { reconcile })).resolves.toEqual({ kind: "uncertain", reconciliation: { kind: "refreshed" } });
+    expect(interrupted.request).toHaveBeenNthCalledWith(2, "/api/v1/jobs/discovery-schedules/s-1/run-now", { method: "POST" });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves stale, rejected, changed, and started outcomes", async () => {
+    const displayed = schedule();
+    await expect(runSavedDiscoveryNowWithReconciliation({ request: vi.fn().mockRejectedValueOnce(new ApiError(404, "missing")) }, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "stale" });
+    await expect(runSavedDiscoveryNowWithReconciliation({ request: vi.fn().mockRejectedValueOnce(new ApiError(503, "unavailable")) }, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "rejected", status: 503 });
+    const fresh = schedule({ query: { ...displayed.query, keywords: ["Platform"] } });
+    const changed = { request: vi.fn().mockResolvedValueOnce(fresh) };
+    await expect(runSavedDiscoveryNowWithReconciliation(changed, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "changed", schedule: fresh });
+    const started = { request: vi.fn().mockResolvedValueOnce(displayed).mockResolvedValueOnce(execution) };
+    await expect(runSavedDiscoveryNowWithReconciliation(started, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "started", schedule: displayed, execution });
+  });
 });

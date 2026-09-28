@@ -370,6 +370,7 @@ export function JobsSearchesPage() {
         return;
       }
       if (result.kind === "stale") { await clearStaleSchedule(id, sessionGeneration); return; }
+      if (result.kind === "preflight_unavailable") { setError("Could not confirm the current saved configuration. Run now was not submitted."); return; }
       if (result.kind === "rejected") { setError(`Run now was rejected by the server (HTTP ${result.status}). No execution was confirmed by this response.`); return; }
       if (result.kind === "already_running" || result.kind === "uncertain") {
         if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
