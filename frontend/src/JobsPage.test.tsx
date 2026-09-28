@@ -761,7 +761,7 @@ describe("Issue #234 Find jobs saved-schedule execution", () => {
     let lists = 0; let posts = 0;
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => { lists += 1; return scheduleList(lists === 1 ? savedSchedule() : null); }, "/api/v1/jobs/discovery-schedules/s-1": () => json(undefined, 404), "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => { posts += 1; return json(savedExecution()); } });
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
-    await expectStatusContaining("The saved configuration is no longer available. No execution was submitted."); expect(screen.getByLabelText("Saved search configuration")).toHaveValue(""); expect(posts).toBe(0);
+    await expectStatusContaining("The saved configuration is no longer available. Run now was not submitted."); expect(screen.getByLabelText("Saved search configuration")).toHaveValue(""); expect(posts).toBe(0);
   });
 
   it("does not call execution history when preflight GET is unavailable", async () => {
@@ -770,6 +770,19 @@ describe("Issue #234 Find jobs saved-schedule execution", () => {
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
     await expectStatusContaining("Could not confirm the current saved configuration. Run now was not submitted."); expect(posts).toBe(0);
     expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-schedules/s-1/executions"); expect(screen.queryByText(/Uncertain execution/)).not.toBeInTheDocument();
+  });
+
+  it("does not submit or reconcile when preflight HTTP verification fails", async () => {
+    let posts = 0;
+    const fetch = scheduleFetch(savedSchedule(), { "/api/v1/jobs/discovery-schedules/s-1": () => json(undefined, 503), "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => { posts += 1; return json(savedExecution()); } });
+    renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    await expectStatusContaining("Could not verify the current saved configuration (HTTP 503). Run now was not submitted."); expect(posts).toBe(0); expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-schedules/s-1/executions");
+  });
+
+  it("reports POST HTTP rejection separately from preflight failure", async () => {
+    const fetch = scheduleFetch(savedSchedule(), { "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => json(undefined, 503) });
+    renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    await expectStatusContaining("The server rejected Run now with HTTP 503. No execution success was confirmed.");
   });
 
   it("reconciles Find jobs 409 against saved-schedule execution history", async () => {
@@ -795,7 +808,14 @@ describe("Issue #234 Find jobs saved-schedule execution", () => {
     let lists = 0;
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => { lists += 1; return scheduleList(lists === 1 ? savedSchedule() : null); }, "/api/v1/jobs/discovery-schedules/s-1": () => json(savedSchedule()), "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => json(undefined, 409), "/api/v1/jobs/discovery-schedules/s-1/executions": () => json(undefined, 404) });
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
-    await expectStatusContaining("The saved configuration is no longer available. No execution was submitted."); expect(screen.queryByText(/Status: Already running/)).not.toBeInTheDocument(); expect(screen.getByLabelText("Saved search configuration")).toHaveValue("");
+    await expectStatusContaining("The saved configuration became unavailable while reconciling this run."); expect(screen.queryByText(/No execution was submitted/)).not.toBeInTheDocument(); expect(screen.getByText(/server had reported that an execution was already running/)).toBeInTheDocument(); expect(screen.getByLabelText("Saved search configuration")).toHaveValue("");
+  });
+
+  it("preserves uncertainty when POST interruption is followed by stale execution history", async () => {
+    let lists = 0;
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => { lists += 1; return scheduleList(lists === 1 ? savedSchedule() : null); }, "/api/v1/jobs/discovery-schedules/s-1": () => json(savedSchedule()), "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => Promise.reject(new TypeError("offline")), "/api/v1/jobs/discovery-schedules/s-1/executions": () => json(undefined, 404) });
+    renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    await expectStatusContaining("The saved configuration became unavailable while reconciling this run."); expect(screen.queryByText(/No execution was submitted/)).not.toBeInTheDocument(); expect(screen.getByText(/cannot confirm whether a new execution was created/)).toBeInTheDocument(); expect(screen.getByLabelText("Saved search configuration")).toHaveValue("");
   });
 
   it.each([["completed", "Completed"], ["partial_failed", "Partial Failed"]] as const)("keeps %s visible on Find jobs and offers explicit Inbox review", async (status, label) => {

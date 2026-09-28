@@ -44,7 +44,7 @@ describe("saved discovery Run now controller", () => {
     expect(refreshed).toEqual({ kind: "already_running", reconciliation: { kind: "refreshed" } });
 
     const rejected = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new ApiError(503, "unavailable")) };
-    await expect(runSavedDiscoveryNowWithReconciliation(rejected, displayed, { reconcile: async () => ({ kind: "refreshed" as const }) })).resolves.toEqual({ kind: "rejected", status: 503 });
+    await expect(runSavedDiscoveryNowWithReconciliation(rejected, displayed, { reconcile: async () => ({ kind: "refreshed" as const }) })).resolves.toEqual({ kind: "post_rejected", status: 503 });
 
     const interrupted = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new TypeError("offline")) };
     const uncertain = await runSavedDiscoveryNowWithReconciliation(interrupted, displayed, { reconcile: async () => ({ kind: "failed" as const }) });
@@ -67,12 +67,26 @@ describe("saved discovery Run now controller", () => {
 
   it("preserves stale, rejected, changed, and started outcomes", async () => {
     const displayed = schedule();
-    await expect(runSavedDiscoveryNowWithReconciliation({ request: vi.fn().mockRejectedValueOnce(new ApiError(404, "missing")) }, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "stale" });
-    await expect(runSavedDiscoveryNowWithReconciliation({ request: vi.fn().mockRejectedValueOnce(new ApiError(503, "unavailable")) }, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "rejected", status: 503 });
+    const preflightMissing = { request: vi.fn().mockRejectedValueOnce(new ApiError(404, "missing")) }; const preflightReconcile = vi.fn();
+    await expect(runSavedDiscoveryNowWithReconciliation(preflightMissing, displayed, { reconcile: preflightReconcile })).resolves.toEqual({ kind: "preflight_stale" });
+    expect(preflightMissing.request).toHaveBeenCalledTimes(1); expect(preflightReconcile).not.toHaveBeenCalled();
+    const preflightRejected = { request: vi.fn().mockRejectedValueOnce(new ApiError(503, "unavailable")) }; const rejectedReconcile = vi.fn();
+    await expect(runSavedDiscoveryNowWithReconciliation(preflightRejected, displayed, { reconcile: rejectedReconcile })).resolves.toEqual({ kind: "preflight_rejected", status: 503 });
+    expect(preflightRejected.request).toHaveBeenCalledTimes(1); expect(rejectedReconcile).not.toHaveBeenCalled();
     const fresh = schedule({ query: { ...displayed.query, keywords: ["Platform"] } });
     const changed = { request: vi.fn().mockResolvedValueOnce(fresh) };
     await expect(runSavedDiscoveryNowWithReconciliation(changed, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "changed", schedule: fresh });
     const started = { request: vi.fn().mockResolvedValueOnce(displayed).mockResolvedValueOnce(execution) };
     await expect(runSavedDiscoveryNowWithReconciliation(started, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "started", schedule: displayed, execution });
+  });
+
+  it("preserves POST-attempted stage when reconciliation discovers deletion", async () => {
+    const displayed = schedule();
+    const conflict = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new ApiError(409, "conflict")) };
+    await expect(runSavedDiscoveryNowWithReconciliation(conflict, displayed, { reconcile: async () => ({ kind: "stale" as const }) })).resolves.toEqual({ kind: "already_running", reconciliation: { kind: "stale" } });
+    const interrupted = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new TypeError("offline")) };
+    await expect(runSavedDiscoveryNowWithReconciliation(interrupted, displayed, { reconcile: async () => ({ kind: "stale" as const }) })).resolves.toEqual({ kind: "uncertain", reconciliation: { kind: "stale" } });
+    const postRejected = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new ApiError(503, "unavailable")) };
+    await expect(runSavedDiscoveryNowWithReconciliation(postRejected, displayed, { reconcile: vi.fn() })).resolves.toEqual({ kind: "post_rejected", status: 503 });
   });
 });

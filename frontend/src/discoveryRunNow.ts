@@ -6,10 +6,12 @@ export type DiscoveryRunReconciliation<T> = { kind: "refreshed"; value?: T } | {
 export type DiscoveryRunNowResult<T> =
   | { kind: "started"; schedule: DiscoveryScheduleRead; execution: ScheduledExecutionRead }
   | { kind: "changed"; schedule: DiscoveryScheduleRead }
-  | { kind: "stale" }
+  | { kind: "preflight_stale" }
+  | { kind: "preflight_rejected"; status: number }
   | { kind: "preflight_unavailable" }
   | { kind: "already_running"; reconciliation: DiscoveryRunReconciliation<T> }
-  | { kind: "rejected"; status: number }
+  | { kind: "post_stale" }
+  | { kind: "post_rejected"; status: number }
   | { kind: "uncertain"; reconciliation: DiscoveryRunReconciliation<T> };
 
 const executionConfig = (schedule: DiscoveryScheduleRead): ExecutionConfig => ({ query: schedule.query, acquisition: schedule.acquisition, evaluation: schedule.evaluation });
@@ -41,8 +43,8 @@ export async function runSavedDiscoveryNowWithReconciliation<T>(
   try {
     fresh = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(displayed.id)}`);
   } catch (cause) {
-    if (cause instanceof ApiError && cause.status === 404) return { kind: "stale" };
-    if (cause instanceof ApiError) return { kind: "rejected", status: cause.status };
+    if (cause instanceof ApiError && cause.status === 404) return { kind: "preflight_stale" };
+    if (cause instanceof ApiError) return { kind: "preflight_rejected", status: cause.status };
     return { kind: "preflight_unavailable" };
   }
   if (executionConfigKey(fresh) !== executionConfigKey(displayed)) return { kind: "changed", schedule: fresh };
@@ -50,12 +52,12 @@ export async function runSavedDiscoveryNowWithReconciliation<T>(
     const execution = await api.request<ScheduledExecutionRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(displayed.id)}/run-now`, { method: "POST" });
     return { kind: "started", schedule: fresh, execution };
   } catch (cause) {
-    if (cause instanceof ApiError && cause.status === 404) return { kind: "stale" };
+    if (cause instanceof ApiError && cause.status === 404) return { kind: "post_stale" };
     if (cause instanceof ApiError && cause.status === 409) {
       options.onReconcileStart?.("already_running");
       return { kind: "already_running", reconciliation: await reconcileSafely(options) };
     }
-    if (cause instanceof ApiError) return { kind: "rejected", status: cause.status };
+    if (cause instanceof ApiError) return { kind: "post_rejected", status: cause.status };
     if (cause instanceof DOMException && cause.name === "AbortError") return { kind: "uncertain", reconciliation: { kind: "session_stale" } };
     options.onReconcileStart?.("uncertain");
     return { kind: "uncertain", reconciliation: await reconcileSafely(options) };

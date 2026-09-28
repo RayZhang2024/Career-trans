@@ -25,11 +25,14 @@ const outcomeLabels: Record<DiscoveryRunDetail["jobs"][number]["outcome"], strin
 type FindRunOutcome =
   | { kind: "execution"; scheduleName: string; status: ScheduledExecutionRead["status"]; inboxRefresh?: boolean }
   | { kind: "changed"; scheduleName: string }
-  | { kind: "stale"; scheduleName: string }
+  | { kind: "preflight_stale"; scheduleName: string }
+  | { kind: "post_stale"; scheduleName: string }
+  | { kind: "reconciliation_stale"; scheduleName: string; source: "already_running" | "uncertain" }
+  | { kind: "preflight_rejected"; scheduleName: string; status: number }
   | { kind: "preflight_unavailable"; scheduleName: string }
   | { kind: "already_running"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
   | { kind: "uncertain"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
-  | { kind: "rejected"; scheduleName: string; status: number };
+  | { kind: "post_rejected"; scheduleName: string; status: number };
 
 function StateMessage<T>({ state, empty, children, onRetry }: { state: SectionState<T>; empty: boolean; children: React.ReactNode; onRetry: () => void }) {
   if (state.phase === "loading" && !state.data) return <p className="muted" role="status">Loading…</p>;
@@ -357,22 +360,25 @@ export function JobsPage() {
         setSearchIntent(searchIntentFromQuery(result.schedule.query));
         setFindRunOutcome({ kind: "changed", scheduleName: schedule.name });
         setFindMessage("The saved configuration changed before Run now started. The SearchIntent and persisted channels were refreshed; review them and explicitly run again. No execution was submitted.");
-      } else if (result.kind === "stale") {
+      } else if (result.kind === "preflight_stale" || result.kind === "post_stale") {
         const refreshed = await loadSavedSchedules();
-        setFindRunOutcome({ kind: "stale", scheduleName: schedule.name });
+        setFindRunOutcome({ kind: result.kind, scheduleName: schedule.name });
         setFindError(refreshed ? "The selected saved configuration is no longer available. Choose another configuration." : "The selected saved configuration is no longer available, and its refresh could not be confirmed.");
         setSelectedScheduleId(null);
+      } else if (result.kind === "preflight_rejected") {
+        setFindRunOutcome({ kind: "preflight_rejected", scheduleName: schedule.name, status: result.status });
+        setFindError(`Could not verify the current saved configuration (HTTP ${result.status}). Run now was not submitted.`);
       } else if (result.kind === "preflight_unavailable") {
         setFindRunOutcome({ kind: "preflight_unavailable", scheduleName: schedule.name });
         setFindError("Could not confirm the current saved configuration. Run now was not submitted.");
-      } else if (result.kind === "rejected") {
-        setFindRunOutcome({ kind: "rejected", scheduleName: schedule.name, status: result.status });
+      } else if (result.kind === "post_rejected") {
+        setFindRunOutcome({ kind: "post_rejected", scheduleName: schedule.name, status: result.status });
         setFindError(`Run now was rejected by the server (HTTP ${result.status}). No execution success was confirmed.`);
       } else if (result.kind === "already_running" || result.kind === "uncertain") {
         if (result.reconciliation.kind === "stale") {
           const refreshed = await loadSavedSchedules();
           setSelectedScheduleId(null);
-          setFindRunOutcome({ kind: "stale", scheduleName: schedule.name });
+          setFindRunOutcome({ kind: "reconciliation_stale", scheduleName: schedule.name, source: result.kind });
           setFindError(refreshed ? "The selected saved configuration is no longer available. Choose another configuration." : "The selected saved configuration is no longer available, and its refresh could not be confirmed.");
         } else setFindRunOutcome({ kind: result.kind, scheduleName: schedule.name, reconciliation: result.reconciliation });
       } else {
@@ -436,9 +442,12 @@ export function JobsPage() {
         {findRunOutcome && <section className="card" aria-label="Run now result"><h3>Run now result</h3>
           {findRunOutcome.kind === "execution" && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {titleCase(findRunOutcome.status)}</p>{(findRunOutcome.status === "completed" || findRunOutcome.status === "partial_failed") && <><p>Recent vacancies refresh: {findRunOutcome.inboxRefresh ? "refreshed" : "could not be confirmed as refreshed"}.</p><p className="muted">Recent vacancies is a shared persisted slice, not an exact execution result set.</p><button type="button" className="button-secondary" onClick={() => setTab("inbox")}>Review recent vacancies</button></>}</>}
           {findRunOutcome.kind === "changed" && <p role="status">The saved configuration changed before execution started. No execution was submitted.</p>}
-          {findRunOutcome.kind === "stale" && <p role="status">The saved configuration is no longer available. No execution was submitted.</p>}
+          {findRunOutcome.kind === "preflight_stale" && <p role="status">The saved configuration is no longer available. Run now was not submitted.</p>}
+          {findRunOutcome.kind === "post_stale" && <p role="status">The saved configuration became unavailable after Run now was submitted. Career-trans cannot confirm the resulting state.</p>}
+          {findRunOutcome.kind === "reconciliation_stale" && <><p role="status">The saved configuration became unavailable while reconciling this run. Career-trans cannot use its saved execution history to confirm the resulting state.</p>{findRunOutcome.source === "already_running" && <p>The server had reported that an execution was already running before the saved configuration became unavailable during reconciliation.</p>}{findRunOutcome.source === "uncertain" && <p>Career-trans cannot confirm whether a new execution was created.</p>}</>}
+          {findRunOutcome.kind === "preflight_rejected" && <p role="status">Could not verify the current saved configuration (HTTP {findRunOutcome.status}). Run now was not submitted.</p>}
           {findRunOutcome.kind === "preflight_unavailable" && <p role="status">Could not confirm the current saved configuration. Run now was not submitted.</p>}
-          {findRunOutcome.kind === "rejected" && <p role="status">The server rejected Run now with HTTP {findRunOutcome.status}. No execution success was confirmed.</p>}
+          {findRunOutcome.kind === "post_rejected" && <p role="status">The server rejected Run now with HTTP {findRunOutcome.status}. No execution success was confirmed.</p>}
           {(findRunOutcome.kind === "already_running" || findRunOutcome.kind === "uncertain") && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {findRunOutcome.kind === "already_running" ? "Already running" : "Uncertain"}</p><p>Execution history reconciliation: {findRunOutcome.reconciliation.kind === "refreshed" ? "refreshed" : findRunOutcome.reconciliation.kind === "stale" ? "saved configuration was no longer available" : findRunOutcome.reconciliation.kind === "superseded" ? "superseded by a newer refresh" : findRunOutcome.reconciliation.kind === "session_stale" ? "session became stale" : "could not be confirmed as refreshed"}.</p>{findRunOutcome.kind === "uncertain" && <p className="muted">Career-trans cannot confirm from the interrupted response whether a new execution was created.</p>}</>}
         </section>}
         <div className="card-actions"><button type="button" onClick={handoffSearchIntent}>{selectedSchedule ? "Review or save configuration" : "Save or configure search"}</button>{selectedSchedule && <button type="button" className="button-secondary" onClick={() => void runSelectedSchedule()} disabled={!ready || selectedScheduleDirty || findRunning}>{findRunning ? "Running…" : "Run now"}</button>}</div>

@@ -369,9 +369,10 @@ export function JobsSearchesPage() {
         setMessage(`The saved configuration for ${schedule.name} changed before Run now started. Review the refreshed configuration and run again; any unsaved SearchIntent remains in the editor.`);
         return;
       }
-      if (result.kind === "stale") { await clearStaleSchedule(id, sessionGeneration); return; }
+      if (result.kind === "preflight_stale" || result.kind === "post_stale") { await clearStaleSchedule(id, sessionGeneration); return; }
       if (result.kind === "preflight_unavailable") { setError("Could not confirm the current saved configuration. Run now was not submitted."); return; }
-      if (result.kind === "rejected") { setError(`Run now was rejected by the server (HTTP ${result.status}). No execution was confirmed by this response.`); return; }
+      if (result.kind === "preflight_rejected") { setError(`Could not verify the current saved configuration (HTTP ${result.status}). Run now was not submitted.`); return; }
+      if (result.kind === "post_rejected") { setError(`Run now was rejected by the server (HTTP ${result.status}). No execution was confirmed by this response.`); return; }
       if (result.kind === "already_running" || result.kind === "uncertain") {
         if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
         const prefix = result.kind === "already_running" ? `An execution is already running for ${schedule.name}.` : "The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted.";
