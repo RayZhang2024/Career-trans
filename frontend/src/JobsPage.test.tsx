@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import type { ApplicationPreparation, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
 import { App } from "./App";
 import { AuthProvider } from "./auth";
@@ -61,12 +61,13 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     throw new Error(`Unexpected request ${init?.method ?? "GET"} ${path}${url.search}`);
   });
 }
-function renderJobs(fetch = fakeFetch(), path = "/jobs/find") {
+function renderJobs(fetch = fakeFetch(), path = "/jobs/find", showRouteLocation = false) {
   sessionStorage.setItem(TOKEN, "test-token");
   vi.stubGlobal("fetch", fetch);
-  return { ...render(<MemoryRouter initialEntries={[path]}><AuthProvider><App /></AuthProvider></MemoryRouter>), fetch };
+  return { ...render(<MemoryRouter initialEntries={[path]}><AuthProvider><App />{showRouteLocation && <RouteLocation />}</AuthProvider></MemoryRouter>), fetch };
 }
-function RouteLocation() { const location = useLocation(); const action = useNavigationType(); return <output aria-label="Route location">{location.pathname}:{action}</output>; }
+function RouteLocation() { const location = useLocation(); const action = useNavigationType(); return <output aria-label="Route location">{location.pathname}{location.search}:{action}</output>; }
+function HistoryControls() { const navigate = useNavigate(); return <div><button type="button" onClick={() => navigate(-1)}>Back history</button><button type="button" onClick={() => navigate(1)}>Forward history</button></div>; }
 function requestPaths(fetch: ReturnType<typeof fakeFetch>) { return fetch.mock.calls.map(([input]) => { const url = new URL(String(input), window.location.origin); return `${url.pathname}${url.search}`; }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 async function loaded() { await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Alpha"); }
@@ -636,11 +637,11 @@ describe("Issue #171 Jobs workspace", () => {
     expect(await screen.findByText(/Evaluation completed\. Recent runs were refreshed; current opportunities were refreshed\./)).toBeInTheDocument();
   });
 
-  it("uses different empty-opportunity messages for a new account and a historical-only account", async () => {
+  it("uses a route-local empty-opportunity message without consulting history", async () => {
     const noItems = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([])), "/api/v1/jobs/discovery-runs": () => json(page([])) });
-    renderJobs(noItems); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(screen.queryByText("No jobs have been evaluated yet.")).not.toBeInTheDocument(); expect(screen.queryByText(/No current evaluated opportunities/)).not.toBeInTheDocument(); cleanup(); sessionStorage.clear();
+    renderJobs(noItems); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(await screen.findByText("No current evaluated opportunities.")).toBeInTheDocument(); expect(screen.getByRole("link", { name: "View Search history" })).toHaveAttribute("href", "/jobs/history"); expect(requestPaths(noItems)).not.toContain("/api/v1/jobs/discovery-runs?limit=20"); cleanup(); sessionStorage.clear();
     const oldRuns = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([])), "/api/v1/jobs/discovery-runs": () => json(page([run()])) });
-    renderJobs(oldRuns); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" }); await screen.findByText("Completed"); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(await screen.findByText(/No current evaluated opportunities. Historical runs are available below/)).toBeInTheDocument();
+    renderJobs(oldRuns); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" }); await screen.findByText("Completed"); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(await screen.findByText("No current evaluated opportunities.")).toBeInTheDocument(); expect(screen.queryByText(/Historical runs are available below/)).not.toBeInTheDocument();
   });
 
   it("does not claim historical runs exist when run history is unavailable", async () => {
@@ -959,5 +960,147 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-1");
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-1/jobs/job-0");
+  });
+
+  it("closes historical detail and removes only the job query", async () => {
+    renderJobs(fakeFetch(), "/jobs/history", true);
+    await screen.findByRole("heading", { name: "Search history" });
+    await screen.findByText("Completed");
+    fireEvent.click(screen.getByRole("button", { name: "View run" }));
+    await screen.findByText("Per-job outcomes");
+    fireEvent.click(screen.getAllByRole("button", { name: "Historical detail" })[0]);
+    expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: "Historical detail" })[0]);
+    expect(screen.queryByRole("article", { name: "Historical evaluation detail" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history?run=run-1:");
+  });
+
+  it("renders a direct history run and job when the bounded history list fails", async () => {
+    const directRun = { ...runDetail(), id: "old-run", jobs: [{ ...runDetail().jobs[0], discovered_job_id: "old-job" }] };
+    const directJob = { ...historyDetail, discovered_job_id: "old-job", opportunity: ranked("Old historical role") };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/discovery-runs": () => json(undefined, 503),
+      "/api/v1/jobs/discovery-runs/old-run": () => json(directRun),
+      "/api/v1/jobs/discovery-runs/old-run/jobs/old-job": () => json(directJob),
+    });
+    renderJobs(fetch, "/jobs/history?run=old-run&job=old-job");
+    expect(await screen.findByRole("heading", { name: "Search history" })).toBeInTheDocument();
+    expect(await screen.findByText(/Discovery run history is unavailable/)).toBeInTheDocument();
+    expect(await screen.findByText("Old historical role")).toBeInTheDocument();
+    expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
+  });
+
+  it("normalizes a job-only history URL and supports browser back and forward", async () => {
+    sessionStorage.setItem(TOKEN, "test-token");
+    const fetch = fakeFetch();
+    vi.stubGlobal("fetch", fetch);
+    render(<MemoryRouter initialEntries={["/jobs/history?job=job-0"]}><AuthProvider><App /><RouteLocation /><HistoryControls /></AuthProvider></MemoryRouter>);
+    await screen.findByRole("heading", { name: "Search history" });
+    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history:REPLACE"));
+    fireEvent.click(screen.getByRole("button", { name: "View run" }));
+    await screen.findByText("Per-job outcomes");
+    fireEvent.click(screen.getAllByRole("button", { name: "Historical detail" })[0]);
+    await screen.findByRole("article", { name: "Historical evaluation detail" });
+    fireEvent.click(screen.getByRole("button", { name: "Back history" }));
+    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history?run=run-1:POP"));
+    expect(screen.queryByRole("article", { name: "Historical evaluation detail" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back history" }));
+    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history:POP"));
+    fireEvent.click(screen.getByRole("button", { name: "Forward history" }));
+    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history?run=run-1:POP"));
+  });
+
+  it.each([
+    ["/jobs/opportunities/recommended", "Recommended / Current analyses"],
+    ["/jobs/opportunities/shortlisted", "Shortlisted"],
+  ])("marks only the active My opportunities child route for %s", async (path, heading) => {
+    renderJobs(fakeFetch(), path);
+    await screen.findByRole("heading", { name: heading });
+    const navigation = screen.getByRole("navigation", { name: "My opportunities sections" });
+    expect(within(navigation).getAllByRole("link", { current: "page" })).toHaveLength(1);
+  });
+});
+
+describe("Issue #236 Phase 5 repair regressions", () => {
+  it("preserves, re-resolves, and clears selected saved schedules across the Job Search family", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]) });
+    renderJobs(fetch); await selectSavedSchedule();
+    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("AI");
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(screen.getByLabelText("Saved search configuration")).toHaveValue("s-1");
+    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("AI");
+    expect(screen.getByText(/5 full analyses/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(screen.getByLabelText("Saved search configuration")).toHaveValue("s-1");
+    expect(screen.getByText(/5 full analyses/)).toBeInTheDocument();
+  });
+
+  it("re-resolves the selected saved schedule when Find jobs refreshes it", async () => {
+    let lists = 0;
+    const refreshed = savedSchedule({ query: { ...savedSchedule().query, keywords: ["Refreshed"] }, evaluation: { ...savedSchedule().evaluation, max_full_analyses: 2 } });
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => { lists += 1; return json(lists === 1 ? [savedSchedule()] : [refreshed]); } });
+    renderJobs(fetch); await selectSavedSchedule();
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(screen.getByLabelText("Saved search configuration")).toHaveValue("s-1");
+    expect(screen.getByText(/2 full analyses/)).toBeInTheDocument();
+    expect(lists).toBeGreaterThan(1);
+  });
+
+  it("clears a selected saved schedule when a route-family refresh shows it was deleted", async () => {
+    let lists = 0;
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => { lists += 1; return json(lists === 1 ? [savedSchedule()] : []); } });
+    renderJobs(fetch); await selectSavedSchedule();
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(screen.getByLabelText("Saved search configuration")).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Run now" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a deferred Run now result visible after navigating to Inbox and back", async () => {
+    const pending = deferred<Response>(); let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]),
+      "/api/v1/jobs/discovery-schedules/s-1": () => json(savedSchedule()),
+      "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => { posts += 1; return pending.promise; },
+    });
+    renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByRole("button", { name: "Running…" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    pending.resolve(json(savedExecution()));
+    await waitFor(() => expect(posts).toBe(1));
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(await screen.findByRole("status")).toHaveTextContent("Completed");
+  });
+
+  it("keeps a deferred Inbox evaluation snapshot and blocks SearchIntent edits until completion", async () => {
+    const pending = deferred<Response>(); let posts = 0;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => { posts += 1; return pending.promise; } });
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Deferred AI" } });
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    expect(await screen.findByRole("button", { name: "Evaluating…" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Deferred AI");
+    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toBeDisabled();
+    pending.resolve(json({ ...run("run-new"), jobs: [] }));
+    await waitFor(() => expect(posts).toBe(1));
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    expect(await screen.findByText(/Search themes: Deferred AI/)).toBeInTheDocument();
+  });
+
+  it("resets transient Job Search state after leaving the route family", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]) });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Transient state" } });
+    fireEvent.click(screen.getByRole("link", { name: "Profile" })); await screen.findByRole("heading", { name: "Your career profile" });
+    fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(screen.getByLabelText("Saved search configuration")).toHaveValue("");
+    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("");
   });
 });
