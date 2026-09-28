@@ -17,6 +17,7 @@ export function useJobDecisionMutator() {
   const locks = useRef(new Map<string, symbol>());
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [notices, setNotices] = useState<Record<string, string>>({});
+  const sessionEpoch = api.sessionEpoch();
 
   const sessionIsCurrent = useCallback((userId: string | null, epoch: number) => user?.id === userId && api.sessionEpoch() === epoch, [api, user?.id]);
 
@@ -24,7 +25,7 @@ export function useJobDecisionMutator() {
     locks.current.clear();
     setPending(new Set());
     setNotices({});
-  }, [user?.id]);
+  }, [user?.id, sessionEpoch]);
 
   const mutate = useCallback(async (current: UserJobDecision, target: UserJobDecisionValue): Promise<DecisionMutationResult> => {
     const jobId = current.discovered_job_id;

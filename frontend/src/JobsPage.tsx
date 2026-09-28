@@ -11,6 +11,7 @@ import { runSavedDiscoveryNowWithReconciliation, type DiscoveryRunReconciliation
 import { DecisionControls, undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
+type InboxDismissalNotice = { decision: UserJobDecision; title: string; message: string };
 const WINDOW = 20;
 const MAX_WINDOW = 100;
 const emptyPage = <T,>(): SectionState<T> => ({ phase: "loading" });
@@ -266,7 +267,7 @@ export function JobsPage() {
   const [shortlistedLimit, setShortlistedLimit] = useState(WINDOW);
   const [dismissedLimit, setDismissedLimit] = useState(WINDOW);
   const [showDismissed, setShowDismissed] = useState(false);
-  const [lastConfirmedInboxDismissal, setLastConfirmedInboxDismissal] = useState<{ decision: UserJobDecision; title: string } | null>(null);
+  const [lastConfirmedInboxDismissal, setLastConfirmedInboxDismissal] = useState<InboxDismissalNotice | null>(null);
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<SectionState<DiscoveryRunDetail>>({ phase: "loading" });
   const [selectedHistorical, setSelectedHistorical] = useState<string | null>(null);
@@ -294,19 +295,23 @@ export function JobsPage() {
   const runsRequest = useRef<number | null>(null);
   const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, shortlisted: 0, dismissed: 0, savedSchedules: 0, scheduleHistory: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0 });
   const userKey = user?.id ?? "";
+  const sessionEpoch = api.sessionEpoch();
   const previousUserKey = useRef(userKey);
+  const previousSessionEpoch = useRef(sessionEpoch);
 
   useEffect(() => {
-    if (previousUserKey.current && previousUserKey.current !== userKey) {
+    if (previousUserKey.current && (previousUserKey.current !== userKey || previousSessionEpoch.current !== sessionEpoch)) {
       setOnboarding(emptyPage()); setOpportunities(emptyPage()); setRuns(emptyPage()); setInbox(emptyPage()); setShortlisted(emptyPage()); setDismissed(emptyPage()); setSavedSchedules(emptyPage());
       setSelectedIds(new Set()); setSearchIntent(emptySearchIntent()); setSelectedScheduleId(null); setSelectedRun(null); setSelectedHistorical(null); setSelectedCurrent(null);
       setRunDetail(emptyPage()); setHistoricalDetail(emptyPage()); setCurrentDetail(emptyPage()); setEvaluationSnapshot(null); setExactEvaluation(null); setEvaluationMessage(""); setEvaluationError(""); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
       setLastConfirmedInboxDismissal(null);
+      setShortlistedLimit(WINDOW); setDismissedLimit(WINDOW); setShowDismissed(false);
     }
     generations.current.shortlisted += 1;
     generations.current.dismissed += 1;
     previousUserKey.current = userKey;
-  }, [userKey]);
+    previousSessionEpoch.current = sessionEpoch;
+  }, [userKey, sessionEpoch]);
 
   const loadOnboarding = async () => {
     if (onboardingRequest.current !== null) return;
@@ -393,25 +398,35 @@ export function JobsPage() {
     if (!current) return;
     const result = await decisionMutator.mutate(current, target);
     if (!result.confirmed || !result.decision || (result.kind !== "confirmed" && result.kind !== "reconciled")) return;
+    const authoritative = result.decision;
+    const reconciled = result.kind === "reconciled";
     if (surface === "inbox") {
-      if (target === "dismissed") {
-        const item = inbox.data?.items.find((candidate) => candidate.discovered_job_id === current.discovered_job_id);
-        setLastConfirmedInboxDismissal({ decision: result.decision, title: item?.title ?? "Job" });
+      const item = inbox.data?.items.find((candidate) => candidate.discovered_job_id === current.discovered_job_id);
+      const title = item?.title ?? lastConfirmedInboxDismissal?.title ?? "Job";
+      if (authoritative.decision === "dismissed") {
+        setSelectedIds((selected) => { const next = new Set(selected); next.delete(current.discovered_job_id); return next; });
+        setInbox((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.filter((candidate) => candidate.discovered_job_id !== current.discovered_job_id) } } : previous);
+        setLastConfirmedInboxDismissal({ decision: authoritative, title, message: reconciled ? "Current decision is Dismissed." : "Job dismissed." });
         void loadInbox(inboxLimit);
-      } else if (current.decision === "dismissed") {
+      } else if (reconciled || target === "dismissed" || current.decision === "dismissed") {
         setLastConfirmedInboxDismissal(null);
         void loadInbox(inboxLimit);
-      }
-      else setInbox((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) => item.discovered_job_id === current.discovered_job_id ? { ...item, decision: result.decision! } : item) } } : previous);
+      } else setInbox((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) => item.discovered_job_id === current.discovered_job_id ? { ...item, decision: authoritative } : item) } } : previous);
     } else if (surface === "recommended") {
-      if (target === "dismissed") void loadOpportunities(opportunityLimit, true);
-      else setOpportunities((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) => item.discovered_job_id === current.discovered_job_id ? { ...item, decision: result.decision! } : item) } } : previous);
+      if (authoritative.decision === "dismissed") void loadOpportunities(opportunityLimit, true);
+      else setOpportunities((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) => item.discovered_job_id === current.discovered_job_id ? { ...item, decision: authoritative } : item) } } : previous);
     } else if (surface === "shortlisted") {
-      void loadShortlisted(shortlistedLimit, true);
-      if (showDismissed) void loadDismissed(dismissedLimit, true);
+      if (reconciled && authoritative.decision === "shortlisted") setShortlisted((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) => item.discovered_job_id === current.discovered_job_id ? { ...item, decision: authoritative.decision, revision: authoritative.revision ?? item.revision, created_at: authoritative.created_at ?? item.created_at, updated_at: authoritative.updated_at ?? item.updated_at } : item) } } : previous);
+      else {
+        void loadShortlisted(shortlistedLimit, true);
+        if (showDismissed || authoritative.decision === "dismissed") void loadDismissed(dismissedLimit, true);
+      }
     } else {
-      void loadDismissed(dismissedLimit, true);
-      if (target === "shortlisted") void loadShortlisted(shortlistedLimit, true);
+      if (reconciled && authoritative.decision === "dismissed") setDismissed((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) => item.discovered_job_id === current.discovered_job_id ? { ...item, decision: authoritative.decision, revision: authoritative.revision ?? item.revision, created_at: authoritative.created_at ?? item.created_at, updated_at: authoritative.updated_at ?? item.updated_at } : item) } } : previous);
+      else {
+        void loadDismissed(dismissedLimit, true);
+        if (authoritative.decision === "shortlisted") void loadShortlisted(shortlistedLimit, true);
+      }
     }
   };
   const undoInboxDismissal = async () => {
@@ -419,8 +434,8 @@ export function JobsPage() {
     if (!dismissal) return;
     const result = await decisionMutator.mutate(dismissal.decision, "undecided");
     if (!result.confirmed || !result.decision || (result.kind !== "confirmed" && result.kind !== "reconciled")) return;
-    if (result.decision.decision === "undecided") setLastConfirmedInboxDismissal(null);
-    else setLastConfirmedInboxDismissal({ decision: result.decision, title: dismissal.title });
+    if (result.decision.decision === "dismissed") setLastConfirmedInboxDismissal({ decision: result.decision, title: dismissal.title, message: "Current decision is Dismissed." });
+    else setLastConfirmedInboxDismissal(null);
     void loadInbox(inboxLimit);
   };
   const reconcileFindHistory = async (scheduleId: string): Promise<DiscoveryRunReconciliation<ScheduledExecutionRead[]>> => {
@@ -464,7 +479,7 @@ export function JobsPage() {
     else if (view === "recommended") { if (!onboarding.data) void loadOnboarding(); void loadOpportunities(WINDOW); }
     else if (view === "shortlisted") void loadShortlisted(WINDOW);
     else if (view === "history") void loadRuns(WINDOW);
-  }, [view, userKey]);
+  }, [view, userKey, sessionEpoch]);
   useEffect(() => { if (view === "shortlisted" && showDismissed) void loadDismissed(dismissedLimit); }, [view, showDismissed]);
   useEffect(() => {
     const refresh = () => {
@@ -673,7 +688,7 @@ export function JobsPage() {
         {selectedRun && !runs.data && <section className="card run-card" aria-label="Selected search history run"><div className="section-heading"><div><h3>{runDetail.data ? (runDetail.data.status === "running" ? "Evaluation in progress" : titleCase(runDetail.data.status)) : "Selected search history run"}</h3></div><button type="button" className="button-secondary" aria-expanded="true" onClick={closeSelectedRun}>Close run</button></div>{runDetail.data ? <><RunSnapshot run={runDetail.data} /><RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${selectedRun}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(selectedRun)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(selectedRun, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(selectedRun, jobId)} /></> : <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(selectedRun)}>{null}</StateMessage>}</section>}
       </section>}
       {view === "inbox" && <section aria-labelledby="inbox-heading" className="jobs-section"><div className="section-heading"><div><h2 id="inbox-heading">Inbox</h2><p className="muted">Showing recent shared persisted public vacancies. This is not all jobs, a live search, or a shortlist.</p></div><button type="button" className="button-secondary" onClick={() => void loadInbox()}>Refresh</button></div>
-        {lastConfirmedInboxDismissal && <p className="notice" role="status">{lastConfirmedInboxDismissal.title} dismissed. <button type="button" className="button-secondary" onClick={() => void undoInboxDismissal()}>Undo</button></p>}
+        {lastConfirmedInboxDismissal && <p className="notice" role="status">{lastConfirmedInboxDismissal.message} <button type="button" className="button-secondary" onClick={() => void undoInboxDismissal()}>Undo</button></p>}
         <StateMessage state={inbox} empty={false} onRetry={() => void loadInbox()}>
           {inbox.phase === "loaded" && inbox.data?.items.length === 0 && <p className="muted">No recently imported public vacancies are available.</p>}
           {!!inbox.data?.items.length && <>
