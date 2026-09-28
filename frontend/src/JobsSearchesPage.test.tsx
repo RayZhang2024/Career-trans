@@ -57,7 +57,7 @@ function fakeFetch(overrides: Record<string, Handler> = {}, initial: DiscoverySc
   });
   return { fetch, requests };
 }
-function renderPage(path = "/jobs/searches", setup: Record<string, Handler> = {}, initial?: DiscoveryScheduleRead[]) {
+function renderPage(path: string | { pathname: string; search?: string; hash?: string; state?: unknown } = "/jobs/searches", setup: Record<string, Handler> = {}, initial?: DiscoveryScheduleRead[]) {
   sessionStorage.setItem(TOKEN, "test-token"); const mocked = fakeFetch(setup, initial);
   vi.stubGlobal("fetch", mocked.fetch);
   const view = render(<MemoryRouter initialEntries={[path]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
@@ -72,12 +72,20 @@ beforeEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 afterEach(cleanup);
 
 describe("Issue #175 saved discovery configurations", () => {
+  it("canonicalizes the legacy saved-search route while preserving SearchIntent handoff state", async () => {
+    renderPage({ pathname: "/jobs/searches", state: { searchIntent: { themes: ["Applied AI"], locations: ["London"], remotePolicy: "exclude_remote", excludedCompanies: [], excludedTitleTerms: [], employmentTypes: [], compatibility: { companies: [], maxResults: 50 } }, scheduleId: "s-1" } });
+    await loaded();
+    expect(await screen.findByRole("heading", { name: "Edit saved discovery" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Applied AI");
+    expect(screen.getByLabelText("Remote policy")).toHaveValue("exclude_remote");
+  });
+
   it("protects the direct /jobs/searches route and exposes navigation from both authenticated surfaces", async () => {
     const { requests } = renderPage("/jobs");
-    expect(await screen.findByRole("link", { name: "Manage saved discovery configurations" })).toHaveAttribute("href", "/jobs/searches");
+    expect(await screen.findByRole("link", { name: "Manage saved discovery configurations" })).toHaveAttribute("href", "/jobs/find/saved");
     fireEvent.click(screen.getByRole("link", { name: "Manage saved discovery configurations" }));
     expect(await screen.findByRole("heading", { name: "Saved discovery configurations" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Job Search" })).toHaveAttribute("href", "/jobs");
+    expect(screen.getByRole("link", { name: "Job Search" })).toHaveAttribute("href", "/jobs/find");
     expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules").length).toBeGreaterThan(0);
   });
 
@@ -735,7 +743,7 @@ describe("Issue #176 manual execution and history", () => {
     expect(screen.getByText("Maximum full analyses: 2")).toBeInTheDocument();
     expect(screen.getByText("Minimum relevance score: 0.72")).toBeInTheDocument();
     expect(screen.queryByText(/Historical schedule name|enabled state|next_run_at|last_execution_at/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Open Jobs workspace" })).toHaveAttribute("href", "/jobs");
+    expect(screen.getByRole("link", { name: "Open Find jobs" })).toHaveAttribute("href", "/jobs/find");
     expect(screen.queryByRole("link", { name: /run-1|discovery run/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
     expect(await screen.findByText("Saved discovery AI roles updated.")).toBeInTheDocument();

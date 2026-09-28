@@ -1,14 +1,14 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, ScheduledExecutionRead, UserOpportunitySummary } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
+import { JobsSearchesPage } from "./JobsSearchesPage";
 import { SearchIntentEditor } from "./SearchIntentEditor";
 import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
 import { runSavedDiscoveryNowWithReconciliation, type DiscoveryRunReconciliation } from "./discoveryRunNow";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
-type Tab = "find" | "opportunities" | "runs" | "inbox";
 const WINDOW = 20;
 const MAX_WINDOW = 100;
 const emptyPage = <T,>(): SectionState<T> => ({ phase: "loading" });
@@ -33,6 +33,32 @@ type FindRunOutcome =
   | { kind: "already_running"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
   | { kind: "uncertain"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
   | { kind: "post_rejected"; scheduleName: string; status: number };
+
+type JobSearchView = "find" | "saved" | "inbox" | "recommended" | "shortlisted" | "history" | "unknown";
+
+function jobSearchView(pathname: string): JobSearchView {
+  if (pathname === "/jobs/find" || pathname === "/jobs") return "find";
+  if (pathname === "/jobs/find/saved") return "saved";
+  if (pathname === "/jobs/inbox") return "inbox";
+  if (pathname === "/jobs/opportunities/recommended") return "recommended";
+  if (pathname === "/jobs/opportunities/shortlisted") return "shortlisted";
+  if (pathname === "/jobs/history") return "history";
+  return "unknown";
+}
+
+function JobSearchNavigation({ view }: { view: JobSearchView }) {
+  const items = [
+    ["/jobs/find", "Find jobs", view === "find" || view === "saved"],
+    ["/jobs/inbox", "Inbox", view === "inbox"],
+    ["/jobs/opportunities/recommended", "My opportunities", view === "recommended" || view === "shortlisted"],
+    ["/jobs/history", "Search history", view === "history"],
+  ] as const;
+  return <nav className="jobs-tabs" aria-label="Job Search sections">{items.map(([to, label, active]) => <NavLink key={to} to={to} aria-current={active ? "page" : undefined} className={active ? "active" : undefined}>{label}</NavLink>)}</nav>;
+}
+
+function OpportunitiesNavigation({ view }: { view: JobSearchView }) {
+  return <nav className="jobs-tabs" aria-label="My opportunities sections"><NavLink to="/jobs/opportunities/shortlisted" aria-current={view === "shortlisted" ? "page" : undefined} className={view === "shortlisted" ? "active" : undefined}>Shortlisted</NavLink><NavLink to="/jobs/opportunities/recommended" aria-current={view === "recommended" ? "page" : undefined} className={view === "recommended" ? "active" : undefined}>Recommended / Current analyses</NavLink></nav>;
+}
 
 function StateMessage<T>({ state, empty, children, onRetry }: { state: SectionState<T>; empty: boolean; children: React.ReactNode; onRetry: () => void }) {
   if (state.phase === "loading" && !state.data) return <p className="muted" role="status">Loading…</p>;
@@ -184,7 +210,9 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
 
 export function JobsPage() {
   const { api, user } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
+  const view = jobSearchView(location.pathname);
   const [onboarding, setOnboarding] = useState<SectionState<OnboardingStatus>>({ phase: "loading" });
   const [opportunities, setOpportunities] = useState<SectionState<BoundedResponse<UserOpportunitySummary>>>({ phase: "loading" });
   const [runs, setRuns] = useState<SectionState<BoundedResponse<DiscoveryRunSummary>>>({ phase: "loading" });
@@ -193,7 +221,6 @@ export function JobsPage() {
   const [opportunityLimit, setOpportunityLimit] = useState(WINDOW);
   const [runLimit, setRunLimit] = useState(WINDOW);
   const [inboxLimit, setInboxLimit] = useState(WINDOW);
-  const [tab, setTab] = useState<Tab>("find");
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<SectionState<DiscoveryRunDetail>>({ phase: "loading" });
   const [selectedHistorical, setSelectedHistorical] = useState<string | null>(null);
@@ -214,17 +241,34 @@ export function JobsPage() {
   const [evaluationError, setEvaluationError] = useState("");
   const submitLock = useRef(false);
   const alive = useRef(false);
+  const onboardingRequest = useRef<number | null>(null);
+  const opportunitiesRequest = useRef<number | null>(null);
+  const runsRequest = useRef<number | null>(null);
   const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, savedSchedules: 0, scheduleHistory: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0 });
   const userKey = user?.id ?? "";
+  const previousUserKey = useRef(userKey);
+
+  useEffect(() => {
+    if (previousUserKey.current && previousUserKey.current !== userKey) {
+      setOnboarding(emptyPage()); setOpportunities(emptyPage()); setRuns(emptyPage()); setInbox(emptyPage()); setSavedSchedules(emptyPage());
+      setSelectedIds(new Set()); setSearchIntent(emptySearchIntent()); setSelectedScheduleId(null); setSelectedRun(null); setSelectedHistorical(null); setSelectedCurrent(null);
+      setRunDetail(emptyPage()); setHistoricalDetail(emptyPage()); setCurrentDetail(emptyPage()); setEvaluationSnapshot(null); setEvaluationMessage(""); setEvaluationError(""); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
+    }
+    previousUserKey.current = userKey;
+  }, [userKey]);
 
   const loadOnboarding = async () => {
+    if (onboardingRequest.current !== null) return;
     const request = ++generations.current.onboarding;
+    onboardingRequest.current = request;
     setOnboarding((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
     try {
       const data = await api.request<OnboardingStatus>("/api/v1/onboarding/status");
       if (alive.current && request === generations.current.onboarding) setOnboarding({ phase: "loaded", data });
     } catch {
       if (alive.current && request === generations.current.onboarding) setOnboarding((previous) => ({ phase: previous.data ? "error" : "error", data: previous.data, error: "Candidate readiness is unavailable." }));
+    } finally {
+      if (onboardingRequest.current === request) onboardingRequest.current = null;
     }
   };
   const acceptOnboardingAuthority = (data: OnboardingStatus | undefined) => {
@@ -232,7 +276,9 @@ export function JobsPage() {
     setOnboarding(data ? { phase: "loaded", data } : { phase: "error", error: "Candidate readiness is unavailable." });
   };
   const loadOpportunities = async (limit = opportunityLimit, clearExisting = false): Promise<boolean> => {
+    if (opportunitiesRequest.current !== null && !clearExisting) return false;
     const request = ++generations.current.opportunities;
+    opportunitiesRequest.current = request;
     setOpportunities((previous) => ({ ...previous, phase: previous.data && !clearExisting ? "loaded" : "loading", data: clearExisting ? undefined : previous.data, error: undefined }));
     try {
       const data = await api.request<BoundedResponse<UserOpportunitySummary>>(`/api/v1/jobs/opportunities?limit=${limit}`);
@@ -241,10 +287,14 @@ export function JobsPage() {
     } catch {
       if (alive.current && request === generations.current.opportunities) setOpportunities((previous) => ({ phase: "error", data: previous.data, error: "Current opportunities are unavailable." }));
       return false;
+    } finally {
+      if (opportunitiesRequest.current === request) opportunitiesRequest.current = null;
     }
   };
   const loadRuns = async (limit = runLimit): Promise<boolean> => {
+    if (runsRequest.current !== null) return false;
     const request = ++generations.current.runs;
+    runsRequest.current = request;
     setRuns((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
     try {
       const data = await api.request<BoundedResponse<DiscoveryRunSummary>>(`/api/v1/jobs/discovery-runs?limit=${limit}`);
@@ -253,6 +303,8 @@ export function JobsPage() {
     } catch {
       if (alive.current && request === generations.current.runs) setRuns((previous) => ({ phase: "error", data: previous.data, error: "Discovery run history is unavailable." }));
       return false;
+    } finally {
+      if (runsRequest.current === request) runsRequest.current = null;
     }
   };
   const loadInbox = async (limit = inboxLimit): Promise<boolean> => {
@@ -291,7 +343,11 @@ export function JobsPage() {
     setSavedSchedules((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
     try {
       const data = await api.request<DiscoveryScheduleRead[]>("/api/v1/jobs/discovery-schedules");
-      if (alive.current && request === generations.current.savedSchedules) { setSavedSchedules({ phase: "loaded", data }); return true; }
+      if (alive.current && request === generations.current.savedSchedules) {
+        setSavedSchedules({ phase: "loaded", data });
+        if (selectedScheduleId && !data.some((item) => item.id === selectedScheduleId)) setSelectedScheduleId(null);
+        return true;
+      }
       return false;
     } catch {
       if (alive.current && request === generations.current.savedSchedules) setSavedSchedules((previous) => ({ phase: "error", data: previous.data, error: "Saved discovery configurations are unavailable." }));
@@ -300,9 +356,15 @@ export function JobsPage() {
   };
   useEffect(() => {
     alive.current = true;
-    void loadOnboarding(); void loadOpportunities(WINDOW); void loadRuns(WINDOW); void loadInbox(WINDOW); void loadSavedSchedules();
     return () => { alive.current = false; for (const key of Object.keys(generations.current) as Array<keyof typeof generations.current>) generations.current[key] += 1; };
   }, [api, userKey]);
+
+  useEffect(() => {
+    if (view === "find") { if (!onboarding.data) void loadOnboarding(); void loadSavedSchedules(); }
+    else if (view === "inbox") { if (!onboarding.data) void loadOnboarding(); void loadInbox(WINDOW); }
+    else if (view === "recommended") { if (!onboarding.data) void loadOnboarding(); void loadOpportunities(WINDOW); }
+    else if (view === "history") void loadRuns(WINDOW);
+  }, [view, userKey]);
 
   const openCurrent = async (evaluationId: string) => {
     const request = ++generations.current.currentDetail;
@@ -319,7 +381,8 @@ export function JobsPage() {
       } else setCurrentDetail({ phase: "error", error: "Opportunity detail is unavailable." });
     }
   };
-  const openRun = async (runId: string) => {
+  const openRun = async (runId: string, syncUrl = true) => {
+    if (syncUrl) navigate(`/jobs/history?run=${encodeURIComponent(runId)}`);
     const request = ++generations.current.runDetail;
     setSelectedRun(runId); setRunDetail({ phase: "loading" }); setSelectedHistorical(null); setHistoricalDetail({ phase: "loading" });
     try {
@@ -329,7 +392,8 @@ export function JobsPage() {
       if (alive.current && request === generations.current.runDetail) setRunDetail({ phase: "error", error: "Run detail is unavailable." });
     }
   };
-  const openHistorical = async (runId: string, jobId: string) => {
+  const openHistorical = async (runId: string, jobId: string, syncUrl = true) => {
+    if (syncUrl) navigate(`/jobs/history?run=${encodeURIComponent(runId)}&job=${encodeURIComponent(jobId)}`);
     const request = ++generations.current.historicalDetail;
     const key = `${runId}:${jobId}`;
     setSelectedHistorical(key); setHistoricalDetail({ phase: "loading" });
@@ -340,6 +404,24 @@ export function JobsPage() {
       if (alive.current && request === generations.current.historicalDetail) setHistoricalDetail({ phase: "error", error: "Historical detail is unavailable." });
     }
   };
+
+  useEffect(() => {
+    if (view !== "history") return;
+    const params = new URLSearchParams(location.search);
+    const runId = params.get("run");
+    const jobId = params.get("job");
+    if (!runId && jobId) {
+      navigate("/jobs/history", { replace: true });
+      setSelectedRun(null); setSelectedHistorical(null); setRunDetail({ phase: "loading" }); setHistoricalDetail({ phase: "loading" });
+      return;
+    }
+    if (!runId) {
+      if (selectedRun) { generations.current.runDetail += 1; generations.current.historicalDetail += 1; setSelectedRun(null); setSelectedHistorical(null); }
+      return;
+    }
+    if (selectedRun !== runId) void openRun(runId, false);
+    if (jobId && selectedHistorical !== `${runId}:${jobId}`) void openHistorical(runId, jobId, false);
+  }, [view, location.search, userKey]);
   const toggleJob = (item: InboxSummary) => {
     if (!item.actionable) return;
     setSelectedIds((current) => { const next = new Set(current); if (next.has(item.discovered_job_id)) next.delete(item.discovered_job_id); else next.add(item.discovered_job_id); return next; });
@@ -347,7 +429,7 @@ export function JobsPage() {
   const selectedSchedule = savedSchedules.data?.find((schedule) => schedule.id === selectedScheduleId);
   const selectedScheduleIntent = selectedSchedule ? searchIntentFromQuery(selectedSchedule.query) : null;
   const selectedScheduleDirty = !!selectedScheduleIntent && !searchIntentEquals(searchIntent, selectedScheduleIntent);
-  const handoffSearchIntent = () => navigate("/jobs/searches", { state: { searchIntent, ...(selectedSchedule ? { scheduleId: selectedSchedule.id } : {}) } });
+  const handoffSearchIntent = () => navigate("/jobs/find/saved", { state: { searchIntent, ...(selectedSchedule ? { scheduleId: selectedSchedule.id } : {}) } });
   const runSelectedSchedule = async () => {
     const schedule = selectedSchedule;
     if (!schedule || !ready || selectedScheduleDirty || findRunning) return;
@@ -419,20 +501,23 @@ export function JobsPage() {
   const hasHistoricalRuns = runs.data !== undefined && runs.data.items.length > 0;
   const confirmedWindow = opportunities.data?.items ?? [];
 
+  if (view === "unknown") { navigate("/jobs/find", { replace: true }); return null; }
   return <main className="jobs-page">
-    <header className="workspace-header jobs-header"><div><p className="eyebrow">Career workspace</p><h1>Jobs</h1><p className="muted">Review current evaluations, run history, and recent imported public vacancies.</p><Link to="/jobs/searches">Manage saved discovery configurations</Link></div></header>
-    <nav className="jobs-tabs" aria-label="Jobs sections">{(["find", "opportunities", "runs", "inbox"] as Tab[]).map((item) => <button type="button" key={item} aria-pressed={tab === item} onClick={() => setTab(item)}>{item === "find" ? "Find jobs" : item === "opportunities" ? "Opportunities" : item === "runs" ? "Discovery runs" : "Recent vacancies"}</button>)}</nav>
-    <section className="jobs-prerequisite card" aria-label="Candidate readiness">
+    <header className="workspace-header jobs-header"><div><p className="eyebrow">Career workspace</p><h1>Job Search</h1><p className="muted">Find, evaluate, and review job discovery information in one route family.</p>{view !== "saved" && <Link to="/jobs/find/saved">Manage saved discovery configurations</Link>}</div></header>
+    <JobSearchNavigation view={view} />
+    {view === "saved" && <JobsSearchesPage />}
+    {view !== "saved" && <>
+    {(view === "find" || view === "inbox" || view === "recommended") && <section className="jobs-prerequisite card" aria-label="Candidate readiness">
       {onboarding.phase === "loading" && !onboarding.data ? <p role="status">Checking candidate readiness…</p> : onboarding.data ? <>
         {!ready && <><h2>Complete your Profile first</h2><p>Confirm structured career information in Profile or confirm a CV to create the candidate context used for evaluation.</p><Link to="/profile">Review Profile</Link></>}
         {ready && onboarding.data.latest_cv_draft && onboarding.data.latest_cv_draft.state !== "confirmed" && <p className="notice">Evaluations use your current confirmed candidate profile. A newer CV update is awaiting review.</p>}
         {ready && onboarding.data.adviser.assessment_status !== "confirmed" && <p className="muted">Career Adviser completion is optional. Saved Adviser intake may already inform your evaluation context.</p>}
       </> : <div><p role="alert">Candidate readiness is unavailable. Evaluation controls remain hidden until it can be confirmed.</p><button type="button" className="button-secondary" onClick={() => void loadOnboarding()}>Retry readiness</button></div>}
-    </section>
+    </section>}
     {evaluationMessage && <p className="notice" role="status">{evaluationMessage}</p>}{evaluationError && <p className="notice" role="status">{evaluationError}</p>}{staleNotice && <p className="notice" role="status">{staleNotice}</p>}
     {evaluationSnapshot && <section className="card evaluation-snapshot"><h2>{submitting ? "Evaluation in progress" : "Submitted evaluation"}</h2>{submitting && <p role="status">Evaluating selected jobs… this may take several minutes.</p>}<p>Selected jobs: {evaluationSnapshot.titles.join(", ") || "Selection submitted"}</p><p>Search themes: {evaluationSnapshot.query.keywords.join(", ")} · locations: {evaluationSnapshot.query.locations.join(", ") || "Any"} · remote policy: {evaluationSnapshot.query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p></section>}
     <div className="jobs-content">
-      {tab === "find" && <section aria-labelledby="find-jobs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="find-jobs-heading">Find jobs</h2><p className="muted">Build a SearchIntent for discovery and prioritisation. Search context is not eligibility, evidence, or proof of fit.</p></div></div>
+      {view === "find" && <section aria-labelledby="find-jobs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="find-jobs-heading">Find jobs</h2><p className="muted">Build a SearchIntent for discovery and prioritisation. Search context is not eligibility, evidence, or proof of fit.</p></div></div>
         {savedSchedules.phase === "loading" && !savedSchedules.data && <p className="muted" role="status">Loading saved configurations…</p>}
         {savedSchedules.phase === "error" && !savedSchedules.data && <p className="notice" role="status">Saved configurations are unavailable. You can still prepare a transient SearchIntent.</p>}
         <label htmlFor="saved-search-selection">Saved search configuration</label><select id="saved-search-selection" aria-label="Saved search configuration" value={selectedScheduleId ?? ""} onChange={(event) => { const id = event.target.value || null; setSelectedScheduleId(id); const schedule = savedSchedules.data?.find((item) => item.id === id); if (schedule) setSearchIntent(searchIntentFromQuery(schedule.query)); setFindMessage(""); setFindError(""); }}><option value="">Use a transient SearchIntent</option>{savedSchedules.data?.map((schedule) => <option value={schedule.id} key={schedule.id}>{schedule.name}</option>)}</select>
@@ -440,7 +525,7 @@ export function JobsPage() {
         {selectedSchedule && <div className="card"><p><strong>Persisted channels:</strong> {selectedSchedule.acquisition.structured_ats.enabled ? "Structured ATS" : ""}{selectedSchedule.acquisition.structured_ats.enabled && selectedSchedule.acquisition.agentic_web.enabled ? " · " : ""}{selectedSchedule.acquisition.agentic_web.enabled ? "Profile-driven bounded server-side web discovery" : ""}</p><p><strong>Evaluation:</strong> {selectedSchedule.evaluation.max_semantic_candidates} semantic candidates · {selectedSchedule.evaluation.max_full_analyses} full analyses · minimum relevance {selectedSchedule.evaluation.min_relevance_score}</p><p className="muted">Candidate readiness controls whether the persisted schedule can run. Semantic configuration is advisory and is not provider readiness.</p>{selectedScheduleDirty && <p className="notice">This SearchIntent differs from the persisted saved configuration. Hand it off to Saved searches to review and save; it is explicitly dirty.</p>}</div>}
         {findMessage && <p className="notice" role="status">{findMessage}</p>}{findError && <p className="notice" role="status">{findError}</p>}
         {findRunOutcome && <section className="card" aria-label="Run now result"><h3>Run now result</h3>
-          {findRunOutcome.kind === "execution" && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {titleCase(findRunOutcome.status)}</p>{(findRunOutcome.status === "completed" || findRunOutcome.status === "partial_failed") && <><p>Recent vacancies refresh: {findRunOutcome.inboxRefresh ? "refreshed" : "could not be confirmed as refreshed"}.</p><p className="muted">Recent vacancies is a shared persisted slice, not an exact execution result set.</p><button type="button" className="button-secondary" onClick={() => setTab("inbox")}>Review recent vacancies</button></>}</>}
+          {findRunOutcome.kind === "execution" && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {titleCase(findRunOutcome.status)}</p>{(findRunOutcome.status === "completed" || findRunOutcome.status === "partial_failed") && <><p>Recent vacancies refresh: {findRunOutcome.inboxRefresh ? "refreshed" : "could not be confirmed as refreshed"}.</p><p className="muted">Recent vacancies is a shared persisted slice, not an exact execution result set.</p><Link className="button-secondary" to="/jobs/inbox">Review recent vacancies</Link></>}</>}
           {findRunOutcome.kind === "changed" && <p role="status">The saved configuration changed before execution started. No execution was submitted.</p>}
           {findRunOutcome.kind === "preflight_stale" && <p role="status">The saved configuration is no longer available. Run now was not submitted.</p>}
           {findRunOutcome.kind === "post_stale" && <p role="status">The saved configuration became unavailable after Run now was submitted. Career-trans cannot confirm the resulting state.</p>}
@@ -454,7 +539,7 @@ export function JobsPage() {
         {!ready && <p className="muted">Run now requires confirmed candidate context. A transient SearchIntent can still be reviewed or saved.</p>}
         <section className="card" aria-label="Host Codex guidance"><h3>Run with Codex on this device</h3><p>SearchIntent is not automatically transferred to local Codex. Codex runs locally outside the browser and the current CLI supports only a subset of this search context.</p><p>Excluded companies, excluded title terms, and employment types are not claimed to be applied by that local workflow. Imported bounded results may appear in shared Recent vacancies; a run not completed here is not a completed run with zero results.</p></section>
       </section>}
-      {tab === "opportunities" && <section aria-labelledby="opportunities-heading" className="jobs-section"><div className="section-heading"><div><h2 id="opportunities-heading">Current ranked opportunities</h2><p className="muted">Ordered by current backend analyses. Posting recency is a signal, not proof the vacancy is live.</p></div><button type="button" className="button-secondary" onClick={() => void loadOpportunities()}>Refresh</button></div>
+      {view === "recommended" && <section aria-labelledby="opportunities-heading" className="jobs-section"><OpportunitiesNavigation view={view} /><div className="section-heading"><div><h2 id="opportunities-heading">Recommended / Current analyses</h2><p className="muted">Ordered by current backend analyses. Posting recency is a signal, not proof the vacancy is live.</p></div><button type="button" className="button-secondary" onClick={() => void loadOpportunities()}>Refresh</button></div>
         <StateMessage state={opportunities} empty={false} onRetry={() => void loadOpportunities()}>
           {!confirmedWindow.length && noRuns && <p className="muted">No jobs have been evaluated yet.</p>}
           {!confirmedWindow.length && hasHistoricalRuns && opportunities.phase === "loaded" && <p className="muted">No current evaluated opportunities. Historical runs are available below.</p>}
@@ -462,20 +547,22 @@ export function JobsPage() {
           {opportunities.data?.truncated && (opportunityLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(opportunityLimit); setOpportunityLimit(next); void loadOpportunities(next); }}>Show more current opportunities</button> : <p className="muted">Showing the first 100 current opportunities available through this view.</p>)}
         </StateMessage>
       </section>}
-      {tab === "runs" && <section aria-labelledby="runs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="runs-heading">Discovery-run history</h2><p className="muted">Recent runs and their stored query/funnel summaries.</p></div><button type="button" className="button-secondary" onClick={() => void loadRuns()}>Refresh</button></div>
-        <StateMessage state={runs} empty={false} onRetry={() => void loadRuns()}>{noRuns && <p className="muted">No discovery runs yet.</p>}{!!runs.data?.items.length && <ol className="run-list">{runs.data.items.map((run) => <li className="card run-card" key={run.id}><div className="section-heading"><div><h3>{run.status === "running" ? "Evaluation in progress" : titleCase(run.status)}</h3><p>Started {new Date(run.started_at).toLocaleString()}{run.completed_at ? ` · completed ${new Date(run.completed_at).toLocaleString()}` : ""}</p></div><button type="button" className="button-secondary" aria-expanded={selectedRun === run.id} onClick={() => selectedRun === run.id ? (generations.current.runDetail += 1, setSelectedRun(null)) : void openRun(run.id)}>{selectedRun === run.id ? "Close run" : "View run"}</button></div><RunSnapshot run={run} />{selectedRun === run.id && <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(run.id)}>{runDetail.data && <RunRows run={runDetail.data} onHistorical={(jobId) => void openHistorical(run.id, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(run.id, jobId)} />}</StateMessage>}</li>)}</ol>}{runs.data?.truncated && (runLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(runLimit); setRunLimit(next); void loadRuns(next); }}>Show more runs</button> : <p className="muted">Showing the first 100 discovery runs available through this view.</p>)}</StateMessage>
+      {view === "history" && <section aria-labelledby="runs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="runs-heading">Search history</h2><p className="muted">Recent discovery runs and their stored query/funnel summaries.</p></div><button type="button" className="button-secondary" onClick={() => void loadRuns()}>Refresh</button></div>
+        <StateMessage state={runs} empty={false} onRetry={() => void loadRuns()}>{noRuns && <p className="muted">No discovery runs yet.</p>}{!!runs.data?.items.length && <ol className="run-list">{runs.data.items.map((run) => <li className="card run-card" key={run.id}><div className="section-heading"><div><h3>{run.status === "running" ? "Evaluation in progress" : titleCase(run.status)}</h3><p>Started {new Date(run.started_at).toLocaleString()}{run.completed_at ? ` · completed ${new Date(run.completed_at).toLocaleString()}` : ""}</p></div><button type="button" className="button-secondary" aria-expanded={selectedRun === run.id} onClick={() => selectedRun === run.id ? (generations.current.runDetail += 1, generations.current.historicalDetail += 1, setSelectedRun(null), setSelectedHistorical(null), navigate("/jobs/history", { replace: true })) : void openRun(run.id)}>{selectedRun === run.id ? "Close run" : "View run"}</button></div><RunSnapshot run={run} />{selectedRun === run.id && <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(run.id)}>{runDetail.data && <RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${run.id}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(run.id)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(run.id, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(run.id, jobId)} />}</StateMessage>}</li>)}</ol>}{selectedRun && !runs.data?.items.some((item) => item.id === selectedRun) && <section className="card run-card" aria-label="Selected search history run">{runDetail.data ? <><RunSnapshot run={runDetail.data} /><RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${selectedRun}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(selectedRun)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(selectedRun, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(selectedRun, jobId)} /></> : <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(selectedRun)}>{null}</StateMessage>}</section>}{runs.data?.truncated && (runLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(runLimit); setRunLimit(next); void loadRuns(next); }}>Show more runs</button> : <p className="muted">Showing the first 100 discovery runs available through this view.</p>)}</StateMessage>
       </section>}
-      {tab === "inbox" && <section aria-labelledby="inbox-heading" className="jobs-section"><div className="section-heading"><div><h2 id="inbox-heading">Recent imported public vacancies</h2><p className="muted">Showing the most recent imported public vacancies. This is a shared persisted slice, not all jobs or live search results.</p></div><button type="button" className="button-secondary" onClick={() => void loadInbox()}>Refresh</button></div>
+      {view === "inbox" && <section aria-labelledby="inbox-heading" className="jobs-section"><div className="section-heading"><div><h2 id="inbox-heading">Inbox</h2><p className="muted">Showing recent shared persisted public vacancies. This is not all jobs, a live search, or a shortlist.</p></div><button type="button" className="button-secondary" onClick={() => void loadInbox()}>Refresh</button></div>
         <StateMessage state={inbox} empty={false} onRetry={() => void loadInbox()}>
           {inbox.phase === "loaded" && inbox.data?.items.length === 0 && <p className="muted">No recently imported public vacancies are available.</p>}
           {!!inbox.data?.items.length && <>
             <ul className="inbox-list">{inbox.data.items.map((item) => <li className={`card inbox-card${selectedIds.has(item.discovered_job_id) ? " is-selected" : ""}`} key={item.discovered_job_id}><label className="selection-label"><input type="checkbox" checked={selectedIds.has(item.discovered_job_id)} disabled={!item.actionable || !ready || submitting} onChange={() => toggleJob(item)} aria-label={`Select ${item.title}`} /><span>{item.title}</span></label><p>{[item.company, item.location, item.work_arrangement, item.employment_type].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Lifecycle: {titleCase(item.state)} · Verification: {titleCase(item.verification_status)} · {item.actionable ? "Actionable" : "Not actionable"}</p>{item.verification_reason && <p>Verification note: {titleCase(item.verification_reason)}</p>}<p>Last seen: {new Date(item.last_seen_at).toLocaleString()}</p>{item.provenance.length > 0 && <p>Recent provenance: {item.provenance.map((source) => `${source.runtime}${source.discovered_via ? ` · ${source.discovered_via}` : ""}`).join("; ")}</p>}<a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></li>)}</ul>
             {inbox.data.truncated && (inboxLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(inboxLimit); setInboxLimit(next); void loadInbox(next); }}>Show more recent vacancies</button> : <p className="muted">Showing the first 100 recent vacancies available through this view.</p>)}
           </>}
-          {ready && <form className="card evaluation-form" onSubmit={(event) => void submitEvaluation(event)}><h3>Evaluate selected actionable jobs</h3><p className="muted">This evaluates persisted vacancies with the same explicit SearchIntent used by Find jobs. It does not start internet discovery.</p><SearchIntentEditor intent={searchIntent} onChange={setSearchIntent} idPrefix="inbox-search-intent" disabled={submitting} /><p><strong>SearchIntent:</strong> {searchIntent.themes.join(", ") || "Not set"} · locations: {searchIntent.locations.join(", ") || "Any"} · remote policy: {searchIntent.remotePolicy === "exclude_remote" ? "Exclude remote jobs" : searchIntent.remotePolicy === "legacy_true" ? "No remote restriction (legacy stored value)" : "No remote restriction"}</p><p className="muted">SearchIntent is discovery context, not eligibility or evidence. <button type="button" className="button-secondary" onClick={() => setTab("find")}>Edit SearchIntent in Find jobs</button></p><button type="submit" disabled={submitting || selectedIds.size === 0 || searchIntent.themes.length === 0}>{submitting ? "Evaluating…" : `Evaluate ${selectedIds.size || "selected"} jobs`}</button>{!searchIntent.themes.length && <p className="muted">Set an explicit SearchIntent in Find jobs before evaluating.</p>}{!selectedIds.size && <p className="muted">Select one or more actionable vacancies to continue.</p>}</form>}
+          {ready && <form className="card evaluation-form" onSubmit={(event) => void submitEvaluation(event)}><h3>Evaluate selected actionable jobs</h3><p className="muted">This evaluates persisted vacancies with the same explicit SearchIntent used by Find jobs. It does not start internet discovery.</p><p><strong>SearchIntent:</strong> {searchIntent.themes.join(", ") || "Not set"} · locations: {searchIntent.locations.join(", ") || "Any"} · remote policy: {searchIntent.remotePolicy === "exclude_remote" ? "Exclude remote jobs" : searchIntent.remotePolicy === "legacy_true" ? "No remote restriction (legacy stored value)" : "No remote restriction"}</p><p className="muted">SearchIntent is discovery context, not eligibility or evidence. <Link className="button-secondary" to="/jobs/find">Edit SearchIntent in Find jobs</Link></p><button type="submit" disabled={submitting || selectedIds.size === 0 || searchIntent.themes.length === 0}>{submitting ? "Evaluating…" : `Evaluate ${selectedIds.size || "selected"} jobs`}</button>{!searchIntent.themes.length && <p className="muted">Set an explicit SearchIntent in Find jobs before evaluating.</p>}{!selectedIds.size && <p className="muted">Select one or more actionable vacancies to continue.</p>}</form>}
         </StateMessage>
       </section>}
+      {view === "shortlisted" && <section aria-labelledby="shortlisted-heading" className="jobs-section"><OpportunitiesNavigation view={view} /><h2 id="shortlisted-heading">Shortlisted</h2><div className="card"><p>Saved shortlist decisions are not available yet. This view is a non-authoritative placeholder until a dedicated shortlist authority exists.</p><Link className="button-secondary" to="/jobs/opportunities/recommended">Open Recommended / Current analyses</Link></div></section>}
     </div>
+    </>}
   </main>;
 }
 
