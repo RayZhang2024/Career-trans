@@ -504,7 +504,7 @@ export function JobsSearchesPage() {
       {execution.scheduled_for && <p>Scheduled for: {displayTime(execution.scheduled_for)}</p>}
       <p>Started: {displayTime(execution.started_at)}</p><p>Completed: {displayTime(execution.completed_at)}</p>
       {counters("Acquisition summary", execution.acquisition_summary)}{counters("Failure summary", execution.failure_summary)}
-      <p>{execution.discovery_run_id ? <>A linked discovery run exists. <Link to="/jobs">Open Jobs workspace</Link></> : "No linked discovery run is recorded."}</p>
+      <p>{execution.discovery_run_id ? <>A linked discovery run exists. <Link to="/jobs/find">Open Find jobs</Link></> : "No linked discovery run is recorded."}</p>
       <details><summary>Configuration used for this execution</summary>
         <div className="execution-snapshot">
           <h5>Recurrence timing</h5><p>Cadence: {snapshot.schedule.cadence}</p><p>Timezone: {snapshot.schedule.timezone}</p><p>Local time: {snapshot.schedule.local_time}</p><p>Weekdays: {snapshot.schedule.weekdays.length ? snapshot.schedule.weekdays.map((day) => weekdays[day] ?? `Day ${day}`).join(", ") : "Not applicable"}</p>
@@ -574,7 +574,7 @@ export function JobsSearchesPage() {
   };
 
   return <main className="jobs-searches-page">
-    <header className="workspace-header searches-header"><div><p className="eyebrow">Jobs workspace</p><h1>Saved discovery configurations</h1><p className="muted">Configure saved searches, manually run persisted configurations, and review execution history.</p><Link to="/jobs">Back to Jobs workspace</Link></div><button type="button" onClick={() => openCreate()}>New saved discovery</button></header>
+    <header className="workspace-header searches-header"><div><p className="eyebrow">Job Search</p><h1>Saved discovery configurations</h1><p className="muted">Configure saved searches, manually run persisted configurations, and review execution history.</p><Link to="/jobs/find">Back to Find jobs</Link></div><button type="button" onClick={() => openCreate()}>New saved discovery</button></header>
     {message && <p className="notice" role="status">{message}</p>}{error && <p role="alert">{error}</p>}
     <section className="readiness-notices" aria-label="Execution readiness">
       {candidateReadiness === "loading" && <p className="muted" role="status">Checking confirmed candidate context…</p>}
