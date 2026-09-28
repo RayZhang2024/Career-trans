@@ -1,6 +1,7 @@
 """Focused provider-free regressions for the Phase 6 canonical job workspace."""
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 
 import pytest
 
@@ -11,14 +12,23 @@ from app.main import app
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
 from app.models.user_job_discovery import UserJobEvaluation
 from app.schemas.candidate import CandidateEvidenceMaterializationStatus
+from app.schemas.ai_settings import SemanticOperation
 from app.schemas.job import JobProfile, JobRequirement
 from app.schemas.job_ranking import RankedJobOpportunity
 from app.schemas.matching import RequirementMatch
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_workspace_service import UserJobWorkspaceReadService
 from app.services.llm_runtime import RuntimePreferenceError
-from candidate_read_support import snapshot_for_context, StaticCandidateReader
+from candidate_read_support import patch_candidate_context, snapshot_for_context, StaticCandidateReader
 from test_jobs_read_models import _context, _job, _Ranking, _request, _user
+
+
+def _make_usable_evaluation(evaluation: UserJobEvaluation, job) -> None:
+    stored = RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)
+    evaluation.evaluation_json = stored.model_copy(update={
+        "job_profile": JobProfile(title=job.title, requirements=[JobRequirement(text="Python", importance="essential", category="technical")]),
+        "requirement_matches": [RequirementMatch(requirement_index=0, requirement={"text": "Python", "importance": "essential", "category": "technical"}, match_type="demonstrated", score=0.8, evidence_ids=[], reasoning="safe")],
+    }).model_dump_json()
 
 
 def test_workspace_returns_shared_facts_provenance_and_current_fit_without_provider_work(db_session, monkeypatch, runtime_snapshot_a):
@@ -35,11 +45,7 @@ def test_workspace_returns_shared_facts_provenance_and_current_fit_without_provi
     patch_candidate_context(monkeypatch, _context())
     UserJobDiscoveryService(db_session, ranking_service=_Ranking(), runtime_snapshot=runtime_snapshot_a).start("owner", _request([job.id]))
     evaluation = db_session.query(UserJobEvaluation).filter_by(user_id="owner").one()
-    stored = RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)
-    evaluation.evaluation_json = stored.model_copy(update={
-        "job_profile": JobProfile(title=job.title, requirements=[JobRequirement(text="Python", importance="essential", category="technical")]),
-        "requirement_matches": [RequirementMatch(requirement_index=0, requirement={"text": "Python", "importance": "essential", "category": "technical"}, match_type="demonstrated", score=0.8, evidence_ids=[], reasoning="safe")],
-    }).model_dump_json()
+    _make_usable_evaluation(evaluation, job)
     db_session.commit()
 
     workspace = UserJobWorkspaceReadService(db_session, runtime_snapshot_resolver=lambda _: runtime_snapshot_a).read("owner", job.id)
@@ -187,3 +193,105 @@ def test_workspace_dependency_is_lazy_and_endpoint_returns_authenticated_workspa
     assert response.status_code == 200
     assert response.json()["job"]["id"] == job.id
     assert response.json()["provenance"]["count"] == 0
+
+
+def test_workspace_evaluation_ordering_bounds_and_none_history_applicability(db_session, monkeypatch, runtime_snapshot_a):
+    job = _job(8)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    UserJobDiscoveryService(db_session, ranking_service=_Ranking(), runtime_snapshot=runtime_snapshot_a).start("owner", _request([job.id]))
+    base = db_session.query(UserJobEvaluation).filter_by(user_id="owner").one()
+    _make_usable_evaluation(base, job)
+    now = datetime.now(timezone.utc)
+    base.id = "evaluation-c"
+    base.created_at = now - timedelta(seconds=2)
+    for identifier, created_at in (("evaluation-b", now), ("evaluation-a", now)):
+        db_session.add(UserJobEvaluation(
+            id=identifier, user_id="owner", discovered_job_id=job.id, job_content_hash=job.content_hash,
+            candidate_evaluation_fingerprint=identifier, evaluation_contract_fingerprint=f"contract-{identifier}",
+            job_snapshot_json="{}", evaluation_json=base.evaluation_json, created_at=created_at,
+        ))
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(
+        db_session,
+        candidate_reader=StaticCandidateReader(snapshot_for_context(_context().model_copy(update={"skills_text": "Different"}))),
+        runtime_snapshot_resolver=lambda _: runtime_snapshot_a,
+    ).read("owner", job.id, evaluation_limit=2)
+
+    assert workspace.current_fit.status == "none"
+    assert workspace.current_fit.reason == "no_current_evaluation"
+    assert [item.id for item in workspace.evaluations.items] == ["evaluation-a", "evaluation-b"]
+    assert all(item.applicability == "historical" for item in workspace.evaluations.items)
+    assert workspace.evaluations.truncated is True
+
+
+def test_workspace_current_evaluation_outside_history_window_and_legitimacy_projection(db_session, monkeypatch, runtime_snapshot_a):
+    job = _job(9)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    UserJobDiscoveryService(db_session, ranking_service=_Ranking(), runtime_snapshot=runtime_snapshot_a).start("owner", _request([job.id]))
+    current = db_session.query(UserJobEvaluation).filter_by(user_id="owner").one()
+    _make_usable_evaluation(current, job)
+    now = datetime.now(timezone.utc)
+    current.created_at = now - timedelta(days=1)
+    historical_json = current.evaluation_json
+    job.posted_at = now
+    for identifier, created_at in (("history-a", now), ("history-b", now - timedelta(seconds=1))):
+        db_session.add(UserJobEvaluation(
+            id=identifier, user_id="owner", discovered_job_id=job.id, job_content_hash=job.content_hash,
+            candidate_evaluation_fingerprint=identifier, evaluation_contract_fingerprint=f"contract-{identifier}",
+            job_snapshot_json="{}", evaluation_json=historical_json, created_at=created_at,
+        ))
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(
+        db_session,
+        candidate_reader=StaticCandidateReader(snapshot_for_context(_context())),
+        runtime_snapshot_resolver=lambda _: runtime_snapshot_a,
+    ).read("owner", job.id, evaluation_limit=2)
+
+    assert workspace.current_fit.status == "current"
+    assert workspace.current_fit.evaluation is not None
+    assert workspace.current_fit.evaluation.id == current.id
+    assert all(item.applicability == "historical" for item in workspace.evaluations.items)
+    assert all(item.id != current.id for item in workspace.evaluations.items)
+    assert workspace.current_fit.evaluation.opportunity.legitimacy != workspace.evaluations.items[0].opportunity.legitimacy
+
+
+def test_workspace_currentness_rechecks_job_candidate_and_runtime_identity(db_session, monkeypatch, runtime_snapshot_a):
+    job = _job(10)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    UserJobDiscoveryService(db_session, ranking_service=_Ranking(), runtime_snapshot=runtime_snapshot_a).start("owner", _request([job.id]))
+    evaluation = db_session.query(UserJobEvaluation).filter_by(user_id="owner").one()
+    _make_usable_evaluation(evaluation, job)
+    db_session.commit()
+
+    def read(candidate_reader, runtime):
+        return UserJobWorkspaceReadService(
+            db_session,
+            candidate_reader=candidate_reader,
+            runtime_snapshot_resolver=lambda _: runtime,
+        ).read("owner", job.id)
+
+    current_reader = StaticCandidateReader(snapshot_for_context(_context()))
+    assert read(current_reader, runtime_snapshot_a).current_fit.status == "current"
+
+    original_hash = job.content_hash
+    job.content_hash = "f" * 64
+    assert read(current_reader, runtime_snapshot_a).current_fit.reason == "no_current_evaluation"
+    job.content_hash = original_hash
+
+    changed_candidate = StaticCandidateReader(snapshot_for_context(_context().model_copy(update={"skills_text": "Changed"})))
+    assert read(changed_candidate, runtime_snapshot_a).current_fit.reason == "no_current_evaluation"
+
+    changed_operations = tuple(
+        (operation, replace(resolved, model="changed-job-relevance") if operation is SemanticOperation.JOB_RELEVANCE else resolved)
+        for operation, resolved in runtime_snapshot_a.operations
+    )
+    changed_runtime = replace(runtime_snapshot_a, operations=changed_operations)
+    assert read(current_reader, changed_runtime).current_fit.reason == "no_current_evaluation"

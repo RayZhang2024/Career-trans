@@ -37,6 +37,11 @@ type FindRunOutcome =
 
 type JobSearchView = "find" | "saved" | "inbox" | "recommended" | "shortlisted" | "history" | "unknown";
 type JobSearchRoute = { kind: "search"; view: JobSearchView } | { kind: "workspace"; discoveredJobId: string; section: JobWorkspaceSection } | { kind: "unknown" };
+const RESERVED_JOB_ROUTE_SEGMENTS = new Set(["find", "inbox", "history", "opportunities", "searches"]);
+
+function safeDecodeRouteSegment(value: string): string | null {
+  try { return decodeURIComponent(value); } catch { return null; }
+}
 
 function parseJobSearchRoute(pathname: string): JobSearchRoute {
   if (pathname === "/jobs/find" || pathname === "/jobs") return { kind: "search", view: "find" };
@@ -46,7 +51,11 @@ function parseJobSearchRoute(pathname: string): JobSearchRoute {
   if (pathname === "/jobs/opportunities/shortlisted") return { kind: "search", view: "shortlisted" };
   if (pathname === "/jobs/history") return { kind: "search", view: "history" };
   const match = pathname.match(/^\/jobs\/([^/]+)(?:\/(fit|application|tracking))?$/);
-  if (match) return { kind: "workspace", discoveredJobId: decodeURIComponent(match[1]), section: (match[2] ?? "overview") as JobWorkspaceSection };
+  if (match) {
+    const discoveredJobId = safeDecodeRouteSegment(match[1]);
+    if (discoveredJobId === null || RESERVED_JOB_ROUTE_SEGMENTS.has(discoveredJobId.trim().toLowerCase())) return { kind: "unknown" };
+    return { kind: "workspace", discoveredJobId, section: (match[2] ?? "overview") as JobWorkspaceSection };
+  }
   return { kind: "unknown" };
 }
 
@@ -103,7 +112,7 @@ export function OpportunityDetail({ opportunity, historical = false, mode }: { o
       const match = opportunity.requirement_matches.find((item) => item.requirement_index === index);
       return <li key={`${index}-${requirement.text}`}><strong>{requirement.text}</strong> <span className="muted">({titleCase(requirement.importance)} · {titleCase(requirement.category)})</span>{match ? <p>{titleCase(match.match_type)} · {numberLabel(match.score * 100)} — {match.reasoning}</p> : <p className="muted">No match detail available.</p>}</li>;
     })}</ul>}{opportunity.requirement_matches.some((item) => !Number.isInteger(item.requirement_index) || item.requirement_index < 0 || item.requirement_index >= requirements.length) && <p className="muted">Requirement reference unavailable.</p>}</section>
-    <section><h4>{historical ? "Historical posting recency signal" : "Posting recency signal"}</h4><p>{titleCase(opportunity.legitimacy.legitimacy)} — {opportunity.legitimacy.reasoning}</p></section>
+    <section><h4>{isHistorical ? "Historical posting recency signal" : isUnknown ? "Persisted posting recency signal" : "Posting recency signal"}</h4><p>{titleCase(opportunity.legitimacy.legitimacy)} — {opportunity.legitimacy.reasoning}</p></section>
   </article>;
 }
 
