@@ -367,7 +367,7 @@ export type JobWorkspace = {
     verification_reason: string | null; state: string; actionable: boolean;
     first_seen_at: string; last_seen_at: string; last_changed_at: string;
   };
-  provenance: { items: Array<{ id: string; runtime: string; source_ref: string | null; discovered_via: string | null; imported_at: string }>; limit: number; truncated: boolean };
+  provenance: { items: Array<{ id: string; runtime: string; source_ref: string | null; discovered_via: string | null; imported_at: string }>; count: number; limit: number; truncated: boolean };
   current_fit: { status: "current" | "none" | "unavailable"; reason: string | null; evaluation: JobWorkspaceEvaluation | null };
   evaluations: { items: JobWorkspaceEvaluation[]; limit: number; truncated: boolean };
 };

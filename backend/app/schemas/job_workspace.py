@@ -63,6 +63,7 @@ class WorkspaceProvenanceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[WorkspaceProvenanceRead] = Field(default_factory=list)
+    count: int
     limit: int
     truncated: bool
 

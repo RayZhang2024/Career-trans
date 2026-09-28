@@ -2,13 +2,22 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+from app.api.deps import get_user_job_workspace_read_service
+from app.core.security import create_access_token
+from app.main import app
+
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
 from app.models.user_job_discovery import UserJobEvaluation
+from app.schemas.candidate import CandidateEvidenceMaterializationStatus
 from app.schemas.job import JobProfile, JobRequirement
 from app.schemas.job_ranking import RankedJobOpportunity
 from app.schemas.matching import RequirementMatch
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_workspace_service import UserJobWorkspaceReadService
+from app.services.llm_runtime import RuntimePreferenceError
+from candidate_read_support import snapshot_for_context, StaticCandidateReader
 from test_jobs_read_models import _context, _job, _Ranking, _request, _user
 
 
@@ -42,6 +51,7 @@ def test_workspace_returns_shared_facts_provenance_and_current_fit_without_provi
     assert workspace.current_fit.evaluation is not None
     assert workspace.current_fit.evaluation.applicability == "current"
     assert workspace.evaluations.items[0].applicability == "current"
+    assert workspace.provenance.count == 2
 
 
 def test_workspace_scopes_evaluation_history_and_marks_currentness_unavailable_without_runtime(db_session, monkeypatch, runtime_snapshot_a):
@@ -65,3 +75,115 @@ def test_workspace_scopes_evaluation_history_and_marks_currentness_unavailable_w
     assert workspace.current_fit.reason == "runtime_configuration_unavailable"
     assert len(workspace.evaluations.items) == 1
     assert workspace.evaluations.items[0].applicability == "unknown"
+
+
+def test_workspace_missing_job_is_safe_404_and_endpoint_is_authenticated(db_session, client):
+    db_session.add(_user("owner"))
+    db_session.commit()
+    response = client.get("/api/v1/jobs/workspaces/missing", headers={"Authorization": f"Bearer {create_access_token('owner')}"})
+    assert response.status_code == 404
+
+
+def test_workspace_provenance_count_limit_and_order_are_truthful(db_session):
+    job = _job(3)
+    now = datetime.now(timezone.utc)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    db_session.add_all([
+        DiscoveredJobProvenance(id="b", job_id=job.id, runtime="same-time-b", fingerprint="b" * 64, imported_at=now),
+        DiscoveredJobProvenance(id="c", job_id=job.id, runtime="older", fingerprint="c" * 64, imported_at=now - timedelta(seconds=1)),
+        DiscoveredJobProvenance(id="a", job_id=job.id, runtime="same-time-a", fingerprint="a" * 64, imported_at=now),
+    ])
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(db_session).read("owner", job.id, provenance_limit=2)
+
+    assert workspace.provenance.count == 3
+    assert workspace.provenance.truncated is True
+    assert [item.runtime for item in workspace.provenance.items] == ["same-time-a", "same-time-b"]
+
+
+def test_workspace_no_evaluation_still_returns_shared_overview(db_session):
+    job = _job(4)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(db_session).read("owner", job.id)
+
+    assert workspace.job.id == job.id
+    assert workspace.job.actionable is True
+    assert workspace.current_fit.status == "unavailable"
+    assert workspace.evaluations.items == []
+
+
+def test_workspace_currentness_reason_contract_and_unexpected_errors(db_session, runtime_snapshot_a):
+    job = _job(5)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    context = _context()
+
+    not_ready = UserJobWorkspaceReadService(
+        db_session,
+        candidate_reader=StaticCandidateReader(snapshot_for_context(context, structured_profile_available=False)),
+        runtime_snapshot_resolver=lambda _: runtime_snapshot_a,
+    ).read("owner", job.id)
+    assert not_ready.current_fit.status == "unavailable"
+    assert not_ready.current_fit.reason == "candidate_not_ready"
+
+    incomplete = UserJobWorkspaceReadService(
+        db_session,
+        candidate_reader=StaticCandidateReader(snapshot_for_context(context, evidence_status=CandidateEvidenceMaterializationStatus.INCOMPLETE)),
+        runtime_snapshot_resolver=lambda _: runtime_snapshot_a,
+    ).read("owner", job.id)
+    assert incomplete.current_fit.reason == "candidate_evidence_incomplete"
+
+    runtime_unavailable = UserJobWorkspaceReadService(
+        db_session,
+        candidate_reader=StaticCandidateReader(snapshot_for_context(context)),
+        runtime_snapshot_resolver=lambda _: (_ for _ in ()).throw(RuntimePreferenceError("invalid local runtime")),
+    ).read("owner", job.id)
+    assert runtime_unavailable.current_fit.reason == "runtime_configuration_unavailable"
+
+    class BrokenCandidateReader(StaticCandidateReader):
+        def read(self, user_id: str):
+            raise RuntimeError("database failure")
+
+    with pytest.raises(RuntimeError, match="database failure"):
+        UserJobWorkspaceReadService(
+            db_session,
+            candidate_reader=BrokenCandidateReader(snapshot_for_context(context)),
+            runtime_snapshot_resolver=lambda _: runtime_snapshot_a,
+        ).read("owner", job.id)
+
+    with pytest.raises(RuntimeError, match="resolver failure"):
+        UserJobWorkspaceReadService(
+            db_session,
+            candidate_reader=StaticCandidateReader(snapshot_for_context(context)),
+            runtime_snapshot_resolver=lambda _: (_ for _ in ()).throw(RuntimeError("resolver failure")),
+        ).read("owner", job.id)
+
+
+def test_workspace_job_not_actionable_and_history_applicability_are_distinct(db_session):
+    job = _job(6)
+    job.verification_status = "unverified"
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(db_session).read("owner", job.id)
+
+    assert workspace.current_fit.status == "none"
+    assert workspace.current_fit.reason == "job_not_actionable"
+
+
+def test_workspace_dependency_is_lazy_and_endpoint_returns_authenticated_workspace(db_session, client):
+    job = _job(7)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    service = UserJobWorkspaceReadService(db_session)
+    app.dependency_overrides[get_user_job_workspace_read_service] = lambda: service
+
+    response = client.get(f"/api/v1/jobs/workspaces/{job.id}", headers={"Authorization": f"Bearer {create_access_token('owner')}"})
+
+    assert response.status_code == 200
+    assert response.json()["job"]["id"] == job.id
+    assert response.json()["provenance"]["count"] == 0

@@ -1154,7 +1154,7 @@ describe("Issue #236 Phase 5 repair regressions", () => {
   });
 
   it("keeps Job Search mounted while navigating the canonical job workspace sections", async () => {
-    const workspace = { job: { id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" }, provenance: { items: [], limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false } };
+    const workspace = { job: { id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" }, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false } };
     const fetch = fakeFetch({ "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
     renderJobs(fetch, "/jobs/actionable");
     await screen.findByRole("heading", { name: "Workspace role" });
@@ -1163,12 +1163,13 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     expect(within(workspaceNav).getAllByRole("link").filter((link) => link.getAttribute("aria-current") === "page")).toHaveLength(1);
     fireEvent.click(within(workspaceNav).getByRole("link", { name: "Fit" }));
     await screen.findByRole("heading", { name: "Current Fit" });
+    expect(screen.getByText(/No analysis is current for the present job, candidate and evaluation configuration/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Job Search" })).toHaveClass("active");
     expect(fetch.mock.calls.filter(([input]) => String(input).includes("/api/v1/jobs/workspaces/actionable")).length).toBe(1);
   });
 
   it("retains the exact successful Inbox analysis result across workspace navigation", async () => {
-    const workspace = { job: { id: "actionable", title: "Exact returned role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: null, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" }, provenance: { items: [], limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false } };
+    const workspace = { job: { id: "actionable", title: "Exact returned role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: null, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" }, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false } };
     const exactRun = { ...run("run-exact"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "actionable", evaluation_id: "eval-exact", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Exact returned role") }] };
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun), "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
     renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
@@ -1184,5 +1185,53 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     await screen.findByRole("heading", { name: "Inbox" });
     expect(screen.getByRole("heading", { name: "Analysis just completed" })).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "View Fit" }).some((link) => link.getAttribute("href") === "/jobs/actionable/fit")).toBe(true);
+    expect(screen.getByText("Newly evaluated")).toBeInTheDocument();
+    expect(screen.getByText("eval-exact")).toBeInTheDocument();
+    expect(screen.getByText("CONSIDER")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open exact run result" })).toHaveAttribute("href", "/jobs/history?run=run-exact&job=actionable");
+  });
+
+  it("keeps exact factual outcomes and actions for rows without opportunities", async () => {
+    const exactRun = { ...run("run-exact-no-opportunity"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "blocked", evaluation_id: null, outcome: "semantic_rejected" as const, failure_stage: "relevance", failure_kind: "not_relevant", opportunity: null }] };
+    const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun) });
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Exact analysis" } });
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    await screen.findByRole("heading", { name: "Analysis just completed" });
+    expect(screen.getByText("Semantic rejected")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "Open workspace" }).some((link) => link.getAttribute("href") === "/jobs/blocked")).toBe(true);
+    expect(screen.getByRole("link", { name: "Open exact run result" })).toHaveAttribute("href", "/jobs/history?run=run-exact-no-opportunity&job=blocked");
+    expect(screen.queryByRole("link", { name: "Open Fit" })).not.toBeInTheDocument();
+  });
+
+  it("renders current, historical, and unknown applicability as distinct presentations", async () => {
+    const baseJob = { id: "actionable", title: "Applicability role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: null, posted_at: "2026-02-01T00:00:00Z", work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" };
+    const evaluation = (id: string, applicability: "current" | "historical" | "unknown") => ({ id, created_at: "2026-02-03T00:00:00Z", applicability, opportunity: ranked("Applicability role"), runtime_attribution: null });
+    const workspace = { job: baseJob, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [evaluation("eval-current", "current"), evaluation("eval-historical", "historical"), evaluation("eval-unknown", "unknown")], limit: 20, truncated: false } };
+    const fetch = fakeFetch({ "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
+    renderJobs(fetch, "/jobs/actionable/fit"); await screen.findByRole("heading", { name: "Current Fit" });
+    expect(screen.getByText("Current evaluation")).toBeInTheDocument();
+    expect(screen.getByText("Historical evaluation snapshot")).toBeInTheDocument();
+    expect(screen.getByText("Applicability unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/Currentness could not be established/)).toBeInTheDocument();
+    expect(screen.queryAllByText(/This is historical evaluation state/)).toHaveLength(1);
+  });
+
+  it("shows Current Fit timestamp, evaluation ID, and runtime attribution independently of history", async () => {
+    const workspace = { job: { id: "actionable", title: "Current role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: null, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" }, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "current", reason: null, evaluation: { id: "eval-current-only", created_at: "2026-02-03T00:00:00Z", applicability: "current", opportunity: ranked("Current role"), runtime_attribution: historyDetail.runtime_attribution } }, evaluations: { items: [], limit: 20, truncated: false } };
+    const fetch = fakeFetch({ "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
+    renderJobs(fetch, "/jobs/actionable/fit"); await screen.findByRole("heading", { name: "Current Fit" });
+    expect(screen.getByText("eval-current-only")).toBeInTheDocument();
+    expect(screen.getByText(new Date("2026-02-03T00:00:00Z").toLocaleString())).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "AI runtime used" })).toBeInTheDocument();
+    expect(screen.getByText("old-job-relevance · Provider default reasoning")).toBeInTheDocument();
+  });
+
+  it.each(["/jobs/actionable", "/jobs/actionable/fit", "/jobs/actionable/application", "/jobs/actionable/tracking"])("shows safe not-found state for missing canonical jobs at %s", async (path) => {
+    const fetch = fakeFetch({ "/api/v1/jobs/workspaces/actionable": () => json(undefined, 404) });
+    renderJobs(fetch, path);
+    expect(await screen.findByRole("heading", { name: "Job Workspace not found" })).toBeInTheDocument();
   });
 });

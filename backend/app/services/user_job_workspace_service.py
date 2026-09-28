@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.discovered_job import DiscoveredJob
@@ -25,6 +25,7 @@ from app.services.canonical_candidate_read_service import (
     CanonicalCandidateReadService,
 )
 from app.services.llm_runtime import ResolvedRuntimeSnapshot
+from app.services.llm_runtime import RuntimePreferenceError
 from app.services.posting_legitimacy_service import PostingLegitimacyService
 from app.services.public_job_actionability import is_public_job_actionable
 from app.services.semantic_runtime_attribution import read_attribution
@@ -50,6 +51,9 @@ class UserJobWorkspaceReadService:
         job = self._session.get(DiscoveredJob, discovered_job_id)
         if job is None:
             raise LookupError("Discovered job not found.")
+        provenance_count = self._session.scalar(
+            select(func.count()).select_from(DiscoveredJobProvenance).where(DiscoveredJobProvenance.job_id == job.id)
+        ) or 0
         provenance_rows = self._session.scalars(
             select(DiscoveredJobProvenance).where(DiscoveredJobProvenance.job_id == job.id)
             .order_by(DiscoveredJobProvenance.imported_at.desc(), DiscoveredJobProvenance.id.asc()).limit(provenance_limit + 1)
@@ -75,10 +79,6 @@ class UserJobWorkspaceReadService:
                 context = None
                 current_reason = WorkspaceCurrentFitReason.CANDIDATE_EVIDENCE_INCOMPLETE
                 current_unavailable = True
-            except Exception:
-                context = None
-                current_reason = WorkspaceCurrentFitReason.CANDIDATE_NOT_READY
-                current_unavailable = True
             if current_reason is None:
                 if context is None:
                     current_reason = WorkspaceCurrentFitReason.CANDIDATE_NOT_READY
@@ -90,7 +90,7 @@ class UserJobWorkspaceReadService:
                             self._session, user_id, job, candidate_reader=self._candidate_reader,
                             runtime_snapshot=runtime, candidate_context=context,
                         )
-                    except Exception:
+                    except RuntimePreferenceError:
                         current_reason = WorkspaceCurrentFitReason.RUNTIME_CONFIGURATION_UNAVAILABLE
                         current_unavailable = True
                     if current_reason is None and current_evaluation is None:
@@ -114,6 +114,7 @@ class UserJobWorkspaceReadService:
             ),
             provenance=WorkspaceProvenanceResponse(
                 items=[WorkspaceProvenanceRead.model_validate(row, from_attributes=True) for row in provenance_rows[:provenance_limit]],
+                count=provenance_count,
                 limit=provenance_limit, truncated=len(provenance_rows) > provenance_limit,
             ),
             current_fit=current_fit,
