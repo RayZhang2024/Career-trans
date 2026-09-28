@@ -287,6 +287,17 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(patch.acquisition).toBeUndefined(); expect(patch.schedule).toBeUndefined();
   });
 
+  it("merges only edited SearchIntent fields over a newer persisted query", async () => {
+    let gets = 0;
+    const initial = schedule();
+    const fresh = schedule({ query: { ...initial.query, keywords: ["Fresh server theme"], companies: ["Newer compatibility company"], max_results: 91, excluded_companies: ["Newer exclusion"], employment_types: ["Contract"] } });
+    const { requests } = renderPage("/jobs/searches", { "GET /api/v1/jobs/discovery-schedules/s-1": () => response(++gets === 1 ? initial : fresh) }); await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" })); await screen.findByDisplayValue("AI roles");
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Edited theme" } }); fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => expect(getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")).toHaveLength(1));
+    expect(getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")[0].body).toEqual({ query: { ...fresh.query, keywords: ["Edited theme"] } });
+  });
+
   it("aborts a nested save when the mandatory fresh GET fails", async () => {
     let gets = 0; const { requests } = renderPage("/jobs/searches", { "GET /api/v1/jobs/discovery-schedules/s-1": () => ++gets === 1 ? response(schedule()) : Promise.reject(new TypeError("offline")) }); await loaded();
     fireEvent.click(screen.getByRole("button", { name: "Edit" })); await screen.findByDisplayValue("AI roles"); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Changed" } }); fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));

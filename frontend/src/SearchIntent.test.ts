@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { searchIntentEquals, searchIntentFromQuery, searchIntentToQuery } from "./SearchIntent";
+import { mergeSearchIntentIntoQuery, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery } from "./SearchIntent";
 
 describe("SearchIntent adapter", () => {
   it("round-trips every persisted query field, including compatibility fields", () => {
@@ -21,5 +21,12 @@ describe("SearchIntent adapter", () => {
     const intent = searchIntentFromQuery({ keywords: ["AI"], locations: [], remote_ok: null, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 });
     expect(searchIntentToQuery(intent).remote_ok).toBeNull();
     expect(searchIntentEquals(intent, searchIntentFromQuery(searchIntentToQuery(intent)))).toBe(true);
+  });
+
+  it("merges only explicitly edited fields into a fresh persisted query", () => {
+    const fresh = { keywords: ["Fresh theme"], locations: ["Fresh location"], remote_ok: true as const, companies: ["New compatibility company"], excluded_companies: ["Fresh exclusion"], excluded_title_terms: ["Fresh title exclusion"], employment_types: ["Contract"], max_results: 91 };
+    const edited = searchIntentFromQuery({ ...fresh, keywords: ["Edited theme"], remote_ok: false, excluded_companies: ["Edited exclusion"], employment_types: ["Part-time"] });
+    const merged = mergeSearchIntentIntoQuery(fresh, edited, new Set(["themes", "excludedCompanies"]));
+    expect(merged).toEqual({ ...fresh, keywords: ["Edited theme"], excluded_companies: ["Edited exclusion"] });
   });
 });

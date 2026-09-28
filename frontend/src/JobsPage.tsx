@@ -1,11 +1,11 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, UserOpportunitySummary } from "./api";
+import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, ScheduledExecutionRead, UserOpportunitySummary } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
 import { SearchIntentEditor } from "./SearchIntentEditor";
 import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
-import { DiscoveryScheduleChangedError, DiscoveryScheduleStaleError, runSavedDiscoveryNow } from "./discoveryRunNow";
+import { runSavedDiscoveryNowWithReconciliation, type DiscoveryRunReconciliation } from "./discoveryRunNow";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
 type Tab = "find" | "opportunities" | "runs" | "inbox";
@@ -22,6 +22,13 @@ const outcomeLabels: Record<DiscoveryRunDetail["jobs"][number]["outcome"], strin
   semantic_rejected: "Semantic rejected", outside_deep_analysis_budget: "Outside deep-analysis budget",
   analysis_failed: "Analysis failed",
 };
+type FindRunOutcome =
+  | { kind: "execution"; scheduleName: string; status: ScheduledExecutionRead["status"]; inboxRefresh?: boolean }
+  | { kind: "changed"; scheduleName: string }
+  | { kind: "stale"; scheduleName: string }
+  | { kind: "already_running"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<BoundedResponse<DiscoveryRunSummary>> }
+  | { kind: "uncertain"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<BoundedResponse<DiscoveryRunSummary>> }
+  | { kind: "rejected"; scheduleName: string; status: number };
 
 function StateMessage<T>({ state, empty, children, onRetry }: { state: SectionState<T>; empty: boolean; children: React.ReactNode; onRetry: () => void }) {
   if (state.phase === "loading" && !state.data) return <p className="muted" role="status">Loading…</p>;
@@ -195,6 +202,7 @@ export function JobsPage() {
   const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
   const [findMessage, setFindMessage] = useState("");
   const [findError, setFindError] = useState("");
+  const [findRunOutcome, setFindRunOutcome] = useState<FindRunOutcome | null>(null);
   const [findRunning, setFindRunning] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [evaluationSnapshot, setEvaluationSnapshot] = useState<{ titles: string[]; query: CreateDiscoveryRun["query"] } | null>(null);
@@ -258,6 +266,22 @@ export function JobsPage() {
     } catch {
       if (alive.current && request === generations.current.inbox) setInbox((previous) => ({ phase: "error", data: previous.data, error: "Recent imported vacancies are unavailable." }));
       return false;
+    }
+  };
+  const reconcileFindHistory = async (): Promise<DiscoveryRunReconciliation<BoundedResponse<DiscoveryRunSummary>>> => {
+    const request = ++generations.current.runs;
+    try {
+      const data = await api.request<BoundedResponse<DiscoveryRunSummary>>(`/api/v1/jobs/discovery-runs?limit=${runLimit}`);
+      if (!alive.current) return { kind: "session_stale" };
+      if (request !== generations.current.runs) return { kind: "superseded" };
+      setRuns({ phase: "loaded", data });
+      return { kind: "refreshed", value: data };
+    } catch (error) {
+      if (!alive.current) return { kind: "session_stale" };
+      if (request !== generations.current.runs) return { kind: "superseded" };
+      if (error instanceof ApiError && error.status === 404) return { kind: "stale" };
+      setRuns((previous) => ({ phase: "error", data: previous.data, error: "Discovery run history is unavailable." }));
+      return { kind: "failed" };
     }
   };
   const loadSavedSchedules = async (): Promise<boolean> => {
@@ -325,25 +349,33 @@ export function JobsPage() {
   const runSelectedSchedule = async () => {
     const schedule = selectedSchedule;
     if (!schedule || !ready || selectedScheduleDirty || findRunning) return;
-    setFindRunning(true); setFindMessage(""); setFindError("");
+    setFindRunning(true); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
     try {
-      const { schedule: fresh, execution } = await runSavedDiscoveryNow(api, schedule);
-      setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === fresh.id ? fresh : item) } : old);
-      if (execution.status === "completed" || execution.status === "partial_failed") {
-        const refreshed = await loadInbox(WINDOW);
-        setTab("inbox");
-        setFindMessage(`Run now ${execution.status === "partial_failed" ? "completed with partial failures" : "completed"}. Recent vacancies ${refreshed ? "were refreshed" : "could not be confirmed as refreshed"}. Review recent vacancies. The exact execution result set is available in discovery-run history.`);
-      } else setFindMessage(`Run now returned ${execution.status}. Recent vacancies were not presented as an exact execution result set.`);
-    } catch (cause) {
-      if (cause instanceof DiscoveryScheduleChangedError) {
-        setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === cause.fresh.id ? cause.fresh : item) } : old);
+      const result = await runSavedDiscoveryNowWithReconciliation(api, schedule, { reconcile: reconcileFindHistory });
+      if (!alive.current) return;
+      if (result.kind === "changed") {
+        setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === result.schedule.id ? result.schedule : item) } : old);
+        setFindRunOutcome({ kind: "changed", scheduleName: schedule.name });
         setFindMessage("The saved configuration changed before Run now started. Review the refreshed configuration and run again; the current SearchIntent draft was preserved.");
-      } else if (cause instanceof DiscoveryScheduleStaleError || cause instanceof ApiError && cause.status === 404) {
+      } else if (result.kind === "stale") {
         const refreshed = await loadSavedSchedules();
+        setFindRunOutcome({ kind: "stale", scheduleName: schedule.name });
         setFindError(refreshed ? "The selected saved configuration is no longer available. Choose another configuration." : "The selected saved configuration is no longer available, and its refresh could not be confirmed.");
         setSelectedScheduleId(null);
-      } else if (cause instanceof ApiError) setFindError(`Run now was rejected by the server (HTTP ${cause.status}). No execution success was confirmed.`);
-      else setFindError("The Run now request was interrupted. Career-trans cannot confirm what execution state resulted. Review discovery-run history and recent vacancies.");
+      } else if (result.kind === "rejected") {
+        setFindRunOutcome({ kind: "rejected", scheduleName: schedule.name, status: result.status });
+        setFindError(`Run now was rejected by the server (HTTP ${result.status}). No execution success was confirmed.`);
+      } else if (result.kind === "already_running" || result.kind === "uncertain") {
+        setFindRunOutcome({ kind: result.kind, scheduleName: schedule.name, reconciliation: result.reconciliation });
+      } else {
+        setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === result.schedule.id ? result.schedule : item) } : old);
+        let inboxRefresh: boolean | undefined;
+        if (result.execution.status === "completed" || result.execution.status === "partial_failed") {
+          const [refreshedInbox] = await Promise.all([loadInbox(WINDOW), loadRuns(runLimit)]);
+          inboxRefresh = refreshedInbox;
+        }
+        setFindRunOutcome({ kind: "execution", scheduleName: schedule.name, status: result.execution.status, inboxRefresh });
+      }
     } finally { if (alive.current) setFindRunning(false); }
   };
   const submitEvaluation = async (event: FormEvent<HTMLFormElement>) => {
@@ -393,6 +425,13 @@ export function JobsPage() {
         <SearchIntentEditor intent={searchIntent} onChange={(next) => { setSearchIntent(next); setFindMessage(""); setFindError(""); }} idPrefix="find-search-intent" disabled={findRunning || submitting} />
         {selectedSchedule && <div className="card"><p><strong>Persisted channels:</strong> {selectedSchedule.acquisition.structured_ats.enabled ? "Structured ATS" : ""}{selectedSchedule.acquisition.structured_ats.enabled && selectedSchedule.acquisition.agentic_web.enabled ? " · " : ""}{selectedSchedule.acquisition.agentic_web.enabled ? "Profile-driven bounded server-side web discovery" : ""}</p><p className="muted">Candidate readiness controls whether the persisted schedule can run. Semantic configuration is advisory and is not provider readiness.</p>{selectedScheduleDirty && <p className="notice">This SearchIntent differs from the persisted saved configuration. Hand it off to Saved searches to review and save; it is explicitly dirty.</p>}</div>}
         {findMessage && <p className="notice" role="status">{findMessage}</p>}{findError && <p className="notice" role="status">{findError}</p>}
+        {findRunOutcome && <section className="card" aria-label="Run now result"><h3>Run now result</h3>
+          {findRunOutcome.kind === "execution" && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {titleCase(findRunOutcome.status)}</p>{(findRunOutcome.status === "completed" || findRunOutcome.status === "partial_failed") && <><p>Recent vacancies refresh: {findRunOutcome.inboxRefresh ? "refreshed" : "could not be confirmed as refreshed"}.</p><p className="muted">Recent vacancies is a shared persisted slice, not an exact execution result set.</p><button type="button" className="button-secondary" onClick={() => setTab("inbox")}>Review recent vacancies</button></>}</>}
+          {findRunOutcome.kind === "changed" && <p role="status">The saved configuration changed before execution started. No execution was submitted.</p>}
+          {findRunOutcome.kind === "stale" && <p role="status">The saved configuration is no longer available. No execution was submitted.</p>}
+          {findRunOutcome.kind === "rejected" && <p role="status">The server rejected Run now with HTTP {findRunOutcome.status}. No execution success was confirmed.</p>}
+          {(findRunOutcome.kind === "already_running" || findRunOutcome.kind === "uncertain") && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {findRunOutcome.kind === "already_running" ? "Already running" : "Uncertain"}</p><p>Execution history reconciliation: {findRunOutcome.reconciliation.kind === "refreshed" ? "refreshed" : findRunOutcome.reconciliation.kind === "stale" ? "saved configuration was no longer available" : findRunOutcome.reconciliation.kind === "superseded" ? "superseded by a newer refresh" : findRunOutcome.reconciliation.kind === "session_stale" ? "session became stale" : "could not be confirmed as refreshed"}.</p>{findRunOutcome.kind === "uncertain" && <p className="muted">Career-trans cannot confirm from the interrupted response whether a new execution was created.</p>}</>}
+        </section>}
         <div className="card-actions"><button type="button" onClick={handoffSearchIntent}>{selectedSchedule ? "Review or save configuration" : "Save or configure search"}</button>{selectedSchedule && <button type="button" className="button-secondary" onClick={() => void runSelectedSchedule()} disabled={!ready || selectedScheduleDirty || findRunning}>{findRunning ? "Running…" : "Run now"}</button>}</div>
         {!ready && <p className="muted">Run now requires confirmed candidate context. A transient SearchIntent can still be reviewed or saved.</p>}
         <section className="card" aria-label="Host Codex guidance"><h3>Run with Codex on this device</h3><p>SearchIntent is not automatically transferred to local Codex. Codex runs locally outside the browser and the current CLI supports only a subset of this search context.</p><p>Excluded companies, excluded title terms, and employment types are not claimed to be applied by that local workflow. Imported bounded results may appear in shared Recent vacancies; a run not completed here is not a completed run with zero results.</p></section>

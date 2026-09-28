@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DiscoveryScheduleRead, ScheduledExecutionRead } from "./api";
-import { DiscoveryScheduleChangedError, DiscoveryScheduleStaleError, runSavedDiscoveryNow } from "./discoveryRunNow";
+import { ApiError, type DiscoveryScheduleRead, type ScheduledExecutionRead } from "./api";
+import { DiscoveryScheduleChangedError, DiscoveryScheduleStaleError, runSavedDiscoveryNow, runSavedDiscoveryNowWithReconciliation } from "./discoveryRunNow";
 
 const schedule = (patch: Partial<DiscoveryScheduleRead> = {}): DiscoveryScheduleRead => ({
   id: "s-1", name: "AI roles", enabled: false,
@@ -35,5 +35,19 @@ describe("saved discovery Run now controller", () => {
     const paused = schedule({ enabled: false }); const api = { request: vi.fn().mockResolvedValueOnce(paused).mockResolvedValueOnce(execution) };
     await expect(runSavedDiscoveryNow(api, paused)).resolves.toMatchObject({ execution });
     expect(api.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares already-running, authoritative HTTP, and transport reconciliation outcomes", async () => {
+    const displayed = schedule();
+    const alreadyRunning = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new ApiError(409, "conflict")) };
+    const refreshed = await runSavedDiscoveryNowWithReconciliation(alreadyRunning, displayed, { reconcile: async () => ({ kind: "refreshed" as const }) });
+    expect(refreshed).toEqual({ kind: "already_running", reconciliation: { kind: "refreshed" } });
+
+    const rejected = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new ApiError(503, "unavailable")) };
+    await expect(runSavedDiscoveryNowWithReconciliation(rejected, displayed, { reconcile: async () => ({ kind: "refreshed" as const }) })).resolves.toEqual({ kind: "rejected", status: 503 });
+
+    const interrupted = { request: vi.fn().mockResolvedValueOnce(displayed).mockRejectedValueOnce(new TypeError("offline")) };
+    const uncertain = await runSavedDiscoveryNowWithReconciliation(interrupted, displayed, { reconcile: async () => ({ kind: "failed" as const }) });
+    expect(uncertain).toEqual({ kind: "uncertain", reconciliation: { kind: "failed" } });
   });
 });

@@ -15,8 +15,8 @@ import type {
 } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { SearchIntentEditor } from "./SearchIntentEditor";
-import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
-import { DiscoveryScheduleChangedError, DiscoveryScheduleStaleError, runSavedDiscoveryNow } from "./discoveryRunNow";
+import { emptySearchIntent, mergeSearchIntentIntoQuery, searchIntentChangedFields, searchIntentFromQuery, searchIntentToQuery, type SearchIntent, type SearchIntentField } from "./SearchIntent";
+import { runSavedDiscoveryNowWithReconciliation } from "./discoveryRunNow";
 
 type ListState = { phase: "loading" | "loaded" | "error"; items?: DiscoveryScheduleRead[]; error?: string };
 type ScopeMode = "unfiltered" | "filtered" | "legacy-mixed";
@@ -27,7 +27,7 @@ type Draft = {
   agenticEnabled: boolean; agenticMaxQueries: string; agenticResultsPerQuery: string; agenticMaxPages: string; agenticMaxJobs: string;
   maxSemanticCandidates: string; maxFullAnalyses: string; minRelevanceScore: string;
 };
-type Editor = { id: string | null; loading: boolean; baseline?: DiscoveryScheduleRead; draft: Draft; dirty: Set<keyof Draft>; error?: string; pending?: boolean };
+type Editor = { id: string | null; loading: boolean; baseline?: DiscoveryScheduleRead; draft: Draft; dirty: Set<keyof Draft>; searchIntentDirty: Set<SearchIntentField>; error?: string; pending?: boolean };
 type DraftKey = keyof Draft;
 type CandidateReadiness = "loading" | "ready" | "not_ready" | "unknown";
 type SemanticAdvisory = "loading" | "ready" | "problem" | "unknown";
@@ -111,7 +111,7 @@ function buildCreate(draft: Draft): DiscoveryScheduleCreate {
   return { name: draft.name.trim(), enabled: draft.enabled, schedule: scheduleSpec(draft), query: queryFromDraft(draft), acquisition: acquisitionFromDraft(draft), evaluation: evaluationFromDraft(draft) };
 }
 
-function buildPatch(fresh: DiscoveryScheduleRead, draft: Draft, dirty: Set<DraftKey>): DiscoverySchedulePatch {
+function buildPatch(fresh: DiscoveryScheduleRead, draft: Draft, dirty: Set<DraftKey>, searchIntentDirty: ReadonlySet<SearchIntentField>): DiscoverySchedulePatch {
   const patch: DiscoverySchedulePatch = {};
   if (dirty.has("name") && draft.name.trim() !== fresh.name) patch.name = draft.name.trim();
   if (dirty.has("enabled") && draft.enabled !== fresh.enabled) patch.enabled = draft.enabled;
@@ -123,9 +123,7 @@ function buildPatch(fresh: DiscoveryScheduleRead, draft: Draft, dirty: Set<Draft
   if (dirty.has("weekdays")) nextSchedule.weekdays = draft.cadence === "weekly" ? [...draft.weekdays].sort((a, b) => a - b) : [];
   if (JSON.stringify(nextSchedule) !== JSON.stringify(fresh.schedule)) patch.schedule = nextSchedule;
 
-  const nextQuery = { ...fresh.query };
-  const candidateQuery = queryFromDraft(draft);
-  if (dirty.has("searchIntent")) Object.assign(nextQuery, candidateQuery);
+  const nextQuery = dirty.has("searchIntent") ? mergeSearchIntentIntoQuery(fresh.query, draft.searchIntent, searchIntentDirty) : { ...fresh.query };
   if (JSON.stringify(nextQuery) !== JSON.stringify(fresh.query)) patch.query = nextQuery;
 
   const nextAts = { ...fresh.acquisition.structured_ats };
@@ -201,8 +199,8 @@ export function JobsSearchesPage() {
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [historyBySchedule, setHistoryBySchedule] = useState<Record<string, HistoryState>>({});
   const [message, setMessageState] = useState("");
-  const [handoff, setHandoff] = useState<SearchIntentHandoff | null>(null);
   const messageAuthority = useRef(0);
+  const [handoff, setHandoff] = useState<SearchIntentHandoff | null>(null);
   const setMessage = (value: string) => {
     messageAuthority.current += 1;
     setMessageState(value);
@@ -307,19 +305,23 @@ export function JobsSearchesPage() {
     editorGeneration.current += 1; editorSelection.current = null; setError(""); setMessage("");
     const draft = blankDraft();
     if (intent) draft.searchIntent = intent;
-    setEditor({ id: null, loading: false, draft, dirty: new Set() });
+    setEditor({ id: null, loading: false, draft, dirty: new Set(), searchIntentDirty: new Set() });
   };
   const openEdit = async (scheduleId: string, modifiedIntent?: SearchIntent) => {
     const generation = ++editorGeneration.current;
     editorSelection.current = scheduleId;
-    setEditor({ id: scheduleId, loading: true, draft: blankDraft(), dirty: new Set() }); setError(""); setMessage("");
+    setEditor({ id: scheduleId, loading: true, draft: blankDraft(), dirty: new Set(), searchIntentDirty: new Set() }); setError(""); setMessage("");
     try {
       const baseline = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(scheduleId)}`);
       if (alive.current && generation === editorGeneration.current) {
         const draft = toDraft(baseline);
         const dirty = new Set<DraftKey>();
-        if (modifiedIntent && !searchIntentEquals(modifiedIntent, draft.searchIntent)) { draft.searchIntent = modifiedIntent; dirty.add("searchIntent"); }
-        setEditor({ id: scheduleId, loading: false, baseline, draft, dirty });
+        const searchIntentDirty = new Set<SearchIntentField>();
+        if (modifiedIntent) {
+          for (const field of searchIntentChangedFields(draft.searchIntent, modifiedIntent)) searchIntentDirty.add(field);
+          if (searchIntentDirty.size) { draft.searchIntent = modifiedIntent; dirty.add("searchIntent"); }
+        }
+        setEditor({ id: scheduleId, loading: false, baseline, draft, dirty, searchIntentDirty });
       }
     } catch (cause) {
       if (!alive.current || generation !== editorGeneration.current) return;
@@ -350,62 +352,37 @@ export function JobsSearchesPage() {
     const id = schedule.id;
     if (candidateReadiness !== "ready" || staleScheduleIds.has(id) || editor?.id === id && editor.dirty.size > 0 || runLocks.current.has(id) || mutationLocks.current.has(`save:${id}`) || mutationLocks.current.has(`toggle:${id}`)) return;
     const sessionGeneration = viewGeneration.current;
+    const sessionToken = sessionStorage.getItem("career-trans.access-token");
     const requestGeneration = (runGeneration.current.get(id) ?? 0) + 1;
     runGeneration.current.set(id, requestGeneration); runLocks.current.add(id);
     setRunningScheduleIds((old) => new Set(old).add(id)); setMessage(""); setError("");
     const settleRunRequest = () => setRunningScheduleIds((old) => { const next = new Set(old); next.delete(id); return next; });
     const beginReconciliation = () => setReconcilingScheduleIds((old) => new Set(old).add(id));
+    let reconciliationMessageAuthority = 0;
     try {
-      let execution: ScheduledExecutionRead;
-      let freshSchedule = schedule;
-      try {
-        const result = await runSavedDiscoveryNow(api, schedule);
-        freshSchedule = result.schedule;
-        execution = result.execution;
-      } catch (cause) {
-        if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || isStaleSessionWork(cause)) return;
-        settleRunRequest();
-        if (cause instanceof DiscoveryScheduleChangedError) {
-          setList((old) => old.items ? { ...old, phase: "loaded", items: old.items.map((item) => item.id === id ? cause.fresh : item) } : old);
-          setMessage(`The saved configuration for ${schedule.name} changed before Run now started. Review the refreshed configuration and run again; any unsaved SearchIntent remains in the editor.`);
-          return;
-        }
-        if (cause instanceof DiscoveryScheduleStaleError) {
-          beginReconciliation(); await clearStaleSchedule(id, sessionGeneration); return;
-        }
-        if (cause instanceof ApiError && cause.status === 404) {
-          beginReconciliation(); await clearStaleSchedule(id, sessionGeneration); return;
-        }
-        if (cause instanceof ApiError && cause.status === 409) {
-          beginReconciliation(); setMessage(`An execution is already running for ${schedule.name}.`);
-          if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
-          const outcome = await refreshHistory(id);
-          if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale" || outcome.kind === "superseded") return;
-          setMessage(`An execution is already running for ${schedule.name}. ${outcome.kind === "refreshed" ? "Execution history refreshed." : "Execution history refresh could not be confirmed."}`);
-          return;
-        }
-        if (cause instanceof ApiError) {
-          setError(`Run now was rejected by the server (HTTP ${cause.status}). No execution was confirmed by this response.`);
-          return;
-        }
-        beginReconciliation();
-        const transportCheckingMessage = "The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. Checking execution history…";
-        setMessage(transportCheckingMessage);
-        const transportMessageAuthority = messageAuthority.current;
-        if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
-        const outcome = await refreshHistory(id);
-        if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration || outcome.kind === "stale" || outcome.kind === "session_stale") return;
-        if (outcome.kind === "superseded") {
-          if (messageAuthority.current === transportMessageAuthority) {
-            setMessage("The Run now request was interrupted. Career-trans cannot confirm which execution-history record, if any, corresponds to that request.");
-          }
-          return;
-        }
-        setMessage(`The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. ${outcome.kind === "refreshed" ? "Execution history was refreshed." : "Execution history could not be confirmed as refreshed."}`);
+      const result = await runSavedDiscoveryNowWithReconciliation(api, schedule, { onReconcileStart: (reason) => { settleRunRequest(); beginReconciliation(); if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); } setMessage(reason === "already_running" ? `An execution is already running for ${schedule.name}.` : "The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted. Checking execution history…"); reconciliationMessageAuthority = messageAuthority.current; }, reconcile: () => refreshHistory(id) });
+      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
+      if (sessionStorage.getItem("career-trans.access-token") !== sessionToken) return;
+      settleRunRequest();
+      if (result.kind === "changed") {
+        setList((old) => old.items ? { ...old, phase: "loaded", items: old.items.map((item) => item.id === id ? result.schedule : item) } : old);
+        setMessage(`The saved configuration for ${schedule.name} changed before Run now started. Review the refreshed configuration and run again; any unsaved SearchIntent remains in the editor.`);
         return;
       }
-      if (!alive.current || sessionGeneration !== viewGeneration.current || runGeneration.current.get(id) !== requestGeneration) return;
-      settleRunRequest();
+      if (result.kind === "stale") { await clearStaleSchedule(id, sessionGeneration); return; }
+      if (result.kind === "rejected") { setError(`Run now was rejected by the server (HTTP ${result.status}). No execution was confirmed by this response.`); return; }
+      if (result.kind === "already_running" || result.kind === "uncertain") {
+        if (historySelection.current === null) { historySelection.current = id; setSelectedHistoryId(id); }
+        const prefix = result.kind === "already_running" ? `An execution is already running for ${schedule.name}.` : "The Run now request was interrupted. Career-trans cannot confirm from this response what execution state resulted.";
+        const reconciliation = result.reconciliation;
+        if (reconciliation.kind === "stale") return;
+        if (reconciliation.kind === "session_stale") return;
+        if (reconciliation.kind === "superseded" && messageAuthority.current !== reconciliationMessageAuthority) return;
+        setMessage(`${prefix} ${reconciliation.kind === "refreshed" ? "Execution history was refreshed." : reconciliation.kind === "superseded" ? "Career-trans cannot confirm which execution-history record, if any, corresponds to that request." : "Execution history could not be confirmed as refreshed."}`);
+        return;
+      }
+      const freshSchedule = result.schedule;
+      const execution = result.execution;
       beginReconciliation();
       setList((old) => old.items ? { ...old, phase: "loaded", items: old.items.map((item) => item.id === id ? freshSchedule : item) } : old);
       setRunResults((old) => ({ ...old, [id]: execution }));
@@ -432,11 +409,18 @@ export function JobsSearchesPage() {
     setEditor((old) => {
       if (!old || old.loading || old.pending) return old;
       const dirty = new Set(old.dirty); dirty.add(key);
+      const searchIntentDirty = new Set(old.searchIntentDirty);
       const draft = { ...old.draft, [key]: value } as Draft;
+      if (key === "searchIntent") {
+        if (old.baseline) {
+          searchIntentDirty.clear();
+          for (const field of searchIntentChangedFields(searchIntentFromQuery(old.baseline.query), value as SearchIntent)) searchIntentDirty.add(field);
+        } else for (const field of searchIntentChangedFields(old.draft.searchIntent, value as SearchIntent)) searchIntentDirty.add(field);
+      }
       if (key === "cadence" && value === "daily") { draft.weekdays = []; dirty.add("weekdays"); }
       if (key === "atsCompanies" && trimLines(String(value)).length && draft.atsScopeMode !== "filtered") { draft.atsScopeMode = "filtered"; dirty.add("atsScopeMode"); }
       if (key === "atsProviders" && (value as string[]).length && draft.atsScopeMode !== "filtered") { draft.atsScopeMode = "filtered"; dirty.add("atsScopeMode"); }
-      return { ...old, draft, dirty, error: undefined };
+      return { ...old, draft, dirty, searchIntentDirty, error: undefined };
     });
   };
   const changeScope = (mode: "filtered" | "unfiltered") => {
@@ -474,13 +458,13 @@ export function JobsSearchesPage() {
       const requiresFreshRead = [...current.dirty].some((key) => ["cadence", "timezone", "localTime", "weekdays", "searchIntent", "atsEnabled", "atsScopeMode", "atsCompanies", "atsProviders", "atsMaxSources", "atsMaxResults", "agenticEnabled", "agenticMaxQueries", "agenticResultsPerQuery", "agenticMaxPages", "agenticMaxJobs", "maxSemanticCandidates", "maxFullAnalyses", "minRelevanceScore"].includes(key));
       let fresh = current.baseline!;
       if (requiresFreshRead) fresh = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}`);
-      const patch = buildPatch(fresh, current.draft, current.dirty);
+      const patch = buildPatch(fresh, current.draft, current.dirty, current.searchIntentDirty);
       if (Object.keys(patch).length === 0) {
-        if (ownsEditor()) setEditor({ id, loading: false, baseline: fresh, draft: toDraft(fresh), dirty: new Set() });
+        if (ownsEditor()) setEditor({ id, loading: false, baseline: fresh, draft: toDraft(fresh), dirty: new Set(), searchIntentDirty: new Set() });
         setMessage("There are no saved changes to apply."); return;
       }
       const updated = await api.request<DiscoveryScheduleRead>(`/api/v1/jobs/discovery-schedules/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) });
-      if (ownsEditor()) setEditor({ id, loading: false, baseline: updated, draft: toDraft(updated), dirty: new Set() });
+      if (ownsEditor()) setEditor({ id, loading: false, baseline: updated, draft: toDraft(updated), dirty: new Set(), searchIntentDirty: new Set() });
       setMessage("Saved discovery updated. Refreshing the saved-configuration list…");
       const refreshed = await refreshList();
       if (!refreshed) setMessage(ownsEditor()

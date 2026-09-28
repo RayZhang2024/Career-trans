@@ -15,6 +15,8 @@ export type SearchIntent = {
   };
 };
 
+export type SearchIntentField = "themes" | "locations" | "remotePolicy" | "excludedCompanies" | "excludedTitleTerms" | "employmentTypes";
+
 export const emptySearchIntent = (): SearchIntent => ({
   themes: [], locations: [], remotePolicy: "any", excludedCompanies: [], excludedTitleTerms: [], employmentTypes: [],
   compatibility: { companies: [], maxResults: 50 },
@@ -40,4 +42,24 @@ export function searchIntentToQuery(intent: SearchIntent): DiscoveryScheduleQuer
 
 export function searchIntentEquals(left: SearchIntent, right: SearchIntent): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function searchIntentChangedFields(left: SearchIntent, right: SearchIntent): SearchIntentField[] {
+  return (["themes", "locations", "remotePolicy", "excludedCompanies", "excludedTitleTerms", "employmentTypes"] as const).filter((field) => JSON.stringify(left[field]) !== JSON.stringify(right[field]));
+}
+
+export function mergeSearchIntentIntoQuery(query: DiscoveryScheduleQuery, intent: SearchIntent, dirty: ReadonlySet<SearchIntentField>): DiscoveryScheduleQuery {
+  const edited = searchIntentToQuery(intent);
+  const next = {
+    ...query,
+    keywords: [...query.keywords], locations: [...query.locations], companies: [...query.companies],
+    excluded_companies: [...query.excluded_companies], excluded_title_terms: [...query.excluded_title_terms], employment_types: [...query.employment_types],
+  };
+  if (dirty.has("themes")) next.keywords = edited.keywords;
+  if (dirty.has("locations")) next.locations = edited.locations;
+  if (dirty.has("remotePolicy")) next.remote_ok = edited.remote_ok;
+  if (dirty.has("excludedCompanies")) next.excluded_companies = edited.excluded_companies;
+  if (dirty.has("excludedTitleTerms")) next.excluded_title_terms = edited.excluded_title_terms;
+  if (dirty.has("employmentTypes")) next.employment_types = edited.employment_types;
+  return next;
 }
