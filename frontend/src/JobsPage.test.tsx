@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import type { ApplicationPreparation, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
 import { App } from "./App";
-import { AuthProvider } from "./auth";
+import { AuthProvider, useAuth } from "./auth";
+import { undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
 
 const TOKEN = "career-trans.access-token";
 const user: User = { id: "user-1", email: "jobs@example.test", created_at: "2026-01-01T00:00:00Z" };
@@ -70,6 +71,12 @@ function renderJobs(fetch = fakeFetch(), path = "/jobs/find", showRouteLocation 
 }
 function RouteLocation() { const location = useLocation(); const action = useNavigationType(); return <output aria-label="Route location">{location.pathname}{location.search}:{action}</output>; }
 function HistoryControls() { const navigate = useNavigate(); return <div><button type="button" onClick={() => navigate(-1)}>Back history</button><button type="button" onClick={() => navigate(1)}>Forward history</button></div>; }
+function DecisionProbe() {
+  const { api, user } = useAuth();
+  const mutator = useJobDecisionMutator();
+  const mutate = (jobId: string, target: "shortlisted" | "dismissed") => void mutator.mutate(undecidedDecision(jobId), target);
+  return <div><output>{user?.id ?? "loading"}</output><button type="button" onClick={() => { mutate("job-a", "shortlisted"); mutate("job-a", "dismissed"); }}>Mutate A twice</button><button type="button" onClick={() => mutate("job-b", "shortlisted")}>Mutate B</button><button type="button" onClick={() => api.replaceToken("replacement-token")}>Replace session</button></div>;
+}
 function requestPaths(fetch: ReturnType<typeof fakeFetch>) { return fetch.mock.calls.map(([input]) => { const url = new URL(String(input), window.location.origin); return `${url.pathname}${url.search}`; }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 async function loaded() { await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Alpha"); }
@@ -1330,5 +1337,114 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
     const fetch = fakeFetch({ "/api/v1/jobs/workspaces/actionable": () => json(fitWorkspace) });
     renderJobs(fetch, "/jobs/actionable/fit"); await screen.findByRole("heading", { name: "Current Fit" });
     expect(screen.getByText(copy)).toBeInTheDocument();
+  });
+});
+
+describe("Issue #240 Phase 7 decision authority regressions", () => {
+  it("uses a synchronous per-job lock while allowing independent jobs", async () => {
+    let puts = 0;
+    const fetch = fakeFetch({
+      "PUT /api/v1/jobs/decisions/job-a": () => { puts += 1; return json({ ...undecidedDecision("job-a"), decision: "shortlisted", revision: 1, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }); },
+      "PUT /api/v1/jobs/decisions/job-b": () => { puts += 1; return json({ ...undecidedDecision("job-b"), decision: "shortlisted", revision: 1, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }); },
+    });
+    vi.stubGlobal("fetch", fetch); sessionStorage.setItem(TOKEN, "test-token");
+    render(<MemoryRouter><AuthProvider><DecisionProbe /></AuthProvider></MemoryRouter>);
+    expect(await screen.findByText(user.id)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Mutate A twice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mutate B" }));
+    await waitFor(() => expect(puts).toBe(2));
+    expect(fetch.mock.calls.filter(([input, init]) => String(input).includes("/api/v1/jobs/decisions/job-a") && init?.method === "PUT")).toHaveLength(1);
+  });
+
+  it("does not reconcile under a replacement session after an interrupted mutation", async () => {
+    const request = deferred<Response>();
+    let exactGets = 0;
+    const fetch = fakeFetch({
+      "PUT /api/v1/jobs/decisions/job-a": () => request.promise,
+      "GET /api/v1/jobs/decisions/job-a": () => { exactGets += 1; return json({ ...undecidedDecision("job-a"), decision: "dismissed", revision: 2 }); },
+    });
+    vi.stubGlobal("fetch", fetch); sessionStorage.setItem(TOKEN, "test-token");
+    render(<MemoryRouter><AuthProvider><DecisionProbe /></AuthProvider></MemoryRouter>);
+    expect(await screen.findByText(user.id)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Mutate A twice" }));
+    fireEvent.click(screen.getByRole("button", { name: "Replace session" }));
+    request.reject(new TypeError("interrupted"));
+    await waitFor(() => expect(exactGets).toBe(0));
+    expect(screen.queryByText(/could not be confirmed/)).not.toBeInTheDocument();
+  });
+
+  it("offers immediate Inbox Undo using the confirmed dismissed revision and refetches", async () => {
+    let inboxCalls = 0;
+    const putBodies: unknown[] = [];
+    const dismissed = { ...inboxItem("actionable"), decision: { ...decision("actionable", "undecided"), revision: null } };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/inbox": () => { inboxCalls += 1; return json(inboxCalls === 1 ? page([inboxItem("actionable")]) : inboxCalls === 2 ? page([]) : page([inboxItem("actionable")])); },
+      "PUT /api/v1/jobs/decisions/actionable": (_url, init) => { putBodies.push(JSON.parse(String(init?.body))); return json({ ...dismissed.decision, decision: "dismissed", revision: 1, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:01Z" }); },
+    });
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    fireEvent.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    await waitFor(() => expect(screen.queryByText("Inbox actionable")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(screen.getByText("Inbox actionable")).toBeInTheDocument());
+    expect(putBodies).toHaveLength(2);
+    expect(putBodies[1]).toMatchObject({ decision: "undecided", expected_revision: 1 });
+    expect(inboxCalls).toBeGreaterThanOrEqual(3);
+  });
+
+  it("ignores a stale Show more Shortlisted response after authoritative removal", async () => {
+    const oldResponse = deferred<Response>();
+    const item = { discovered_job_id: "job-short", title: "Stale shortlisted role", company: "Public Co", location: "London", url: "https://public.example.test/short", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "inactive" as const, verification_status: "verified" as const, verification_reason: null, actionable: false, last_seen_at: "2026-02-02T00:00:00Z", decision: "shortlisted" as const, revision: 1, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" };
+    let calls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/decisions": (url) => { if (url.searchParams.get("decision") !== "shortlisted") return json(page([])); calls += 1; if (url.searchParams.get("limit") === "40") return oldResponse.promise; return json(calls === 1 ? page([item], true) : page([])); },
+      "PUT /api/v1/jobs/decisions/job-short": () => json({ ...item, decision: "undecided", revision: 2 }),
+    });
+    renderJobs(fetch, "/jobs/opportunities/shortlisted"); await screen.findByText(item.title);
+    fireEvent.click(screen.getByRole("button", { name: "Show more shortlisted jobs" }));
+    await waitFor(() => expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=shortlisted&limit=40"));
+    fireEvent.click(screen.getByRole("button", { name: "Remove from shortlist" }));
+    await waitFor(() => expect(screen.queryByText(item.title)).not.toBeInTheDocument());
+    oldResponse.resolve(json(page([item], true)));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText(item.title)).not.toBeInTheDocument();
+  });
+
+  it("loads Dismissed management lazily and ignores stale Show more after Undo", async () => {
+    const oldResponse = deferred<Response>();
+    const shortlisted = { discovered_job_id: "job-short", title: "Shortlisted anchor", company: "Public Co", location: "London", url: "https://public.example.test/short", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "new" as const, verification_status: "verified" as const, verification_reason: null, actionable: true, last_seen_at: "2026-02-02T00:00:00Z", decision: "shortlisted" as const, revision: 1, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" };
+    const item = { ...shortlisted, discovered_job_id: "job-dismissed", title: "Stale dismissed role", decision: "dismissed" as const };
+    const listCalls = { shortlisted: 0, dismissed: 0 };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/decisions": (url) => { const kind = url.searchParams.get("decision") as "shortlisted" | "dismissed"; listCalls[kind] += 1; if (kind === "shortlisted") return json(page([shortlisted])); if (url.searchParams.get("limit") === "40") return oldResponse.promise; return json(listCalls.dismissed === 1 ? page([item], true) : page([])); },
+      "PUT /api/v1/jobs/decisions/job-dismissed": () => json({ ...item, decision: "undecided", revision: 2 }),
+    });
+    renderJobs(fetch, "/jobs/opportunities/shortlisted"); await screen.findByText(shortlisted.title);
+    fireEvent.click(screen.getByRole("button", { name: "Manage dismissed jobs" }));
+    await screen.findByText(item.title);
+    fireEvent.click(screen.getByRole("button", { name: "Show more dismissed jobs" }));
+    await waitFor(() => expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=dismissed&limit=40"));
+    fireEvent.click(screen.getByRole("button", { name: "Undo dismissal" }));
+    await waitFor(() => expect(screen.queryByText(item.title)).not.toBeInTheDocument());
+    oldResponse.resolve(json(page([item], true)));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText(item.title)).not.toBeInTheDocument();
+  });
+
+  it("keeps Recommended refreshes on the active expanded window after dismissal", async () => {
+    let dismissed = false;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/opportunities": (url) => { const limit = url.searchParams.get("limit"); if (limit === "20") return json(page([op("initial", "Initial")], true)); if (limit === "40") return json(page([op(dismissed ? "backfill" : "expanded", dismissed ? "Backfill" : "Expanded")], true)); if (limit === "60") return json(page([op("sixty", "Sixty")], true)); return json(page([])); },
+      "PUT /api/v1/jobs/decisions/job-expanded": () => { dismissed = true; return json({ ...undecidedDecision("job-expanded"), decision: "dismissed", revision: 1 }); },
+    });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Initial");
+    fireEvent.click(screen.getByRole("button", { name: "Show more current opportunities" }));
+    expect(await screen.findByText("Expanded")).toBeInTheDocument();
+    const card = screen.getByText("Expanded").closest("li")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.getByText("Backfill")).toBeInTheDocument());
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=40");
+    fireEvent.click(screen.getByRole("button", { name: "Show more current opportunities" }));
+    await waitFor(() => expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=60"));
   });
 });

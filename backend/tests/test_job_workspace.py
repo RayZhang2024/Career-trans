@@ -11,6 +11,7 @@ from app.main import app
 
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
 from app.models.user_job_discovery import UserJobEvaluation
+from app.models.user_job_decision import UserJobDecision
 from app.schemas.candidate import CandidateEvidenceMaterializationStatus
 from app.schemas.ai_settings import SemanticOperation
 from app.schemas.job import JobProfile, JobRequirement
@@ -18,6 +19,8 @@ from app.schemas.job_ranking import RankedJobOpportunity
 from app.schemas.matching import RequirementMatch
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_workspace_service import UserJobWorkspaceReadService
+from app.services.user_job_decision_service import UserJobDecisionService
+from app.schemas.user_job_decision import UserJobDecisionMutation
 from app.services.llm_runtime import RuntimePreferenceError
 from candidate_read_support import patch_candidate_context, snapshot_for_context, StaticCandidateReader
 from test_jobs_read_models import _context, _job, _Ranking, _request, _user
@@ -120,6 +123,29 @@ def test_workspace_no_evaluation_still_returns_shared_overview(db_session):
     assert workspace.job.actionable is True
     assert workspace.current_fit.status == "unavailable"
     assert workspace.evaluations.items == []
+
+
+def test_workspace_projects_all_decision_states_without_touching_fit_or_workflow_rows(db_session):
+    job = _job(401)
+    other_job = _job(402)
+    db_session.add_all([_user("owner"), _user("other"), job, other_job])
+    db_session.commit()
+    service = UserJobWorkspaceReadService(db_session)
+    decision_service = UserJobDecisionService(db_session)
+    assert service.read("owner", job.id).decision.revision is None
+    db_session.add(UserJobDecision(user_id="owner", discovered_job_id=other_job.id, decision="undecided", revision=4))
+    db_session.commit()
+    assert service.read("owner", other_job.id).decision.revision == 4
+
+    persisted = decision_service.mutate("owner", job.id, UserJobDecisionMutation(decision="shortlisted"))
+    assert service.read("owner", job.id).decision.decision == "shortlisted"
+    decision_service.mutate("owner", job.id, UserJobDecisionMutation(decision="dismissed", expected_revision=persisted.revision))
+    dismissed = service.read("owner", job.id)
+    assert dismissed.decision.decision == "dismissed"
+    assert dismissed.current_fit.status == "unavailable"
+    assert service.read("other", job.id).decision.decision == "undecided"
+    assert service.read("owner", other_job.id).decision.decision == "undecided"
+    assert db_session.query(UserJobDecision).count() == 2
 
 
 def test_workspace_currentness_reason_contract_and_unexpected_errors(db_session, runtime_snapshot_a):

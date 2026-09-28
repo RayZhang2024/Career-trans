@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import event, select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.user_job_decision import UserJobDecision
 from app.services.user_job_decision_service import UserJobDecisionConflict, UserJobDecisionService
@@ -45,6 +47,79 @@ def test_decision_cas_conflicts_and_user_scoping(db_session):
         service.read("owner", "missing-job")
 
 
+def test_first_create_integrity_race_maps_to_conflict(db_session, monkeypatch):
+    job = _job(704)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    original_commit = db_session.commit
+    calls = 0
+
+    def concurrent_commit():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise IntegrityError("insert", {}, RuntimeError("unique race"))
+        original_commit()
+
+    monkeypatch.setattr(db_session, "commit", concurrent_commit)
+    with pytest.raises(UserJobDecisionConflict):
+        UserJobDecisionService(db_session).mutate("owner", job.id, UserJobDecisionMutation(decision="shortlisted"))
+
+
+def test_persisted_undecided_requires_revision_and_same_state_does_not_update(db_session):
+    job = _job(705)
+    created = datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=2)))
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    db_session.add(UserJobDecision(user_id="owner", discovered_job_id=job.id, decision="undecided", revision=7, created_at=created, updated_at=created))
+    db_session.commit()
+    service = UserJobDecisionService(db_session)
+    with pytest.raises(UserJobDecisionConflict):
+        service.mutate("owner", job.id, UserJobDecisionMutation(decision="shortlisted", expected_revision=None))
+
+    statements: list[str] = []
+    def capture(_connection, _cursor, statement, *_args):
+        statements.append(statement)
+    event.listen(db_session.bind, "before_cursor_execute", capture)
+    try:
+        unchanged = service.mutate("owner", job.id, UserJobDecisionMutation(decision="undecided", expected_revision=7))
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture)
+    assert unchanged.revision == 7
+    assert unchanged.created_at is not None and unchanged.created_at.utcoffset() == timedelta(0)
+    assert not any(statement.lstrip().upper().startswith("UPDATE") for statement in statements)
+
+
+def test_transition_increments_once_and_preserves_row_and_created_at(db_session):
+    job = _job(706)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    service = UserJobDecisionService(db_session)
+    first = service.mutate("owner", job.id, UserJobDecisionMutation(decision="shortlisted"))
+    row_id = db_session.scalar(select(UserJobDecision.id).where(UserJobDecision.user_id == "owner", UserJobDecision.discovered_job_id == job.id))
+    second = service.mutate("owner", job.id, UserJobDecisionMutation(decision="dismissed", expected_revision=first.revision))
+    assert second.revision == first.revision + 1
+    assert second.created_at == first.created_at
+    assert db_session.scalar(select(UserJobDecision.id).where(UserJobDecision.user_id == "owner", UserJobDecision.discovered_job_id == job.id)) == row_id
+
+
+def test_decision_list_is_ordered_bounded_and_strictly_scoped(db_session):
+    jobs = [_job(index) for index in (707, 708, 709)]
+    db_session.add_all([_user("owner"), _user("other"), *jobs])
+    db_session.commit()
+    service = UserJobDecisionService(db_session)
+    for job in jobs:
+        service.mutate("owner", job.id, UserJobDecisionMutation(decision="shortlisted"))
+    rows = db_session.scalars(select(UserJobDecision).where(UserJobDecision.user_id == "owner")).all()
+    for index, row in enumerate(rows):
+        row.updated_at = datetime(2026, 1, index + 1, tzinfo=timezone.utc)
+    db_session.commit()
+    result = service.list("owner", decision=UserJobDecisionValue.SHORTLISTED, limit=2)
+    assert [item.discovered_job_id for item in result.items] == [jobs[2].id, jobs[1].id]
+    assert result.truncated is True and result.limit == 2
+    assert service.list("other", decision=UserJobDecisionValue.SHORTLISTED, limit=2).items == []
+
+
 def test_decision_api_is_authenticated_and_validates_list_filter(client, db_session):
     job = _job(703)
     db_session.add_all([_user("owner"), job])
@@ -55,6 +130,7 @@ def test_decision_api_is_authenticated_and_validates_list_filter(client, db_sess
     assert client.get(f"/api/v1/jobs/decisions/{job.id}").status_code == 401
     assert client.get(f"/api/v1/jobs/decisions?decision=undecided", headers=headers).status_code == 422
     assert client.get(f"/api/v1/jobs/decisions?decision=shortlisted&limit=0", headers=headers).status_code == 422
+    assert client.get(f"/api/v1/jobs/decisions?decision=shortlisted&limit=101", headers=headers).status_code == 422
     changed = client.put(f"/api/v1/jobs/decisions/{job.id}", json={"decision": "shortlisted", "expected_revision": None}, headers=headers)
     assert changed.status_code == 200 and changed.json()["revision"] == 1
     listed = client.get("/api/v1/jobs/decisions?decision=shortlisted&limit=20", headers=headers)
@@ -69,4 +145,5 @@ def test_migration_is_additive_and_does_not_backfill():
     assert "CREATE TABLE user_job_decisions" in text
     assert "UNIQUE (user_id, discovered_job_id)" in text
     assert "revision >= 1" in text
+    assert "ix_user_job_decisions_decision" in text
     assert "INSERT" not in text.upper()

@@ -456,6 +456,7 @@ export class SessionApi {
   private epoch = 0;
   private controllers = new Set<AbortController>();
   constructor(private token: string | null, private onAuthenticated401: () => void) {}
+  sessionEpoch() { return this.epoch; }
   replaceToken(token: string | null) { this.epoch += 1; this.token = token; this.controllers.forEach((controller) => controller.abort()); this.controllers.clear(); }
   async request<T>(path: string, init: RequestInit = {}, authenticated = true): Promise<T> {
     const epoch = this.epoch; const controller = new AbortController(); this.controllers.add(controller);

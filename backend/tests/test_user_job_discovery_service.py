@@ -19,8 +19,10 @@ from app.schemas.discovery import DiscoveredJobState, JobSearchQuery
 from app.schemas.job_ranking import JobArchetype, JobArchetypeAssessment, JobRankingResponse, JobRelevanceAssessment, PostingLegitimacy, PostingLegitimacyAssessment, RankedJobOpportunity
 from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
+from app.schemas.user_job_decision import UserJobDecisionMutation
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
+from app.services.user_job_decision_service import UserJobDecisionService
 from candidate_read_support import StaticCandidateReader, patch_candidate_context, snapshot_for_context
 from app.services.canonical_candidate_read_service import (
     CandidateEvidenceMaterializationIncomplete,
@@ -33,6 +35,7 @@ from app.core.security import create_access_token
 from app.core.config import Settings
 import app.services.user_job_discovery_service as discovery_module
 from app.main import app as fastapi_app
+from test_jobs_read_models import _prepared as prepared_read_model
 
 
 class _Ranking:
@@ -530,3 +533,20 @@ def test_current_opportunity_routes_remain_runtime_aware():
     for route in routes:
         dependency = next(item for item in route.dependant.dependencies if item.call is get_user_job_discovery_read_service)
         assert any(item.call is get_user_runtime_snapshot for item in dependency.dependencies)
+
+
+def test_current_opportunities_filter_owner_dismissals_before_slice_and_detail_remains_readable(db_session, monkeypatch):
+    jobs, run, service, _ranking = prepared_read_model(db_session, monkeypatch, count=4)
+    decisions = UserJobDecisionService(db_session)
+    decisions.mutate("owner", jobs[0].id, UserJobDecisionMutation(decision="dismissed"))
+    decisions.mutate("other", jobs[1].id, UserJobDecisionMutation(decision="dismissed"))
+    decisions.mutate("owner", jobs[2].id, UserJobDecisionMutation(decision="shortlisted"))
+
+    summaries = service.current_opportunity_summaries("owner", limit=2)
+    assert len(summaries.items) == 2
+    assert jobs[0].id not in {item.discovered_job_id for item in summaries.items}
+    assert jobs[2].id in {item.discovered_job_id for item in summaries.items}
+    assert summaries.truncated is True
+    assert [item.decision.decision for item in summaries.items] == ["undecided", "shortlisted"]
+    dismissed_evaluation = next(item for item in run.jobs if item.discovered_job_id == jobs[0].id)
+    assert service.current_opportunity_detail("owner", dismissed_evaluation.evaluation_id).job.title == jobs[0].title

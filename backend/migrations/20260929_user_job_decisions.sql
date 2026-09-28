@@ -11,4 +11,5 @@ CREATE TABLE user_job_decisions (
 );
 CREATE INDEX ix_user_job_decisions_user_id ON user_job_decisions(user_id);
 CREATE INDEX ix_user_job_decisions_discovered_job_id ON user_job_decisions(discovered_job_id);
+CREATE INDEX ix_user_job_decisions_decision ON user_job_decisions(decision);
 CREATE INDEX ix_user_job_decisions_user_decision_updated ON user_job_decisions(user_id, decision, updated_at DESC, id ASC);

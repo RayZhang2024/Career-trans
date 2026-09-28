@@ -11,6 +11,10 @@ from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.job_ranking import JobRankingResponse
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.cv_ingestion_service import CVIngestionService
+from app.schemas.user_job_decision import UserJobDecisionMutation
+from app.services.user_job_decision_service import UserJobDecisionService
+from app.services.opportunity_inbox_service import OpportunityInboxService
+from test_jobs_read_models import _job as model_job, _user
 
 
 def _auth_headers(client, email: str = "inbox-user@example.com") -> dict[str, str]:
@@ -87,6 +91,26 @@ def test_inbox_returns_bounded_recent_external_jobs_with_actionable_provenance(c
 
 def test_inbox_requires_authentication_and_never_invokes_external_discovery(client) -> None:
     assert client.get("/api/v1/jobs/inbox").status_code == 401
+
+
+def test_inbox_filters_owner_dismissals_before_limit_and_projects_owner_decisions(db_session) -> None:
+    jobs = [model_job(index) for index in range(730, 734)]
+    db_session.add_all([_user("owner"), _user("other"), *jobs])
+    db_session.commit()
+    now = datetime.now(timezone.utc)
+    for offset, job in enumerate(jobs):
+        job.last_seen_at = now - timedelta(minutes=offset)
+    db_session.commit()
+    decisions = UserJobDecisionService(db_session)
+    decisions.mutate("owner", jobs[0].id, UserJobDecisionMutation(decision="dismissed"))
+    decisions.mutate("other", jobs[1].id, UserJobDecisionMutation(decision="dismissed"))
+    decisions.mutate("owner", jobs[2].id, UserJobDecisionMutation(decision="shortlisted"))
+
+    page = OpportunityInboxService(db_session).list_recent_summary(limit=2, user_id="owner")
+
+    assert [item.discovered_job_id for item in page.items] == [jobs[1].id, jobs[2].id]
+    assert page.truncated is True
+    assert [item.decision.decision for item in page.items] == ["undecided", "shortlisted"]
 
 
 def test_rank_me_can_rerank_inbox_job_with_confirmed_context(client, db_session) -> None:
