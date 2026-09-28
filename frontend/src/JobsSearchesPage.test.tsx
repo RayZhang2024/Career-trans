@@ -173,7 +173,7 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(screen.queryByText(/Saving requires a confirmed candidate profile/i)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "  AI hunt  " } });
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "  AI, ML platform  \n\n FDE " } });
-    fireEvent.change(screen.getByLabelText("Eligibility locations (one complete location per line)"), { target: { value: " London, United Kingdom \n\nOxford, United Kingdom" } });
+    fireEvent.change(screen.getByLabelText("Locations (search criteria, not eligibility)"), { target: { value: " London, United Kingdom \n\nOxford, United Kingdom" } });
     fireEvent.change(screen.getByLabelText("Excluded companies (one per line)"), { target: { value: " Avoid Co \n\n Other Co " } });
     fireEvent.change(screen.getByLabelText("Excluded title terms (one per line)"), { target: { value: " Intern, Junior " } });
     fireEvent.change(screen.getByLabelText("Employment types (one per line)"), { target: { value: " Full-time \n Contract " } });
@@ -192,7 +192,7 @@ describe("Issue #175 saved discovery configurations", () => {
   it("explains soft themes, comma preservation, server-side profile-driven web, DST, and save-before-run boundary", async () => {
     renderPage(); await loaded();
     fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
-    expect(screen.getByText(/Themes prioritise structured ATS candidates softly/)).toBeInTheDocument();
+    expect(screen.getByText(/Themes guide search and prioritisation/)).toBeInTheDocument();
     expect(screen.getByText(/not exact web-search terms or eligibility filters/)).toBeInTheDocument();
     expect(screen.getByText(/This is not Codex/)).toBeInTheDocument();
     expect(screen.getByText(/search strategy comes from confirmed candidate context/i)).toBeInTheDocument();
@@ -224,7 +224,7 @@ describe("Issue #175 saved discovery configurations", () => {
     const { requests } = renderPage("/jobs/searches", {}, []); await screen.findByText("No saved discovery configurations yet."); fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "No themes" } }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "  \n\t\n" } }); fireEvent.click(screen.getByRole("checkbox", { name: /Structured ATS/ }));
     fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Add at least one prioritisation theme.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Add at least one search theme.");
     expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules")).toHaveLength(0);
   });
 
@@ -285,6 +285,17 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(patch).toEqual({ query: { ...fresh.query, keywords: ["AI systems"] } });
     expect(patch.query.companies).toEqual(["New hidden company"]); expect(patch.query.max_results).toBe(91);
     expect(patch.acquisition).toBeUndefined(); expect(patch.schedule).toBeUndefined();
+  });
+
+  it("merges only edited SearchIntent fields over a newer persisted query", async () => {
+    let gets = 0;
+    const initial = schedule();
+    const fresh = schedule({ query: { ...initial.query, keywords: ["Fresh server theme"], companies: ["Newer compatibility company"], max_results: 91, excluded_companies: ["Newer exclusion"], employment_types: ["Contract"] } });
+    const { requests } = renderPage("/jobs/searches", { "GET /api/v1/jobs/discovery-schedules/s-1": () => response(++gets === 1 ? initial : fresh) }); await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" })); await screen.findByDisplayValue("AI roles");
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Edited theme" } }); fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => expect(getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")).toHaveLength(1));
+    expect(getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")[0].body).toEqual({ query: { ...fresh.query, keywords: ["Edited theme"] } });
   });
 
   it("aborts a nested save when the mandatory fresh GET fails", async () => {
