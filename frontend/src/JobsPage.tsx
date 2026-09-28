@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
-import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, ScheduledExecutionRead, UserOpportunitySummary } from "./api";
+import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, ScheduledExecutionRead, UserJobDecision, UserJobDecisionListItem, UserJobDecisionValue, UserOpportunitySummary } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
 import JobWorkspacePage, { type JobWorkspaceSection } from "./JobWorkspacePage";
@@ -8,6 +8,7 @@ import { JobsSearchesPage } from "./JobsSearchesPage";
 import { SearchIntentEditor } from "./SearchIntentEditor";
 import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
 import { runSavedDiscoveryNowWithReconciliation, type DiscoveryRunReconciliation } from "./discoveryRunNow";
+import { DecisionControls, undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
 const WINDOW = 20;
@@ -129,6 +130,8 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
   const [reconciled, setReconciled] = useState<ApplicationPreparation[]>([]);
   const [unavailable, setUnavailable] = useState(false);
   const [prerequisitesUnconfirmed, setPrerequisitesUnconfirmed] = useState(false);
+  const [decision, setDecision] = useState(opportunity.decision ?? undecidedDecision(opportunity.discovered_job_id));
+  const decisionMutator = useJobDecisionMutator();
   const alive = useRef(true);
   const generation = useRef(0);
   const lock = useRef(false);
@@ -144,6 +147,14 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
   }, [ready, profileState]);
 
   const canSubmit = ready === true && profileState === "ready" && !unavailable && !prerequisitesUnconfirmed;
+  useEffect(() => { setDecision(opportunity.decision ?? undecidedDecision(opportunity.discovered_job_id)); }, [opportunity.decision, opportunity.discovered_job_id]);
+  const changeDecision = async (target: UserJobDecisionValue) => {
+    const result = await decisionMutator.mutate(decision, target);
+    if (result.decision) {
+      setDecision(result.decision);
+      if (result.confirmed) window.dispatchEvent(new CustomEvent("career-trans-job-decision-changed"));
+    }
+  };
 
   const checkDisplayName = async () => {
     if (ready !== true) return;
@@ -206,6 +217,8 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
   };
 
   return <section className="preparation-panel" aria-label={`Prepare application for ${opportunity.title}`}>
+    <DecisionControls decision={decision} disabled={decisionMutator.pending.has(decision.discovered_job_id)} onMutate={(target) => void changeDecision(target)} />
+    {decisionMutator.notices[decision.discovered_job_id] && <p className="notice" role="status">{decisionMutator.notices[decision.discovered_job_id]}</p>}
     <button type="button" className="button-secondary" aria-expanded={open} disabled={!open && (ready !== true || unavailable)} onClick={() => { setOpen((value) => !value); if (!open && profileState === "unchecked") void checkDisplayName(); }}>{open ? "Close preparation options" : "Prepare application"}</button>
     {ready !== true && <p className="muted">{ready === false ? <>Confirm a CV before preparing an application. <Link to="/profile/cv">CV onboarding for application preparation</Link>.</> : "Candidate readiness is being confirmed. Preparation is unavailable until it can be verified."}</p>}
     {open && <form className="card preparation-form" aria-label={`Prepare application for ${opportunity.title}`} onSubmit={(event) => void submit(event)}>
@@ -244,10 +257,15 @@ export function JobsPage() {
   const [opportunities, setOpportunities] = useState<SectionState<BoundedResponse<UserOpportunitySummary>>>({ phase: "loading" });
   const [runs, setRuns] = useState<SectionState<BoundedResponse<DiscoveryRunSummary>>>({ phase: "loading" });
   const [inbox, setInbox] = useState<SectionState<BoundedResponse<InboxSummary>>>({ phase: "loading" });
+  const [shortlisted, setShortlisted] = useState<SectionState<BoundedResponse<UserJobDecisionListItem>>>({ phase: "loading" });
+  const [dismissed, setDismissed] = useState<SectionState<BoundedResponse<UserJobDecisionListItem>>>({ phase: "loading" });
   const [savedSchedules, setSavedSchedules] = useState<SectionState<DiscoveryScheduleRead[]>>({ phase: "loading" });
   const [opportunityLimit, setOpportunityLimit] = useState(WINDOW);
   const [runLimit, setRunLimit] = useState(WINDOW);
   const [inboxLimit, setInboxLimit] = useState(WINDOW);
+  const [shortlistedLimit, setShortlistedLimit] = useState(WINDOW);
+  const [dismissedLimit, setDismissedLimit] = useState(WINDOW);
+  const [showDismissed, setShowDismissed] = useState(false);
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<SectionState<DiscoveryRunDetail>>({ phase: "loading" });
   const [selectedHistorical, setSelectedHistorical] = useState<string | null>(null);
@@ -267,6 +285,7 @@ export function JobsPage() {
   const [exactEvaluation, setExactEvaluation] = useState<DiscoveryRunCreated | null>(null);
   const [evaluationMessage, setEvaluationMessage] = useState("");
   const [evaluationError, setEvaluationError] = useState("");
+  const decisionMutator = useJobDecisionMutator();
   const submitLock = useRef(false);
   const alive = useRef(false);
   const onboardingRequest = useRef<number | null>(null);
@@ -278,7 +297,7 @@ export function JobsPage() {
 
   useEffect(() => {
     if (previousUserKey.current && previousUserKey.current !== userKey) {
-      setOnboarding(emptyPage()); setOpportunities(emptyPage()); setRuns(emptyPage()); setInbox(emptyPage()); setSavedSchedules(emptyPage());
+      setOnboarding(emptyPage()); setOpportunities(emptyPage()); setRuns(emptyPage()); setInbox(emptyPage()); setShortlisted(emptyPage()); setDismissed(emptyPage()); setSavedSchedules(emptyPage());
       setSelectedIds(new Set()); setSearchIntent(emptySearchIntent()); setSelectedScheduleId(null); setSelectedRun(null); setSelectedHistorical(null); setSelectedCurrent(null);
       setRunDetail(emptyPage()); setHistoricalDetail(emptyPage()); setCurrentDetail(emptyPage()); setEvaluationSnapshot(null); setExactEvaluation(null); setEvaluationMessage(""); setEvaluationError(""); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
     }
@@ -352,6 +371,37 @@ export function JobsPage() {
       return false;
     }
   };
+  const loadDecisionList = async (kind: "shortlisted" | "dismissed", limit: number, clearExisting = false): Promise<boolean> => {
+    const setter = kind === "shortlisted" ? setShortlisted : setDismissed;
+    setter((previous) => ({ ...previous, phase: previous.data && !clearExisting ? "loaded" : "loading", data: clearExisting ? undefined : previous.data, error: undefined }));
+    try {
+      const data = await api.request<BoundedResponse<UserJobDecisionListItem>>(`/api/v1/jobs/decisions?decision=${kind}&limit=${limit}`);
+      if (alive.current) { setter({ phase: "loaded", data }); return true; }
+    } catch {
+      if (alive.current) setter((previous) => ({ phase: "error", data: previous.data, error: `${kind === "shortlisted" ? "Shortlisted" : "Dismissed jobs"} are unavailable.` }));
+    }
+    return false;
+  };
+  const loadShortlisted = (limit = shortlistedLimit, clearExisting = false) => loadDecisionList("shortlisted", limit, clearExisting);
+  const loadDismissed = (limit = dismissedLimit, clearExisting = false) => loadDecisionList("dismissed", limit, clearExisting);
+  const mutateDecision = async (current: UserJobDecision | undefined, target: UserJobDecisionValue, surface: "inbox" | "recommended" | "shortlisted" | "dismissed") => {
+    if (!current) return;
+    const result = await decisionMutator.mutate(current, target);
+    if (!result.confirmed || !result.decision) return;
+    if (surface === "inbox") {
+      if (target === "dismissed" || current.decision === "dismissed") void loadInbox(inboxLimit);
+      else setInbox((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) => item.discovered_job_id === current.discovered_job_id ? { ...item, decision: result.decision! } : item) } } : previous);
+    } else if (surface === "recommended") {
+      if (target === "dismissed") void loadOpportunities(WINDOW, true);
+      else setOpportunities((previous) => previous.data ? { ...previous, data: { ...previous.data, items: previous.data.items.map((item) => item.discovered_job_id === current.discovered_job_id ? { ...item, decision: result.decision! } : item) } } : previous);
+    } else if (surface === "shortlisted") {
+      void loadShortlisted(shortlistedLimit, true);
+      if (showDismissed) void loadDismissed(dismissedLimit, true);
+    } else {
+      void loadDismissed(dismissedLimit, true);
+      if (target === "shortlisted") void loadShortlisted(shortlistedLimit, true);
+    }
+  };
   const reconcileFindHistory = async (scheduleId: string): Promise<DiscoveryRunReconciliation<ScheduledExecutionRead[]>> => {
     const request = ++generations.current.scheduleHistory;
     try {
@@ -391,8 +441,18 @@ export function JobsPage() {
     if (view === "find") { if (!onboarding.data) void loadOnboarding(); void loadSavedSchedules(); }
     else if (view === "inbox") { if (!onboarding.data) void loadOnboarding(); void loadInbox(WINDOW); }
     else if (view === "recommended") { if (!onboarding.data) void loadOnboarding(); void loadOpportunities(WINDOW); }
+    else if (view === "shortlisted") void loadShortlisted(WINDOW);
     else if (view === "history") void loadRuns(WINDOW);
   }, [view, userKey]);
+  useEffect(() => { if (view === "shortlisted" && showDismissed) void loadDismissed(dismissedLimit); }, [view, showDismissed]);
+  useEffect(() => {
+    const refresh = () => {
+      if (view === "recommended") void loadOpportunities(WINDOW, true);
+      if (view === "inbox") void loadInbox(inboxLimit);
+    };
+    window.addEventListener("career-trans-job-decision-changed", refresh);
+    return () => window.removeEventListener("career-trans-job-decision-changed", refresh);
+  }, [view, inboxLimit]);
 
   const openCurrent = async (evaluationId: string) => {
     const request = ++generations.current.currentDetail;
@@ -595,13 +655,13 @@ export function JobsPage() {
         <StateMessage state={inbox} empty={false} onRetry={() => void loadInbox()}>
           {inbox.phase === "loaded" && inbox.data?.items.length === 0 && <p className="muted">No recently imported public vacancies are available.</p>}
           {!!inbox.data?.items.length && <>
-            <ul className="inbox-list">{inbox.data.items.map((item) => <li className={`card inbox-card${selectedIds.has(item.discovered_job_id) ? " is-selected" : ""}`} key={item.discovered_job_id}><label className="selection-label"><input type="checkbox" checked={selectedIds.has(item.discovered_job_id)} disabled={!item.actionable || !ready || submitting} onChange={() => toggleJob(item)} aria-label={`Select ${item.title}`} /><span>{item.title}</span></label><p>{[item.company, item.location, item.work_arrangement, item.employment_type].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Lifecycle: {titleCase(item.state)} · Verification: {titleCase(item.verification_status)} · {item.actionable ? "Actionable" : "Not actionable"}</p>{item.verification_reason && <p>Verification note: {titleCase(item.verification_reason)}</p>}<p>Last seen: {new Date(item.last_seen_at).toLocaleString()}</p>{item.provenance.length > 0 && <p>Recent provenance: {item.provenance.map((source) => `${source.runtime}${source.discovered_via ? ` · ${source.discovered_via}` : ""}`).join("; ")}</p>}<div className="card-actions"><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></div></li>)}</ul>
+            <ul className="inbox-list">{inbox.data.items.map((item) => <li className={`card inbox-card${selectedIds.has(item.discovered_job_id) ? " is-selected" : ""}`} key={item.discovered_job_id}><label className="selection-label"><input type="checkbox" checked={selectedIds.has(item.discovered_job_id)} disabled={!item.actionable || !ready || submitting} onChange={() => toggleJob(item)} aria-label={`Select ${item.title}`} /><span>{item.title}</span></label><p>{[item.company, item.location, item.work_arrangement, item.employment_type].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Lifecycle: {titleCase(item.state)} · Verification: {titleCase(item.verification_status)} · {item.actionable ? "Actionable" : "Not actionable"}</p>{item.verification_reason && <p>Verification note: {titleCase(item.verification_reason)}</p>}<p>Last seen: {new Date(item.last_seen_at).toLocaleString()}</p>{item.provenance.length > 0 && <p>Recent provenance: {item.provenance.map((source) => `${source.runtime}${source.discovered_via ? ` · ${source.discovered_via}` : ""}`).join("; ")}</p>}<div className="card-actions"><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></div><DecisionControls decision={item.decision} disabled={decisionMutator.pending.has(item.discovered_job_id)} onMutate={(target) => void mutateDecision(item.decision, target, "inbox")} />{decisionMutator.notices[item.discovered_job_id] && <p className="notice" role="status">{decisionMutator.notices[item.discovered_job_id]}</p>}</li>)}</ul>
             {inbox.data.truncated && (inboxLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(inboxLimit); setInboxLimit(next); void loadInbox(next); }}>Show more recent vacancies</button> : <p className="muted">Showing the first 100 recent vacancies available through this view.</p>)}
           </>}
           {ready && <form className="card evaluation-form" onSubmit={(event) => void submitEvaluation(event)}><h3>Evaluate selected actionable jobs</h3><p className="muted">This evaluates persisted vacancies with the same explicit SearchIntent used by Find jobs. It does not start internet discovery.</p><p><strong>SearchIntent:</strong> {searchIntent.themes.join(", ") || "Not set"} · locations: {searchIntent.locations.join(", ") || "Any"} · remote policy: {searchIntent.remotePolicy === "exclude_remote" ? "Exclude remote jobs" : searchIntent.remotePolicy === "legacy_true" ? "No remote restriction (legacy stored value)" : "No remote restriction"}</p><p className="muted">SearchIntent is discovery context, not eligibility or evidence. <Link className="button-secondary" to="/jobs/find">Edit SearchIntent in Find jobs</Link></p><button type="submit" disabled={submitting || selectedIds.size === 0 || searchIntent.themes.length === 0}>{submitting ? "Evaluating…" : `Evaluate ${selectedIds.size || "selected"} jobs`}</button>{!searchIntent.themes.length && <p className="muted">Set an explicit SearchIntent in Find jobs before evaluating.</p>}{!selectedIds.size && <p className="muted">Select one or more actionable vacancies to continue.</p>}</form>}
         </StateMessage>
       </section>}
-      {view === "shortlisted" && <section aria-labelledby="shortlisted-heading" className="jobs-section"><OpportunitiesNavigation view={view} /><h2 id="shortlisted-heading">Shortlisted</h2><div className="card"><p>Saved shortlist decisions are not available yet. This view is a non-authoritative placeholder until a dedicated shortlist authority exists.</p><Link className="button-secondary" to="/jobs/opportunities/recommended">Open Recommended / Current analyses</Link></div></section>}
+      {view === "shortlisted" && <section aria-labelledby="shortlisted-heading" className="jobs-section"><OpportunitiesNavigation view={view} /><div className="section-heading"><div><h2 id="shortlisted-heading">Shortlisted</h2><p className="muted">Jobs you explicitly shortlisted. This list is independent of recommendations, Fit, and evaluation history.</p></div><button type="button" className="button-secondary" onClick={() => void loadShortlisted()}>Refresh</button></div><StateMessage state={shortlisted} empty={false} onRetry={() => void loadShortlisted()}>{shortlisted.phase === "loaded" && shortlisted.data?.items.length === 0 && <p className="muted">No shortlisted jobs yet.</p>}{!!shortlisted.data?.items.length && <><ul className="opportunity-list">{shortlisted.data.items.map((item) => <li className="card opportunity-card" key={item.discovered_job_id}><h3>{item.title}</h3><p>{[item.company, item.location, item.work_arrangement].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Decision updated {item.updated_at ? new Date(item.updated_at).toLocaleString() : "recently"} · {item.actionable ? "Actionable" : "Not actionable"}</p><div className="card-actions"><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link><a href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></div><DecisionControls decision={item} disabled={decisionMutator.pending.has(item.discovered_job_id)} onMutate={(target) => void mutateDecision(item, target, "shortlisted")} />{decisionMutator.notices[item.discovered_job_id] && <p className="notice" role="status">{decisionMutator.notices[item.discovered_job_id]}</p>}</li>)}</ul>{shortlisted.data.truncated && (shortlistedLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(shortlistedLimit); setShortlistedLimit(next); void loadShortlisted(next); }}>Show more shortlisted jobs</button> : <p className="muted">Showing the first 100 shortlisted jobs; more matching decisions exist.</p>)}</>}{shortlisted.data && <section className="card" aria-labelledby="dismissed-heading"><div className="section-heading"><h3 id="dismissed-heading">Dismissed jobs</h3><button type="button" className="button-secondary" aria-expanded={showDismissed} onClick={() => setShowDismissed((value) => !value)}>{showDismissed ? "Hide dismissed jobs" : "Manage dismissed jobs"}</button></div>{showDismissed && <StateMessage state={dismissed} empty={false} onRetry={() => void loadDismissed()}>{dismissed.phase === "loaded" && dismissed.data?.items.length === 0 && <p className="muted">No dismissed jobs.</p>}{!!dismissed.data?.items.length && <><ul className="opportunity-list">{dismissed.data.items.map((item) => <li className="card opportunity-card" key={item.discovered_job_id}><h4>{item.title}</h4><p>{[item.company, item.location].filter(Boolean).join(" · ") || "Details not provided"}</p><div className="card-actions"><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link></div><DecisionControls decision={item} disabled={decisionMutator.pending.has(item.discovered_job_id)} onMutate={(target) => void mutateDecision(item, target, "dismissed")} />{decisionMutator.notices[item.discovered_job_id] && <p className="notice" role="status">{decisionMutator.notices[item.discovered_job_id]}</p>}</li>)}</ul>{dismissed.data.truncated && (dismissedLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(dismissedLimit); setDismissedLimit(next); void loadDismissed(next); }}>Show more dismissed jobs</button> : <p className="muted">Showing the first 100 dismissed jobs; more matching decisions exist.</p>)}</>}</StateMessage>}</section>}</StateMessage></section>}
     </div>
     </>}
     </>}

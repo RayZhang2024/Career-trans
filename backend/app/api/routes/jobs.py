@@ -25,6 +25,7 @@ from app.api.deps import (
     get_user_job_discovery_read_service,
     get_user_job_discovery_history_read_service,
     get_user_job_workspace_read_service,
+    get_user_job_decision_service,
     get_discovery_schedule_service,
     get_scheduled_discovery_execution_service,
 )
@@ -64,6 +65,7 @@ from app.schemas.user_job_discovery import (
     DiscoveryRunDetailRead, DiscoveryRunJobDetailRead,
 )
 from app.schemas.job_workspace import JobWorkspaceRead
+from app.schemas.user_job_decision import UserJobDecisionListResponse, UserJobDecisionMutation, UserJobDecisionRead, UserJobDecisionValue
 from app.schemas.discovery_schedule import DiscoveryScheduleCreate, DiscoverySchedulePatch, DiscoveryScheduleRead, ScheduledExecutionRead
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
@@ -83,11 +85,37 @@ from app.services.job_detail_enrichment_service import JobDetailEnrichmentServic
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_workspace_service import UserJobWorkspaceReadService
+from app.services.user_job_decision_service import UserJobDecisionConflict, UserJobDecisionService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@router.get("/decisions/{discovered_job_id}", response_model=UserJobDecisionRead)
+def get_job_decision(discovered_job_id: str, current_user: CurrentUser, service: UserJobDecisionService = Depends(get_user_job_decision_service)) -> UserJobDecisionRead:
+    try:
+        return service.read(current_user.id, discovered_job_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovered job not found.") from exc
+
+
+@router.put("/decisions/{discovered_job_id}", response_model=UserJobDecisionRead)
+def put_job_decision(discovered_job_id: str, payload: UserJobDecisionMutation, current_user: CurrentUser, service: UserJobDecisionService = Depends(get_user_job_decision_service)) -> UserJobDecisionRead:
+    try:
+        return service.mutate(current_user.id, discovered_job_id, payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Discovered job not found.") from exc
+    except UserJobDecisionConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/decisions", response_model=UserJobDecisionListResponse)
+def list_job_decisions(current_user: CurrentUser, decision: UserJobDecisionValue = Query(...), limit: int = Query(default=20, ge=1, le=100), service: UserJobDecisionService = Depends(get_user_job_decision_service)) -> UserJobDecisionListResponse:
+    if decision is UserJobDecisionValue.UNDECIDED:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Only shortlisted or dismissed decisions can be listed.")
+    return service.list(current_user.id, decision=decision, limit=limit)
 
 
 @router.get("/workspaces/{discovered_job_id}", response_model=JobWorkspaceRead)
@@ -265,8 +293,7 @@ def list_opportunity_inbox(
     service: OpportunityInboxService = Depends(get_opportunity_inbox_service),
 ) -> OpportunityInboxSummaryResponse:
     """Inspect recent shared external discoveries without starting a runtime or ranking job."""
-    del current_user  # Authentication gates public-job inspection; candidate data is never returned.
-    return service.list_recent_summary(limit=limit)
+    return service.list_recent_summary(limit=limit, user_id=current_user.id)
 
 
 @router.post("/enrich-imported", response_model=JobEnrichmentResponse, status_code=status.HTTP_200_OK)

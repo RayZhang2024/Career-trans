@@ -30,6 +30,7 @@ from app.services.posting_legitimacy_service import PostingLegitimacyService
 from app.services.public_job_actionability import is_public_job_actionable
 from app.services.semantic_runtime_attribution import read_attribution
 from app.services.user_job_discovery_service import reusable_current_evaluation, UserJobDiscoveryService
+from app.services.user_job_decision_service import UserJobDecisionService
 from app.schemas.job_ranking import RankedJobOpportunity
 
 
@@ -119,6 +120,7 @@ class UserJobWorkspaceReadService:
             ),
             current_fit=current_fit,
             evaluations=WorkspaceEvaluationResponse(items=evaluations, limit=evaluation_limit, truncated=len(evaluation_rows) > evaluation_limit),
+            decision=UserJobDecisionService(self._session).read(user_id, job.id),
         )
 
     @staticmethod

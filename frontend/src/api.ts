@@ -232,7 +232,11 @@ export type UserOpportunitySummary = {
   company: string | null; location: string | null; work_arrangement: string | null; fit_score: number;
   career_alignment_score: number; career_alignment_confidence: string; relevance_score: number; archetype: string;
   url: string; posting_recency: PostingRecency;
+  decision?: UserJobDecision;
 };
+export type UserJobDecisionValue = "undecided" | "shortlisted" | "dismissed";
+export type UserJobDecision = { discovered_job_id: string; decision: UserJobDecisionValue; revision: number | null; created_at: string | null; updated_at: string | null };
+export type UserJobDecisionListItem = { discovered_job_id: string; decision: UserJobDecisionValue; revision: number; created_at: string; updated_at: string; title: string; company: string | null; location: string | null; url: string; posted_at: string | null; work_arrangement: string | null; employment_type: string | null; state: "new" | "updated" | "unchanged" | "inactive"; verification_status: "verified" | "unverified"; verification_reason: string | null; actionable: boolean; last_seen_at: string };
 export type BoundedResponse<T> = { items: T[]; limit: number; truncated: boolean };
 export type DiscoveryRunStatus = "running" | "completed" | "partial_failed" | "failed";
 export type DiscoveryRunSummary = {
@@ -314,6 +318,7 @@ export type InboxSummary = {
   work_arrangement: string | null; employment_type: string | null; url: string; state: "new" | "updated" | "unchanged" | "inactive";
   verification_status: "verified" | "unverified"; verification_reason: string | null; actionable: boolean;
   first_seen_at: string; last_seen_at: string; provenance: InboxProvenance[]; provenance_count: number;
+  decision?: UserJobDecision;
 };
 export type CreateDiscoveryRun = {
   query: { keywords: string[]; locations: string[]; remote_ok: boolean | null; companies: string[]; excluded_companies: string[]; excluded_title_terms: string[]; employment_types: string[]; max_results: number };
@@ -370,6 +375,7 @@ export type JobWorkspace = {
   provenance: { items: Array<{ id: string; runtime: string; source_ref: string | null; discovered_via: string | null; imported_at: string }>; count: number; limit: number; truncated: boolean };
   current_fit: { status: "current" | "none" | "unavailable"; reason: string | null; evaluation: JobWorkspaceEvaluation | null };
   evaluations: { items: JobWorkspaceEvaluation[]; limit: number; truncated: boolean };
+  decision: UserJobDecision;
 };
 export type JobWorkspaceEvaluation = {
   id: string; created_at: string; applicability: "current" | "historical" | "unknown";

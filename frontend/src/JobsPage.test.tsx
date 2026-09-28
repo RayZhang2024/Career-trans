@@ -8,7 +8,8 @@ import { AuthProvider } from "./auth";
 const TOKEN = "career-trans.access-token";
 const user: User = { id: "user-1", email: "jobs@example.test", created_at: "2026-01-01T00:00:00Z" };
 const ready: OnboardingStatus = { profile_exists: true, candidate_context_ready: true, latest_cv_draft: { id: "cv-1", state: "confirmed", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 } };
-const op = (id: string, title = id, rank = 999): UserOpportunitySummary => ({ evaluation_id: `eval-${id}`, discovered_job_id: `job-${id}`, recommendation: "consider", title, company: "Example Co", location: "London", work_arrangement: "Hybrid", fit_score: 72, career_alignment_score: 84, career_alignment_confidence: "medium", relevance_score: 0.91, archetype: "ai_forward_deployed", url: `https://jobs.example.test/${id}`, posting_recency: { legitimacy: "unknown", reasoning: "The listing date is not independently verified." }, ...( { rank } as object) });
+const decision = (id: string, value: "undecided" | "shortlisted" | "dismissed" = "undecided") => ({ discovered_job_id: id, decision: value, revision: null, created_at: null, updated_at: null });
+const op = (id: string, title = id, rank = 999): UserOpportunitySummary => ({ evaluation_id: `eval-${id}`, discovered_job_id: `job-${id}`, recommendation: "consider", title, company: "Example Co", location: "London", work_arrangement: "Hybrid", fit_score: 72, career_alignment_score: 84, career_alignment_confidence: "medium", relevance_score: 0.91, archetype: "ai_forward_deployed", url: `https://jobs.example.test/${id}`, posting_recency: { legitimacy: "unknown", reasoning: "The listing date is not independently verified." }, decision: decision(`job-${id}`), ...( { rank } as object) });
 const ranked = (title: string): RankedJobOpportunity => ({
   job: { title, company: "Example Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: "https://jobs.example.test/detail", posted_at: null },
   relevance: { relevant: true, score: 0.91, reasoning: "Backend relevance reasoning." }, archetype: { archetype: "ai_forward_deployed", reasoning: "Backend archetype reasoning." },
@@ -33,7 +34,7 @@ const savedExecution = (status: ScheduledExecutionRead["status"] = "completed"):
   discovery_run_id: status === "running" ? null : "run-1", acquisition_summary: {}, failure_summary: {}, started_at: "2026-02-01T12:00:00Z", completed_at: status === "running" ? null : "2026-02-01T12:05:00Z",
 });
 const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
-const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1 });
+const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1, decision: decision(id) });
 const historyDetail: HistoricalRunJobDetail = { discovered_job_id: "job-0", evaluation_id: "historical-eval", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Historical role"), runtime_attribution: { status: "available", provider: "openai", operations: { job_relevance: { model: "old-job-relevance", reasoning_effort: null }, job_archetype: { model: "old-archetype", reasoning_effort: "low" }, job_extraction: { model: "old-extraction", reasoning_effort: "medium" }, requirement_matching: { model: "old-matching", reasoning_effort: "high" }, career_alignment: { model: "old-alignment", reasoning_effort: "max" } } } };
 const json = (body: unknown, status = 200) => new Response(body === undefined ? "" : JSON.stringify(body), { status });
 type Handler = (url: URL, init?: RequestInit) => Response | Promise<Response>;
@@ -53,6 +54,7 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     if (path === "/api/v1/jobs/opportunities") return Promise.resolve(json(page([op("alpha", "Alpha", 99), op("beta", "Beta", 1)])));
     if (path === "/api/v1/jobs/discovery-runs") return Promise.resolve(json(page([run()])));
     if (path === "/api/v1/jobs/inbox") return Promise.resolve(json(page([inboxItem("actionable"), inboxItem("blocked", false)])));
+    if (path === "/api/v1/jobs/decisions") return Promise.resolve(json(page([])));
     if (path === "/api/v1/jobs/discovery-schedules") return Promise.resolve(json([]));
     if (path === "/api/v1/jobs/opportunities/eval-alpha") return Promise.resolve(json(ranked("Alpha detail")));
     if (path === "/api/v1/jobs/discovery-runs/run-1") return Promise.resolve(json(runDetail()));
@@ -945,13 +947,29 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/opportunities?limit=20");
   });
 
-  it("renders the static Shortlisted placeholder without inferring data or reading opportunity state", async () => {
+  it("loads the authoritative Shortlisted decision projection without reading opportunity state", async () => {
     const { fetch } = renderJobs(fakeFetch(), "/jobs/opportunities/shortlisted");
     expect(await screen.findByRole("heading", { name: "Shortlisted" })).toBeInTheDocument();
-    expect(screen.getByText(/non-authoritative placeholder/)).toBeInTheDocument();
+    expect(await screen.findByText(/No shortlisted jobs yet/)).toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=shortlisted&limit=20");
     expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/opportunities"))).toBe(false);
     expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/inbox"))).toBe(false);
     expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/discovery-runs"))).toBe(false);
+  });
+
+  it("renders a non-actionable shortlisted decision and refetches after removal", async () => {
+    let listCalls = 0;
+    const item = { discovered_job_id: "job-short", title: "Shortlisted role", company: "Public Co", location: "London", url: "https://public.example.test/short", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "inactive" as const, verification_status: "verified" as const, verification_reason: null, actionable: false, last_seen_at: "2026-02-02T00:00:00Z", decision: "shortlisted" as const, revision: 1, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/decisions": (url) => { listCalls += 1; return json(url.searchParams.get("decision") === "shortlisted" && listCalls === 1 ? page([item]) : page([])); },
+      "PUT /api/v1/jobs/decisions/job-short": () => json(decision("job-short")),
+    });
+    renderJobs(fetch, "/jobs/opportunities/shortlisted");
+    expect(await screen.findByText("Shortlisted role")).toBeInTheDocument();
+    expect(screen.getByText(/Not actionable/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove from shortlist" }));
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
+    expect(screen.queryByText("Shortlisted role")).not.toBeInTheDocument();
   });
 
   it("loads history deep links directly and preserves run/job query navigation", async () => {

@@ -49,6 +49,7 @@ from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
 from app.services.user_job_workspace_service import UserJobWorkspaceReadService
+from app.services.user_job_decision_service import UserJobDecisionService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
 from app.services.application_tracking_service import ApplicationTrackingService
@@ -442,6 +443,11 @@ def get_structured_ats_discovery_service(db: DbSession) -> StructuredAtsDiscover
 def get_opportunity_inbox_service(db: DbSession) -> OpportunityInboxService:
     """Request-scoped read service for persisted external discoveries."""
     return OpportunityInboxService(db)
+
+
+def get_user_job_decision_service(db: DbSession) -> UserJobDecisionService:
+    """Decision reads and CAS writes never resolve candidate or provider state."""
+    return UserJobDecisionService(db)
 
 
 def get_job_detail_enrichment_service(db: DbSession) -> JobDetailEnrichmentService:
