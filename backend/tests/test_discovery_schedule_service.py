@@ -403,3 +403,60 @@ def test_api_cross_user_schedule_routes_are_isolated(client, db_session):
     assert client.patch(f"/api/v1/jobs/discovery-schedules/{schedule.id}", headers=headers, json={"name": "no"}).status_code == 404
     assert client.get(f"/api/v1/jobs/discovery-schedules/{schedule.id}/executions", headers=headers).status_code == 404
     assert client.post(f"/api/v1/jobs/discovery-schedules/{schedule.id}/run-now", headers=headers).status_code == 404
+
+
+def test_authenticated_schedule_reads_do_not_construct_execution_provider_dependency(client, db_session, monkeypatch):
+    from app.api import deps as api_deps
+    from app.core.security import create_access_token
+    from app.main import app
+
+    owner = _user(db_session, "schedule-read-owner@example.com")
+    schedule = DiscoveryScheduleService(db_session).create(owner.id, _payload(enabled=False), datetime(2026, 9, 14, 8, tzinfo=UTC))
+    execution = ScheduledDiscoveryExecution(
+        schedule_id=schedule.id,
+        user_id=owner.id,
+        trigger_kind=TriggerKind.MANUAL.value,
+        config_snapshot_json=json.dumps(DiscoveryScheduleService.snapshot(DiscoveryScheduleService(db_session).get(owner.id, schedule.id)), sort_keys=True),
+        status="completed",
+        started_at=datetime(2026, 9, 14, 8, tzinfo=UTC),
+        completed_at=datetime(2026, 9, 14, 8, 1, tzinfo=UTC),
+        acquisition_summary_json="{}",
+        failure_summary_json="{}",
+    )
+    db_session.add(execution)
+    db_session.commit()
+
+    def forbidden_provider_dependency(*_args, **_kwargs):
+        raise AssertionError("persisted schedule reads must not construct provider, acquisition, ranking, semantic, or execution dependencies")
+
+    forbidden_dependencies = (
+        api_deps.get_scheduled_discovery_execution_service,
+        api_deps.get_structured_ats_discovery_service,
+        api_deps.get_agentic_job_discovery_service,
+        api_deps.get_job_ranking_service,
+        api_deps.get_user_job_ranking_service,
+        api_deps.get_user_job_discovery_service,
+        api_deps.get_job_relevance_agent,
+        api_deps.get_job_archetype_agent,
+        api_deps.get_career_analysis_graph,
+        api_deps.get_job_analysis_service,
+        api_deps.get_requirement_matching_service,
+    )
+    for dependency in forbidden_dependencies:
+        app.dependency_overrides[dependency] = forbidden_provider_dependency
+    monkeypatch.setattr(api_deps, "ScheduledDiscoveryExecutionService", forbidden_provider_dependency)
+    monkeypatch.setattr(api_deps, "StructuredAtsDiscoveryService", forbidden_provider_dependency)
+    monkeypatch.setattr(api_deps, "get_semantic_response_client", forbidden_provider_dependency)
+    monkeypatch.setattr(api_deps, "_build_agentic_job_discovery_service", forbidden_provider_dependency)
+    monkeypatch.setattr(api_deps, "_build_user_job_ranking_service", forbidden_provider_dependency)
+    monkeypatch.setattr(api_deps, "get_agentic_web_search_provider", forbidden_provider_dependency)
+    headers = {"Authorization": f"Bearer {create_access_token(owner.id)}"}
+    try:
+        assert client.get("/api/v1/jobs/discovery-schedules", headers=headers).status_code == 200
+        assert client.get(f"/api/v1/jobs/discovery-schedules/{schedule.id}", headers=headers).status_code == 200
+        history = client.get(f"/api/v1/jobs/discovery-schedules/{schedule.id}/executions", headers=headers)
+        assert history.status_code == 200
+        assert [item["id"] for item in history.json()] == [execution.id]
+    finally:
+        for dependency in forbidden_dependencies:
+            app.dependency_overrides.pop(dependency, None)

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import type { DiscoveryScheduleRead, ScheduledExecutionRead, User } from "./api";
 import { App } from "./App";
 import { AuthProvider } from "./auth";
@@ -67,14 +67,19 @@ async function loaded() { await screen.findByRole("heading", { name: "Your saved
 async function candidateReady() { await screen.findByText("Confirmed candidate context is available for execution."); }
 function getCalls(requests: ReturnType<typeof fakeFetch>["requests"], method: string, path: string) { return requests.filter((item) => item.method === method && item.path === path); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
+function RouteLocation() { const location = useLocation(); return <output aria-label="Route location">{location.pathname}{location.search}:{useNavigationType()}</output>; }
 
 beforeEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 afterEach(cleanup);
 
 describe("Issue #175 saved discovery configurations", () => {
   it("canonicalizes the legacy saved-search route while preserving SearchIntent handoff state", async () => {
-    renderPage({ pathname: "/jobs/searches", state: { searchIntent: { themes: ["Applied AI"], locations: ["London"], remotePolicy: "exclude_remote", excludedCompanies: [], excludedTitleTerms: [], employmentTypes: [], compatibility: { companies: [], maxResults: 50 } }, scheduleId: "s-1" } });
+    sessionStorage.setItem(TOKEN, "test-token");
+    const mocked = fakeFetch();
+    vi.stubGlobal("fetch", mocked.fetch);
+    render(<MemoryRouter initialEntries={[{ pathname: "/jobs/searches", state: { searchIntent: { themes: ["Applied AI"], locations: ["London"], remotePolicy: "exclude_remote", excludedCompanies: [], excludedTitleTerms: [], employmentTypes: [], compatibility: { companies: [], maxResults: 50 } }, scheduleId: "s-1" } }]}><AuthProvider><App /><RouteLocation /></AuthProvider></MemoryRouter>);
     await loaded();
+    expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/find/saved:REPLACE");
     expect(await screen.findByRole("heading", { name: "Edit saved discovery" })).toBeInTheDocument();
     expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Applied AI");
     expect(screen.getByLabelText("Remote policy")).toHaveValue("exclude_remote");
