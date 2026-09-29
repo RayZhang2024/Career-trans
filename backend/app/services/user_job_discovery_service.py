@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.models.discovered_job import DiscoveredJob
 from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob, UserJobEvaluation
+from app.models.user_job_decision import UserJobDecision
 from app.schemas.candidate import CandidateContext
 from app.schemas.discovery import DiscoveredJobState, JobListing, JobVerificationStatus
 from app.schemas.job_ranking import JobRankingRequest, JobRankingResponse, RankedJobOpportunity
@@ -25,6 +26,7 @@ from app.schemas.user_job_discovery import (
     DiscoveryRunSummaryResponse, DiscoveryRunJobSummaryRead, DiscoveryRunDetailRead,
     DiscoveryRunJobDetailRead,
 )
+from app.schemas.user_job_decision import UserJobDecisionRead, UserJobDecisionValue
 from app.services.candidate_profile_compaction import candidate_career_profile, candidate_matching_profile, candidate_search_profile
 from app.services.canonical_candidate_read_service import (
     CandidateEvidenceMaterializationIncomplete,
@@ -36,6 +38,7 @@ from app.services.posting_legitimacy_service import PostingLegitimacyService
 from app.services.public_job_actionability import is_public_job_actionable
 from app.services.llm_runtime import JOB_EVALUATION_OPERATIONS, ResolvedRuntimeSnapshot, resolve_runtime_snapshot
 from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, read_attribution
+from app.services.user_job_decision_service import utc_timestamp
 
 
 _CONTRACT_VERSION = "user-discovery-run-v1"
@@ -318,10 +321,12 @@ class UserJobDiscoveryService:
 
     def current_opportunity_summaries(self, user_id: str, *, limit: int) -> UserOpportunitySummaryResponse:
         items = self._current_opportunity_items_read_only(user_id)
-        return UserOpportunitySummaryResponse(items=[self._summary(item) for item in items[:limit]], limit=limit, truncated=len(items) > limit)
+        decision_rows = self._session.scalars(select(UserJobDecision).where(UserJobDecision.user_id == user_id, UserJobDecision.discovered_job_id.in_([item.discovered_job_id for item in items]))).all() if items else []
+        decisions = {row.discovered_job_id: row for row in decision_rows}
+        return UserOpportunitySummaryResponse(items=[self._summary(item, decisions.get(item.discovered_job_id)) for item in items[:limit]], limit=limit, truncated=len(items) > limit)
 
     def current_opportunity_detail(self, user_id: str, evaluation_id: str) -> RankedJobOpportunity:
-        for item in self._current_opportunity_items_read_only(user_id):
+        for item in self._current_opportunity_items_read_only(user_id, include_dismissed=True):
             if item.evaluation_id == evaluation_id:
                 job = self._session.get(DiscoveredJob, item.discovered_job_id)
                 # Current reads project current deterministic recency without
@@ -363,7 +368,7 @@ class UserJobDiscoveryService:
         """Expose the shared public-job actionability rule without copying it."""
         return self._is_actionable(job)
 
-    def _current_opportunity_items_read_only(self, user_id: str) -> list[UserOpportunityRead]:
+    def _current_opportunity_items_read_only(self, user_id: str, *, include_dismissed: bool = False) -> list[UserOpportunityRead]:
         try:
             snapshot = self._candidate_reader.read(user_id)
             context = self._candidate_reader.candidate_context(
@@ -378,14 +383,19 @@ class UserJobDiscoveryService:
         candidate, contract = self.candidate_evaluation_fingerprint(context), self.evaluation_contract_fingerprint()
         rows = self._session.execute(select(UserJobEvaluation, DiscoveredJob).join(DiscoveredJob, DiscoveredJob.id == UserJobEvaluation.discovered_job_id).where(UserJobEvaluation.user_id == user_id, UserJobEvaluation.candidate_evaluation_fingerprint == candidate, UserJobEvaluation.evaluation_contract_fingerprint == contract)).all()
         result = [UserOpportunityRead(evaluation_id=evaluation.id, discovered_job_id=job.id, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)) for evaluation, job in rows if self._is_actionable(job) and evaluation.job_content_hash == job.content_hash]
+        if not include_dismissed and result:
+            dismissed = set(self._session.scalars(select(UserJobDecision.discovered_job_id).where(UserJobDecision.user_id == user_id, UserJobDecision.decision == UserJobDecisionValue.DISMISSED.value, UserJobDecision.discovered_job_id.in_([item.discovered_job_id for item in result]))).all())
+            result = [item for item in result if item.discovered_job_id not in dismissed]
         priority = {Recommendation.APPLY: 0, Recommendation.CONSIDER: 1, Recommendation.SKIP: 2}
         result.sort(key=lambda item: (priority[item.opportunity.recommendation_assessment.recommendation], -item.opportunity.fit_assessment.fit_score, -item.opportunity.career_assessment.career_alignment_score, -item.opportunity.relevance.score, item.discovered_job_id))
         return result
 
-    def _summary(self, item: UserOpportunityRead) -> UserOpportunitySummary:
+    def _summary(self, item: UserOpportunityRead, decision_row: UserJobDecision | None = None) -> UserOpportunitySummary:
         job = self._session.get(DiscoveredJob, item.discovered_job_id)
         opportunity = item.opportunity
-        return UserOpportunitySummary(evaluation_id=item.evaluation_id, discovered_job_id=item.discovered_job_id, recommendation=opportunity.recommendation_assessment.recommendation, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, fit_score=opportunity.fit_assessment.fit_score, career_alignment_score=opportunity.career_assessment.career_alignment_score, career_alignment_confidence=opportunity.career_assessment.confidence, relevance_score=opportunity.relevance.score, archetype=opportunity.archetype.archetype, url=job.url, posting_recency=PostingLegitimacyService().assess(self._listing(job)))
+        row = decision_row
+        decision = UserJobDecisionRead(discovered_job_id=item.discovered_job_id, decision=UserJobDecisionValue.UNDECIDED) if row is None else UserJobDecisionRead(discovered_job_id=row.discovered_job_id, decision=UserJobDecisionValue(row.decision), revision=row.revision, created_at=utc_timestamp(row.created_at), updated_at=utc_timestamp(row.updated_at))
+        return UserOpportunitySummary(evaluation_id=item.evaluation_id, discovered_job_id=item.discovered_job_id, recommendation=opportunity.recommendation_assessment.recommendation, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, fit_score=opportunity.fit_assessment.fit_score, career_alignment_score=opportunity.career_assessment.career_alignment_score, career_alignment_confidence=opportunity.career_assessment.confidence, relevance_score=opportunity.relevance.score, archetype=opportunity.archetype.archetype, url=job.url, posting_recency=PostingLegitimacyService().assess(self._listing(job)), decision=decision)
 
     @staticmethod
     def _run_summary(run: DiscoveryRun) -> DiscoveryRunSummaryRead:

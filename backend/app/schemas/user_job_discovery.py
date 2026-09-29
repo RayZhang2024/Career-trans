@@ -7,6 +7,7 @@ from app.schemas.discovery import JobSearchQuery
 from app.schemas.job_ranking import RankedJobOpportunity
 from app.schemas.job_ranking import PostingLegitimacyAssessment
 from app.schemas.semantic_runtime_attribution import SemanticRuntimeAttribution
+from app.schemas.user_job_decision import UserJobDecisionRead
 
 
 class DiscoveryRunStatus(StrEnum):
@@ -90,6 +91,7 @@ class UserOpportunitySummary(BaseModel):
     archetype: str
     url: str
     posting_recency: PostingLegitimacyAssessment
+    decision: UserJobDecisionRead
 
 
 class UserOpportunitySummaryResponse(BaseModel):

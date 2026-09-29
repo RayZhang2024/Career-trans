@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.job_ranking import RankedJobOpportunity
 from app.schemas.semantic_runtime_attribution import SemanticRuntimeAttribution
+from app.schemas.user_job_decision import UserJobDecisionRead
 
 
 class WorkspaceCurrentFitStatus(StrEnum):
@@ -101,3 +102,4 @@ class JobWorkspaceRead(BaseModel):
     provenance: WorkspaceProvenanceResponse
     current_fit: WorkspaceCurrentFitRead
     evaluations: WorkspaceEvaluationResponse
+    decision: UserJobDecisionRead

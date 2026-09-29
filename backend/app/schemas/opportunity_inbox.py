@@ -5,6 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.discovery import DiscoveredJobState, JobListing, JobProvenance, JobVerificationStatus
+from app.schemas.user_job_decision import UserJobDecisionRead
 
 
 class PersistedJobProvenance(BaseModel):
@@ -32,6 +33,7 @@ class OpportunityInboxItem(BaseModel):
     verification_status: JobVerificationStatus
     verification_reason: str | None = None
     provenance: list[PersistedJobProvenance] = Field(default_factory=list)
+    decision: UserJobDecisionRead
 
 
 class OpportunityInboxResponse(BaseModel):
@@ -58,6 +60,7 @@ class OpportunityInboxSummary(BaseModel):
     last_seen_at: datetime
     provenance: list[PersistedJobProvenance] = Field(default_factory=list)
     provenance_count: int
+    decision: UserJobDecisionRead
 
 
 class OpportunityInboxSummaryResponse(BaseModel):
