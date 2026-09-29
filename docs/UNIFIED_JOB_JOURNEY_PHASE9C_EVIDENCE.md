@@ -58,12 +58,12 @@ Status vocabulary:
 | Job Search Inbox and tabs | FIXED | FIXED | Selected anchor styling and mobile tab sizing now apply. |
 | My opportunities / Recommended | FIXED | FIXED | Primary and nested selected links now have selected styling. |
 | My opportunities / Shortlisted | FIXED | FIXED | Nested selected link now has selected styling. |
-| Search history and Saved discovery history | PASS | PASS | Empty/loading states fit. |
-| Workspace Overview/Fit/Application/Tracking | NOT_REACHABLE | NOT_REACHABLE | No canonical job record was available in the temporary local render data. |
+| Search history and Saved discovery history | PASS | PASS | Two persisted synthetic run cards rendered; each retained a distinct status/started-time toggle context. |
+| Workspace Overview/Fit/Application/Tracking | PASS | PASS | Synthetic persisted job, evaluation, preparation, and tracking records rendered at both sizes. |
 | Applications list | PASS | PASS | External-preparation controls and empty/history state fit. |
-| Application detail and downloads | NOT_REACHABLE | NOT_REACHABLE | No persisted preparation detail existed. |
-| Tracking list | PASS | PASS | Empty tracking state fit. |
-| Tracking detail/history | NOT_REACHABLE | NOT_REACHABLE | No persisted tracking detail existed. |
+| Application detail and downloads | PASS | PASS | Synthetic historical preparation detail rendered; CV and cover-letter download controls were present and keyboard-activated. |
+| Tracking list | PASS | PASS | Synthetic tracked applications rendered with status, updated time, and preparation/history links. |
+| Tracking detail/history | PASS | PASS | Synthetic tracking detail rendered with persisted status history and status-update controls. |
 | Settings / AI Models | PASS | PASS | Long content fit and scrolled vertically without horizontal overflow. |
 
 The repaired screenshots showed no horizontal overflow at either requested size for the reachable routes. Vertical scrolling on long pages was expected.
@@ -95,33 +95,24 @@ Focused tests now directly prove:
 
 ### Keyboard-only smoke
 
-Result: `PARTIAL — not PASS` under the literal Issue #248 gate.
+Result: `PASS` for the completed rendered Issue #248 gate. This is a keyboard-operability smoke result, not an assistive-technology conformance claim.
 
-Exercised on the repaired branch:
+At both requested viewport sizes, the rendered surfaces were reachable without horizontal overflow. Keyboard-only interaction exercised:
 
-- primary navigation;
-- Profile secondary navigation;
-- Job Search navigation;
-- My opportunities navigation;
-- SearchIntent controls on Find jobs;
-- global Applications controls;
-- global Tracking controls;
-- Settings controls.
+- primary navigation, Job Search navigation, My opportunities navigation, and Workspace Overview/Fit/Application/Tracking tabs;
+- Inbox selection checkboxes and repeated Shortlist/Dismiss actions, with selection restored after the toggle;
+- repeated Recommended preparation toggles and decision actions, with the preparation panel and decision restored;
+- Shortlisted dismissal and Dismissed restore/Shortlist actions;
+- both Search History View run/Close run toggles, including distinct status/started-time contexts;
+- Workspace Application form controls and application-detail Start tracking;
+- application-detail navigation/history and CV DOCX, CV PDF, cover-letter DOCX, and cover-letter PDF downloads;
+- Tracking detail status selection/save and the resulting status history.
 
-Not exercised because the corresponding rendered states were `NOT_REACHABLE`:
-
-- Job Workspace Overview/Fit/Application/Tracking tabs;
-- repeated job-card action group;
-- Workspace Application controls;
-- Workspace Tracking controls;
-- application-detail download controls;
-- tracking-detail/history controls.
-
-The evidence therefore does not claim a complete keyboard PASS and the PR remains draft/not merge-ready.
+The smoke found no focus trap or positive `tabindex` requirement in the exercised controls. Visible labels remained intact, and no pointer-only interaction was required for the exercised actions. The PR remains draft/not merge-ready pending review.
 
 ### Downloads and status semantics
 
-- Existing download labels remain distinct in source/tests (`Download CV DOCX`, `Download CV PDF`, and separate cover-letter variants); no download markup or behavior changed. Rendered download controls were `NOT_REACHABLE` because no preparation detail existed.
+- Existing download labels remain distinct in source/tests (`Download CV DOCX`, `Download CV PDF`, and separate cover-letter variants); no download markup or behavior changed. All four rendered download controls were reached and keyboard-activated on the synthetic application detail.
 - Existing `role="status"` and `role="alert"` semantics remain in place for loading, success, retry, and error messages. No blanket `aria-live` region was added.
 
 ## Scoped changes
@@ -141,6 +132,8 @@ No route, readiness authority, candidate authority, application-preparation beha
 
 ## Validation record
 
+- Rendered evidence gate rerun: local production preview with temporary synthetic SQLite records; all required Workspace, Application, and Tracking detail states reached at 390px × 844px and 1280px × 720px, with no horizontal overflow.
+- Keyboard-only evidence gate: `PASS`; all required repeated job-card, Workspace, application-detail, download, Search History, and tracking status/history controls were exercised without pointer activation.
 - Focused Jobs/Applications/Tracking tests: 3 files, 234 passed.
 - Full frontend suite: 15 files, 576 passed.
 - TypeScript typecheck: passed.
