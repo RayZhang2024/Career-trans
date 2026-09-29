@@ -144,16 +144,11 @@ controller.
 | Applications | preparation record and immutable candidate/target/input snapshots | E4, E5, B2, T4 | Aligned for history/detail/downloads; explicit preparation is the only write path. |
 | Tracking | tracking record revision and ordered status events | E4, E5, B2, T4 | Aligned; no employer activity is inferred. |
 
-### Blocking contradiction
+### Authority contradiction check
 
-`JobWorkspacePage.tsx` contains a local `ApplicationReadiness` read that calls
-onboarding status and the legacy profile endpoint together. The shared
-Applications flow has its own readiness controller and the Home/Profile paths
-use canonical readiness/snapshot contracts. The direct Workspace path can
-therefore classify a candidate differently from the shared authority, especially
-when the profile read is unavailable or a candidate-not-ready condition has
-precedence. Existing T1 tests explicitly document the behavior. This is a
-Phase 9B implementation candidate, not changed by this audit.
+No blocking authority contradiction was found. Workspace Application uses the
+shared `readPreparationPrerequisites` authority for initial readiness, retry,
+and reconciliation semantics.
 
 ## History, deep-link, and provenance audit
 
