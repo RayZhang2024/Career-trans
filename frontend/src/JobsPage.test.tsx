@@ -1051,6 +1051,21 @@ describe("Issue #230 route and shell foundation", () => {
     expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/find:REPLACE");
   });
 
+  it.each([
+    ["/cv", "/profile/cv"],
+    ["/adviser", "/profile/adviser"],
+    ["/jobs/searches", "/jobs/find/saved"],
+    ["/settings", "/settings/ai"],
+  ])("keeps compatibility alias %s as a replace redirect to %s", async (legacyPath, canonicalPath) => {
+    cleanup(); sessionStorage.clear(); sessionStorage.setItem(TOKEN, "test-token");
+    const overrides: Record<string, Handler> = {};
+    if (legacyPath === "/cv") overrides["/api/v1/onboarding/status"] = () => json({ ...ready, candidate_context_ready: false, latest_cv_draft: null });
+    if (legacyPath === "/adviser") overrides["/api/v1/onboarding/status"] = () => json({ ...ready, candidate_context_ready: false });
+    vi.stubGlobal("fetch", fakeFetch(overrides));
+    render(<MemoryRouter initialEntries={[legacyPath]}><AuthProvider><App /><RouteLocation /></AuthProvider></MemoryRouter>);
+    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent(`${canonicalPath}:REPLACE`));
+  });
+
   it.each(["/profile/cv", "/cv"]) ("preserves the CV workflow at %s", async (path) => {
     renderJobs(fakeFetch({ "/api/v1/onboarding/status": () => json({ ...ready, candidate_context_ready: false, latest_cv_draft: null }) }), path);
     expect(await screen.findByRole("heading", { name: "Upload your CV" })).toBeInTheDocument();

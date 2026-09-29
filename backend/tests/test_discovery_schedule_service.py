@@ -403,3 +403,20 @@ def test_api_cross_user_schedule_routes_are_isolated(client, db_session):
     assert client.patch(f"/api/v1/jobs/discovery-schedules/{schedule.id}", headers=headers, json={"name": "no"}).status_code == 404
     assert client.get(f"/api/v1/jobs/discovery-schedules/{schedule.id}/executions", headers=headers).status_code == 404
     assert client.post(f"/api/v1/jobs/discovery-schedules/{schedule.id}/run-now", headers=headers).status_code == 404
+
+
+def test_authenticated_schedule_reads_do_not_construct_execution_provider_dependency(client, db_session, monkeypatch):
+    from app.api import deps as api_deps
+    from app.core.security import create_access_token
+
+    owner = _user(db_session, "schedule-read-owner@example.com")
+    schedule = DiscoveryScheduleService(db_session).create(owner.id, _payload(enabled=False), datetime(2026, 9, 14, 8, tzinfo=UTC))
+
+    def forbidden_provider_dependency(*_args, **_kwargs):
+        raise AssertionError("persisted schedule reads must not construct discovery providers or execution services")
+
+    monkeypatch.setattr(api_deps, "ScheduledDiscoveryExecutionService", forbidden_provider_dependency)
+    headers = {"Authorization": f"Bearer {create_access_token(owner.id)}"}
+    assert client.get("/api/v1/jobs/discovery-schedules", headers=headers).status_code == 200
+    assert client.get(f"/api/v1/jobs/discovery-schedules/{schedule.id}", headers=headers).status_code == 200
+    assert client.get(f"/api/v1/jobs/discovery-schedules/{schedule.id}/executions", headers=headers).status_code == 200
