@@ -1819,24 +1819,29 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     let workspaceCalls = 0;
     const fetch = fakeFetch({
       "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [base(workspaceCalls++ === 0 ? null : { id: "track-a", preparation_id: "prep-a", current_status: "interview", revision: 2, created_at: "2026-03-01T12:00:00Z", updated_at: "2026-03-02T12:00:00Z" })], limit: 20, truncated: false } })),
+      "/api/v1/application-tracking/by-preparation/prep-a": () => json({ id: "track-a", preparation_id: "prep-a", current_status: "interview", revision: 2, created_at: "2026-03-01T12:00:00Z", updated_at: "2026-03-02T12:00:00Z" }),
       "POST /api/v1/application-tracking": () => json({ detail: "already exists" }, 409),
     });
     renderJobs(fetch, "/jobs/actionable/tracking");
     fireEvent.click(await screen.findByRole("button", { name: "Start tracking" }));
-    expect(await screen.findByText(/current saved state is being shown without retrying/)).toBeInTheDocument();
+    expect(await screen.findByText(/Saved tracking was confirmed/)).toBeInTheDocument();
     expect(await screen.findByText(/interview/i)).toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/application-tracking/by-preparation/prep-a");
+    expect(workspaceCalls).toBeGreaterThan(1);
   });
 
-  it("does not claim Workspace tracking state when conflict reconciliation fails", async () => {
+  it("does not claim Workspace tracking state when exact reconciliation fails even if the bounded refresh succeeds", async () => {
     let workspaceCalls = 0;
     const fetch = fakeFetch({
-      "/api/v1/jobs/workspaces/actionable": () => workspaceCalls++ === 0 ? json(workspacePayload(decision("actionable"), { applications: { items: [{ preparation_id: "prep-a", created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "prep-a", company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null }], limit: 20, truncated: false } })) : json(undefined, 503),
+      "/api/v1/jobs/workspaces/actionable": () => workspaceCalls++ === 0 ? json(workspacePayload(decision("actionable"), { applications: { items: [{ preparation_id: "prep-a", created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "prep-a", company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null }], limit: 20, truncated: false } })) : json(workspacePayload(decision("actionable"), { applications: { items: [], limit: 20, truncated: false } })),
+      "/api/v1/application-tracking/by-preparation/prep-a": () => json({ detail: "not found" }, 404),
       "POST /api/v1/application-tracking": () => json({ detail: "already exists" }, 409),
     });
     renderJobs(fetch, "/jobs/actionable/tracking");
     fireEvent.click(await screen.findByRole("button", { name: "Start tracking" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/could not confirm the current saved tracking state/);
-    expect(screen.queryByText(/currently saved state is being shown/)).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not confirm saved tracking for this preparation/);
+    expect(screen.queryByText(/Saved tracking was confirmed/)).not.toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/application-tracking/by-preparation/prep-a");
   });
 
   it("keeps Tracking show-more on the shared bounded application window", async () => {
@@ -1871,25 +1876,49 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(screen.queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
   });
 
-  it("preserves a newer Phase 7 decision while stale-target authority refresh is pending", async () => {
+  it("keeps a newer 40-item application window and decision while stale target authority updates job and Fit", async () => {
     const staleRefresh = deferred<Response>();
+    const application = (id: string) => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: id, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null });
+    const initialHistory = { id: "eval-history", created_at: "2026-02-01T00:00:00Z", applicability: "historical", opportunity: ranked("Historical workspace role"), runtime_attribution: null };
+    const initialProvenance = { id: "prov-1", runtime: "codex", source_ref: "workspace-source", discovered_via: "external_import", imported_at: "2026-02-01T00:00:00Z" };
     let workspaceCalls = 0;
     const fetch = fakeFetch({
-      "/api/v1/jobs/workspaces/actionable": () => {
+      "/api/v1/jobs/workspaces/actionable": (url) => {
+        if (url.searchParams.get("application_limit") === "40") return json(workspacePayload(decision("actionable"), { applications: { items: [application("prep-40")], limit: 40, truncated: false } }));
         workspaceCalls += 1;
-        return workspaceCalls === 1 ? json(workspacePayload(decision("actionable"))) : staleRefresh.promise;
+        if (workspaceCalls === 1) return json(workspacePayload(decision("actionable"), {
+          current_fit: { status: "current", reason: null, evaluation: { id: "eval-current", created_at: "2026-03-01T00:00:00Z", applicability: "current", opportunity: ranked("Current workspace role"), runtime_attribution: null } },
+          evaluations: { items: [initialHistory], limit: 20, truncated: false },
+          provenance: { items: [initialProvenance], count: 1, limit: 20, truncated: false },
+          applications: { items: [application("prep-20")], limit: 20, truncated: true },
+        }));
+        return staleRefresh.promise;
       },
       "POST /api/v1/applications/prepare": () => json({ detail: "gone" }, 404),
       "PUT /api/v1/jobs/decisions/actionable": () => json({ ...decision("actionable", "shortlisted"), revision: 1 }),
     });
     renderJobs(fetch, "/jobs/actionable/application");
     await screen.findByRole("button", { name: "Create preparation" });
+    expect(await screen.findByText("prep-20")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
     await waitFor(() => expect(workspaceCalls).toBe(2));
     fireEvent.click(screen.getByRole("button", { name: "Shortlist" }));
     expect(await screen.findByLabelText("Shortlisted")).toBeInTheDocument();
-    staleRefresh.resolve(json(workspacePayload(decision("actionable"), { job: workspaceJob({ actionable: false }) })));
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(await screen.findByText("prep-40")).toBeInTheDocument();
+    staleRefresh.resolve(json(workspacePayload(decision("actionable", "dismissed"), {
+      job: workspaceJob({ actionable: false, title: "No longer actionable role" }),
+      current_fit: { status: "none", reason: "job_not_actionable", evaluation: null },
+      applications: { items: [application("prep-20")], limit: 20, truncated: true },
+    })));
     expect(await screen.findByText("This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.")).toBeInTheDocument();
+    expect(screen.getByText("prep-40")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Shortlisted")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Fit" }));
+    expect(await screen.findByText("This vacancy is not currently actionable, so no current Fit is claimed.")).toBeInTheDocument();
+    expect(screen.getByText("Historical workspace role")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Overview" }));
+    expect(await screen.findByText("workspace-source")).toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
-import type { ApplicationPreparation, ApplicationPrepareRequest, ApplicationTrackingStatus, JobWorkspace, JobWorkspaceApplication, JobWorkspaceEvaluation, OnboardingStatus, Profile, UserJobDecisionValue } from "./api";
+import type { ApplicationPreparation, ApplicationPrepareRequest, ApplicationTracking, ApplicationTrackingStatus, JobWorkspace, JobWorkspaceApplication, JobWorkspaceEvaluation, OnboardingStatus, Profile, UserJobDecisionValue } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
 import { OpportunityDetail } from "./JobsPage";
@@ -95,13 +95,26 @@ function WorkspaceTracking({ applications, applicationLimit, onRefresh, onShowMo
     if (pendingIds.has(preparationId)) return;
     setPendingIds((current) => new Set(current).add(preparationId)); setNotice(""); setError("");
     try {
-      const result = await createApplicationTracking(api, preparationId, "prepared", { userId: user?.id, getUserId: () => user?.id, reconcile: () => onRefresh() });
+      const result = await createApplicationTracking(api, preparationId, "prepared", {
+        userId: user?.id,
+        getUserId: () => user?.id,
+        reconcileByPreparation: async () => {
+          try {
+            const value = await api.request<ApplicationTracking>(`/api/v1/application-tracking/by-preparation/${encodeURIComponent(preparationId)}`);
+            return value.preparation_id === preparationId ? value : null;
+          } catch (reason) {
+            if (reason instanceof ApiError && reason.status === 404) return null;
+            throw reason;
+          }
+        },
+        reconcileWorkspace: () => onRefresh(),
+      });
       if (result.kind === "session_stale") return;
       if (result.kind === "locked") setNotice("A tracking request for this preparation is already in progress. No duplicate was created.");
       else if (result.kind === "confirmed") { setNotice("Tracking saved. The workspace projection is refreshing."); onRefresh(); }
-      else if (result.kind === "reconciled_existing") setNotice("Tracking already exists or changed. The current saved state is being shown without retrying.");
-      else if (result.kind === "reconciliation_failed") setError("Tracking already exists or changed, but Career-trans could not confirm the current saved tracking state. Refresh and try again.");
-      else if (result.kind === "uncertain_reconciled") setNotice("The currently saved tracking state was confirmed. The interrupted request itself cannot be identified as its cause.");
+      else if (result.kind === "reconciled_existing") setNotice(result.workspaceRefreshConfirmed === false ? "Saved tracking was confirmed, but the current bounded Workspace projection could not be refreshed." : "Saved tracking was confirmed. The bounded Workspace projection was refreshed separately.");
+      else if (result.kind === "reconciliation_failed") setError("Tracking already exists or changed, but Career-trans could not confirm saved tracking for this preparation. Refresh and try again.");
+      else if (result.kind === "uncertain_reconciled") setNotice(result.workspaceRefreshConfirmed === false ? "Saved tracking was confirmed, but the current bounded Workspace projection could not be refreshed. The interrupted request itself cannot be identified as its cause." : "Saved tracking was confirmed. The interrupted request itself cannot be identified as its cause.");
       else if (result.kind === "uncertain_unconfirmed") setError("The request outcome is uncertain and current saved tracking could not be confirmed.");
       else if (result.kind === "not_found") setError("This preparation is not available to this account.");
       else setError("Tracking could not be started. The current saved state is being reconciled.");
@@ -133,12 +146,14 @@ function JobWorkspacePage({ discoveredJobId, section }: { discoveredJobId: strin
     }).catch(() => false);
   };
   const refreshWorkspaceForTargetAvailability = (requestedLimit = applicationLimit): Promise<boolean> => {
-    const current = ++targetAvailabilityGeneration.current; applicationGeneration.current += 1; const owner = user?.id; const epoch = api.sessionEpoch();
+    const current = ++targetAvailabilityGeneration.current; const applicationGenerationAtStart = ++applicationGeneration.current; const owner = user?.id; const epoch = api.sessionEpoch();
     return api.request<JobWorkspace>(`/api/v1/jobs/workspaces/${encodeURIComponent(discoveredJobId)}?application_limit=${requestedLimit}`).then((data) => {
       if (current !== targetAvailabilityGeneration.current || api.sessionEpoch() !== epoch || owner !== user?.id) return false;
-      setWorkspace((previous) => previous ? { ...previous, job: data.job } : previous); setApplications(data.applications ?? emptyApplications()); setApplicationLimit(data.applications?.limit ?? requestedLimit); return true;
+      setWorkspace((previous) => previous ? { ...previous, job: data.job, current_fit: data.current_fit } : previous);
+      if (applicationGeneration.current === applicationGenerationAtStart) { setApplications(data.applications ?? emptyApplications()); setApplicationLimit(data.applications?.limit ?? requestedLimit); }
+      return true;
     }).catch((error) => {
-      if (current === targetAvailabilityGeneration.current && api.sessionEpoch() === epoch && owner === user?.id) {
+      if (current === targetAvailabilityGeneration.current && applicationGeneration.current === applicationGenerationAtStart && api.sessionEpoch() === epoch && owner === user?.id) {
         setWorkspace(null); setDecision(null); setState(error instanceof ApiError && error.status === 404 ? "not_found" : "error");
       }
       return false;

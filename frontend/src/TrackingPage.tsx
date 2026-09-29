@@ -60,7 +60,24 @@ export function PreparationTrackingPanel({ preparationId }: { preparationId: str
     const current = generation.current;
     const ownerId = user?.id;
     try {
-      const result = await createApplicationTracking(api, preparationId, initialStatus, { userId: ownerId, getUserId: () => user?.id, reconcile: async () => (await lookup(current, ownerId)) !== undefined });
+      const result = await createApplicationTracking(api, preparationId, initialStatus, {
+        userId: ownerId,
+        getUserId: () => user?.id,
+        reconcileByPreparation: async () => {
+          try {
+            const value = await api.request<ApplicationTracking>(`/api/v1/application-tracking/by-preparation/${encodeURIComponent(preparationId)}`);
+            if (generation.current !== current || ownerId !== user?.id || value.preparation_id !== preparationId) return null;
+            if (monotonic(accepted.current, value, value.id)) {
+              accepted.current = value;
+              setState({ phase: "ready", value });
+            }
+            return value;
+          } catch (reason) {
+            if (reason instanceof ApiError && reason.status === 404) return null;
+            throw reason;
+          }
+        },
+      });
       if (result.kind === "session_stale" || generation.current !== current || ownerId !== user?.id) return;
       if (result.kind === "locked") {
         setNotice("A tracking request for this preparation is already in progress. No duplicate was created.");

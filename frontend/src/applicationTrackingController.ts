@@ -6,15 +6,20 @@ const preparationLocks = new Set<string>();
 export type TrackingStartResult =
   | { kind: "locked" }
   | { kind: "confirmed"; value: ApplicationTracking }
-  | { kind: "reconciled_existing" }
-  | { kind: "reconciliation_failed"; reconciliationError?: unknown }
-  | { kind: "uncertain_reconciled" }
-  | { kind: "uncertain_unconfirmed"; reconciliationError?: unknown }
+  | { kind: "reconciled_existing"; workspaceRefreshConfirmed?: boolean }
+  | { kind: "reconciliation_failed"; reconciliationError?: unknown; workspaceRefreshConfirmed?: boolean }
+  | { kind: "uncertain_reconciled"; workspaceRefreshConfirmed?: boolean }
+  | { kind: "uncertain_unconfirmed"; reconciliationError?: unknown; workspaceRefreshConfirmed?: boolean }
   | { kind: "not_found" }
   | { kind: "failed"; error: unknown }
   | { kind: "session_stale" };
 
-export type TrackingControllerOptions = { userId?: string; getUserId?: () => string | undefined; reconcile?: () => Promise<boolean> };
+export type TrackingControllerOptions = {
+  userId?: string;
+  getUserId?: () => string | undefined;
+  reconcileByPreparation?: () => Promise<ApplicationTracking | null>;
+  reconcileWorkspace?: () => Promise<boolean>;
+};
 
 function currentSession(api: SessionApi, startingEpoch: number, startingUserId: string | undefined, getUserId?: () => string | undefined): boolean {
   return api.sessionEpoch() === startingEpoch && (!getUserId || getUserId() === startingUserId);
@@ -36,21 +41,48 @@ export async function createApplicationTracking(api: SessionApi, preparationId: 
     if (!currentSession(api, startingEpoch, startingUserId, options.getUserId) || (error as Error)?.name === "AbortError") return { kind: "session_stale" };
     if (error instanceof ApiError && error.status === 404) return { kind: "not_found" };
     if (error instanceof ApiError && error.status === 409) {
-      let confirmed = false;
-      let reconciliationError: unknown;
-      try { confirmed = options.reconcile ? await options.reconcile() : false; } catch (reason) { reconciliationError = reason; }
-      if (!currentSession(api, startingEpoch, startingUserId, options.getUserId)) return { kind: "session_stale" };
-      return confirmed ? { kind: "reconciled_existing" } : { kind: "reconciliation_failed", reconciliationError };
+      const reconciliation = await reconcileExactPreparation(api, preparationId, startingEpoch, startingUserId, options);
+      if (reconciliation.kind === "session_stale") return reconciliation;
+      return reconciliation.matching
+        ? { kind: "reconciled_existing", workspaceRefreshConfirmed: reconciliation.workspaceRefreshConfirmed }
+        : { kind: "reconciliation_failed", reconciliationError: reconciliation.error, workspaceRefreshConfirmed: reconciliation.workspaceRefreshConfirmed };
     }
     if (!(error instanceof ApiError)) {
-      let reconciliationError: unknown;
-      let confirmed = false;
-      try { confirmed = options.reconcile ? await options.reconcile() : false; } catch (reason) { reconciliationError = reason; }
-      if (!currentSession(api, startingEpoch, startingUserId, options.getUserId)) return { kind: "session_stale" };
-      return confirmed ? { kind: "uncertain_reconciled" } : { kind: "uncertain_unconfirmed", reconciliationError };
+      const reconciliation = await reconcileExactPreparation(api, preparationId, startingEpoch, startingUserId, options);
+      if (reconciliation.kind === "session_stale") return reconciliation;
+      return reconciliation.matching
+        ? { kind: "uncertain_reconciled", workspaceRefreshConfirmed: reconciliation.workspaceRefreshConfirmed }
+        : { kind: "uncertain_unconfirmed", reconciliationError: reconciliation.error, workspaceRefreshConfirmed: reconciliation.workspaceRefreshConfirmed };
     }
     return { kind: "failed", error };
   } finally {
     preparationLocks.delete(lockKey);
   }
+}
+
+async function reconcileExactPreparation(
+  api: SessionApi,
+  preparationId: string,
+  startingEpoch: number,
+  startingUserId: string | undefined,
+  options: TrackingControllerOptions,
+): Promise<{ kind: "matched"; matching: true; workspaceRefreshConfirmed?: boolean } | { kind: "unmatched"; matching: false; error?: unknown; workspaceRefreshConfirmed?: boolean } | { kind: "session_stale" }> {
+  let matching: ApplicationTracking | null = null;
+  let error: unknown;
+  try {
+    matching = options.reconcileByPreparation ? await options.reconcileByPreparation() : null;
+    if (matching && matching.preparation_id !== preparationId) {
+      error = new Error("Tracking reconciliation response did not match the preparation.");
+      matching = null;
+    }
+  } catch (reason) {
+    error = reason;
+  }
+  if (!currentSession(api, startingEpoch, startingUserId, options.getUserId)) return { kind: "session_stale" };
+  let workspaceRefreshConfirmed: boolean | undefined;
+  if (options.reconcileWorkspace) {
+    try { workspaceRefreshConfirmed = await options.reconcileWorkspace(); } catch (reason) { workspaceRefreshConfirmed = false; error ??= reason; }
+    if (!currentSession(api, startingEpoch, startingUserId, options.getUserId)) return { kind: "session_stale" };
+  }
+  return matching ? { kind: "matched", matching: true, workspaceRefreshConfirmed } : { kind: "unmatched", matching: false, error, workspaceRefreshConfirmed };
 }
