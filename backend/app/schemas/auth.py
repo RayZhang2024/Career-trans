@@ -9,6 +9,7 @@ class PasswordPolicyRead(BaseModel):
     max_length: int
     common_passwords_rejected: bool
     composition_requirements: list[str]
+    whitespace_allowed: bool
 
     @classmethod
     def current(cls) -> "PasswordPolicyRead":
@@ -18,6 +19,7 @@ class PasswordPolicyRead(BaseModel):
             max_length=PASSWORD_POLICY.max_length,
             common_passwords_rejected=PASSWORD_POLICY.common_passwords_rejected,
             composition_requirements=list(PASSWORD_POLICY.composition_requirements),
+            whitespace_allowed=PASSWORD_POLICY.whitespace_allowed,
         )
 
 

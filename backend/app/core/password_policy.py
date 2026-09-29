@@ -3,10 +3,11 @@
 from dataclasses import dataclass
 
 
-PASSWORD_POLICY_VERSION = 1
-PASSWORD_MIN_LENGTH = 15
+PASSWORD_POLICY_VERSION = 2
+PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
 PASSWORD_COMPOSITION_REQUIREMENTS: tuple[str, ...] = ()
+PASSWORD_WHITESPACE_ALLOWED = False
 
 # This is an intentionally small local control, not a complete breach corpus.
 # Entries are compared against the entire password using Unicode case folding.
@@ -33,6 +34,7 @@ class PasswordPolicy:
     max_length: int
     common_passwords_rejected: bool
     composition_requirements: tuple[str, ...]
+    whitespace_allowed: bool
 
 
 PASSWORD_POLICY = PasswordPolicy(
@@ -41,6 +43,7 @@ PASSWORD_POLICY = PasswordPolicy(
     max_length=PASSWORD_MAX_LENGTH,
     common_passwords_rejected=True,
     composition_requirements=PASSWORD_COMPOSITION_REQUIREMENTS,
+    whitespace_allowed=PASSWORD_WHITESPACE_ALLOWED,
 )
 
 
@@ -63,5 +66,7 @@ def validate_new_password(password: str) -> None:
         raise PasswordPolicyError("password_too_short")
     if length > PASSWORD_POLICY.max_length:
         raise PasswordPolicyError("password_too_long")
+    if not PASSWORD_POLICY.whitespace_allowed and any(character.isspace() for character in password):
+        raise PasswordPolicyError("password_contains_whitespace")
     if password.casefold() in _COMMON_PASSWORDS:
         raise PasswordPolicyError("password_too_common")

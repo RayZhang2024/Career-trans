@@ -99,8 +99,9 @@ GET   /health
 
 ## Important V1 limitations
 
-- Newly created passwords require 15–128 Unicode code points. Spaces and Unicode
-  are accepted without trimming; composition rules are not imposed. A small,
+- Newly created passwords require 8–128 Unicode code points and reject all
+  whitespace. Unicode characters are preserved; composition rules are not
+  imposed. A small,
   deterministic local blocklist rejects representative common passwords. It is
   an initial control, not a complete breach corpus. Existing password hashes
   are not changed, and login verification does not apply the new-password
