@@ -75,6 +75,9 @@ describe("Issue #180 Applications workspace", () => {
     expect(screen.getAllByText(/Fits target/)).toHaveLength(2);
     expect(screen.getByText("Included")).toBeInTheDocument();
     expect(screen.getByText("Not included")).toBeInTheDocument();
+    const reviewLinks = screen.getAllByRole("link", { name: /Review preparation for/ });
+    expect(reviewLinks).toHaveLength(2);
+    expect(new Set(reviewLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
     expect(requestPaths(fetch).filter((path) => path === "/api/v1/applications")).toHaveLength(1);
     expect(requestPaths(fetch).some((path) => path.endsWith("/review"))).toBe(false);
     expect(requestPaths(fetch).filter((path) => path === "/api/v1/application-tracking")).toHaveLength(1);

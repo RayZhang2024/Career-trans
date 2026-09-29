@@ -58,6 +58,9 @@ describe("Issue #184 application tracking workspace", () => {
     renderApp(fetch);
     expect(await screen.findByRole("heading", { name: "Newest role" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Older role" })).toBeInTheDocument();
+    const historyLinks = screen.getAllByRole("link", { name: /Open tracking history for/ });
+    expect(historyLinks).toHaveLength(2);
+    expect(new Set(historyLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
     const rendered = document.body.textContent ?? "";
     expect(rendered.indexOf("Newest role")).toBeLessThan(rendered.indexOf("Older role"));
     expect(screen.getByRole("link", { name: "Tracking" })).toHaveAttribute("href", "/tracking");

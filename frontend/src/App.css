@@ -102,8 +102,8 @@ h2 { font-size: 1.2rem; }
 .jobs-header { max-width: none; padding: 1rem 0 0; }
 .jobs-header > div { display: grid; gap: 0.3rem; }
 .jobs-tabs { border-bottom: 1px solid #d4dbea; display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.jobs-tabs button { background: transparent; border-radius: 0.4rem 0.4rem 0 0; color: #263755; }
-.jobs-tabs button[aria-pressed="true"] { background: #dce8ff; color: #173d91; }
+.jobs-tabs a { background: transparent; border-radius: 0.4rem 0.4rem 0 0; color: #263755; display: inline-block; padding: 0.4rem 0.55rem; text-decoration: none; }
+.jobs-tabs a[aria-current="page"] { background: #dce8ff; color: #173d91; }
 .jobs-prerequisite { display: grid; gap: 0.65rem; }
 .jobs-content, .jobs-section, .opportunity-list, .run-list, .inbox-list { display: grid; gap: 1rem; min-width: 0; }
 .section-heading { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 0.8rem; justify-content: space-between; min-width: 0; }
@@ -215,7 +215,7 @@ h2 { font-size: 1.2rem; }
   .site-nav { gap: 0.35rem 0.8rem; }
   .jobs-page { padding-left: 0.75rem; padding-right: 0.75rem; }
   .jobs-tabs { gap: 0.15rem; }
-  .jobs-tabs button { flex: 1 1 auto; padding: 0.6rem 0.5rem; }
+  .jobs-tabs a { flex: 1 1 auto; padding: 0.6rem 0.5rem; }
   .section-heading { align-items: stretch; }
   .section-heading > button { align-self: flex-start; }
 }
