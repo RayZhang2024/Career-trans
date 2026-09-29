@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
-import type { ApplicationPreparation, ApplicationPrepareRequest, ApplicationTracking, ApplicationTrackingStatus, JobWorkspace, JobWorkspaceApplication, JobWorkspaceEvaluation, OnboardingStatus, Profile, UserJobDecisionValue } from "./api";
+import type { ApplicationPreparation, ApplicationPrepareRequest, ApplicationTracking, ApplicationTrackingStatus, JobWorkspace, JobWorkspaceApplication, JobWorkspaceEvaluation, UserJobDecisionValue } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
 import { OpportunityDetail } from "./JobsPage";
 import { DecisionControls, undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
-import { createApplicationPreparation, type PreparationPrerequisites } from "./applicationPreparationController";
+import { createApplicationPreparation, readPreparationPrerequisites, type PreparationPrerequisites } from "./applicationPreparationController";
 import { createApplicationTracking } from "./applicationTrackingController";
 
 export type JobWorkspaceSection = "overview" | "fit" | "application" | "tracking";
@@ -41,32 +41,42 @@ function ApplicationSummary({ item }: { item: JobWorkspaceApplication }) {
   return <article className="card application-summary"><p className="eyebrow">Created {dateLabel(item.created_at)}</p><h3>{item.target.title}</h3><p>{[item.target.company, item.target.location].filter(Boolean).join(" · ") || "Company and location not recorded"}</p><dl className="metric-grid"><div><dt>Job snapshot</dt><dd>{item.snapshot_status === "current_job_content" ? "Current job content" : "Historical job content"}</dd></div>{item.result_summary && <><div><dt>CV pages</dt><dd>{item.result_summary.actual_pdf_pages} / {item.result_summary.target_pages} · {item.result_summary.layout_status === "fit" ? "Fits target" : "Over target"}</dd></div><div><dt>Cover letter</dt><dd>{item.result_summary.has_cover_letter ? "Included" : "Not included"}</dd></div><div><dt>Answers</dt><dd>{item.result_summary.answer_count}</dd></div></>}{tracking && <div><dt>Tracking</dt><dd>{statusLabel(tracking.current_status)} · Revision {tracking.revision}</dd></div>}</dl>{!tracking && <p className="muted">Not tracked</p>}<div className="card-actions"><Link to={`/applications/${encodeURIComponent(item.preparation_id)}`}>Open preparation</Link>{tracking && <Link to={`/tracking/${encodeURIComponent(tracking.id)}`}>Open tracking history</Link>}</div></article>;
 }
 
-function ApplicationReadiness({ onReady, attempt }: { onReady: (value: "checking" | "ready" | "not_ready" | "unavailable") => void; attempt: number }) {
+type WorkspacePreparationReadiness = "checking" | PreparationPrerequisites["state"];
+
+function useWorkspacePreparationPrerequisites() {
   const { api, user } = useAuth();
+  const [readiness, setReadiness] = useState<WorkspacePreparationReadiness>("checking");
+  const [attempt, setAttempt] = useState(0);
   const generation = useRef(0);
   useEffect(() => {
-    const current = ++generation.current; onReady("checking");
-    void Promise.all([api.request<OnboardingStatus>("/api/v1/onboarding/status"), api.request<Profile>("/api/v1/profile")]).then(([status, profile]) => {
-      if (generation.current === current && user?.id) onReady(status.candidate_context_ready && Boolean(profile.display_name?.trim()) ? "ready" : "not_ready");
-    }).catch(() => { if (generation.current === current) onReady("unavailable"); });
+    const current = ++generation.current;
+    setReadiness("checking");
+    if (!user?.id) return () => { generation.current += 1; };
+    void readPreparationPrerequisites(api, { userId: user.id, getUserId: () => user?.id }).then((result) => {
+      if (generation.current !== current || result.state === "session_stale") return;
+      setReadiness(result.state);
+    }).catch(() => {
+      if (generation.current === current) setReadiness("unavailable");
+    });
     return () => { generation.current += 1; };
-  }, [api, attempt, onReady, user?.id]);
-  return null;
+  }, [api, attempt, user?.id]);
+  return {
+    readiness,
+    retry: () => setAttempt((value) => value + 1),
+    apply: (result: PreparationPrerequisites) => setReadiness(result.state),
+  };
 }
 
 function WorkspaceApplications({ workspace, applications, applicationLimit, onRefresh, onShowMore, onTargetUnavailable }: { workspace: JobWorkspace; applications: JobWorkspace["applications"]; applicationLimit: number; onRefresh: () => Promise<boolean>; onShowMore: () => Promise<boolean>; onTargetUnavailable: () => Promise<boolean> }) {
   const { api, user } = useAuth();
-  const [readiness, setReadiness] = useState<"checking" | "ready" | "not_ready" | "unavailable">("checking");
+  const preparationReadiness = useWorkspacePreparationPrerequisites();
+  const { readiness } = preparationReadiness;
   const [pages, setPages] = useState<1 | 2 | 3>(2); const [includeCoverLetter, setIncludeCoverLetter] = useState(true); const [questions, setQuestions] = useState("");
-  const [pending, setPending] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [created, setCreated] = useState<ApplicationPreparation | null>(null); const [readinessAttempt, setReadinessAttempt] = useState(0);
+  const [pending, setPending] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [created, setCreated] = useState<ApplicationPreparation | null>(null);
   const refreshRef = useRef(onRefresh); refreshRef.current = onRefresh;
   const applyPrerequisites = (prerequisites: PreparationPrerequisites) => {
-    if (prerequisites.state === "ready") { setReadiness("ready"); return; }
-    if (prerequisites.state === "candidate_not_ready" || prerequisites.state === "profile_missing") setReadiness("not_ready");
-    else setReadiness("unavailable");
-    if (prerequisites.state === "candidate_not_ready") setError("A confirmed candidate CV is required before preparing an application. Review Profile/CV before trying again.");
-    else if (prerequisites.state === "profile_missing") setError("An application display name is required before preparing an application. Update your profile before trying again.");
-    else setError("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.");
+    preparationReadiness.apply(prerequisites);
+    setError("");
   };
   const create = async () => {
     if (pending || readiness !== "ready" || !workspace.job.actionable) return;
@@ -86,7 +96,7 @@ function WorkspaceApplications({ workspace, applications, applicationLimit, onRe
       else { refreshRef.current(); setError(result.error instanceof ApiError && result.error.status === 503 ? "Application preparation is temporarily unavailable. Your saved application history remains available." : "The preparation could not be created. Saved application history remains available."); }
     } finally { setPending(false); }
   };
-  return <><ApplicationReadiness onReady={setReadiness} attempt={readinessAttempt} /><section className="card" aria-labelledby="workspace-application-history-heading"><div className="section-heading"><h3 id="workspace-application-history-heading">Preparation history</h3><button type="button" className="button-secondary" onClick={onRefresh}>Refresh applications</button></div>{applications.items.length === 0 && <p className="muted">No preparations have been saved for this canonical job yet.</p>}{!!applications.items.length && <div className="application-list">{applications.items.map((item) => <ApplicationSummary key={item.preparation_id} item={item} />)}</div>}{applications.truncated && applicationLimit < APPLICATION_WINDOW_MAX && <button type="button" className="button-secondary" onClick={onShowMore}>Show more</button>}{applications.truncated && applicationLimit >= APPLICATION_WINDOW_MAX && <p className="muted">Showing only the first 100 preparations.</p>}</section><section className="card application-section" aria-labelledby="workspace-create-preparation-heading"><h3 id="workspace-create-preparation-heading">Create preparation</h3>{readiness === "checking" && <p role="status">Checking candidate readiness and application display name…</p>}{readiness === "unavailable" && <p role="alert">Preparation readiness is unavailable. <button type="button" className="button-secondary" onClick={() => setReadinessAttempt((value) => value + 1)} disabled={pending}>Retry readiness</button> Saved history remains readable.</p>}{readiness === "not_ready" && <p role="alert">Complete your confirmed Profile/CV before creating a preparation. <Link to="/profile">Open Profile</Link>.</p>}{!workspace.job.actionable && <p role="alert">This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.</p>}{readiness === "ready" && workspace.job.actionable && <><label htmlFor="workspace-target-pages">Target CV pages</label><select id="workspace-target-pages" value={pages} onChange={(event) => setPages(Number(event.target.value) as 1 | 2 | 3)} disabled={pending}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select><label><input type="checkbox" checked={includeCoverLetter} onChange={(event) => setIncludeCoverLetter(event.target.checked)} disabled={pending} /> Include a cover letter</label><label htmlFor="workspace-application-questions">Application questions (one per line)</label><textarea id="workspace-application-questions" value={questions} onChange={(event) => setQuestions(event.target.value)} disabled={pending} /><button type="button" disabled={pending} onClick={() => void create()}>{pending ? "Preparing…" : "Create preparation"}</button>{notice && <p role="status">{notice} {created && <Link to={`/applications/${encodeURIComponent(created.id)}`}>Open preparation</Link>}</p>}{error && <p role="alert">{error}</p>}</>}</section></>;
+  return <><section className="card" aria-labelledby="workspace-application-history-heading"><div className="section-heading"><h3 id="workspace-application-history-heading">Preparation history</h3><button type="button" className="button-secondary" onClick={onRefresh}>Refresh applications</button></div>{applications.items.length === 0 && <p className="muted">No preparations have been saved for this canonical job yet.</p>}{!!applications.items.length && <div className="application-list">{applications.items.map((item) => <ApplicationSummary key={item.preparation_id} item={item} />)}</div>}{applications.truncated && applicationLimit < APPLICATION_WINDOW_MAX && <button type="button" className="button-secondary" onClick={onShowMore}>Show more</button>}{applications.truncated && applicationLimit >= APPLICATION_WINDOW_MAX && <p className="muted">Showing only the first 100 preparations.</p>}</section><section className="card application-section" aria-labelledby="workspace-create-preparation-heading"><h3 id="workspace-create-preparation-heading">Create preparation</h3>{readiness === "checking" && <p role="status">Checking candidate readiness and application display name…</p>}{readiness === "candidate_not_ready" && <p role="alert">A confirmed candidate CV is required before preparing an application. <Link to="/profile/cv">Continue CV onboarding</Link>.</p>}{readiness === "profile_missing" && <p role="alert">An application display name is required before preparing an application. <Link to="/profile">Update your profile</Link>.</p>}{readiness === "unavailable" && <p role="alert">Preparation readiness is unavailable. <button type="button" className="button-secondary" onClick={preparationReadiness.retry} disabled={pending}>Retry readiness</button> Saved history remains readable.</p>}{!workspace.job.actionable && <p role="alert">This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.</p>}{readiness === "ready" && workspace.job.actionable && <><label htmlFor="workspace-target-pages">Target CV pages</label><select id="workspace-target-pages" value={pages} onChange={(event) => setPages(Number(event.target.value) as 1 | 2 | 3)} disabled={pending}><option value={1}>1</option><option value={2}>2</option><option value={3}>3</option></select><label><input type="checkbox" checked={includeCoverLetter} onChange={(event) => setIncludeCoverLetter(event.target.checked)} disabled={pending} /> Include a cover letter</label><label htmlFor="workspace-application-questions">Application questions (one per line)</label><textarea id="workspace-application-questions" value={questions} onChange={(event) => setQuestions(event.target.value)} disabled={pending} /><button type="button" disabled={pending} onClick={() => void create()}>{pending ? "Preparing…" : "Create preparation"}</button>{notice && <p role="status">{notice} {created && <Link to={`/applications/${encodeURIComponent(created.id)}`}>Open preparation</Link>}</p>}{error && <p role="alert">{error}</p>}</>}</section></>;
 }
 
 function WorkspaceTracking({ applications, applicationLimit, onRefresh, onShowMore }: { applications: JobWorkspace["applications"]; applicationLimit: number; onRefresh: () => Promise<boolean>; onShowMore: () => Promise<boolean> }) {
