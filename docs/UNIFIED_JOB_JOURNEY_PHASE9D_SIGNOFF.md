@@ -30,7 +30,7 @@ repository's offline test fixtures and provider-forbidden seams.
 | FT4 | `frontend/src/App.test.tsx`, `frontend/src/ProfileSecondaryNavigation.test.tsx`, and `frontend/src/AiSettingsPage.test.tsx`: Profile navigation/source history, Home readiness, session replacement, Profile secondary navigation, and Settings behavior. |
 | B1 | `backend/tests/test_job_workspace.py` and `backend/tests/test_jobs_read_models.py`: bounded provider-free Workspace/opportunity/history projections, applicability, runtime attribution, ordering, malformed-record safety, and user scope. |
 | B2 | `backend/tests/test_application_preparation.py` and `backend/tests/test_application_tracking.py`: immutable preparation/detail/download history, tracking/event authority, provider-free reads, and cross-user safe 404 behavior. |
-| B3 | `backend/tests/test_discovery_schedule_service.py`: saved schedule ownership, execution history, snapshot behavior, cross-user isolation, and the Phase 9D provider-forbidden persisted-read regression. |
+| B3 | `backend/tests/test_discovery_schedule_service.py`: saved schedule ownership, execution history, snapshot behavior, cross-user isolation, and the Phase 9D authenticated persisted-read regression with FastAPI dependency overrides guarding execution, ATS acquisition, agentic, ranking, and semantic construction. |
 | B4 | `backend/tests/test_user_job_decisions.py`: explicit decision authority, absence versus persisted `undecided`, CAS/revision behavior, ordering, and user scoping. |
 | D1 | `docs/UNIFIED_JOB_JOURNEY_PHASE9_AUDIT.md` and `docs/UNIFIED_JOB_JOURNEY_UX_MIGRATION.md`: Phase 9A route, authority, history, compatibility, rollback, and migration contracts. |
 | D2 | `docs/UNIFIED_JOB_JOURNEY_PHASE9C_EVIDENCE.md`: repaired-branch 390px/desktop and keyboard evidence, including its intentionally retained historical exact-base rows. |
@@ -133,7 +133,7 @@ leak private identifiers or diagnostics.
 | Workspace GET | `F4`; `B1` provider-free Workspace tests, including lazy dependency and runtime-unavailable states. | Confirmed |
 | Applications list/detail/review/download | `F5`; `B2` application history/download provider-free test. | Confirmed |
 | Tracking list/detail/by-preparation/history | `F5`; `B2` real provider-free tracking dependency test. | Confirmed |
-| Saved schedule configuration and execution-history GETs | `F3`; `B3` `test_authenticated_schedule_reads_do_not_construct_execution_provider_dependency`. | Confirmed |
+| Saved schedule configuration and execution-history GETs | `F3`; `B3` `test_authenticated_schedule_reads_do_not_construct_execution_provider_dependency` uses persisted schedule/execution data and forbids execution, ATS acquisition, agentic, ranking, and semantic dependency construction. | Confirmed |
 
 Explicit writes remain explicit: discovery execution, evaluation, application
 preparation, and tracking status changes are not triggered by these reads.
