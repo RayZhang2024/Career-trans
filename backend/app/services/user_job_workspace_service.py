@@ -1,10 +1,15 @@
 """Provider-free, user-scoped reads for the canonical job workspace."""
 
 from collections.abc import Callable
+from datetime import datetime, timezone
+import json
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
+from app.models.application_preparation import ApplicationPreparation
+from app.models.application_tracking import ApplicationTrackingRecord
 from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
 from app.models.user_job_discovery import UserJobEvaluation
@@ -16,6 +21,11 @@ from app.schemas.job_workspace import (
     WorkspaceEvaluationApplicability,
     WorkspaceEvaluationRead,
     WorkspaceEvaluationResponse,
+    WorkspaceApplicationRead,
+    WorkspaceApplicationResponse,
+    WorkspaceApplicationResultSummary,
+    WorkspaceApplicationTargetRead,
+    WorkspaceApplicationTrackingSummary,
     WorkspaceJobRead,
     WorkspaceProvenanceRead,
     WorkspaceProvenanceResponse,
@@ -32,6 +42,7 @@ from app.services.semantic_runtime_attribution import read_attribution
 from app.services.user_job_discovery_service import reusable_current_evaluation, UserJobDiscoveryService
 from app.services.user_job_decision_service import UserJobDecisionService
 from app.schemas.job_ranking import RankedJobOpportunity
+from app.services.application_preparation_service import _decode_persisted_result
 
 
 class UserJobWorkspaceReadService:
@@ -48,7 +59,15 @@ class UserJobWorkspaceReadService:
         self._candidate_reader = candidate_reader or CanonicalCandidateReadService(session)
         self._runtime_snapshot_resolver = runtime_snapshot_resolver
 
-    def read(self, user_id: str, discovered_job_id: str, *, provenance_limit: int = 20, evaluation_limit: int = 20) -> JobWorkspaceRead:
+    def read(
+        self,
+        user_id: str,
+        discovered_job_id: str,
+        *,
+        provenance_limit: int = 20,
+        evaluation_limit: int = 20,
+        application_limit: int = 20,
+    ) -> JobWorkspaceRead:
         job = self._session.get(DiscoveredJob, discovered_job_id)
         if job is None:
             raise LookupError("Discovered job not found.")
@@ -63,6 +82,19 @@ class UserJobWorkspaceReadService:
             select(UserJobEvaluation).where(UserJobEvaluation.user_id == user_id, UserJobEvaluation.discovered_job_id == job.id)
             .order_by(UserJobEvaluation.created_at.desc(), UserJobEvaluation.id.asc()).limit(evaluation_limit + 1)
         ).all()
+        canonical_id = case(
+            (func.json_valid(ApplicationPreparation.target_snapshot_json) == 1,
+             func.json_extract(ApplicationPreparation.target_snapshot_json, "$.canonical_discovered_job_id")),
+            else_=None,
+        )
+        application_rows = self._session.scalars(
+            select(ApplicationPreparation)
+            .where(ApplicationPreparation.user_id == user_id, canonical_id == job.id)
+            .order_by(ApplicationPreparation.created_at.desc(), ApplicationPreparation.id.asc())
+            .limit(application_limit + 1)
+        ).all()
+        visible_application_rows = application_rows[:application_limit]
+        tracking_by_preparation = self._tracking_projection(user_id, visible_application_rows)
 
         current_evaluation = None
         current_reason: WorkspaceCurrentFitReason | None = None
@@ -121,6 +153,78 @@ class UserJobWorkspaceReadService:
             current_fit=current_fit,
             evaluations=WorkspaceEvaluationResponse(items=evaluations, limit=evaluation_limit, truncated=len(evaluation_rows) > evaluation_limit),
             decision=UserJobDecisionService(self._session).read(user_id, job.id),
+            applications=WorkspaceApplicationResponse(
+                items=[item for row in visible_application_rows if (item := self._application_read(row, job, tracking_by_preparation.get(row.id))) is not None],
+                limit=application_limit,
+                truncated=len(application_rows) > application_limit,
+            ),
+        )
+
+    def _tracking_projection(
+        self, user_id: str, preparations: list[ApplicationPreparation]
+    ) -> dict[str, ApplicationTrackingRecord]:
+        if not preparations:
+            return {}
+        preparation_ids = [row.id for row in preparations]
+        rows = self._session.execute(
+            select(ApplicationTrackingRecord)
+            .join(ApplicationPreparation, ApplicationPreparation.id == ApplicationTrackingRecord.preparation_id)
+            .where(
+                ApplicationPreparation.user_id == user_id,
+                ApplicationTrackingRecord.preparation_id.in_(preparation_ids),
+            )
+        ).scalars().all()
+        return {row.preparation_id: row for row in rows}
+
+    @staticmethod
+    def _application_read(
+        row: ApplicationPreparation,
+        job: DiscoveredJob,
+        tracking: ApplicationTrackingRecord | None,
+    ) -> WorkspaceApplicationRead | None:
+        try:
+            target = json.loads(row.target_snapshot_json)
+            target_read = WorkspaceApplicationTargetRead(
+                source_kind=target["source_kind"],
+                canonical_discovered_job_id=target.get("canonical_discovered_job_id"),
+                title=target["title"], company=target.get("company"), location=target.get("location"),
+                public_url=target.get("public_url"), work_arrangement=target.get("work_arrangement"),
+                employment_type=target.get("employment_type"), job_content_hash=target["job_content_hash"],
+            )
+        except (TypeError, KeyError, json.JSONDecodeError, ValidationError):
+            # A malformed target cannot be safely associated with a workspace.
+            return None
+        result_summary = None
+        try:
+            result, _, _ = _decode_persisted_result(row.preparation_result_json)
+            result_summary = WorkspaceApplicationResultSummary(
+                layout_status=result.layout_status.value,
+                target_pages=result.target_pages,
+                actual_pdf_pages=result.actual_pdf_pages,
+                has_cover_letter=result.cover_letter is not None,
+                answer_count=len(result.answers),
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # A malformed legacy result must not make the rest of the workspace
+            # unreadable, and no summary is invented for it.
+            result_summary = None
+        tracking_summary = None
+        if tracking is not None:
+            tracking_summary = WorkspaceApplicationTrackingSummary(
+                id=tracking.id,
+                preparation_id=tracking.preparation_id,
+                current_status=tracking.current_status,
+                revision=tracking.revision,
+                created_at=_utc(tracking.created_at),
+                updated_at=_utc(tracking.updated_at),
+            )
+        return WorkspaceApplicationRead(
+            preparation_id=row.id,
+            created_at=_utc(row.created_at),
+            target=target_read,
+            snapshot_status="current_job_content" if target.get("job_content_hash") == job.content_hash else "historical_job_content",
+            result_summary=result_summary,
+            tracking=tracking_summary,
         )
 
     @staticmethod
@@ -132,3 +236,8 @@ class UserJobWorkspaceReadService:
             id=row.id, created_at=row.created_at, applicability=applicability, opportunity=opportunity,
             runtime_attribution=read_attribution(row.runtime_attribution_json),
         )
+
+
+def _utc(value: datetime) -> datetime:
+    """SQLite may return timezone=True values as naive; restore UTC authority."""
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)

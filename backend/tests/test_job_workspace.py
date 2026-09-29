@@ -10,12 +10,15 @@ from app.core.security import create_access_token
 from app.main import app
 
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
+from app.models.application_preparation import ApplicationPreparation
+from app.models.application_tracking import ApplicationTrackingRecord
 from app.models.user_job_discovery import UserJobEvaluation
 from app.models.user_job_decision import UserJobDecision
 from app.schemas.candidate import CandidateEvidenceMaterializationStatus
 from app.schemas.ai_settings import SemanticOperation
 from app.schemas.job import JobProfile, JobRequirement
 from app.schemas.job_ranking import RankedJobOpportunity
+from app.schemas.application_preparation import ApplicationPreparationResult, ApplicationSourceRef, ApplicationTargetSnapshot, TailoredCVContent
 from app.schemas.matching import RequirementMatch
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_workspace_service import UserJobWorkspaceReadService
@@ -321,3 +324,74 @@ def test_workspace_currentness_rechecks_job_candidate_and_runtime_identity(db_se
     )
     changed_runtime = replace(runtime_snapshot_a, operations=changed_operations)
     assert read(current_reader, changed_runtime).current_fit.reason == "no_current_evaluation"
+
+
+def _workspace_preparation(preparation_id: str, user_id: str, job_id: str | None, content_hash: str, created_at: datetime, *, legacy: bool = False) -> ApplicationPreparation:
+    target = ApplicationTargetSnapshot(
+        source_kind="discovered_job", canonical_discovered_job_id=job_id, title="Saved role", company="Saved Co",
+        location="London", public_url="https://jobs.example.test/saved", job_profile=JobProfile(title="Saved role"),
+        job_content_hash=content_hash,
+    )
+    result = ApplicationPreparationResult(
+        cv=TailoredCVContent(
+            professional_summary="Saved summary",
+            summary_source_refs=[ApplicationSourceRef(source_type="career_evidence", source_ref="e1")],
+        ),
+        target_pages=2,
+        actual_pdf_pages=2,
+    )
+    return ApplicationPreparation(
+        id=preparation_id, user_id=user_id, target_snapshot_json=target.model_dump_json(),
+        identity_snapshot_json="{}", preparation_input_fingerprint="a" * 64,
+        preparation_contract_fingerprint="b" * 64,
+        preparation_result_json=result.model_dump_json() if legacy else '{"persistence_version":2,"result":' + result.model_dump_json() + ',"evidence_snapshot_status":"available","evidence_sources":[]}',
+        created_at=created_at,
+    )
+
+
+def test_workspace_application_projection_is_scoped_bounded_ordered_and_set_joined(db_session):
+    job = _job(2421)
+    other_job = _job(2422)
+    db_session.add_all([_user("owner"), _user("other"), job, other_job])
+    db_session.commit()
+    now = datetime.now(timezone.utc)
+    rows = [
+        _workspace_preparation("prep-a", "owner", job.id, job.content_hash, now),
+        _workspace_preparation("prep-b", "owner", job.id, "old-hash", now),
+        _workspace_preparation("prep-c", "owner", job.id, job.content_hash, now - timedelta(seconds=1)),
+        _workspace_preparation("prep-other-job", "owner", other_job.id, other_job.content_hash, now),
+        _workspace_preparation("prep-other-user", "other", job.id, job.content_hash, now),
+        _workspace_preparation("prep-null", "owner", None, job.content_hash, now),
+    ]
+    db_session.add_all(rows)
+    db_session.add(ApplicationTrackingRecord(preparation_id="prep-b", current_status="interview", revision=2, created_at=now, updated_at=now))
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(db_session).read("owner", job.id, application_limit=2)
+
+    assert [item.preparation_id for item in workspace.applications.items] == ["prep-a", "prep-b"]
+    assert workspace.applications.limit == 2
+    assert workspace.applications.truncated is True
+    assert workspace.applications.items[0].snapshot_status == "current_job_content"
+    assert workspace.applications.items[1].snapshot_status == "historical_job_content"
+    assert workspace.applications.items[0].tracking is None
+    assert workspace.applications.items[1].tracking is not None
+    assert workspace.applications.items[1].tracking.current_status == "interview"
+
+
+def test_workspace_application_projection_safely_excludes_malformed_targets_and_supports_legacy_results(db_session):
+    job = _job(2423)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    valid = _workspace_preparation("prep-valid", "owner", job.id, job.content_hash, datetime.now(timezone.utc), legacy=True)
+    malformed = _workspace_preparation("prep-malformed", "owner", job.id, job.content_hash, datetime.now(timezone.utc))
+    malformed.target_snapshot_json = "{not-json"
+    db_session.add_all([valid, malformed])
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(db_session).read("owner", job.id)
+
+    assert [item.preparation_id for item in workspace.applications.items] == ["prep-valid"]
+    assert workspace.applications.items[0].result_summary is not None
+    assert workspace.applications.items[0].result_summary.actual_pdf_pages == 2
+    assert workspace.applications.items[0].created_at.tzinfo is not None

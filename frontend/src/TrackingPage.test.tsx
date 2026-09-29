@@ -97,11 +97,11 @@ describe("Issue #184 application tracking workspace", () => {
     expect(paths(fetch)).not.toContain("/api/v1/applications/prep-1/review");
   });
 
-  it("loads no tracking data from Applications history", async () => {
+  it("loads one global tracking projection for Applications history", async () => {
     const fetch = fetcher(); renderApp(fetch, "/applications");
     expect(await screen.findByRole("heading", { name: "Applications" })).toBeInTheDocument();
     await waitFor(() => expect(paths(fetch)).toContain("/api/v1/applications"));
-    expect(paths(fetch).some((path) => path.includes("application-tracking"))).toBe(false);
+    expect(paths(fetch).filter((path) => path === "/api/v1/application-tracking")).toHaveLength(1);
   });
 
   it("waits for preparation ownership before looking up tracking and leaves V2C2 content visible on tracking failure", async () => {

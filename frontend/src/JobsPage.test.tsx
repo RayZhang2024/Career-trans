@@ -37,7 +37,7 @@ const savedExecution = (status: ScheduledExecutionRead["status"] = "completed"):
 const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
 const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1, decision: decision(id) });
 const workspaceJob = (patch: Record<string, unknown> = {}) => ({ id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z", ...patch });
-const workspacePayload = (workspaceDecision = decision("actionable"), patch: Record<string, unknown> = {}) => ({ job: workspaceJob(), decision: workspaceDecision, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false }, ...patch });
+const workspacePayload = (workspaceDecision = decision("actionable"), patch: Record<string, unknown> = {}) => ({ job: workspaceJob(), decision: workspaceDecision, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false }, applications: { items: [], limit: 20, truncated: false }, ...patch });
 const listedDecision = (id: string, value: "shortlisted" | "dismissed", revision: number, title = `${value} ${id}`) => ({ discovered_job_id: id, title, company: "Public Co", location: "London", url: `https://public.example.test/${id}`, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "new" as const, verification_status: "verified" as const, verification_reason: null, actionable: true, last_seen_at: "2026-02-02T00:00:00Z", decision: value, revision, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" });
 const historyDetail: HistoricalRunJobDetail = { discovered_job_id: "job-0", evaluation_id: "historical-eval", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Historical role"), runtime_attribution: { status: "available", provider: "openai", operations: { job_relevance: { model: "old-job-relevance", reasoning_effort: null }, job_archetype: { model: "old-archetype", reasoning_effort: "low" }, job_extraction: { model: "old-extraction", reasoning_effort: "medium" }, requirement_matching: { model: "old-matching", reasoning_effort: "high" }, career_alignment: { model: "old-alignment", reasoning_effort: "max" } } } };
 const json = (body: unknown, status = 200) => new Response(body === undefined ? "" : JSON.stringify(body), { status });
@@ -1778,5 +1778,39 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     fireEvent.click(screen.getByRole("button", { name: "Manage dismissed jobs" }));
     expect(await screen.findByText(dismissed.title)).toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=dismissed&limit=20");
+  });
+
+  it("renders Workspace preparation history and reuses the canonical preparation endpoint", async () => {
+    const application = { preparation_id: "prep-1", created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "Saved workspace role", company: "Public Co", location: "London", public_url: "https://public.example.test/actionable", work_arrangement: "Hybrid", employment_type: "Full-time", job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: { layout_status: "fit", target_pages: 2, actual_pdf_pages: 2, has_cover_letter: true, answer_count: 1 }, tracking: null };
+    let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": (_url, init) => init?.method === "POST" ? json({ detail: "unexpected" }, 405) : json(workspacePayload(decision("actionable"), { applications: { items: [application], limit: 20, truncated: false } })),
+      "POST /api/v1/applications/prepare": (_url, init) => { posts += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ target: { discovered_job_id: "actionable" }, target_pages: 2, include_cover_letter: true }); return json({ id: "prep-created" }, 201); },
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    expect(await screen.findByText("Saved workspace role")).toBeInTheDocument();
+    expect(screen.getByText("Current job content")).toBeInTheDocument();
+    expect(screen.queryByText(/not part of this Job Workspace yet/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open preparation" })).toHaveAttribute("href", "/applications/prep-1");
+    fireEvent.click(await screen.findByRole("button", { name: "Create preparation" }));
+    await waitFor(() => expect(posts).toBe(1));
+    await waitFor(() => expect(screen.getAllByRole("link", { name: "Open preparation" }).some((link) => link.getAttribute("href") === "/applications/prep-created")).toBe(true));
+  });
+
+  it("renders independent Workspace tracking states and synchronously locks duplicate starts", async () => {
+    const base = (id: string, tracking: unknown) => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: id, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking });
+    let workspaceCalls = 0; let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => { workspaceCalls += 1; return json(workspacePayload(decision("actionable"), { applications: { items: [base("prep-a", null), base("prep-b", { id: "track-b", preparation_id: "prep-b", current_status: "interview", revision: 2, created_at: "2026-03-01T12:00:00Z", updated_at: "2026-03-02T12:00:00Z" })], limit: 20, truncated: false } })); },
+      "POST /api/v1/application-tracking": () => { posts += 1; return json({ id: "track-a", preparation_id: "prep-a" }, 201); },
+    });
+    renderJobs(fetch, "/jobs/actionable/tracking");
+    expect(await screen.findByText("Not tracked")).toBeInTheDocument();
+    expect(screen.getByText("interview", { exact: false })).toBeInTheDocument();
+    const start = screen.getByRole("button", { name: "Start tracking" });
+    fireEvent.click(start); fireEvent.click(start);
+    await waitFor(() => expect(posts).toBe(1));
+    expect(workspaceCalls).toBeGreaterThan(1);
+    expect(screen.getByText(/workspace projection is refreshing/i)).toBeInTheDocument();
   });
 });

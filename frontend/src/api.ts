@@ -376,10 +376,18 @@ export type JobWorkspace = {
   current_fit: { status: "current" | "none" | "unavailable"; reason: string | null; evaluation: JobWorkspaceEvaluation | null };
   evaluations: { items: JobWorkspaceEvaluation[]; limit: number; truncated: boolean };
   decision: UserJobDecision;
+  applications: { items: JobWorkspaceApplication[]; limit: number; truncated: boolean };
 };
 export type JobWorkspaceEvaluation = {
   id: string; created_at: string; applicability: "current" | "historical" | "unknown";
   opportunity: RankedJobOpportunity; runtime_attribution: SemanticRuntimeAttribution | null;
+};
+export type JobWorkspaceApplication = {
+  preparation_id: string; created_at: string;
+  target: { source_kind: "discovered_job" | "job_text" | "job_url"; canonical_discovered_job_id: string | null; title: string; company: string | null; location: string | null; public_url: string | null; work_arrangement: string | null; employment_type: string | null; job_content_hash: string };
+  snapshot_status: "current_job_content" | "historical_job_content";
+  result_summary: { layout_status: string; target_pages: number; actual_pdf_pages: number; has_cover_letter: boolean; answer_count: number } | null;
+  tracking: { id: string; preparation_id: string; current_status: ApplicationTrackingStatus; revision: number; created_at: string; updated_at: string } | null;
 };
 
 export type ApplicationSourceRef = { source_type: string; source_ref: string; value?: string | null };

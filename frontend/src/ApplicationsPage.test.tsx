@@ -77,7 +77,7 @@ describe("Issue #180 Applications workspace", () => {
     expect(screen.getByText("Not included")).toBeInTheDocument();
     expect(requestPaths(fetch).filter((path) => path === "/api/v1/applications")).toHaveLength(1);
     expect(requestPaths(fetch).some((path) => path.endsWith("/review"))).toBe(false);
-    expect(requestPaths(fetch).some((path) => path.includes("application-tracking"))).toBe(false);
+    expect(requestPaths(fetch).filter((path) => path === "/api/v1/application-tracking")).toHaveLength(1);
   });
 
   it("supports direct deep links and renders immutable target, identity, factual content and provenance", async () => {

@@ -9,6 +9,7 @@ import { SearchIntentEditor } from "./SearchIntentEditor";
 import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
 import { runSavedDiscoveryNowWithReconciliation, type DiscoveryRunReconciliation } from "./discoveryRunNow";
 import { DecisionControls, undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
+import { createApplicationPreparation } from "./applicationPreparationController";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
 type InboxDismissalNotice = { decision: UserJobDecision; title: string; message: string };
@@ -178,7 +179,10 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
     lock.current = true; setPending(true); setError(null); setCreated(null); setReconciled([]);
     const payload: ApplicationPrepareRequest = { target: { discovered_job_id: opportunity.discovered_job_id }, target_pages: pages, include_cover_letter: includeLetter, application_questions: cleanedQuestions };
     try {
-      const result = await api.request<ApplicationPreparation>("/api/v1/applications/prepare", { method: "POST", body: JSON.stringify(payload) });
+      const mutation = await createApplicationPreparation(api, payload);
+      if (mutation.kind === "locked") return;
+      if (mutation.kind === "error") throw mutation.error;
+      const result = mutation.value;
       if (alive.current && requestGeneration === generation.current) setCreated(result);
     } catch (reason) {
       if (!alive.current || requestGeneration !== generation.current || (reason as Error)?.name === "AbortError") return;

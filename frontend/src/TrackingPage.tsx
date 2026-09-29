@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, type ApplicationTracking, type ApplicationTrackingListItem, type ApplicationTrackingStatus } from "./api";
 import { useAuth } from "./auth";
+import { createApplicationTracking } from "./applicationTrackingController";
 
 const statuses: ApplicationTrackingStatus[] = ["prepared", "applied", "interview", "rejected", "offer", "withdrawn"];
 const statusLabel = (value: ApplicationTrackingStatus) => value[0].toUpperCase() + value.slice(1);
@@ -65,9 +66,10 @@ export function PreparationTrackingPanel({ preparationId }: { preparationId: str
     const current = generation.current;
     const ownerId = user?.id;
     try {
-      const value = await api.request<ApplicationTracking>("/api/v1/application-tracking", {
-        method: "POST", body: JSON.stringify({ preparation_id: preparationId, status: initialStatus }),
-      });
+      const result = await createApplicationTracking(api, preparationId, initialStatus);
+      if (result.kind === "locked") return;
+      if (result.kind === "error") throw result.error;
+      const value = result.value;
       if (generation.current === current && ownerId === user?.id && value.preparation_id === preparationId && monotonic(accepted.current, value, value.id)) {
         accepted.current = value; setState({ phase: "ready", value });
       }
