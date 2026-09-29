@@ -82,14 +82,32 @@ class UserJobWorkspaceReadService:
             select(UserJobEvaluation).where(UserJobEvaluation.user_id == user_id, UserJobEvaluation.discovered_job_id == job.id)
             .order_by(UserJobEvaluation.created_at.desc(), UserJobEvaluation.id.asc()).limit(evaluation_limit + 1)
         ).all()
+        target_json_valid = func.json_valid(ApplicationPreparation.target_snapshot_json) == 1
         canonical_id = case(
-            (func.json_valid(ApplicationPreparation.target_snapshot_json) == 1,
-             func.json_extract(ApplicationPreparation.target_snapshot_json, "$.canonical_discovered_job_id")),
+            (target_json_valid, func.json_extract(ApplicationPreparation.target_snapshot_json, "$.canonical_discovered_job_id")),
+            else_=None,
+        )
+        source_kind = case(
+            (target_json_valid, func.json_extract(ApplicationPreparation.target_snapshot_json, "$.source_kind")),
+            else_=None,
+        )
+        target_title = case(
+            (target_json_valid, func.json_extract(ApplicationPreparation.target_snapshot_json, "$.title")),
+            else_=None,
+        )
+        target_hash = case(
+            (target_json_valid, func.json_extract(ApplicationPreparation.target_snapshot_json, "$.job_content_hash")),
             else_=None,
         )
         application_rows = self._session.scalars(
             select(ApplicationPreparation)
-            .where(ApplicationPreparation.user_id == user_id, canonical_id == job.id)
+            .where(
+                ApplicationPreparation.user_id == user_id,
+                canonical_id == job.id,
+                source_kind.is_not(None),
+                target_title.is_not(None),
+                target_hash.is_not(None),
+            )
             .order_by(ApplicationPreparation.created_at.desc(), ApplicationPreparation.id.asc())
             .limit(application_limit + 1)
         ).all()

@@ -54,32 +54,24 @@ export function PreparationTrackingPanel({ preparationId }: { preparationId: str
     return () => { generation.current += 1; };
   }, [api, preparationId, user?.id]);
 
-  async function reconcile(message: string) {
-    const current = generation.current;
-    setNotice(message);
-    await lookup(current, user?.id);
-  }
-
   async function startTracking() {
     if (pending) return;
     setPending(true); setNotice("");
     const current = generation.current;
     const ownerId = user?.id;
     try {
-      const result = await createApplicationTracking(api, preparationId, initialStatus);
-      if (result.kind === "locked") return;
-      if (result.kind === "error") throw result.error;
-      const value = result.value;
-      if (generation.current === current && ownerId === user?.id && value.preparation_id === preparationId && monotonic(accepted.current, value, value.id)) {
+      const result = await createApplicationTracking(api, preparationId, initialStatus, { userId: ownerId, getUserId: () => user?.id, reconcile: () => lookup(current, ownerId) });
+      if (result.kind === "session_stale" || generation.current !== current || ownerId !== user?.id) return;
+      if (result.kind === "locked") {
+        setNotice("A tracking request for this preparation is already in progress. No duplicate was created.");
+      } else if (result.kind === "confirmed") {
+        const value = result.value;
         accepted.current = value; setState({ phase: "ready", value });
-      }
-    } catch (error) {
-      if (generation.current !== current || ownerId !== user?.id || (error as Error)?.name === "AbortError") return;
-      if (error instanceof ApiError && error.status === 409) {
-        await reconcile("Tracking may already exist. The currently recorded state is shown if available; the request is not repeated.");
-      } else if (!(error instanceof ApiError)) {
-        await reconcile("The start request was interrupted. Any currently recorded tracking state is shown without attributing its cause.");
-      } else if (error.status === 404) {
+      } else if (result.kind === "reconciled_existing") {
+        setNotice("Tracking may already exist. The currently recorded state is shown if available; the request is not repeated.");
+      } else if (result.kind === "uncertain") {
+        setNotice("The start request was interrupted. Any currently recorded tracking state is shown without attributing its cause.");
+      } else if (result.kind === "not_found") {
         setState({ phase: "error", message: "This preparation is not available to this account." });
       } else {
         setState({ phase: "error", message: "Tracking could not be started. You can try explicitly again." });

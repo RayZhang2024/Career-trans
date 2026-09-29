@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, type ApplicationPreparation, type ApplicationPrepareRequest, type OnboardingStatus, type Profile } from "./api";
+import { ApiError, type ApplicationPreparation, type ApplicationPrepareRequest } from "./api";
 import { useAuth } from "./auth";
+import { createApplicationPreparation, readPreparationPrerequisites } from "./applicationPreparationController";
 
 type Prerequisite = "checking" | "ready" | "candidate_info_missing" | "profile_missing" | "unavailable";
 type SourceMode = "text" | "url";
@@ -17,13 +18,6 @@ function isHttpUrl(value: string): boolean {
     const parsed = new URL(value);
     return (parsed.protocol === "http:" || parsed.protocol === "https:") && Boolean(parsed.hostname);
   } catch { return false; }
-}
-
-function resolvePrerequisite(statusResult: PromiseSettledResult<OnboardingStatus>, profileResult: PromiseSettledResult<Profile>): Prerequisite {
-  if (statusResult.status === "fulfilled" && !statusResult.value.candidate_context_ready) return "candidate_info_missing";
-  if (statusResult.status !== "fulfilled") return "unavailable";
-  if (profileResult.status === "rejected") return profileResult.reason instanceof ApiError && profileResult.reason.status === 404 ? "profile_missing" : "unavailable";
-  return profileResult.value.display_name?.trim() ? "ready" : "profile_missing";
 }
 
 export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh: () => Promise<boolean> }) {
@@ -61,12 +55,9 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
     setPrerequisiteOwner(requestOwner);
     setPrerequisite("checking");
     setPrerequisiteError("");
-    const [statusResult, profileResult] = await Promise.allSettled([
-      api.request<OnboardingStatus>("/api/v1/onboarding/status"),
-      api.request<Profile>("/api/v1/profile"),
-    ]);
-    if (!alive.current || request !== prerequisiteGeneration.current || identityRef.current !== requestOwner) return null;
-    const resolved = resolvePrerequisite(statusResult, profileResult);
+    const result = await readPreparationPrerequisites(api, { userId: requestOwner, getUserId: () => identityRef.current });
+    if (!alive.current || request !== prerequisiteGeneration.current || identityRef.current !== requestOwner || result.state === "session_stale") return null;
+    const resolved: Prerequisite = result.state === "candidate_not_ready" ? "candidate_info_missing" : result.state === "profile_missing" ? "profile_missing" : result.state === "ready" ? "ready" : "unavailable";
     setPrerequisite(resolved);
     if (resolved === "unavailable") setPrerequisiteError("Career-trans could not confirm the current preparation prerequisites. Retry before creating a preparation.");
     return resolved;
@@ -104,31 +95,33 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
     setError("");
     setCreated(null);
     try {
-      const result = await api.request<ApplicationPreparation>("/api/v1/applications/prepare", { method: "POST", body: JSON.stringify(payload) });
-      if (!alive.current || identityRef.current !== submitOwner) return;
-      setCreated(result);
-      void onHistoryRefresh();
-    } catch (reason) {
-      if (!alive.current || identityRef.current !== submitOwner || (reason as Error)?.name === "AbortError") return;
-      if (!(reason instanceof ApiError)) {
+      const result = await createApplicationPreparation(api, payload, { userId: submitOwner, getUserId: () => identityRef.current });
+      if (!alive.current || identityRef.current !== submitOwner || result.kind === "session_stale") return;
+      if (result.kind === "locked") setError("A preparation request is already in progress. No new preparation was created.");
+      else if (result.kind === "confirmed") { setCreated(result.value); void onHistoryRefresh(); }
+      else if (result.kind === "uncertain") {
         let historyRefreshed = false;
         try { historyRefreshed = await onHistoryRefresh(); } catch { /* History and request outcomes are independent. */ }
         if (!alive.current || identityRef.current !== submitOwner) return;
         setError(historyRefreshed
           ? "The preparation request was interrupted. Career-trans cannot confirm from this response whether a preparation was created. Saved application history has been refreshed; entries remain ordinary saved history."
           : "The preparation request was interrupted. Career-trans cannot confirm from this response whether a preparation was created. Saved application history could not be confirmed as refreshed.");
-      } else if (reason.status === 409) {
-        const refreshed = await refreshPrerequisites();
-        if (!alive.current || refreshed === null) return;
-        if (refreshed === "candidate_info_missing" || refreshed === "profile_missing" || refreshed === "unavailable") return;
-        setError("Career-trans could not complete this preparation with the current application data. No preparation success was confirmed.");
-      } else if (reason.status === 422 && reason.detail === INSUFFICIENT_DETAIL) {
+      } else if (result.kind === "prerequisite_conflict") {
+        const refreshed = result.prerequisites.state === "candidate_not_ready" ? "candidate_info_missing" : result.prerequisites.state === "profile_missing" ? "profile_missing" : result.prerequisites.state === "ready" ? "ready" : "unavailable";
+        setPrerequisiteOwner(submitOwner); setPrerequisite(refreshed);
+        if (refreshed === "unavailable") setPrerequisiteError("Career-trans could not confirm the current preparation prerequisites. Retry before creating a preparation.");
+        else if (refreshed === "ready") setError("Career-trans could not complete this preparation with the current application data. No preparation success was confirmed.");
+      } else if (result.kind === "target_unavailable") {
+        setError(mode === "text"
+          ? "Career-trans could not obtain enough usable job requirements from this job description. Check that the full vacancy text is included."
+          : "Career-trans could not obtain enough usable vacancy detail from this URL. Try switching to Paste job description and provide the full text.");
+      } else if (result.kind === "failed" && result.error instanceof ApiError && result.error.status === 422 && result.error.detail === INSUFFICIENT_DETAIL) {
         setError(mode === "text"
           ? "Career-trans could not extract enough usable job requirements from this job description. Check that the full vacancy text is included."
           : "Career-trans could not obtain enough usable vacancy detail from this URL. Try switching to Paste job description and provide the full text.");
-      } else if (reason.status === 422) {
+      } else if (result.kind === "failed" && result.error instanceof ApiError && result.error.status === 422) {
         setError("Career-trans could not validate this preparation request. Review the entered vacancy and preparation options, then try again.");
-      } else if (reason.status === 503) {
+      } else if (result.kind === "failed" && result.error instanceof ApiError && result.error.status === 503) {
         setError("Application preparation is temporarily unavailable. Your saved application history remains available.");
       } else {
         setError("Career-trans could not complete this preparation with the current application data. No preparation success was confirmed.");

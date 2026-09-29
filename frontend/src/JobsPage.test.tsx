@@ -1813,4 +1813,36 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(workspaceCalls).toBeGreaterThan(1);
     expect(screen.getByText(/workspace projection is refreshing/i)).toBeInTheDocument();
   });
+
+  it("keeps Tracking show-more on the shared bounded application window", async () => {
+    const item = (id: string) => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: id, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null });
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": (url) => url.searchParams.get("application_limit") === "40"
+        ? json(workspacePayload(decision("actionable"), { applications: { items: [item("prep-40")], limit: 40, truncated: false } }))
+        : json(workspacePayload(decision("actionable"), { applications: { items: [item("prep-20")], limit: 20, truncated: true } })),
+    });
+    renderJobs(fetch, "/jobs/actionable/tracking");
+    expect(await screen.findByText("prep-20")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(await screen.findByText("prep-40")).toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/workspaces/actionable?application_limit=40");
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+  });
+
+  it("refreshes full Workspace authority after preparation target unavailability", async () => {
+    let workspaceCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => {
+        workspaceCalls += 1;
+        return json(workspacePayload(decision("actionable"), { job: workspaceJob({ actionable: workspaceCalls === 1 }) }));
+      },
+      "POST /api/v1/applications/prepare": () => json({ detail: "gone" }, 404),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    await screen.findByRole("button", { name: "Create preparation" });
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByText("This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.")).toBeInTheDocument();
+    expect(workspaceCalls).toBeGreaterThan(1);
+    expect(screen.queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
+  });
 });

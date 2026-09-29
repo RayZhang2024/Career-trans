@@ -1,5 +1,6 @@
 """Focused provider-free regressions for the Phase 6 canonical job workspace."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 
@@ -395,3 +396,21 @@ def test_workspace_application_projection_safely_excludes_malformed_targets_and_
     assert workspace.applications.items[0].result_summary is not None
     assert workspace.applications.items[0].result_summary.actual_pdf_pages == 2
     assert workspace.applications.items[0].created_at.tzinfo is not None
+
+
+def test_workspace_application_projection_filters_structurally_malformed_valid_json_before_bound(db_session):
+    job = _job(2424)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    now = datetime.now(timezone.utc)
+    malformed = _workspace_preparation("prep-structurally-malformed", "owner", job.id, job.content_hash, now)
+    malformed.target_snapshot_json = json.dumps({"source_kind": "discovered_job", "canonical_discovered_job_id": job.id})
+    valid_new = _workspace_preparation("prep-valid-new", "owner", job.id, job.content_hash, now - timedelta(seconds=1))
+    valid_old = _workspace_preparation("prep-valid-old", "owner", job.id, job.content_hash, now - timedelta(seconds=2))
+    db_session.add_all([malformed, valid_new, valid_old])
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(db_session).read("owner", job.id, application_limit=1)
+
+    assert [item.preparation_id for item in workspace.applications.items] == ["prep-valid-new"]
+    assert workspace.applications.truncated is True
