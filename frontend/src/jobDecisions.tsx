@@ -71,13 +71,14 @@ export function useJobDecisionMutator() {
   return { mutate, pending, notices, clearNotice };
 }
 
-export function DecisionControls({ decision: input, onMutate, disabled = false }: { decision?: UserJobDecision; onMutate: (target: UserJobDecisionValue) => void; disabled?: boolean }) {
+export function DecisionControls({ decision: input, onMutate, disabled = false, context }: { decision?: UserJobDecision; onMutate: (target: UserJobDecisionValue) => void; disabled?: boolean; context?: string }) {
   const decision = input ?? undecidedDecision("");
   const busy = disabled;
+  const actionLabel = (label: string) => context ? `${label} ${context}` : label;
   return <div className="card-actions" aria-label="Your decision">
     <strong>Your decision:</strong>
-    {decision.decision === "undecided" && <><button type="button" className="button-secondary" disabled={busy} onClick={() => onMutate("shortlisted")}>Shortlist</button><button type="button" className="button-secondary" disabled={busy} onClick={() => onMutate("dismissed")}>Dismiss</button></>}
-    {decision.decision === "shortlisted" && <><span aria-label="Shortlisted">Shortlisted</span><button type="button" className="button-secondary" disabled={busy} onClick={() => onMutate("undecided")}>Remove from shortlist</button><button type="button" className="button-secondary" disabled={busy} onClick={() => onMutate("dismissed")}>Dismiss</button></>}
-    {decision.decision === "dismissed" && <><span aria-label="Dismissed">Dismissed</span><button type="button" className="button-secondary" disabled={busy} onClick={() => onMutate("undecided")}>Undo dismissal</button><button type="button" className="button-secondary" disabled={busy} onClick={() => onMutate("shortlisted")}>Shortlist</button></>}
+    {decision.decision === "undecided" && <><button type="button" className="button-secondary" aria-label={actionLabel("Shortlist")} disabled={busy} onClick={() => onMutate("shortlisted")}>Shortlist</button><button type="button" className="button-secondary" aria-label={actionLabel("Dismiss")} disabled={busy} onClick={() => onMutate("dismissed")}>Dismiss</button></>}
+    {decision.decision === "shortlisted" && <><span aria-label="Shortlisted">Shortlisted</span><button type="button" className="button-secondary" aria-label={actionLabel("Remove from shortlist")} disabled={busy} onClick={() => onMutate("undecided")}>Remove from shortlist</button><button type="button" className="button-secondary" aria-label={actionLabel("Dismiss")} disabled={busy} onClick={() => onMutate("dismissed")}>Dismiss</button></>}
+    {decision.decision === "dismissed" && <><span aria-label="Dismissed">Dismissed</span><button type="button" className="button-secondary" aria-label={actionLabel("Undo dismissal")} disabled={busy} onClick={() => onMutate("undecided")}>Undo dismissal</button><button type="button" className="button-secondary" aria-label={actionLabel("Shortlist")} disabled={busy} onClick={() => onMutate("shortlisted")}>Shortlist</button></>}
   </div>;
 }

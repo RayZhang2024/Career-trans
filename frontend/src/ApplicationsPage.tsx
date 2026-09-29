@@ -16,6 +16,7 @@ const sourceNames: Record<string, string> = {
 const sourceName = (value: string) => sourceNames[value] ?? "Application source";
 const targetName = (value: ApplicationPreparation["target"]["source_kind"]) => value === "discovered_job" ? "Ranked opportunity" : value === "job_text" ? "Provided job description" : "Job URL";
 const dateLabel = (value: string) => new Date(value).toLocaleString();
+const preparationContextLabel = (value: ApplicationPreparation) => [value.target.title, value.target.company, value.target.location, `created ${dateLabel(value.created_at)}`].filter(Boolean).join(" · ");
 
 function EvidenceUsed({ refs, review, citations, reviewPending }: { refs: ApplicationSourceRef[]; review?: ApplicationPreparationReview; citations: CitationUsage; reviewPending: boolean }) {
   if (!refs.length) return null;
@@ -40,6 +41,7 @@ type TrackingProjection = { phase: "ready"; items: ApplicationTrackingListItem[]
 
 function PreparationSummary({ value, tracking }: { value: ApplicationPreparation; tracking: TrackingProjection }) {
   const tracked = tracking.phase === "ready" ? tracking.items.find((item) => item.preparation_id === value.id) : undefined;
+  const context = preparationContextLabel(value);
   return <article className="card application-summary">
     <p className="eyebrow">Created {dateLabel(value.created_at)}</p>
     <h2><Link to={`/applications/${encodeURIComponent(value.id)}`}>{value.target.title}</Link></h2>
@@ -50,8 +52,8 @@ function PreparationSummary({ value, tracking }: { value: ApplicationPreparation
       <div><dt>Cover letter</dt><dd>{value.result.cover_letter ? "Included" : "Not included"}</dd></div>
       <div><dt>Question answers</dt><dd>{value.result.answers.length}</dd></div>
     </dl>
-    {tracking.phase === "unavailable" ? <p className="muted">Tracking status is temporarily unavailable.</p> : <p>{tracked ? <>Tracked: <strong>{tracked.current_status}</strong> · <Link to={`/tracking/${encodeURIComponent(tracked.id)}`}>Open tracking</Link></> : "Not tracked"}</p>}
-    <Link to={`/applications/${encodeURIComponent(value.id)}`}>Review preparation</Link>
+    {tracking.phase === "unavailable" ? <p className="muted">Tracking status is temporarily unavailable.</p> : <p>{tracked ? <>Tracked: <strong>{tracked.current_status}</strong> · <Link aria-label={`Open tracking for ${context} · ${tracked.current_status} · updated ${dateLabel(tracked.updated_at)}`} to={`/tracking/${encodeURIComponent(tracked.id)}`}>Open tracking</Link></> : "Not tracked"}</p>}
+    <Link aria-label={`Review preparation for ${context}`} to={`/applications/${encodeURIComponent(value.id)}`}>Review preparation</Link>
   </article>;
 }
 
