@@ -97,18 +97,33 @@ Focused tests now directly prove:
 
 Result: `PASS` for the completed rendered Issue #248 gate. This is a keyboard-operability smoke result, not an assistive-technology conformance claim.
 
-At both requested viewport sizes, the rendered surfaces were reachable without horizontal overflow. Keyboard-only interaction exercised:
+The earlier reachable checks recorded at exact reviewed head `5b5dc5a2b8c21dd0a70df30e08ff1db15903548a` remain applicable because the final evidence-completion commit changed only this document. Consolidated with the newly completed rendered gate, the minimum keyboard checklist was exercised as follows:
 
-- primary navigation, Job Search navigation, My opportunities navigation, and Workspace Overview/Fit/Application/Tracking tabs;
-- Inbox selection checkboxes and repeated Shortlist/Dismiss actions, with selection restored after the toggle;
-- repeated Recommended preparation toggles and decision actions, with the preparation panel and decision restored;
-- Shortlisted dismissal and Dismissed restore/Shortlist actions;
-- both Search History View run/Close run toggles, including distinct status/started-time contexts;
-- Workspace Application form controls and application-detail Start tracking;
+- primary navigation;
+- Profile navigation, including Profile secondary navigation;
+- Job Search navigation;
+- My opportunities navigation;
+- Job Workspace tabs: Overview, Fit, Application, and Tracking;
+- SearchIntent controls on Find jobs;
+- repeated job-card action groups across Inbox, Recommended, Shortlisted, and Dismissed, including Inbox selection checkboxes, decision actions, and Recommended preparation toggles;
+- Workspace Application form controls;
+- Workspace Tracking controls;
+- global Applications actions;
+- global Tracking actions;
+- Settings controls;
 - application-detail navigation/history and CV DOCX, CV PDF, cover-letter DOCX, and cover-letter PDF downloads;
 - Tracking detail status selection/save and the resulting status history.
 
-The smoke found no focus trap or positive `tabindex` requirement in the exercised controls. Visible labels remained intact, and no pointer-only interaction was required for the exercised actions. The PR remains draft/not merge-ready pending review.
+Keyboard-quality findings for the exercised controls were:
+
+- native links and buttons remained native;
+- tab order was logical;
+- visible focus indication was present;
+- no positive `tabIndex` was found;
+- no keyboard trap occurred after async state changes;
+- no pointer-only required action was identified.
+
+The PR remains draft/not merge-ready pending review.
 
 ### Downloads and status semantics
 
