@@ -99,18 +99,15 @@ class UserJobWorkspaceReadService:
             (target_json_valid, func.json_extract(ApplicationPreparation.target_snapshot_json, "$.job_content_hash")),
             else_=None,
         )
-        application_rows = self._session.scalars(
-            select(ApplicationPreparation)
-            .where(
-                ApplicationPreparation.user_id == user_id,
-                canonical_id == job.id,
-                source_kind.is_not(None),
-                target_title.is_not(None),
-                target_hash.is_not(None),
-            )
-            .order_by(ApplicationPreparation.created_at.desc(), ApplicationPreparation.id.asc())
-            .limit(application_limit + 1)
-        ).all()
+        application_rows = self._projectable_application_rows(
+            user_id=user_id,
+            job=job,
+            application_limit=application_limit,
+            canonical_id=canonical_id,
+            source_kind=source_kind,
+            target_title=target_title,
+            target_hash=target_hash,
+        )
         visible_application_rows = application_rows[:application_limit]
         tracking_by_preparation = self._tracking_projection(user_id, visible_application_rows)
 
@@ -177,6 +174,52 @@ class UserJobWorkspaceReadService:
                 truncated=len(application_rows) > application_limit,
             ),
         )
+
+    def _projectable_application_rows(
+        self,
+        *,
+        user_id: str,
+        job: DiscoveredJob,
+        application_limit: int,
+        canonical_id,
+        source_kind,
+        target_title,
+        target_hash,
+    ) -> list[ApplicationPreparation]:
+        """Return at most limit+1 rows that can actually form a workspace item.
+
+        SQL keeps the association user-scoped and provider-free, while bounded
+        chunks let schema-invalid JSON rows be skipped without consuming the
+        visible window or corrupting truncation.
+        """
+        chunk_size = max(application_limit + 1, 20)
+        offset = 0
+        projectable: list[ApplicationPreparation] = []
+        while len(projectable) <= application_limit:
+            rows = self._session.scalars(
+                select(ApplicationPreparation)
+                .where(
+                    ApplicationPreparation.user_id == user_id,
+                    canonical_id == job.id,
+                    source_kind.is_not(None),
+                    target_title.is_not(None),
+                    target_hash.is_not(None),
+                )
+                .order_by(ApplicationPreparation.created_at.desc(), ApplicationPreparation.id.asc())
+                .offset(offset)
+                .limit(chunk_size)
+            ).all()
+            if not rows:
+                break
+            offset += len(rows)
+            for row in rows:
+                if self._application_read(row, job, None) is not None:
+                    projectable.append(row)
+                    if len(projectable) > application_limit:
+                        break
+            if len(rows) < chunk_size:
+                break
+        return projectable
 
     def _tracking_projection(
         self, user_id: str, preparations: list[ApplicationPreparation]

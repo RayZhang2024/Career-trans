@@ -414,3 +414,31 @@ def test_workspace_application_projection_filters_structurally_malformed_valid_j
 
     assert [item.preparation_id for item in workspace.applications.items] == ["prep-valid-new"]
     assert workspace.applications.truncated is True
+
+
+def test_workspace_application_projection_iterates_past_schema_invalid_target_rows(db_session):
+    job = _job(2425)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    now = datetime.now(timezone.utc)
+    malformed_rows = []
+    for index in range(21):
+        row = _workspace_preparation(f"prep-invalid-{index:02d}", "owner", job.id, job.content_hash, now - timedelta(seconds=index))
+        target = json.loads(row.target_snapshot_json)
+        if index % 3 == 0:
+            target["source_kind"] = "bad-kind"
+        elif index % 3 == 1:
+            target["title"] = 42
+        else:
+            target["public_url"] = {"not": "a string"}
+        row.target_snapshot_json = json.dumps(target)
+        malformed_rows.append(row)
+    valid_new = _workspace_preparation("prep-valid-after-invalid", "owner", job.id, job.content_hash, now - timedelta(seconds=21))
+    valid_old = _workspace_preparation("prep-valid-old-after-invalid", "owner", job.id, job.content_hash, now - timedelta(seconds=22))
+    db_session.add_all([*malformed_rows, valid_new, valid_old])
+    db_session.commit()
+
+    workspace = UserJobWorkspaceReadService(db_session).read("owner", job.id, application_limit=1)
+
+    assert [item.preparation_id for item in workspace.applications.items] == ["prep-valid-after-invalid"]
+    assert workspace.applications.truncated is True

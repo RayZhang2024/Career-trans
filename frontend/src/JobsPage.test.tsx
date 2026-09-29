@@ -1814,6 +1814,31 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(screen.getByText(/workspace projection is refreshing/i)).toBeInTheDocument();
   });
 
+  it("reports Workspace tracking conflict only after authoritative reconciliation succeeds", async () => {
+    const base = (tracking: unknown) => ({ preparation_id: "prep-a", created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "prep-a", company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking });
+    let workspaceCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [base(workspaceCalls++ === 0 ? null : { id: "track-a", preparation_id: "prep-a", current_status: "interview", revision: 2, created_at: "2026-03-01T12:00:00Z", updated_at: "2026-03-02T12:00:00Z" })], limit: 20, truncated: false } })),
+      "POST /api/v1/application-tracking": () => json({ detail: "already exists" }, 409),
+    });
+    renderJobs(fetch, "/jobs/actionable/tracking");
+    fireEvent.click(await screen.findByRole("button", { name: "Start tracking" }));
+    expect(await screen.findByText(/current saved state is being shown without retrying/)).toBeInTheDocument();
+    expect(await screen.findByText(/interview/i)).toBeInTheDocument();
+  });
+
+  it("does not claim Workspace tracking state when conflict reconciliation fails", async () => {
+    let workspaceCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => workspaceCalls++ === 0 ? json(workspacePayload(decision("actionable"), { applications: { items: [{ preparation_id: "prep-a", created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "prep-a", company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null }], limit: 20, truncated: false } })) : json(undefined, 503),
+      "POST /api/v1/application-tracking": () => json({ detail: "already exists" }, 409),
+    });
+    renderJobs(fetch, "/jobs/actionable/tracking");
+    fireEvent.click(await screen.findByRole("button", { name: "Start tracking" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not confirm the current saved tracking state/);
+    expect(screen.queryByText(/currently saved state is being shown/)).not.toBeInTheDocument();
+  });
+
   it("keeps Tracking show-more on the shared bounded application window", async () => {
     const item = (id: string) => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: id, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null });
     const fetch = fakeFetch({
@@ -1844,5 +1869,27 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(await screen.findByText("This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.")).toBeInTheDocument();
     expect(workspaceCalls).toBeGreaterThan(1);
     expect(screen.queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
+  });
+
+  it("preserves a newer Phase 7 decision while stale-target authority refresh is pending", async () => {
+    const staleRefresh = deferred<Response>();
+    let workspaceCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => {
+        workspaceCalls += 1;
+        return workspaceCalls === 1 ? json(workspacePayload(decision("actionable"))) : staleRefresh.promise;
+      },
+      "POST /api/v1/applications/prepare": () => json({ detail: "gone" }, 404),
+      "PUT /api/v1/jobs/decisions/actionable": () => json({ ...decision("actionable", "shortlisted"), revision: 1 }),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    await screen.findByRole("button", { name: "Create preparation" });
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    await waitFor(() => expect(workspaceCalls).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: "Shortlist" }));
+    expect(await screen.findByLabelText("Shortlisted")).toBeInTheDocument();
+    staleRefresh.resolve(json(workspacePayload(decision("actionable"), { job: workspaceJob({ actionable: false }) })));
+    expect(await screen.findByText("This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Shortlisted")).toBeInTheDocument();
   });
 });

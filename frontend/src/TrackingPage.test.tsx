@@ -165,7 +165,7 @@ describe("Issue #184 application tracking workspace", () => {
     const select = await screen.findByLabelText("Initial recorded status");
     fireEvent.change(select, { target: { value: "offer" } });
     fireEvent.click(screen.getByRole("button", { name: "Start tracking" }));
-    expect(await screen.findByRole("status")).toHaveTextContent(/without attributing its cause/);
+    expect(await screen.findByRole("status")).toHaveTextContent(/current saved tracking could not be confirmed/);
     expect(screen.getByLabelText("Initial recorded status")).toHaveValue("offer");
     expect(posts).toBe(1); expect(lookups).toBe(2); // initial authority load + one reconciliation GET
     fireEvent.click(screen.getByRole("button", { name: "Start tracking" }));

@@ -60,7 +60,7 @@ export function PreparationTrackingPanel({ preparationId }: { preparationId: str
     const current = generation.current;
     const ownerId = user?.id;
     try {
-      const result = await createApplicationTracking(api, preparationId, initialStatus, { userId: ownerId, getUserId: () => user?.id, reconcile: () => lookup(current, ownerId) });
+      const result = await createApplicationTracking(api, preparationId, initialStatus, { userId: ownerId, getUserId: () => user?.id, reconcile: async () => (await lookup(current, ownerId)) !== undefined });
       if (result.kind === "session_stale" || generation.current !== current || ownerId !== user?.id) return;
       if (result.kind === "locked") {
         setNotice("A tracking request for this preparation is already in progress. No duplicate was created.");
@@ -69,8 +69,12 @@ export function PreparationTrackingPanel({ preparationId }: { preparationId: str
         accepted.current = value; setState({ phase: "ready", value });
       } else if (result.kind === "reconciled_existing") {
         setNotice("Tracking may already exist. The currently recorded state is shown if available; the request is not repeated.");
-      } else if (result.kind === "uncertain") {
-        setNotice("The start request was interrupted. Any currently recorded tracking state is shown without attributing its cause.");
+      } else if (result.kind === "reconciliation_failed") {
+        setNotice("Tracking already exists or changed, but Career-trans could not confirm the current saved tracking state.");
+      } else if (result.kind === "uncertain_reconciled") {
+        setNotice("The currently saved tracking state was confirmed. The interrupted request itself cannot be identified as its cause.");
+      } else if (result.kind === "uncertain_unconfirmed") {
+        setNotice("The request outcome is uncertain and current saved tracking could not be confirmed.");
       } else if (result.kind === "not_found") {
         setState({ phase: "error", message: "This preparation is not available to this account." });
       } else {
