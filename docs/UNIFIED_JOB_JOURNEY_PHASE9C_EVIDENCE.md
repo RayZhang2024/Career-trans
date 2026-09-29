@@ -74,7 +74,8 @@ The repaired screenshots showed no horizontal overflow at either requested size 
 
 Visible wording, element types, routes, handlers, and locking mechanics were preserved.
 
-- `JobsPage.tsx`: repeated actions include human-readable title/company/location context when available. Rows without an opportunity now use `returned result 1`, `returned result 2`, and `historical result N`; no `discovered_job_id` is exposed in an accessible name.
+- `JobsPage.tsx`: repeated actions include human-readable title/company/location context plus a surface-specific discriminator. Inbox actions use `last seen` time, Shortlisted/Dismissed actions use decision-update time, Recommended actions use the visible `result N` ordinal, and Search history run toggles use status plus started time. Rows without an opportunity use `returned result 1`, `returned result 2`, and `historical result N`; no `discovered_job_id` is exposed in an accessible name.
+- `jobDecisions.tsx`: repeated DecisionControls accept optional human-readable context for action names while preserving the visible decision labels and mutation mechanics.
 - `JobWorkspacePage.tsx`: preparation/tracking actions include job context and creation time; tracked actions also include status/update time. Start tracking uses `Start tracking for …` normally and `Starting tracking… for …` while pending, matching the visible label and preserving the disabled lock.
 - `ApplicationsPage.tsx`: preparation actions include title/company/location and creation time; tracking actions also include status/update time.
 - `TrackingPage.tsx`: tracking/preparation actions include title/company/location and status/update time.
@@ -85,7 +86,10 @@ Focused tests now directly prove:
 - normal and pending Workspace Start tracking accessible names match their visible labels;
 - two Applications records with the same title, company, and location differ only by creation time and produce distinct names;
 - two Tracking records with the same title, company, and location differ by status/update time and produce distinct names;
-- repeated no-opportunity Job Search result actions remain distinct without using IDs.
+- repeated no-opportunity Job Search result actions remain distinct without using IDs;
+- same-shaped Inbox, Shortlisted, and Dismissed rows expose distinct contextual workspace/decision action names using visible timestamps;
+- same-shaped Recommended cards expose distinct preparation-toggle and DecisionControls names using the visible result ordinal;
+- repeated Search history run cards expose distinct View run/Close run names using status and started time while preserving `aria-expanded`.
 
 ### Keyboard-only smoke
 
@@ -124,10 +128,11 @@ The evidence therefore does not claim a complete keyboard PASS and the PR remain
 | --- | --- |
 | `frontend/src/App.css` | Corrected the existing `.jobs-tabs` selectors to target rendered anchors and `aria-current="page"`. |
 | `frontend/src/JobsPage.tsx` | Replaced opaque ID fallbacks with human-readable result ordinals. Existing contextual accessible names remain otherwise unchanged. |
+| `frontend/src/jobDecisions.tsx` | Added optional human-readable context to repeated decision-action accessible names without changing visible labels or decision behavior. |
 | `frontend/src/JobWorkspacePage.tsx` | Made the Start tracking accessible name follow the visible pending label. |
 | `frontend/src/ApplicationsPage.test.tsx` | Made the repeated-preparation records same-shaped and retained distinct-name assertions. |
 | `frontend/src/TrackingPage.test.tsx` | Made the repeated-tracking records same-shaped and retained distinct-name assertions. |
-| `frontend/src/JobsPage.test.tsx` | Added ordinal/no-ID result regressions and normal/pending Start tracking assertions. |
+| `frontend/src/JobsPage.test.tsx` | Added ordinal/no-ID result regressions, repeated surface/action-name regressions, and normal/pending Start tracking assertions. |
 | `docs/UNIFIED_JOB_JOURNEY_PHASE9C_EVIDENCE.md` | Corrected the evidence gate record with exact-base remedial baseline evidence and explicit remaining limits. |
 
 No route, readiness authority, candidate authority, application-preparation behavior, tracking behavior, backend/API/schema, migration, lifecycle, data, provider, or Phase 9D behavior changed.
