@@ -158,6 +158,18 @@ describe("Issue #171 Jobs workspace", () => {
 
     renderJobs(fetch, "/jobs/inbox");
     await screen.findByRole("heading", { name: "Inbox" });
+    const inboxCheckboxes = await screen.findAllByRole("checkbox", { name: /^Select Repeated role/ });
+    expect(inboxCheckboxes).toHaveLength(2);
+    const checkboxLabels = inboxCheckboxes.map((checkbox) => checkbox.getAttribute("aria-label") ?? "");
+    expect(checkboxLabels.every((label) => label.includes("Select Repeated role"))).toBe(true);
+    expect(new Set(checkboxLabels).size).toBe(2);
+    expect(checkboxLabels.every((label) => label.includes("last seen"))).toBe(true);
+    expect(checkboxLabels.every((label) => !/inbox-a|inbox-b|discovered_job_id/.test(label))).toBe(true);
+    fireEvent.click(inboxCheckboxes[0]);
+    expect(inboxCheckboxes[0]).toBeChecked();
+    expect(inboxCheckboxes[1]).not.toBeChecked();
+    fireEvent.click(inboxCheckboxes[0]);
+    expect(inboxCheckboxes[0]).not.toBeChecked();
     for (const label of ["Open workspace", "View Fit", "Open vacancy"]) {
       const actions = await screen.findAllByRole("link", { name: new RegExp(`^${label} for Repeated role`) });
       expect(actions).toHaveLength(2);
@@ -589,9 +601,9 @@ describe("Issue #171 Jobs workspace", () => {
   it("describes the shared recent inbox neutrally and keeps non-actionable rows visible but disabled", async () => {
     renderJobs(); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
     expect(screen.getByText(/recent shared persisted public vacancies/)).toBeInTheDocument();
-    const blocked = screen.getByRole("checkbox", { name: "Select Inbox blocked" });
+    const blocked = screen.getByRole("checkbox", { name: /^Select Inbox blocked/ });
     expect(blocked).toBeDisabled(); expect(screen.getByText(/Not actionable/)).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Select Inbox actionable" })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })).toBeEnabled();
     expect(screen.queryByRole("button", { name: /^Prepare application/ })).not.toBeInTheDocument();
   });
 
@@ -604,8 +616,8 @@ describe("Issue #171 Jobs workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show more recent vacancies" }));
     await waitFor(() => expect(inboxFetch).toBeGreaterThan(1));
     expect(await screen.findByText("Inbox actionable")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox blocked" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox blocked/ }));
     await editIntentOnFind("AI Engineer\nApplied AI Engineer", "London, United Kingdom", "exclude_remote");
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await waitFor(() => expect(postBody).toBeDefined());
@@ -620,13 +632,13 @@ describe("Issue #171 Jobs workspace", () => {
     });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
     await editIntentOnFind("AI");
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Inbox selected-A" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: /^Select Inbox selected-A/ }));
     expect(screen.getByRole("button", { name: "Evaluate 1 jobs" })).toBeEnabled();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByText("Inbox replacement-B")).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: "Select Inbox selected-A" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /^Select Inbox selected-A/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox replacement-B" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox replacement-B/ }));
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await waitFor(() => expect(postBody).toBeDefined());
@@ -641,12 +653,12 @@ describe("Issue #171 Jobs workspace", () => {
       "POST /api/v1/jobs/discovery-runs": (_url, init) => { postBody = JSON.parse(String(init?.body)); return json({ ...run("run-new"), jobs: [] }); },
     });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    const selected = await screen.findByRole("checkbox", { name: "Select Inbox selected-A" }); fireEvent.click(selected);
+    const selected = await screen.findByRole("checkbox", { name: /^Select Inbox selected-A/ }); fireEvent.click(selected);
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    const nowBlocked = await screen.findByRole("checkbox", { name: "Select Inbox selected-A" });
+    const nowBlocked = await screen.findByRole("checkbox", { name: /^Select Inbox selected-A/ });
     expect(nowBlocked).toBeDisabled(); expect(nowBlocked).not.toBeChecked();
     expect(screen.getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox replacement-B" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox replacement-B/ }));
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await waitFor(() => expect(postBody).toBeDefined());
@@ -658,7 +670,7 @@ describe("Issue #171 Jobs workspace", () => {
     const pending = deferred<Response>(); let postCount = 0;
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => { postCount += 1; return pending.promise; } });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     expect(await screen.findByText(/may take several minutes/)).toBeInTheDocument();
@@ -683,7 +695,7 @@ describe("Issue #171 Jobs workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show more current opportunities" }));
     expect(await screen.findByText("Larger window result")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" });
@@ -697,7 +709,7 @@ describe("Issue #171 Jobs workspace", () => {
     let runRequests = 0;
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => { runRequests += 1; return json(page([run(`run-${runRequests}`)])); }, "POST /api/v1/jobs/discovery-runs": () => Promise.reject(new TypeError("offline")) });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" })); await editIntentOnFind("AI");
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     expect(await screen.findByText(/cannot confirm from this response whether the run started/)).toBeInTheDocument();
     expect(runRequests).toBe(1);
@@ -711,7 +723,7 @@ describe("Issue #171 Jobs workspace", () => {
     });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
     await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     expect(await screen.findByText(/cannot confirm from this response whether the run started/)).toBeInTheDocument();
     expect(screen.getByText(/Recent run history could not be confirmed as refreshed/)).toBeInTheDocument();
@@ -727,7 +739,7 @@ describe("Issue #171 Jobs workspace", () => {
     });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
     await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     expect(await screen.findByText(/Career-trans returned an error while creating the evaluation/)).toBeInTheDocument();
     expect(screen.getByText(/Recent run history has been refreshed/)).toBeInTheDocument();
@@ -748,7 +760,7 @@ describe("Issue #171 Jobs workspace", () => {
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Pre-evaluation shortlist");
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
     await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
 
     await waitFor(() => expect(opportunityRequests).toBe(2));
@@ -1267,7 +1279,7 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     const pending = deferred<Response>(); let posts = 0;
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => { posts += 1; return pending.promise; } });
     renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Deferred AI" } });
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
@@ -1287,13 +1299,13 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     renderJobs(fetch); await selectSavedSchedule();
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Transient state" } });
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("link", { name: "Profile" })); await screen.findByRole("heading", { name: "Your career profile" });
     fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" });
     expect(screen.getByLabelText("Saved search configuration")).toHaveValue("");
     expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("");
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
-    expect(screen.getByRole("checkbox", { name: "Select Inbox actionable" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })).not.toBeChecked();
   });
 
   it("keeps Job Search mounted while navigating the canonical job workspace sections", async () => {
@@ -1319,7 +1331,7 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Exact analysis" } });
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await screen.findByRole("heading", { name: "Analysis just completed" });
     fireEvent.click(screen.getAllByRole("link", { name: /Open workspace for/ })[0]);
@@ -1341,7 +1353,7 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Exact analysis" } });
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await screen.findByRole("heading", { name: "Analysis just completed" });
     expect(screen.getByText("Semantic rejected")).toBeInTheDocument();
     const workspaceLinks = screen.getAllByRole("link", { name: /Open workspace for returned result/ });
@@ -1406,14 +1418,14 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
     renderJobs(fetch); await selectSavedSchedule();
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Persistent workspace intent" } });
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getAllByRole("link", { name: /Open workspace for/ }).find((link) => link.getAttribute("href") === "/jobs/actionable")!);
     await screen.findByRole("heading", { name: "Workspace role" });
     fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" });
     expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Persistent workspace intent");
     expect(screen.getByLabelText("Saved search configuration")).toHaveValue("s-1");
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    expect(screen.getByRole("checkbox", { name: "Select Inbox actionable" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })).toBeChecked();
   });
 
   it("keeps the exact result visible when history and opportunities refreshes fail", async () => {
@@ -1423,7 +1435,7 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Refresh failure" } });
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await screen.findByRole("heading", { name: "Analysis just completed" });
     expect(screen.getByText(/Exact refresh failure role/)).toBeInTheDocument();
     expect(screen.getByText("eval-refresh-failure")).toBeInTheDocument();
@@ -1436,9 +1448,9 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => { posts += 1; return posts === 1 ? json(resultA) : Promise.reject(new Error("transport interrupted")); } });
     renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" });
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Two submissions" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await screen.findByText(/Result A/);
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await screen.findByText(/evaluation request was interrupted/);
     expect(screen.queryByText(/Result A/)).not.toBeInTheDocument();
     expect(screen.queryByText("run-a")).not.toBeInTheDocument();
@@ -1447,7 +1459,7 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
   it("clears the exact result when leaving and returning to the Job Search family", async () => {
     const exactRun = { ...run("run-leave"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "actionable", evaluation_id: "eval-leave", outcome: "newly_evaluated" as const, failure_stage: null, failure_kind: null, opportunity: ranked("Leave result") }] };
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun) });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Leave family" } }); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Leave family" } }); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await screen.findByText(/Leave result/); fireEvent.click(screen.getByRole("link", { name: "Profile" })); await screen.findByRole("heading", { name: "Your career profile" }); fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
     expect(screen.queryByRole("heading", { name: "Analysis just completed" })).not.toBeInTheDocument();
   });
@@ -1657,7 +1669,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
     renderJobs(fetch, "/jobs/find"); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI" } });
     fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByText("Inbox actionable");
-    fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getAllByRole("button", { name: /^Dismiss/ })[0]);
     await waitFor(() => expect(screen.queryByText("Inbox actionable")).not.toBeInTheDocument());
     const form = screen.getByRole("heading", { name: "Evaluate selected actionable jobs" }).closest("form")!;

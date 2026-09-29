@@ -75,6 +75,7 @@ The repaired screenshots showed no horizontal overflow at either requested size 
 Visible wording, element types, routes, handlers, and locking mechanics were preserved.
 
 - `JobsPage.tsx`: repeated actions include human-readable title/company/location context plus a surface-specific discriminator. Inbox actions use `last seen` time, Shortlisted/Dismissed actions use decision-update time, Recommended actions use the visible `result N` ordinal, and Search history run toggles use status plus started time. Rows without an opportunity use `returned result 1`, `returned result 2`, and `historical result N`; no `discovered_job_id` is exposed in an accessible name.
+- Inbox selection checkboxes reuse the same collision-safe contextual name as their card actions, including the human-readable `last seen` discriminator.
 - `jobDecisions.tsx`: repeated DecisionControls accept optional human-readable context for action names while preserving the visible decision labels and mutation mechanics.
 - `JobWorkspacePage.tsx`: preparation/tracking actions include job context and creation time; tracked actions also include status/update time. Start tracking uses `Start tracking for …` normally and `Starting tracking… for …` while pending, matching the visible label and preserving the disabled lock.
 - `ApplicationsPage.tsx`: preparation actions include title/company/location and creation time; tracking actions also include status/update time.
@@ -88,6 +89,7 @@ Focused tests now directly prove:
 - two Tracking records with the same title, company, and location differ by status/update time and produce distinct names;
 - repeated no-opportunity Job Search result actions remain distinct without using IDs;
 - same-shaped Inbox, Shortlisted, and Dismissed rows expose distinct contextual workspace/decision action names using visible timestamps;
+- same-shaped Inbox rows expose distinct selection-checkbox names using the same visible timestamp context, while selection checked-state behavior remains unchanged;
 - same-shaped Recommended cards expose distinct preparation-toggle and DecisionControls names using the visible result ordinal;
 - repeated Search history run cards expose distinct View run/Close run names using status and started time while preserving `aria-expanded`.
 
