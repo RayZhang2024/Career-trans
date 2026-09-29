@@ -127,7 +127,7 @@ The evidence therefore does not claim a complete keyboard PASS and the PR remain
 | File | Change |
 | --- | --- |
 | `frontend/src/App.css` | Corrected the existing `.jobs-tabs` selectors to target rendered anchors and `aria-current="page"`. |
-| `frontend/src/JobsPage.tsx` | Replaced opaque ID fallbacks with human-readable result ordinals. Existing contextual accessible names remain otherwise unchanged. |
+| `frontend/src/JobsPage.tsx` | Replaced opaque ID fallbacks with human-readable result ordinals and added surface-specific context to repeated Jobs actions. |
 | `frontend/src/jobDecisions.tsx` | Added optional human-readable context to repeated decision-action accessible names without changing visible labels or decision behavior. |
 | `frontend/src/JobWorkspacePage.tsx` | Made the Start tracking accessible name follow the visible pending label. |
 | `frontend/src/ApplicationsPage.test.tsx` | Made the repeated-preparation records same-shaped and retained distinct-name assertions. |
@@ -139,8 +139,8 @@ No route, readiness authority, candidate authority, application-preparation beha
 
 ## Validation record
 
-- Focused Jobs/Applications/Tracking tests: 3 files, 231 passed.
-- Full frontend suite: 15 files, 573 passed.
+- Focused Jobs/Applications/Tracking tests: 3 files, 234 passed.
+- Full frontend suite: 15 files, 576 passed.
 - TypeScript typecheck: passed.
 - Production build: passed; Vite emitted only the existing informational large-chunk warning.
 - `git diff --check`: passed; Git emitted only normal LF-to-CRLF conversion warnings.
