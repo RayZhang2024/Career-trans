@@ -470,12 +470,12 @@ describe("Issue #198 direct vacancy preparation", () => {
     const cvFetch = externalFetcher({ "/api/v1/onboarding/status": () => json({ ...readyForPreparation, candidate_context_ready: false }) });
     renderApp(cvFetch);
     expect(await screen.findByRole("alert")).toHaveTextContent("Confirmed structured career information is required");
-    expect(screen.getByRole("link", { name: "Review your Profile" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "Review your Profile" })).toHaveAttribute("href", "/profile");
     expect(screen.getByRole("button", { name: "Create preparation" })).toBeDisabled();
     cleanup();
     const profileFetch = externalFetcher({ "/api/v1/profile": () => json({ detail: "missing" }, 404) }); renderApp(profileFetch);
     expect(await screen.findByRole("alert")).toHaveTextContent("application display name is required");
-    expect(screen.getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
     expect(preparationPosts(profileFetch)).toHaveLength(0);
   });
 
@@ -701,12 +701,12 @@ describe("Issue #198 direct vacancy preparation", () => {
     let statusCalls = 0;
     const cvFetch = externalFetcher({ "/api/v1/onboarding/status": () => ++statusCalls === 1 ? json(readyForPreparation) : json({ ...readyForPreparation, candidate_context_ready: false }), "POST /api/v1/applications/prepare": () => json({}, 409) }); renderApp(cvFetch);
     fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "I".repeat(100) } }); await waitForExternalPreparationReady(); fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Confirmed structured career information is required"); expect(screen.getByRole("link", { name: "Review your Profile" })).toHaveAttribute("href", "/");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Confirmed structured career information is required"); expect(screen.getByRole("link", { name: "Review your Profile" })).toHaveAttribute("href", "/profile");
     cleanup();
     let profileCalls = 0;
     const profileFetch = externalFetcher({ "/api/v1/profile": () => ++profileCalls === 1 ? json(namedProfile) : json({ detail: "missing" }, 404), "POST /api/v1/applications/prepare": () => json({}, 409) }); renderApp(profileFetch);
     fireEvent.change(await screen.findByLabelText("Job description"), { target: { value: "J".repeat(100) } }); await waitForExternalPreparationReady(); fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("application display name is required"); expect(screen.getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/");
+    expect(await screen.findByRole("alert")).toHaveTextContent("application display name is required"); expect(screen.getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
     cleanup();
     let profileChecks = 0;
     const unavailableFetch = externalFetcher({ "/api/v1/profile": () => ++profileChecks === 1 ? json(namedProfile) : json({}, 503), "POST /api/v1/applications/prepare": () => json({}, 409) }); renderApp(unavailableFetch);

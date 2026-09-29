@@ -131,6 +131,7 @@ it("confirmed resume exposes Update CV and preserves the active-context message 
   request.mockResolvedValueOnce(statusWith("draft-c", "confirmed", true)).mockResolvedValueOnce(draftWith("draft-c", "confirmed", mergedEmpty));
   render(<CvPage />);
   expect(await screen.findByRole("heading", { name: "CV confirmed" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "View current Profile" })).toHaveAttribute("href", "/profile");
   fireEvent.click(screen.getByRole("button", { name: "Update CV / Upload newer CV" }));
   expect(screen.getByRole("heading", { name: "Upload your CV" })).toBeInTheDocument();
   expect(screen.getByText(/current structured career information remains in use/)).toBeInTheDocument();
