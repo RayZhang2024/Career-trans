@@ -10,7 +10,7 @@ export class ApiError extends Error {
 export type User = { id: string; email: string; created_at: string };
 export type PasswordPolicy = {
   version: number; min_length: number; max_length: number;
-  common_passwords_rejected: boolean; composition_requirements: string[];
+  common_passwords_rejected: boolean; composition_requirements: string[]; whitespace_allowed: boolean;
 };
 
 export type SemanticOperation =

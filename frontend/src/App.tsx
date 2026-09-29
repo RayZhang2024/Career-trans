@@ -88,6 +88,7 @@ function Register() {
   const [confirmation, setConfirmation] = useState("");
   const [confirmationTouched, setConfirmationTouched] = useState(false);
   const [pending, setPending] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
   const pendingRef = useRef(false);
   useEffect(() => {
     let active = true;
@@ -101,14 +102,33 @@ function Register() {
   const passwordLength = Array.from(password).length;
   const minimumMet = policy !== null && passwordLength >= policy.min_length;
   const maximumMet = policy !== null && passwordLength <= policy.max_length;
+  // Keep this set aligned with Python's str.isspace() used by the backend.
+  const containsWhitespace = /[\p{Z}\u0009-\u000d\u001c-\u001f\u0085]/u.test(password);
+  const whitespaceMet = policy !== null && (policy.whitespace_allowed || !containsWhitespace);
+  const unmetPasswordRules = policy ? [
+    ...(!minimumMet ? [`At least ${policy.min_length} characters`] : []),
+    ...(!maximumMet ? [`No more than ${policy.max_length} characters`] : []),
+    ...(!whitespaceMet ? ["No whitespace characters"] : []),
+  ] : [];
   const confirmationMismatch = confirmationTouched && confirmation !== password;
-  const canSubmit = policy !== null && !policyError && minimumMet && maximumMet && password === confirmation && !pending;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSubmit || pendingRef.current) return;
+    if (pendingRef.current) return;
+    setSubmitted(true);
+    setError("");
+    if (!policy) {
+      setError("Password requirements could not be verified. Please reload this page before creating an account.");
+      return;
+    }
+    if (unmetPasswordRules.length > 0) return;
+    if (confirmation !== password) {
+      setConfirmationTouched(true);
+      return;
+    }
+    const emailInput = event.currentTarget.elements.namedItem("email");
+    if (emailInput instanceof HTMLInputElement && !emailInput.reportValidity()) return;
     pendingRef.current = true;
     setPending(true);
-    setError("");
     const data = new FormData(event.currentTarget);
     try { await register(String(data.get("email")), String(data.get("password"))); navigate("/login"); }
     catch (e) {
@@ -116,30 +136,34 @@ function Register() {
       else if (e instanceof ApiError && e.detail === "password_too_common") setError("Choose a less common password.");
       else if (e instanceof ApiError && policy && e.detail === "password_too_short") setError(`Use at least ${policy.min_length} characters.`);
       else if (e instanceof ApiError && policy && e.detail === "password_too_long") setError(`Use no more than ${policy.max_length} characters.`);
+      else if (e instanceof ApiError && e.detail === "password_contains_whitespace") setError("Remove all spaces and other whitespace characters from the password.");
       else setError("Registration is unavailable.");
     } finally { pendingRef.current = false; setPending(false); }
   }
-  return <AuthPage><form className="form-stack" onSubmit={submit}>
+  return <AuthPage><form className="form-stack" noValidate onSubmit={submit}>
     <div><h1>Create account</h1><p className="muted">Create an account, then sign in to continue.</p></div>
     <label htmlFor="register-email">Email</label><input id="register-email" name="email" type="email" autoComplete="email" required disabled={pending} />
     <label htmlFor="register-password">Password</label>
-    <input id="register-password" name="password" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} aria-describedby="password-policy" required disabled={pending} />
-    <div id="password-policy" className="password-policy">
+    <input id="register-password" name="password" type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} aria-describedby={submitted && unmetPasswordRules.length ? "password-policy password-validation-error" : "password-policy"} aria-invalid={submitted && unmetPasswordRules.length > 0} required disabled={pending} />
+    <div id="password-policy" className="password-policy" role="group" aria-labelledby="password-requirements-label">
       {policy ? <>
+        <p id="password-requirements-label">Password requirements</p>
         <p>Use at least {policy.min_length} characters and no more than {policy.max_length} characters. Common passwords are not accepted.</p>
-        <p>Long passphrases are welcome. Spaces and symbols are allowed; no special mix of uppercase, numbers, or symbols is required.</p>
-        <ul className="password-rules" aria-label="Password requirements">
+        <p>Whitespace is not allowed. No special mix of uppercase, numbers, or symbols is required.</p>
+        <ul className="password-rules">
           <li>{minimumMet ? "Met:" : "Not met:"} At least {policy.min_length} characters</li>
           <li>{maximumMet ? "Met:" : "Not met:"} No more than {policy.max_length} characters</li>
+          <li>{whitespaceMet ? "Met:" : "Not met:"} No whitespace characters</li>
         </ul>
       </> : <p role="status">Loading password requirements…</p>}
     </div>
+    {submitted && unmetPasswordRules.length > 0 && <div id="password-validation-error" className="field-error" role="alert"><p>Update the password to meet every requirement:</p><ul>{unmetPasswordRules.map((rule) => <li key={rule}>{rule}</li>)}</ul></div>}
     <label htmlFor="register-confirm-password">Confirm password</label>
     <input id="register-confirm-password" name="confirmPassword" type="password" autoComplete="new-password" value={confirmation} onChange={(event) => { setConfirmation(event.target.value); setConfirmationTouched(true); }} onBlur={() => setConfirmationTouched(true)} aria-describedby={confirmationMismatch ? "confirm-password-error" : undefined} required disabled={pending} />
     {confirmationMismatch && <p id="confirm-password-error" className="field-error" role="alert">Passwords do not match.</p>}
     {policyError && <p role="alert">{policyError}</p>}
     {error && <p role="alert">{error}</p>}
-    <button type="submit" disabled={!canSubmit}>{pending ? "Creating account…" : "Create account"}</button>
+    <button type="submit" disabled={pending}>{pending ? "Creating account…" : "Create account"}</button>
     {pending && <p role="status">Creating your account…</p>}
     <p className="auth-link">Already have an account? <Link to="/login">Sign in</Link></p>
   </form></AuthPage>;
