@@ -44,6 +44,7 @@ defect prevents sign-off and the required follow-up is recorded.
 | `/profile/cv` CvPage | Canonical | CV ingestion/review workflow | CV draft and confirmed Profile authority | Profile secondary > CV | authenticated read/write CV workflow; semantic work only on explicit user action | authenticated user | direct and `/cv` alias | CV source/history is preserved | prerequisite, upload, review, unavailable, retry states | PASS/PARTIAL: labelled form; long source content needs visual check | NOT PERFORMED | RETAIN | E1, E2, T2 | retain current alias while users migrate |
 | `/profile/adviser` AdviserPage | Canonical | Career Adviser intake/review/proposal workflow | adviser assessment plus confirmed Profile transfer | Profile secondary > Career Adviser | authenticated reads/writes; provider only on explicit generation/action | authenticated user | direct and `/adviser` alias | adviser assessment/clarifications/proposals persist | CV prerequisite, loading, error, readiness-blocked, retry | PASS/PARTIAL: labelled controls; long proposal layout needs visual check | NOT PERFORMED | RETAIN | E1, E2, T2 | retain current alias while users migrate |
 | `/` | Compatibility redirect | Historical entry point to Profile | router redirect only | none | replace redirect; no data/provider read | auth determines protected destination | direct reload redirects to `/profile` | legacy root links still resolve | no surface state | redirect is transparent | NOT PERFORMED | COMPATIBILITY_ONLY | E1, T1 | migrate internal root links in a later narrow cleanup |
+| Internal Profile remediation links via `/` (`CvPage` / `ExternalPreparationForm`) | Canonical destination `/profile`; compatibility path `/` | Profile remediation links for legacy CV/preparation states | Profile route ownership; router compatibility redirect currently completes the transition | reached from CV and preparation error states; not primary nav | internal links only; no provider behavior | authenticated user | direct click resolves through `/` to `/profile` | no historical authority; `/` remains compatibility-only | no independent loading/error/readiness state | PARTIAL: remediation copy is labelled; destination should become canonical | NOT PERFORMED | CONSOLIDATE_LINK | `frontend/src/CvPage.tsx`, `frontend/src/ExternalPreparationForm.tsx`, E1 | later change only link destinations and focused assertions; rollback restores old destinations; retain `/` redirect |
 | `/cv` | Compatibility redirect | Historical CV entry point | router redirect to Profile CV | none | replace redirect; no data/provider read | auth-protected | direct reload redirects to `/profile/cv` | preserves pre-Phase-2 links | no surface state | transparent redirect | NOT PERFORMED | COMPATIBILITY_ONLY | E1, T1 | no removal until link inventory is clean |
 | `/adviser` | Compatibility redirect | Historical Adviser entry point | router redirect to Profile Adviser | none | replace redirect; no data/provider read | auth-protected | direct reload redirects to `/profile/adviser` | preserves pre-Phase-2 links | no surface state | transparent redirect | NOT PERFORMED | COMPATIBILITY_ONLY | E1, T1 | no removal until link inventory is clean |
 | `/jobs` | Compatibility redirect | Historical Jobs landing entry point | router redirect to Find jobs | Workspace > Job Search resolves canonical family | replace redirect; no provider call | authenticated user | direct reload redirects to `/jobs/find` | Phase 2 compatibility | no surface state | transparent redirect | NOT PERFORMED | COMPATIBILITY_ONLY | E1, T1 | preserve while external links may exist |
@@ -56,7 +57,7 @@ defect prevents sign-off and the required follow-up is recorded.
 | `/jobs/searches` | Compatibility redirect | Historical saved-search entry point | router redirects to `/jobs/find/saved` | none | replace redirect; no provider read | authenticated user | direct reload redirects | preserves older saved-search links | no surface state | transparent redirect | NOT PERFORMED | COMPATIBILITY_ONLY | E1, E3, T3 | preserve until external links age out |
 | `/jobs/:discoveredJobId` JobWorkspacePage Overview | Canonical | Unified job facts, provenance, decision and workspace entry | persisted discovered job plus scoped decision/evaluation/application projections | reached from Job Search cards; no new primary item | provider-free workspace read; preparation/tracking writes are explicit | authenticated user; private projections scoped | direct/reload-safe for encoded dynamic ID | provenance, evaluation history/currentness, preparation/tracking summaries | loading/not-found, unavailable applicability, empty/history | PARTIAL: labelled tabs/sections; repeated card links need item context | NOT PERFORMED | RETAIN | E4, T1, B1 | no literal/reserved ID ambiguity allowed |
 | `/jobs/:discoveredJobId/fit` Workspace Fit | Canonical | Current Fit and evaluation history | current evaluation and historical run snapshots | Workspace tabs > Fit | provider-free read; no provider call | authenticated user | direct/reload-safe encoded ID | current, historical, unknown applicability; evaluation/runtime attribution | loading/error/no evaluation/history unavailable | PASS/PARTIAL: semantic headings/status; visual review pending | NOT PERFORMED | RETAIN | E4, T1, B1 | preserve distinction between current and historical |
-| `/jobs/:discoveredJobId/application` Workspace Application | Canonical | Prepare application from exact workspace target and show preparation history | canonical preparation target plus candidate readiness | Workspace tabs > Application | provider-free history/readiness; explicit POST may call provider; downloads later | authenticated user | direct/reload-safe encoded ID | immutable preparation/candidate/target snapshots | history/readiness checking, not-ready/unavailable, POST conflict/error, success | PARTIAL: labelled form and statuses; readiness authority is inconsistent | NOT PERFORMED | BLOCKED | E4, T1, B2 | align direct workspace readiness with shared authoritative readiness before sign-off |
+| `/jobs/:discoveredJobId/application` Workspace Application | Canonical | Prepare application from exact workspace target and show preparation history | shared `readPreparationPrerequisites` authority plus canonical preparation target | Workspace tabs > Application | provider-free history/readiness; explicit POST may call provider; downloads later | authenticated user | direct/reload-safe encoded ID | immutable preparation/candidate/target snapshots | history/readiness checking, not-ready/unavailable, POST conflict/error, success | PARTIAL: labelled form and statuses; visual action-name review remains | NOT PERFORMED | RETAIN | E4, T1, B2 | retain shared prerequisite semantics and Phase 9C accessibility follow-up |
 | `/jobs/:discoveredJobId/tracking` Workspace Tracking | Canonical | Start/view manual tracking for preparations in this workspace | application tracking records/events | Workspace tabs > Tracking | provider-free scoped read; explicit status writes | authenticated user | direct/reload-safe encoded ID | preparation-linked status/event history | loading/error/untracked/start/pending | PASS/PARTIAL: labelled status controls and event history | NOT PERFORMED | RETAIN | E4, T1, T4, B2 | Phase 9C repeated-action review |
 | `/applications` ApplicationsPage list | Canonical | Global preparation history and tracking summary | application preparation records and linked tracking | Workspace > Applications | provider-free GETs; no provider work | authenticated user | direct/reload-safe | immutable target/candidate snapshot and preparation history | loading/error/empty/retry as implemented | PARTIAL: card headings link; generic secondary links repeat | NOT PERFORMED | RETAIN | E1, E5, T4, B2 | disambiguate repeated preparation/tracking actions later |
 | `/applications/:preparationId` ApplicationsPage detail | Canonical | Inspect preparation, review and download artifacts | owner-scoped preparation snapshot/documents | reached from Applications, Workspace, Tracking | provider-free detail/review/download; no provider call | authenticated user; cross-user access neutral/not found | direct/reload-safe encoded ID | exact preparation inputs, attribution, snapshots, questions, downloads | loading/not-found/error/download status | PARTIAL: headings/form controls labelled; download names need review | NOT PERFORMED | RETAIN | E5, T4, B2 | canonical detail remains `/applications/:id` |
@@ -64,6 +65,10 @@ defect prevents sign-off and the required follow-up is recorded.
 | `/tracking/:trackingId` TrackingPage detail | Canonical | Inspect/update recorded application event history | owner-scoped tracking record and revision/event authority | reached from Tracking, Applications, Workspace | provider-free detail; explicit status-event write with revision control | authenticated user; cross-user access neutral/not found | direct/reload-safe encoded ID | historical target, current recorded status, ordered event history | loading/not-found/error, pending, CAS conflict | PASS/PARTIAL: form labels/status history; visual review pending | NOT PERFORMED | RETAIN | E5, T4, B2 | canonical detail remains `/tracking/:id` |
 | `/settings` | Compatibility redirect | Historical Settings entry point | router redirect to AI settings | none | replace redirect; no provider read | authenticated user | direct reload redirects to `/settings/ai` | preserves old links | no surface state | transparent redirect | NOT PERFORMED | COMPATIBILITY_ONLY | E1 | preserve until external links age out |
 | `/settings/ai` AiSettingsPage | Canonical | Read/update model catalogue and AI settings | authenticated AI settings/config service | Workspace > Settings | catalogue/settings reads are provider-free; validation/model operations are explicit and may contact configured provider | authenticated user/settings scope | direct/reload-safe | effective configuration and operation records as exposed | loading/error/validation/unavailable | PARTIAL: controls labelled; operation detail density needs review | NOT PERFORMED | RETAIN | E1, T2, T3 | no provider calls from read-only catalogue path |
+
+Master matrix disposition count: **26 rows** — **RETAIN 19**,
+**CONSOLIDATE_LINK 1**, **COMPATIBILITY_ONLY 6**, **REMOVE_LATER 0**, and
+**BLOCKED 0**.
 
 ### Route-safety findings
 
@@ -118,19 +123,20 @@ The conceptual separation is explicit in the UI and tests:
 | Analyse → Recommended | current evaluation projection is read from opportunities; no implicit provider rerun | no extra UI ID beyond discovered job/evaluation references | PASS |
 | Recommended → Shortlist | explicit decision mutation updates decision authority and refetches the projection | discovered job ID plus revision for CAS | PASS |
 | Shortlist → Workspace | encoded discovered job ID opens the same workspace | discovered job ID | PASS |
-| Workspace → Preparation | Application tab uses the canonical preparation endpoint and exact workspace target | discovered job ID; preparation ID after creation | BLOCKED for readiness authority only; target identity is sound |
+| Workspace → Preparation | Application tab uses the shared preparation prerequisite authority, canonical preparation endpoint, and exact workspace target | discovered job ID; preparation ID after creation | PASS |
 | Preparation → Tracking | preparation history links to `/tracking/:trackingId`; workspace can start tracking | preparation ID and tracking ID | PASS |
 
 The journey needs internal identifiers only where the user is opening a specific
 persisted job, evaluation, preparation, or tracking record. It does not need a
-second route identity or a literal workspace slug. The only sign-off blocker is
-the direct Workspace Application readiness implementation described below.
+second route identity or a literal workspace slug. No parity blocker was found
+in the core journey after verifying the shared Workspace Application readiness
+controller.
 
 ## Authority and contradiction audit
 
 | Domain | Intended/current authority | Evidence | Finding |
 | --- | --- | --- | --- |
-| Candidate Profile | canonical profile snapshot/revision and onboarding status for readiness | E1, T2 | Profile and Home are aligned. Direct Workspace Application also reads `/api/v1/profile` locally, which is the parity blocker. |
+| Candidate Profile | canonical profile snapshot/revision and onboarding status for readiness | E1, T2 | Profile, Home, and Workspace Application are aligned through the shared preparation prerequisite authority. |
 | SearchIntent | transient editor state until an explicit saved configuration/run | E3, T1, T3 | Aligned; SearchIntent is not treated as eligibility/evidence. |
 | Search configuration/history | user-owned saved schedules, executions, discovery runs and immutable run/job snapshots | E3, B1, T3 | Aligned and provider-free for history reads. |
 | Fit/evaluation | current opportunity/evaluation projection plus historical run snapshots, with currentness/provenance explanation | E3, E4, B1, T1 | Aligned; current, historical, and unknown applicability remain distinct. |
@@ -212,10 +218,12 @@ responses from restoring data after logout/user replacement. History and exact
 result flows distinguish HTTP rejection, transport interruption, and stale
 history rather than claiming a provider action succeeded.
 
-The readiness defect remains the exception: direct Workspace Application uses a
-separate local readiness read and mapping. It is recorded as BLOCKED in the
-master matrix and must be resolved against the shared authority before parity
-sign-off.
+Workspace Application readiness is included in the provider-free/read-only
+evidence because `readPreparationPrerequisites` performs the shared onboarding
+and profile reads, preserves candidate-not-ready precedence, maps profile
+failures safely, and protects against session/user replacement. T1 directly
+covers profile-missing authority, candidate-not-ready precedence, unavailable
+retry, unavailable-to-ready transition, and stale prerequisite responses.
 
 ## Accessibility audit (audit only)
 
@@ -257,7 +265,7 @@ does not claim responsive visual evidence and does not change CSS.
 | `/settings` → `/settings/ai` | Settings compatibility alias | COMPATIBILITY_ONLY | no immediate change | retain redirect |
 | `/applications/:preparationId` | canonical preparation detail | RETAIN | no replacement proposed | no migration |
 | `/tracking/:trackingId` | canonical tracking detail | RETAIN | no replacement proposed | no migration |
-| Workspace dynamic routes | canonical per-job join surface | RETAIN | fix readiness authority only; no route change | revert the focused authority change |
+| Workspace dynamic routes | canonical per-job join surface | RETAIN | no route change; retain shared preparation prerequisite authority | revert only a future focused change if needed |
 
 No cleanup, deletion, route removal, data migration, new lifecycle, or
 component consolidation is performed by this audit.
@@ -297,26 +305,16 @@ production source change could have caused that failure.
 **PARITY_CONFIRMED_WITH_FOLLOWUPS** — canonical route ownership, navigation,
 deep-link identity, historical/read-only behavior, shortlist separation,
 provider-free reads, and user scoping are substantially aligned. Sign-off is
-conditional on the explicitly recorded Workspace Application readiness
-authority blocker and the Phase 9C accessibility/responsive follow-ups.
+with the documented internal-link consolidation follow-up and the Phase 9C
+accessibility/responsive follow-ups.
 
 ### B. Blocking defects
 
-1. Direct `/jobs/:discoveredJobId/application` readiness performs a local
-   onboarding-plus-legacy-profile read and can diverge from the shared
-   authoritative candidate readiness/profile semantics. Required detail:
-   consolidate the read/mapping with the shared readiness authority, preserve
-   candidate-not-ready precedence, keep unavailable truthful, and add focused
-   initial/retry/session replacement tests. This is a Phase 9B production fix,
-   not part of this audit.
+None.
 
 ### C. Phase 9B candidates
 
-1. **Workspace readiness authority:** update `frontend/src/JobWorkspacePage.tsx`
-   and its focused tests to consume the same authoritative readiness semantics
-   as Applications/Profile. Rollback is a revert of that focused component/test
-   change; no route or schema change is needed.
-2. **Compatibility-link consolidation:** update the two internal root Profile
+1. **Compatibility-link consolidation:** update the two internal root Profile
    links in `frontend/src/CvPage.tsx` and `frontend/src/ExternalPreparationForm.tsx`
    to `/profile`, with focused route assertions. Rollback is restoring those
    link destinations; retain `/` as compatibility-only.
@@ -332,7 +330,7 @@ manual observations before changing CSS.
 
 ### E. Phase 9D sign-off checklist
 
-- [ ] Workspace Application readiness uses shared authoritative semantics.
+- [ ] Internal Profile remediation links use `/profile` while `/` remains a compatibility redirect.
 - [ ] Focused route/deep-link/history/decision/provider-free/scoping tests pass.
 - [ ] Compatibility aliases still redirect with replace semantics.
 - [ ] No duplicate canonical route owns Profile, Job Search, Applications, or Tracking.
