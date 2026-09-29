@@ -137,8 +137,8 @@ export function ExternalPreparationForm({ onHistoryRefresh }: { onHistoryRefresh
   return <section className="card application-section external-preparation" aria-labelledby="external-preparation-heading">
     <h2 id="external-preparation-heading">Prepare for another vacancy</h2>
     <p className="muted">Prepare a vacancy directly here; it does not need to come from Career-trans job discovery.</p>
-    {currentPrerequisite === "candidate_info_missing" && <p role="alert">Confirmed structured career information is required before preparing an application. Add it through the Profile revision workflow or confirm a CV. <Link to="/">Review your Profile</Link>.</p>}
-    {currentPrerequisite === "profile_missing" && <p role="alert">An application display name is required before preparing an application. <Link to="/">Update your profile</Link>.</p>}
+    {currentPrerequisite === "candidate_info_missing" && <p role="alert">Confirmed structured career information is required before preparing an application. Add it through the Profile revision workflow or confirm a CV. <Link to="/profile">Review your Profile</Link>.</p>}
+    {currentPrerequisite === "profile_missing" && <p role="alert">An application display name is required before preparing an application. <Link to="/profile">Update your profile</Link>.</p>}
     {currentPrerequisite === "unavailable" && <div role="alert">{prerequisiteError} <button type="button" className="button-secondary" onClick={retryPrerequisites} disabled={pending}>Retry prerequisites</button></div>}
     {currentPrerequisite === "checking" && <p role="status">Checking candidate readiness and application display name…</p>}
     {currentPrerequisite !== "unavailable" && <button type="button" className="button-secondary" onClick={retryPrerequisites} disabled={pending}>{currentPrerequisite === "ready" ? "Re-check prerequisites" : "Retry prerequisite check"}</button>}
