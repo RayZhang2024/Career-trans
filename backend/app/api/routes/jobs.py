@@ -124,10 +124,17 @@ def get_job_workspace(
     current_user: CurrentUser,
     provenance_limit: int = Query(default=20, ge=1, le=100),
     evaluation_limit: int = Query(default=20, ge=1, le=100),
+    application_limit: int = Query(default=20, ge=1, le=100),
     service: UserJobWorkspaceReadService = Depends(get_user_job_workspace_read_service),
 ) -> JobWorkspaceRead:
     try:
-        return service.read(current_user.id, discovered_job_id, provenance_limit=provenance_limit, evaluation_limit=evaluation_limit)
+        return service.read(
+            current_user.id,
+            discovered_job_id,
+            provenance_limit=provenance_limit,
+            evaluation_limit=evaluation_limit,
+            application_limit=application_limit,
+        )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job workspace not found.") from exc
 

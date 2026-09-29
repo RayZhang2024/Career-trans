@@ -9,6 +9,7 @@ import { SearchIntentEditor } from "./SearchIntentEditor";
 import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchIntentToQuery, type SearchIntent } from "./SearchIntent";
 import { runSavedDiscoveryNowWithReconciliation, type DiscoveryRunReconciliation } from "./discoveryRunNow";
 import { DecisionControls, undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
+import { createApplicationPreparation, type PreparationPrerequisites } from "./applicationPreparationController";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
 type InboxDismissalNotice = { decision: UserJobDecision; title: string; message: string };
@@ -119,7 +120,7 @@ export function OpportunityDetail({ opportunity, historical = false, mode }: { o
 }
 
 function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadinessRefresh }: { opportunity: UserOpportunitySummary; ready: boolean | undefined; onUnavailable: () => Promise<boolean>; onReadinessRefresh: (status: OnboardingStatus | undefined) => void }) {
-  const { api } = useAuth();
+  const { api, user } = useAuth();
   const [open, setOpen] = useState(false);
   const [profileState, setProfileState] = useState<"unchecked" | "checking" | "ready" | "missing" | "error">("unchecked");
   const [pages, setPages] = useState<1 | 2 | 3>(2);
@@ -178,11 +179,19 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
     lock.current = true; setPending(true); setError(null); setCreated(null); setReconciled([]);
     const payload: ApplicationPrepareRequest = { target: { discovered_job_id: opportunity.discovered_job_id }, target_pages: pages, include_cover_letter: includeLetter, application_questions: cleanedQuestions };
     try {
-      const result = await api.request<ApplicationPreparation>("/api/v1/applications/prepare", { method: "POST", body: JSON.stringify(payload) });
-      if (alive.current && requestGeneration === generation.current) setCreated(result);
-    } catch (reason) {
-      if (!alive.current || requestGeneration !== generation.current || (reason as Error)?.name === "AbortError") return;
-      if (!(reason instanceof ApiError)) {
+      const mutation = await createApplicationPreparation(api, payload, { userId: user?.id, getUserId: () => user?.id });
+      if (!alive.current || requestGeneration !== generation.current || mutation.kind === "session_stale") return;
+      if (mutation.kind === "locked") {
+        setError("A preparation request for this job is already in progress. No new preparation was created.");
+      } else if (mutation.kind === "confirmed") {
+        setCreated(mutation.value);
+      } else if (mutation.kind === "target_unavailable") {
+        setUnavailable(true);
+        const refreshed = await onUnavailable();
+        if (alive.current && requestGeneration === generation.current) setError(refreshed ? "This opportunity is no longer available. The current opportunity view was refreshed." : "This opportunity is no longer available. The opportunity refresh could not be confirmed.");
+      } else if (mutation.kind === "prerequisite_conflict") {
+        applyPreparationPrerequisites(mutation.prerequisites);
+      } else if (mutation.kind === "uncertain") {
         try {
           const history = await api.request<ApplicationPreparation[]>("/api/v1/applications");
           if (alive.current && requestGeneration === generation.current) {
@@ -192,29 +201,24 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
         } catch (historyError) {
           if (alive.current && requestGeneration === generation.current && (historyError as Error)?.name !== "AbortError") setError("The preparation request was interrupted. Career-trans cannot confirm from this response whether a preparation was created. Saved application history could not be confirmed as refreshed.");
         }
-      } else if (reason.status === 404) {
-        setUnavailable(true);
-        const refreshed = await onUnavailable();
-        if (alive.current && requestGeneration === generation.current) setError(refreshed ? "This opportunity is no longer available. The current opportunity view was refreshed." : "This opportunity is no longer available. The opportunity refresh could not be confirmed.");
-      } else if (reason.status === 409) {
-        setPrerequisitesUnconfirmed(true);
-        const [onboardingResult, profileResult] = await Promise.allSettled([api.request<OnboardingStatus>("/api/v1/onboarding/status"), api.request<Profile>("/api/v1/profile")]);
-        if (!alive.current || requestGeneration !== generation.current) return;
-        const refreshedReadiness = onboardingResult.status === "fulfilled" ? onboardingResult.value : undefined;
-        onReadinessRefresh(refreshedReadiness);
-        const candidateNotReady = refreshedReadiness?.candidate_context_ready === false;
-        const profileMissing = profileResult.status === "rejected" && profileResult.reason instanceof ApiError && profileResult.reason.status === 404 || profileResult.status === "fulfilled" && !profileResult.value.display_name?.trim();
-        const profileReady = profileResult.status === "fulfilled" && Boolean(profileResult.value.display_name?.trim());
-        setProfileState(profileMissing ? "missing" : profileReady ? "ready" : "error");
-        setPrerequisitesUnconfirmed(!refreshedReadiness?.candidate_context_ready || !profileReady);
-        if (candidateNotReady) setError(<>A confirmed candidate CV is required before preparing an application. <Link to="/profile/cv">Continue CV onboarding</Link>.</>);
-        else if (profileMissing) setError(<>An application display name is required. <Link to="/profile">Update your profile</Link>.</>);
-        else if (onboardingResult.status !== "fulfilled" || profileResult.status !== "fulfilled") setError("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.");
-        else setError("Career-trans could not prepare this application because the current candidate or application data conflicts with the request.");
-      } else if (reason.status === 422) setError("Career-trans could not prepare this application because the target or request did not contain sufficient usable information.");
-      else if (reason.status === 503) setError("Application preparation is temporarily unavailable. Your saved application history remains available.");
-      else setError("Career-trans could not prepare this application. No preparation success was confirmed.");
+      } else if (mutation.kind === "failed") {
+        const reason = mutation.error;
+        if (reason instanceof ApiError && reason.status === 422) setError("Career-trans could not prepare this application because the target or request did not contain sufficient usable information.");
+        else if (reason instanceof ApiError && reason.status === 503) setError("Application preparation is temporarily unavailable. Your saved application history remains available.");
+        else setError("Career-trans could not prepare this application. No preparation success was confirmed.");
+      }
     } finally { lock.current = false; if (alive.current) setPending(false); }
+  };
+
+  const applyPreparationPrerequisites = (prerequisites: PreparationPrerequisites) => {
+    if (!alive.current) return;
+    onReadinessRefresh(prerequisites.onboarding);
+    setPrerequisitesUnconfirmed(prerequisites.state !== "ready");
+    setProfileState(prerequisites.state === "ready" ? "ready" : prerequisites.state === "profile_missing" ? "missing" : profileState);
+    if (prerequisites.state === "candidate_not_ready") setError(<>A confirmed candidate CV is required before preparing an application. <Link to="/profile/cv">Continue CV onboarding</Link>.</>);
+    else if (prerequisites.state === "profile_missing") setError(<>An application display name is required. <Link to="/profile">Update your profile</Link>.</>);
+    else if (prerequisites.state === "unavailable") setError("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.");
+    else setError("Career-trans could not prepare this application because the current candidate or application data conflicts with the request.");
   };
 
   return <section className="preparation-panel" aria-label={`Prepare application for ${opportunity.title}`}>

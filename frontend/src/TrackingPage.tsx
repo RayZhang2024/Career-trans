@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, type ApplicationTracking, type ApplicationTrackingListItem, type ApplicationTrackingStatus } from "./api";
 import { useAuth } from "./auth";
+import { createApplicationTracking } from "./applicationTrackingController";
 
 const statuses: ApplicationTrackingStatus[] = ["prepared", "applied", "interview", "rejected", "offer", "withdrawn"];
 const statusLabel = (value: ApplicationTrackingStatus) => value[0].toUpperCase() + value.slice(1);
@@ -53,31 +54,45 @@ export function PreparationTrackingPanel({ preparationId }: { preparationId: str
     return () => { generation.current += 1; };
   }, [api, preparationId, user?.id]);
 
-  async function reconcile(message: string) {
-    const current = generation.current;
-    setNotice(message);
-    await lookup(current, user?.id);
-  }
-
   async function startTracking() {
     if (pending) return;
     setPending(true); setNotice("");
     const current = generation.current;
     const ownerId = user?.id;
     try {
-      const value = await api.request<ApplicationTracking>("/api/v1/application-tracking", {
-        method: "POST", body: JSON.stringify({ preparation_id: preparationId, status: initialStatus }),
+      const result = await createApplicationTracking(api, preparationId, initialStatus, {
+        userId: ownerId,
+        getUserId: () => user?.id,
+        reconcileByPreparation: async () => {
+          try {
+            const value = await api.request<ApplicationTracking>(`/api/v1/application-tracking/by-preparation/${encodeURIComponent(preparationId)}`);
+            if (generation.current !== current || ownerId !== user?.id || value.preparation_id !== preparationId) return null;
+            if (monotonic(accepted.current, value, value.id)) {
+              accepted.current = value;
+              setState({ phase: "ready", value });
+            }
+            return value;
+          } catch (reason) {
+            if (reason instanceof ApiError && reason.status === 404) return null;
+            throw reason;
+          }
+        },
       });
-      if (generation.current === current && ownerId === user?.id && value.preparation_id === preparationId && monotonic(accepted.current, value, value.id)) {
+      if (result.kind === "session_stale" || generation.current !== current || ownerId !== user?.id) return;
+      if (result.kind === "locked") {
+        setNotice("A tracking request for this preparation is already in progress. No duplicate was created.");
+      } else if (result.kind === "confirmed") {
+        const value = result.value;
         accepted.current = value; setState({ phase: "ready", value });
-      }
-    } catch (error) {
-      if (generation.current !== current || ownerId !== user?.id || (error as Error)?.name === "AbortError") return;
-      if (error instanceof ApiError && error.status === 409) {
-        await reconcile("Tracking may already exist. The currently recorded state is shown if available; the request is not repeated.");
-      } else if (!(error instanceof ApiError)) {
-        await reconcile("The start request was interrupted. Any currently recorded tracking state is shown without attributing its cause.");
-      } else if (error.status === 404) {
+      } else if (result.kind === "reconciled_existing") {
+        setNotice("Tracking may already exist. The currently recorded state is shown if available; the request is not repeated.");
+      } else if (result.kind === "reconciliation_failed") {
+        setNotice("Tracking already exists or changed, but Career-trans could not confirm the current saved tracking state.");
+      } else if (result.kind === "uncertain_reconciled") {
+        setNotice("The currently saved tracking state was confirmed. The interrupted request itself cannot be identified as its cause.");
+      } else if (result.kind === "uncertain_unconfirmed") {
+        setNotice("The request outcome is uncertain and current saved tracking could not be confirmed.");
+      } else if (result.kind === "not_found") {
         setState({ phase: "error", message: "This preparation is not available to this account." });
       } else {
         setState({ phase: "error", message: "Tracking could not be started. You can try explicitly again." });

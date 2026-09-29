@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.job_ranking import RankedJobOpportunity
 from app.schemas.semantic_runtime_attribution import SemanticRuntimeAttribution
 from app.schemas.user_job_decision import UserJobDecisionRead
+from app.schemas.application_preparation import ApplicationTargetKind
+from app.schemas.application_tracking import ApplicationTrackingStatus
 
 
 class WorkspaceCurrentFitStatus(StrEnum):
@@ -95,6 +97,60 @@ class WorkspaceCurrentFitRead(BaseModel):
     evaluation: WorkspaceEvaluationRead | None = None
 
 
+class WorkspaceApplicationResultSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    layout_status: str
+    target_pages: int
+    actual_pdf_pages: int
+    has_cover_letter: bool
+    answer_count: int
+
+
+class WorkspaceApplicationTrackingSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    preparation_id: str
+    current_status: ApplicationTrackingStatus
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceApplicationTargetRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_kind: ApplicationTargetKind
+    canonical_discovered_job_id: str | None = None
+    title: str
+    company: str | None = None
+    location: str | None = None
+    public_url: str | None = None
+    work_arrangement: str | None = None
+    employment_type: str | None = None
+    job_content_hash: str
+
+
+class WorkspaceApplicationRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preparation_id: str
+    created_at: datetime
+    target: WorkspaceApplicationTargetRead
+    snapshot_status: str
+    result_summary: WorkspaceApplicationResultSummary | None = None
+    tracking: WorkspaceApplicationTrackingSummary | None = None
+
+
+class WorkspaceApplicationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[WorkspaceApplicationRead] = Field(default_factory=list)
+    limit: int
+    truncated: bool
+
+
 class JobWorkspaceRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -103,3 +159,4 @@ class JobWorkspaceRead(BaseModel):
     current_fit: WorkspaceCurrentFitRead
     evaluations: WorkspaceEvaluationResponse
     decision: UserJobDecisionRead
+    applications: WorkspaceApplicationResponse

@@ -37,7 +37,8 @@ const savedExecution = (status: ScheduledExecutionRead["status"] = "completed"):
 const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
 const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1, decision: decision(id) });
 const workspaceJob = (patch: Record<string, unknown> = {}) => ({ id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z", ...patch });
-const workspacePayload = (workspaceDecision = decision("actionable"), patch: Record<string, unknown> = {}) => ({ job: workspaceJob(), decision: workspaceDecision, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false }, ...patch });
+const workspacePayload = (workspaceDecision = decision("actionable"), patch: Record<string, unknown> = {}) => ({ job: workspaceJob(), decision: workspaceDecision, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false }, applications: { items: [], limit: 20, truncated: false }, ...patch });
+const workspacePreparation = (id = "prep-1", title = "Saved workspace preparation") => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null });
 const listedDecision = (id: string, value: "shortlisted" | "dismissed", revision: number, title = `${value} ${id}`) => ({ discovered_job_id: id, title, company: "Public Co", location: "London", url: `https://public.example.test/${id}`, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "new" as const, verification_status: "verified" as const, verification_reason: null, actionable: true, last_seen_at: "2026-02-02T00:00:00Z", decision: value, revision, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" });
 const historyDetail: HistoricalRunJobDetail = { discovered_job_id: "job-0", evaluation_id: "historical-eval", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Historical role"), runtime_attribution: { status: "available", provider: "openai", operations: { job_relevance: { model: "old-job-relevance", reasoning_effort: null }, job_archetype: { model: "old-archetype", reasoning_effort: "low" }, job_extraction: { model: "old-extraction", reasoning_effort: "medium" }, requirement_matching: { model: "old-matching", reasoning_effort: "high" }, career_alignment: { model: "old-alignment", reasoning_effort: "max" } } } };
 const json = (body: unknown, status = 200) => new Response(body === undefined ? "" : JSON.stringify(body), { status });
@@ -1778,5 +1779,241 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     fireEvent.click(screen.getByRole("button", { name: "Manage dismissed jobs" }));
     expect(await screen.findByText(dismissed.title)).toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=dismissed&limit=20");
+  });
+
+  it("renders Workspace preparation history and reuses the canonical preparation endpoint", async () => {
+    const application = { preparation_id: "prep-1", created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "Saved workspace role", company: "Public Co", location: "London", public_url: "https://public.example.test/actionable", work_arrangement: "Hybrid", employment_type: "Full-time", job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: { layout_status: "fit", target_pages: 2, actual_pdf_pages: 2, has_cover_letter: true, answer_count: 1 }, tracking: null };
+    let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": (_url, init) => init?.method === "POST" ? json({ detail: "unexpected" }, 405) : json(workspacePayload(decision("actionable"), { applications: { items: [application], limit: 20, truncated: false } })),
+      "POST /api/v1/applications/prepare": (_url, init) => { posts += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ target: { discovered_job_id: "actionable" }, target_pages: 2, include_cover_letter: true }); return json({ id: "prep-created" }, 201); },
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    expect(await screen.findByText("Saved workspace role")).toBeInTheDocument();
+    expect(screen.getByText("Current job content")).toBeInTheDocument();
+    expect(screen.queryByText(/not part of this Job Workspace yet/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open preparation" })).toHaveAttribute("href", "/applications/prep-1");
+    fireEvent.click(await screen.findByRole("button", { name: "Create preparation" }));
+    await waitFor(() => expect(posts).toBe(1));
+    await waitFor(() => expect(screen.getAllByRole("link", { name: "Open preparation" }).some((link) => link.getAttribute("href") === "/applications/prep-created")).toBe(true));
+  });
+
+  it("uses shared profile-missing authority on direct Workspace Application load", async () => {
+    const fetch = fakeFetch({
+      "/api/v1/onboarding/status": () => json({ ...ready, candidate_context_ready: true }),
+      "/api/v1/profile": () => json(undefined, 404),
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [workspacePreparation()], limit: 20, truncated: false } })),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    expect(await screen.findByText("Saved workspace preparation")).toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("application display name is required");
+    expect(within(alert).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
+    expect(alert).not.toHaveTextContent("Preparation readiness is unavailable");
+    expect(screen.queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
+  });
+
+  it("preserves candidate-not-ready precedence when the direct Workspace profile read fails", async () => {
+    const fetch = fakeFetch({
+      "/api/v1/onboarding/status": () => json({ ...ready, candidate_context_ready: false }),
+      "/api/v1/profile": () => Promise.reject(new TypeError("offline")),
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [workspacePreparation()], limit: 20, truncated: false } })),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    expect(await screen.findByText("Saved workspace preparation")).toBeInTheDocument();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("confirmed candidate CV is required");
+    expect(within(alert).getByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/profile/cv");
+    expect(alert).not.toHaveTextContent("Preparation readiness is unavailable");
+    expect(screen.queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
+  });
+
+  it("shows truthful unavailable Workspace readiness with a retry action", async () => {
+    const fetch = fakeFetch({
+      "/api/v1/onboarding/status": () => Promise.reject(new TypeError("offline")),
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [workspacePreparation()], limit: 20, truncated: false } })),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    expect(await screen.findByText("Saved workspace preparation")).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Preparation readiness is unavailable");
+    expect(screen.getByRole("button", { name: "Retry readiness" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
+  });
+
+  it("transitions Workspace readiness from unavailable to ready without navigation", async () => {
+    let statusCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/onboarding/status": () => ++statusCalls === 1 ? Promise.reject(new TypeError("offline")) : json(ready),
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [workspacePreparation()], limit: 20, truncated: false } })),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    fireEvent.click(await screen.findByRole("button", { name: "Retry readiness" }));
+    expect(await screen.findByRole("button", { name: "Create preparation" })).toBeInTheDocument();
+    expect(statusCalls).toBe(2);
+  });
+
+  it("does not let a stale Workspace prerequisite read update a replacement user", async () => {
+    const oldStatus = deferred<Response>();
+    let statusCalls = 0; let meCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/users/me": () => json(meCalls++ === 0 ? user : { ...user, id: "user-b", email: "replacement@example.test" }),
+      "/api/v1/onboarding/status": () => ++statusCalls === 1 ? oldStatus.promise : json(ready),
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [workspacePreparation()], limit: 20, truncated: false } })),
+    });
+    sessionStorage.setItem(TOKEN, "test-token");
+    vi.stubGlobal("fetch", fetch);
+    render(<MemoryRouter initialEntries={["/jobs/actionable/application"]}><AuthProvider><AuthSwitcher /><App /></AuthProvider></MemoryRouter>);
+    expect(await screen.findByText("Saved workspace preparation")).toBeInTheDocument();
+    await waitFor(() => expect(statusCalls).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
+    expect(await screen.findByRole("button", { name: "Create preparation" })).toBeInTheDocument();
+    oldStatus.resolve(json({ ...ready, candidate_context_ready: false }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create preparation" })).toBeInTheDocument());
+    expect(meCalls).toBeGreaterThan(1);
+  });
+
+  it("uses the same profile-missing presentation for initial reads and 409 reconciliation", async () => {
+    let mode: "initial" | "conflict" = "initial"; let profileCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/onboarding/status": () => json(ready),
+      "/api/v1/profile": () => mode === "initial" ? json(undefined, 404) : profileCalls++ === 0 ? json({ display_name: "Current Person" }) : json(undefined, 404),
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [workspacePreparation()], limit: 20, truncated: false } })),
+      "POST /api/v1/applications/prepare": () => json({ detail: "profile changed" }, 409),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    const initialAlert = await screen.findByRole("alert");
+    expect(initialAlert).toHaveTextContent("application display name is required");
+    expect(within(initialAlert).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
+    cleanup(); sessionStorage.clear(); mode = "conflict"; profileCalls = 0;
+    renderJobs(fetch, "/jobs/actionable/application");
+    fireEvent.click(await screen.findByRole("button", { name: "Create preparation" }));
+    const reconciledAlert = await screen.findByRole("alert");
+    expect(reconciledAlert).toHaveTextContent("application display name is required");
+    expect(within(reconciledAlert).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
+  });
+
+  it("renders independent Workspace tracking states and synchronously locks duplicate starts", async () => {
+    const base = (id: string, tracking: unknown) => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: id, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking });
+    let workspaceCalls = 0; let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => { workspaceCalls += 1; return json(workspacePayload(decision("actionable"), { applications: { items: [base("prep-a", null), base("prep-b", { id: "track-b", preparation_id: "prep-b", current_status: "interview", revision: 2, created_at: "2026-03-01T12:00:00Z", updated_at: "2026-03-02T12:00:00Z" })], limit: 20, truncated: false } })); },
+      "POST /api/v1/application-tracking": () => { posts += 1; return json({ id: "track-a", preparation_id: "prep-a" }, 201); },
+    });
+    renderJobs(fetch, "/jobs/actionable/tracking");
+    expect(await screen.findByText("Not tracked")).toBeInTheDocument();
+    expect(screen.getByText("interview", { exact: false })).toBeInTheDocument();
+    const start = screen.getByRole("button", { name: "Start tracking" });
+    fireEvent.click(start); fireEvent.click(start);
+    await waitFor(() => expect(posts).toBe(1));
+    expect(workspaceCalls).toBeGreaterThan(1);
+    expect(screen.getByText(/workspace projection is refreshing/i)).toBeInTheDocument();
+  });
+
+  it("reports Workspace tracking conflict only after authoritative reconciliation succeeds", async () => {
+    const base = (tracking: unknown) => ({ preparation_id: "prep-a", created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "prep-a", company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking });
+    let workspaceCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [base(workspaceCalls++ === 0 ? null : { id: "track-a", preparation_id: "prep-a", current_status: "interview", revision: 2, created_at: "2026-03-01T12:00:00Z", updated_at: "2026-03-02T12:00:00Z" })], limit: 20, truncated: false } })),
+      "/api/v1/application-tracking/by-preparation/prep-a": () => json({ id: "track-a", preparation_id: "prep-a", current_status: "interview", revision: 2, created_at: "2026-03-01T12:00:00Z", updated_at: "2026-03-02T12:00:00Z" }),
+      "POST /api/v1/application-tracking": () => json({ detail: "already exists" }, 409),
+    });
+    renderJobs(fetch, "/jobs/actionable/tracking");
+    fireEvent.click(await screen.findByRole("button", { name: "Start tracking" }));
+    expect(await screen.findByText(/Saved tracking was confirmed/)).toBeInTheDocument();
+    expect(await screen.findByText(/interview/i)).toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/application-tracking/by-preparation/prep-a");
+    expect(workspaceCalls).toBeGreaterThan(1);
+  });
+
+  it("does not claim Workspace tracking state when exact reconciliation fails even if the bounded refresh succeeds", async () => {
+    let workspaceCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => workspaceCalls++ === 0 ? json(workspacePayload(decision("actionable"), { applications: { items: [{ preparation_id: "prep-a", created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "prep-a", company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null }], limit: 20, truncated: false } })) : json(workspacePayload(decision("actionable"), { applications: { items: [], limit: 20, truncated: false } })),
+      "/api/v1/application-tracking/by-preparation/prep-a": () => json({ detail: "not found" }, 404),
+      "POST /api/v1/application-tracking": () => json({ detail: "already exists" }, 409),
+    });
+    renderJobs(fetch, "/jobs/actionable/tracking");
+    fireEvent.click(await screen.findByRole("button", { name: "Start tracking" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not confirm saved tracking for this preparation/);
+    expect(screen.queryByText(/Saved tracking was confirmed/)).not.toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/application-tracking/by-preparation/prep-a");
+  });
+
+  it("keeps Tracking show-more on the shared bounded application window", async () => {
+    const item = (id: string) => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: id, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null });
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": (url) => url.searchParams.get("application_limit") === "40"
+        ? json(workspacePayload(decision("actionable"), { applications: { items: [item("prep-40")], limit: 40, truncated: false } }))
+        : json(workspacePayload(decision("actionable"), { applications: { items: [item("prep-20")], limit: 20, truncated: true } })),
+    });
+    renderJobs(fetch, "/jobs/actionable/tracking");
+    expect(await screen.findByText("prep-20")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(await screen.findByText("prep-40")).toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/workspaces/actionable?application_limit=40");
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+  });
+
+  it("refreshes full Workspace authority after preparation target unavailability", async () => {
+    let workspaceCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => {
+        workspaceCalls += 1;
+        return json(workspacePayload(decision("actionable"), { job: workspaceJob({ actionable: workspaceCalls === 1 }) }));
+      },
+      "POST /api/v1/applications/prepare": () => json({ detail: "gone" }, 404),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    await screen.findByRole("button", { name: "Create preparation" });
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    expect(await screen.findByText("This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.")).toBeInTheDocument();
+    expect(workspaceCalls).toBeGreaterThan(1);
+    expect(screen.queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a newer 40-item application window and decision while stale target authority updates job and Fit", async () => {
+    const staleRefresh = deferred<Response>();
+    const application = (id: string) => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: id, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null });
+    const initialHistory = { id: "eval-history", created_at: "2026-02-01T00:00:00Z", applicability: "historical", opportunity: ranked("Historical workspace role"), runtime_attribution: null };
+    const initialProvenance = { id: "prov-1", runtime: "codex", source_ref: "workspace-source", discovered_via: "external_import", imported_at: "2026-02-01T00:00:00Z" };
+    let workspaceCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": (url) => {
+        if (url.searchParams.get("application_limit") === "40") return json(workspacePayload(decision("actionable"), { applications: { items: [application("prep-40")], limit: 40, truncated: false } }));
+        workspaceCalls += 1;
+        if (workspaceCalls === 1) return json(workspacePayload(decision("actionable"), {
+          current_fit: { status: "current", reason: null, evaluation: { id: "eval-current", created_at: "2026-03-01T00:00:00Z", applicability: "current", opportunity: ranked("Current workspace role"), runtime_attribution: null } },
+          evaluations: { items: [initialHistory], limit: 20, truncated: false },
+          provenance: { items: [initialProvenance], count: 1, limit: 20, truncated: false },
+          applications: { items: [application("prep-20")], limit: 20, truncated: true },
+        }));
+        return staleRefresh.promise;
+      },
+      "POST /api/v1/applications/prepare": () => json({ detail: "gone" }, 404),
+      "PUT /api/v1/jobs/decisions/actionable": () => json({ ...decision("actionable", "shortlisted"), revision: 1 }),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    await screen.findByRole("button", { name: "Create preparation" });
+    expect(await screen.findByText("prep-20")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
+    await waitFor(() => expect(workspaceCalls).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: "Shortlist" }));
+    expect(await screen.findByLabelText("Shortlisted")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show more" }));
+    expect(await screen.findByText("prep-40")).toBeInTheDocument();
+    staleRefresh.resolve(json(workspacePayload(decision("actionable", "dismissed"), {
+      job: workspaceJob({ actionable: false, title: "No longer actionable role" }),
+      current_fit: { status: "none", reason: "job_not_actionable", evaluation: null },
+      applications: { items: [application("prep-20")], limit: 20, truncated: true },
+    })));
+    expect(await screen.findByText("This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.")).toBeInTheDocument();
+    expect(screen.getByText("prep-40")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Shortlisted")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Fit" }));
+    expect(await screen.findByText("This vacancy is not currently actionable, so no current Fit is claimed.")).toBeInTheDocument();
+    expect(screen.getByText("Historical workspace role")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Overview" }));
+    expect(await screen.findByText("workspace-source")).toBeInTheDocument();
   });
 });

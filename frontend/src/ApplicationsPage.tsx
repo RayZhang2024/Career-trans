@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, type ApplicationPreparation, type ApplicationPreparationReview, type ApplicationSourceRef } from "./api";
+import { ApiError, type ApplicationPreparation, type ApplicationPreparationReview, type ApplicationSourceRef, type ApplicationTrackingListItem } from "./api";
 import { useAuth } from "./auth";
 import { buildRequirementReview, collectFinalCitationUsage, evidenceIdentity, snapshotStatusLabel, type CitationUsage, type RequirementReviewRow } from "./applicationReview";
 import { PreparationTrackingPanel } from "./TrackingPage";
@@ -36,7 +36,10 @@ function EvidenceUsed({ refs, review, citations, reviewPending }: { refs: Applic
   })}</ul></details>;
 }
 
-function PreparationSummary({ value }: { value: ApplicationPreparation }) {
+type TrackingProjection = { phase: "ready"; items: ApplicationTrackingListItem[] } | { phase: "unavailable" };
+
+function PreparationSummary({ value, tracking }: { value: ApplicationPreparation; tracking: TrackingProjection }) {
+  const tracked = tracking.phase === "ready" ? tracking.items.find((item) => item.preparation_id === value.id) : undefined;
   return <article className="card application-summary">
     <p className="eyebrow">Created {dateLabel(value.created_at)}</p>
     <h2><Link to={`/applications/${encodeURIComponent(value.id)}`}>{value.target.title}</Link></h2>
@@ -47,6 +50,7 @@ function PreparationSummary({ value }: { value: ApplicationPreparation }) {
       <div><dt>Cover letter</dt><dd>{value.result.cover_letter ? "Included" : "Not included"}</dd></div>
       <div><dt>Question answers</dt><dd>{value.result.answers.length}</dd></div>
     </dl>
+    {tracking.phase === "unavailable" ? <p className="muted">Tracking status is temporarily unavailable.</p> : <p>{tracked ? <>Tracked: <strong>{tracked.current_status}</strong> · <Link to={`/tracking/${encodeURIComponent(tracked.id)}`}>Open tracking</Link></> : "Not tracked"}</p>}
     <Link to={`/applications/${encodeURIComponent(value.id)}`}>Review preparation</Link>
   </article>;
 }
@@ -118,7 +122,7 @@ function RequirementRow({ row, review, citations }: { row: RequirementReviewRow;
 
 export function ApplicationsPage() {
   const { api, user } = useAuth();
-  const [state, setState] = useState<LoadState<ApplicationPreparation[]> & { ownerId?: string }>({ phase: "loading" });
+  const [state, setState] = useState<LoadState<ApplicationPreparation[]> & { ownerId?: string; tracking?: TrackingProjection }>({ phase: "loading" });
   const generation = useRef(0);
   const alive = useRef(false);
   const ownerRef = useRef(user?.id);
@@ -128,11 +132,21 @@ export function ApplicationsPage() {
     const ownerId = user?.id;
     setState((old) => ({ phase: old.ownerId === ownerId && old.value ? "ready" : "loading", value: old.ownerId === ownerId ? old.value : undefined, ownerId }));
     try {
-      const value = await api.request<ApplicationPreparation[]>("/api/v1/applications");
-      if (alive.current && current === generation.current && ownerRef.current === ownerId) { setState({ phase: "ready", value, ownerId }); return true; }
+      const [preparations, tracking] = await Promise.allSettled([
+        api.request<ApplicationPreparation[]>("/api/v1/applications"),
+        api.request<ApplicationTrackingListItem[]>("/api/v1/application-tracking"),
+      ]);
+      if (alive.current && current === generation.current && ownerRef.current === ownerId) {
+        if (preparations.status === "rejected") {
+          setState((old) => ({ phase: "error", value: old.ownerId === ownerId ? old.value : undefined, ownerId, tracking: old.ownerId === ownerId ? old.tracking : undefined, message: "Application history is unavailable." }));
+          return false;
+        }
+        setState({ phase: "ready", value: preparations.value, ownerId, tracking: tracking.status === "fulfilled" ? { phase: "ready", items: tracking.value } : { phase: "unavailable" } });
+        return true;
+      }
       return false;
     } catch {
-      if (alive.current && current === generation.current && ownerRef.current === ownerId) setState((old) => ({ phase: "error", value: old.ownerId === ownerId ? old.value : undefined, ownerId, message: "Application history is unavailable." }));
+      if (alive.current && current === generation.current && ownerRef.current === ownerId) setState((old) => ({ phase: "error", value: old.ownerId === ownerId ? old.value : undefined, ownerId, tracking: old.ownerId === ownerId ? old.tracking : undefined, message: "Application history is unavailable." }));
       return false;
     }
   };
@@ -146,7 +160,7 @@ export function ApplicationsPage() {
       {visibleState.phase === "loading" && !visibleState.value && <p role="status">Loading application history…</p>}
       {visibleState.phase === "error" && <p role="alert">{visibleState.message}</p>}
       {visibleState.value?.length === 0 && <p className="muted">No application preparations yet. Prepare a ranked opportunity from <Link to="/jobs">Jobs</Link>, or prepare another vacancy directly here.</p>}
-      {!!visibleState.value?.length && <div className="application-list">{visibleState.value.map((value) => <PreparationSummary key={value.id} value={value} />)}</div>}
+       {!!visibleState.value?.length && <div className="application-list">{visibleState.value.map((value) => <PreparationSummary key={value.id} value={value} tracking={visibleState.tracking ?? { phase: "unavailable" }} />)}</div>}
     </section>
   </main>;
 }

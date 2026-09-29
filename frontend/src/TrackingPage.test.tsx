@@ -97,11 +97,11 @@ describe("Issue #184 application tracking workspace", () => {
     expect(paths(fetch)).not.toContain("/api/v1/applications/prep-1/review");
   });
 
-  it("loads no tracking data from Applications history", async () => {
+  it("loads one global tracking projection for Applications history", async () => {
     const fetch = fetcher(); renderApp(fetch, "/applications");
     expect(await screen.findByRole("heading", { name: "Applications" })).toBeInTheDocument();
     await waitFor(() => expect(paths(fetch)).toContain("/api/v1/applications"));
-    expect(paths(fetch).some((path) => path.includes("application-tracking"))).toBe(false);
+    expect(paths(fetch).filter((path) => path === "/api/v1/application-tracking")).toHaveLength(1);
   });
 
   it("waits for preparation ownership before looking up tracking and leaves V2C2 content visible on tracking failure", async () => {
@@ -159,17 +159,44 @@ describe("Issue #184 application tracking workspace", () => {
     let posts = 0; let lookups = 0;
     const fetch = fetcher({
       "POST /api/v1/application-tracking": () => { posts += 1; return Promise.reject(new TypeError("offline")); },
-      "/api/v1/application-tracking/by-preparation/prep-1": () => { lookups += 1; return json({ detail: "not found" }, 404); },
+      "/api/v1/application-tracking/by-preparation/prep-1": () => { lookups += 1; return lookups === 1 ? json({ detail: "not found" }, 404) : json({ detail: "temporarily unavailable" }, 503); },
     });
     renderApp(fetch, "/applications/prep-1");
     const select = await screen.findByLabelText("Initial recorded status");
     fireEvent.change(select, { target: { value: "offer" } });
     fireEvent.click(screen.getByRole("button", { name: "Start tracking" }));
-    expect(await screen.findByRole("status")).toHaveTextContent(/without attributing its cause/);
+    expect(await screen.findByRole("status")).toHaveTextContent(/current saved tracking could not be confirmed/);
     expect(screen.getByLabelText("Initial recorded status")).toHaveValue("offer");
     expect(posts).toBe(1); expect(lookups).toBe(2); // initial authority load + one reconciliation GET
     fireEvent.click(screen.getByRole("button", { name: "Start tracking" }));
     await waitFor(() => expect(posts).toBe(2));
+  });
+
+  it("confirms interrupted creation from the exact preparation lookup without claiming causality", async () => {
+    let posts = 0; let lookups = 0;
+    const fetch = fetcher({
+      "POST /api/v1/application-tracking": () => { posts += 1; return Promise.reject(new TypeError("offline")); },
+      "/api/v1/application-tracking/by-preparation/prep-1": () => { lookups += 1; return lookups === 1 ? json({ detail: "not found" }, 404) : json(tracking("existing", "offer")); },
+    });
+    renderApp(fetch, "/applications/prep-1");
+    fireEvent.click(await screen.findByRole("button", { name: "Start tracking" }));
+    expect(await screen.findByText(/Current recorded status:/)).toHaveTextContent("Offer");
+    expect(await screen.findByRole("status")).toHaveTextContent(/currently saved tracking state was confirmed/);
+    expect(posts).toBe(1); expect(lookups).toBe(2);
+    expect(screen.queryByText(/successfully started/)).not.toBeInTheDocument();
+  });
+
+  it("does not reconcile a tracking record returned for a different preparation", async () => {
+    let lookups = 0;
+    const fetch = fetcher({
+      "POST /api/v1/application-tracking": () => Promise.reject(new TypeError("offline")),
+      "/api/v1/application-tracking/by-preparation/prep-1": () => { lookups += 1; return lookups === 1 ? json({ detail: "not found" }, 404) : json({ ...tracking("wrong"), preparation_id: "other-preparation" }); },
+    });
+    renderApp(fetch, "/applications/prep-1");
+    fireEvent.click(await screen.findByRole("button", { name: "Start tracking" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(/current saved tracking could not be confirmed/);
+    expect(screen.queryByText(/Current recorded status:/)).not.toBeInTheDocument();
+    expect(lookups).toBe(2);
   });
 
   it("sends displayed expected revision and accepts successful full detail", async () => {
