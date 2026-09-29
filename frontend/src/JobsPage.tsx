@@ -153,7 +153,7 @@ function OpportunityPreparation({ opportunity, ready, onUnavailable, onReadiness
     const result = await decisionMutator.mutate(decision, target);
     if (result.decision) {
       setDecision(result.decision);
-      if (result.confirmed) window.dispatchEvent(new CustomEvent("career-trans-job-decision-changed"));
+      if (result.kind === "confirmed") window.dispatchEvent(new CustomEvent("career-trans-job-decision-changed"));
     }
   };
 
