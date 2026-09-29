@@ -272,6 +272,24 @@ replacement, and the current readiness behavior. The evidence is reused from
 T1–T4 and B1–B2. New audit-test count: **0**. Reused focused test evidence:
 **more than 40 named frontend/backend tests** across the cited suites.
 
+## Validation record for this audit branch
+
+| Check | Result |
+| --- | --- |
+| Focused frontend route/parity suites | PASS — 6 files, 353 tests |
+| Full frontend suite | PASS — 15 files, 572 tests |
+| Frontend TypeScript typecheck | PASS |
+| Frontend production build | PASS; Vite emitted only the existing large-chunk advisory |
+| Focused backend parity/scoping/provider-free suites | PASS — 110 tests |
+| Full backend suite | 1,089 passed, 1 unrelated failure |
+| Isolated rerun of the unrelated failure | PASS — `tests/test_candidate_adviser_profile_proposals.py::test_list_is_user_scoped_newest_first_and_bounded` |
+| `git diff --check` | PASS |
+
+The full-backend failure was in an unchanged Candidate Adviser proposal test,
+outside this audit’s source and scope. Its isolated rerun passed. The branch
+contains only this audit document relative to the authorized baseline; no
+production source change could have caused that failure.
+
 ## Conclusion
 
 ### A. Current parity verdict
