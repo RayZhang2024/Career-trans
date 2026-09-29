@@ -68,9 +68,12 @@ afterEach(cleanup);
 
 describe("Issue #180 Applications workspace", () => {
   it("loads history only when opened and preserves the backend order with summary fields", async () => {
-    const fetch = fetcher({ "/api/v1/applications": () => json([preparation("newest", "Newest"), preparation("older", "Older", false)]) });
+    const fetch = fetcher({ "/api/v1/applications": () => json([
+      { ...preparation("newest", "Repeated role"), created_at: "2026-03-02T12:00:00Z" },
+      { ...preparation("older", "Repeated role", false), created_at: "2026-03-01T12:00:00Z" },
+    ]) });
     renderApp(fetch);
-    expect(await screen.findByRole("heading", { name: "Newest" })).toBeInTheDocument();
+    expect(await screen.findAllByRole("heading", { name: "Repeated role" })).toHaveLength(2);
     expect(screen.getByRole("link", { name: "Applications" })).toHaveAttribute("href", "/applications");
     expect(screen.getAllByText(/Fits target/)).toHaveLength(2);
     expect(screen.getByText("Included")).toBeInTheDocument();

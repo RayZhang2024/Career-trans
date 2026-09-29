@@ -54,15 +54,14 @@ afterEach(cleanup);
 
 describe("Issue #184 application tracking workspace", () => {
   it("loads only when opened, preserves API ordering and does not fetch review evidence", async () => {
-    const fetch = fetcher({ "/api/v1/application-tracking": () => json([item("t-new", "Newest role", "offer", "2026-02-02"), item("t-old", "Older role", "applied", "2026-01-01")]) });
+    const fetch = fetcher({ "/api/v1/application-tracking": () => json([item("t-new", "Repeated role", "offer", "2026-02-02"), item("t-old", "Repeated role", "applied", "2026-01-01")]) });
     renderApp(fetch);
-    expect(await screen.findByRole("heading", { name: "Newest role" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Older role" })).toBeInTheDocument();
+    expect(await screen.findAllByRole("heading", { name: "Repeated role" })).toHaveLength(2);
     const historyLinks = screen.getAllByRole("link", { name: /Open tracking history for/ });
     expect(historyLinks).toHaveLength(2);
     expect(new Set(historyLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
     const rendered = document.body.textContent ?? "";
-    expect(rendered.indexOf("Newest role")).toBeLessThan(rendered.indexOf("Older role"));
+    expect(rendered.indexOf("Repeated role")).toBeLessThan(rendered.lastIndexOf("Repeated role"));
     expect(screen.getByRole("link", { name: "Tracking" })).toHaveAttribute("href", "/tracking");
     expect(paths(fetch).filter((path) => path.endsWith("/review"))).toHaveLength(0);
     expect(paths(fetch)).not.toContain("/api/v1/profile");

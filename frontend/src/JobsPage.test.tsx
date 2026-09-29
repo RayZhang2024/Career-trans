@@ -112,6 +112,21 @@ describe("Issue #171 Jobs workspace", () => {
     expect(screen.queryByText("99")).not.toBeInTheDocument();
   });
 
+  it("disambiguates repeated current opportunity actions with the visible result ordinal", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([op("first", "Repeated role", 1), op("second", "Repeated role", 2)])) });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.click(screen.getByRole("link", { name: "My opportunities" }));
+    await screen.findByRole("heading", { name: "Recommended / Current analyses" });
+    const workspaceLinks = await screen.findAllByRole("link", { name: /Open workspace for Repeated role/ });
+    expect(workspaceLinks).toHaveLength(2);
+    expect(new Set(workspaceLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
+    expect(workspaceLinks.map((link) => link.getAttribute("aria-label"))).toEqual(expect.arrayContaining([
+      "Open workspace for Repeated role · Example Co · London · result 1",
+      "Open workspace for Repeated role · Example Co · London · result 2",
+    ]));
+    expect(workspaceLinks.every((link) => !link.getAttribute("aria-label")?.includes("first") && !link.getAttribute("aria-label")?.includes("second"))).toBe(true);
+  });
+
   it("prepares from the canonical discovered job ID, cleans questions, and does not gate on SKIP", async () => {
     let body: unknown;
     const alpha = { ...op("alpha", "Alpha", 99), recommendation: "apply" as const };
@@ -454,6 +469,10 @@ describe("Issue #171 Jobs workspace", () => {
     fireEvent.click(await screen.findByRole("button", { name: "View run" }));
     expect(screen.queryByRole("button", { name: "Prepare application" })).not.toBeInTheDocument();
     for (const label of ["Newly evaluated", "Reused evaluation", "Not actionable", "Presemantic filtered", "Outside semantic budget", "Semantic rejected", "Outside deep-analysis budget", "Analysis failed"]) expect(await screen.findByText(label)).toBeInTheDocument();
+    const historicalActions = screen.getAllByRole("button", { name: /Historical detail for historical result/ });
+    expect(historicalActions).toHaveLength(8);
+    expect(new Set(historicalActions.map((button) => button.getAttribute("aria-label"))).size).toBe(8);
+    expect(historicalActions.every((button) => !button.getAttribute("aria-label")?.includes("job-"))).toBe(true);
     fireEvent.click(screen.getAllByRole("button", { name: /Historical detail for/ })[0]);
     expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
     expect(screen.getByText(/does not describe the vacancy or recommendation as current/)).toBeInTheDocument();
@@ -1222,7 +1241,7 @@ describe("Issue #236 Phase 5 repair regressions", () => {
   });
 
   it("keeps exact factual outcomes and actions for rows without opportunities", async () => {
-    const exactRun = { ...run("run-exact-no-opportunity"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "blocked", evaluation_id: null, outcome: "semantic_rejected" as const, failure_stage: "relevance", failure_kind: "not_relevant", opportunity: null }] };
+    const exactRun = { ...run("run-exact-no-opportunity"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "blocked", evaluation_id: null, outcome: "semantic_rejected" as const, failure_stage: "relevance", failure_kind: "not_relevant", opportunity: null }, { discovered_job_id: "blocked-2", evaluation_id: null, outcome: "outside_semantic_budget" as const, failure_stage: null, failure_kind: null, opportunity: null }] };
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun) });
     renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" });
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
@@ -1231,8 +1250,16 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Select Inbox actionable" })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
     await screen.findByRole("heading", { name: "Analysis just completed" });
     expect(screen.getByText("Semantic rejected")).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /Open workspace for/ }).some((link) => link.getAttribute("href") === "/jobs/blocked")).toBe(true);
-    expect(screen.getByRole("link", { name: /Open exact run result for/ })).toHaveAttribute("href", "/jobs/history?run=run-exact-no-opportunity&job=blocked");
+    const workspaceLinks = screen.getAllByRole("link", { name: /Open workspace for returned result/ });
+    const exactResultLinks = screen.getAllByRole("link", { name: /Open exact run result for returned result/ });
+    expect(workspaceLinks).toHaveLength(2);
+    expect(exactResultLinks).toHaveLength(2);
+    expect(new Set(workspaceLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
+    expect(new Set(exactResultLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
+    expect(workspaceLinks.every((link) => !link.getAttribute("aria-label")?.includes("blocked"))).toBe(true);
+    expect(exactResultLinks.every((link) => !link.getAttribute("aria-label")?.includes("blocked"))).toBe(true);
+    expect(workspaceLinks.map((link) => link.getAttribute("aria-label"))).toEqual(expect.arrayContaining(["Open workspace for returned result 1", "Open workspace for returned result 2"]));
+    expect(exactResultLinks.map((link) => link.getAttribute("href"))).toEqual(expect.arrayContaining(["/jobs/history?run=run-exact-no-opportunity&job=blocked", "/jobs/history?run=run-exact-no-opportunity&job=blocked-2"]));
     expect(screen.queryByRole("link", { name: "Open Fit" })).not.toBeInTheDocument();
   });
 
@@ -1894,18 +1921,23 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
 
   it("renders independent Workspace tracking states and synchronously locks duplicate starts", async () => {
     const base = (id: string, tracking: unknown) => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: id, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking });
-    let workspaceCalls = 0; let posts = 0;
+    let workspaceCalls = 0; let posts = 0; const pending = deferred<Response>();
     const fetch = fakeFetch({
       "/api/v1/jobs/workspaces/actionable": () => { workspaceCalls += 1; return json(workspacePayload(decision("actionable"), { applications: { items: [base("prep-a", null), base("prep-b", { id: "track-b", preparation_id: "prep-b", current_status: "interview", revision: 2, created_at: "2026-03-01T12:00:00Z", updated_at: "2026-03-02T12:00:00Z" })], limit: 20, truncated: false } })); },
-      "POST /api/v1/application-tracking": () => { posts += 1; return json({ id: "track-a", preparation_id: "prep-a" }, 201); },
+      "POST /api/v1/application-tracking": () => { posts += 1; return pending.promise; },
     });
     renderJobs(fetch, "/jobs/actionable/tracking");
     expect(await screen.findByText("Not tracked")).toBeInTheDocument();
     expect(screen.getByText("interview", { exact: false })).toBeInTheDocument();
     const start = screen.getByRole("button", { name: /Start tracking for/ });
+    expect(start).toHaveAccessibleName(/Start tracking for/);
     fireEvent.click(start); fireEvent.click(start);
     await waitFor(() => expect(posts).toBe(1));
-    expect(workspaceCalls).toBeGreaterThan(1);
+    const pendingStart = screen.getByRole("button", { name: /Starting tracking… for/ });
+    expect(pendingStart).toHaveTextContent("Starting tracking…");
+    expect(pendingStart).toBeDisabled();
+    pending.resolve(json({ id: "track-a", preparation_id: "prep-a" }, 201));
+    await waitFor(() => expect(workspaceCalls).toBeGreaterThan(1));
     expect(screen.getByText(/workspace projection is refreshing/i)).toBeInTheDocument();
   });
 
