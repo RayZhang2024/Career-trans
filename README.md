@@ -460,9 +460,19 @@ DEFAULT_LLM_PROVIDER
 LLM_BASE_URL
 AGENTIC_SEARCH_PROVIDER
 BRAVE_SEARCH_API_KEY
+TAVILY_API_KEY
+TAVILY_CREDENTIAL_ENCRYPTION_KEY
 ```
 
 Provider-backed semantic operations require the corresponding provider configuration. Deterministic automated tests do not require live provider calls.
+
+Tavily can be selected as a deployment web-search provider with
+`AGENTIC_SEARCH_PROVIDER=tavily` and `TAVILY_API_KEY`. The Settings → Job
+Discovery page also supports a per-user Tavily key; configure
+`TAVILY_CREDENTIAL_ENCRYPTION_KEY` in deployment secrets to enable encrypted
+user-key storage. For Docker Compose, put these optional values in the root
+`.env` (starting from `.env.example`) or provide them in the environment.
+Credential and rotation details are in [backend/README.md](backend/README.md#job-discovery-web-search-providers).
 
 Semantic model defaults are deployment-owned through the nine `*_MODEL`
 settings documented in `backend/.env.example`. Authenticated users can choose
