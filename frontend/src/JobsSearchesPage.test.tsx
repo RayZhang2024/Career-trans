@@ -202,12 +202,14 @@ describe("Issue #175 saved discovery configurations", () => {
     await screen.findByText(/The saved-configuration list is current/);
   });
 
-  it("explains soft themes, comma preservation, server-side profile-driven web, DST, and save-before-run boundary", async () => {
+  it("explains soft themes, provider selection, advanced host workflow, DST, and save-before-run boundary", async () => {
     renderPage(); await loaded();
     fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
     expect(screen.getByText(/Themes guide search and prioritisation/)).toBeInTheDocument();
     expect(screen.getByText(/not exact web-search terms or eligibility filters/)).toBeInTheDocument();
-    expect(screen.getByText(/This is not Codex/)).toBeInTheDocument();
+    expect(screen.getByText(/effective Job Discovery provider configured in Settings, including Local Codex when selected/i)).toBeInTheDocument();
+    expect(screen.getByText(/jobs discover-external/)).toBeInTheDocument();
+    expect(screen.getByText(/jobs hunt/)).toBeInTheDocument();
     expect(screen.getByText(/search strategy comes from confirmed candidate context/i)).toBeInTheDocument();
     expect(screen.getByText(/Daylight-saving gaps are skipped; repeated local times use the first occurrence/)).toBeInTheDocument();
     expect(screen.getByText("Save this configuration before using Run now or execution history from its saved-discovery card.")).toBeInTheDocument();

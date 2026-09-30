@@ -9,9 +9,11 @@ from sqlalchemy import select
 from app.models.discovery_schedule import ScheduledDiscoveryExecution
 from candidate_read_support import patch_candidate_context
 from app.models.user import User
+from app.models.user_job_discovery_settings import UserJobDiscoverySettings
 from app.schemas.candidate import CandidateContext, CandidateEvidenceMaterializationStatus
 from app.schemas.ai_settings import UserAiPreferences
 from app.core.config import Settings
+from app import scheduled_discovery_runner
 from app.schemas.discovery import JobListing, JobSearchQuery
 from app.schemas.discovery_schedule import AcquisitionConfig, AgenticWebScheduleConfig, DiscoveryScheduleCreate, DiscoverySchedulePatch, ScheduleCadence, ScheduleSpec, StructuredAtsScheduleConfig, TriggerKind
 from app.schemas.structured_ats_discovery import StructuredAtsDiscoveryResponse, StructuredAtsSourceDiagnostic
@@ -22,6 +24,7 @@ from app.services.discovery_schedule_service import DiscoveryScheduleService, mo
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.services.job_discovery_settings_service import JobDiscoveryProviderNotReady
 from app.services.llm_runtime import resolve_runtime_snapshot
+from app.services.codex_runtime import CodexRuntimeAdapter
 from candidate_read_support import StaticCandidateReader, snapshot_for_context
 
 
@@ -161,6 +164,74 @@ def test_scheduled_agentic_provider_resolves_once_for_owner_and_persists_safe_me
     assert provider_builds == [(user.id, None)]
     assert metadata == {"credential_source": "user", "provider": "tavily", "search_depth": "basic"}
     assert "must-not-persist" not in result.web_search_metadata_json
+
+
+def test_standalone_due_runner_defers_semantic_stack_until_provider_ready(
+    db_session, monkeypatch
+) -> None:
+    user = _user(db_session, "local-codex-due-runner@example.com")
+    db_session.add(UserJobDiscoverySettings(
+        user_id=user.id,
+        provider_override="local_codex",
+        revision=1,
+    ))
+    db_session.commit()
+    settings = Settings(
+        _env_file=None,
+        local_codex_discovery_enabled=True,
+        local_codex_scheduled_discovery_capability="unverified",
+    )
+    monkeypatch.setattr(scheduled_discovery_runner.deps, "get_settings", lambda: settings)
+    semantic_calls: list[str] = []
+
+    def forbidden(name):
+        def fail(*_args, **_kwargs):
+            semantic_calls.append(name)
+            raise AssertionError(f"{name} must wait until discovery reaches evaluation.")
+        return fail
+
+    monkeypatch.setattr(
+        scheduled_discovery_runner.deps,
+        "get_user_job_ranking_service",
+        forbidden("ranking"),
+    )
+    monkeypatch.setattr(
+        scheduled_discovery_runner.deps,
+        "get_user_job_discovery_service",
+        forbidden("user_runs"),
+    )
+    monkeypatch.setattr(
+        scheduled_discovery_runner.deps,
+        "get_semantic_response_client",
+        forbidden("semantic response client"),
+    )
+    monkeypatch.setattr(
+        CodexRuntimeAdapter,
+        "probe",
+        forbidden("Codex runtime probe"),
+    )
+    payload = _payload(
+        acquisition=AcquisitionConfig(
+            structured_ats=StructuredAtsScheduleConfig(enabled=False),
+            agentic_web=AgenticWebScheduleConfig(enabled=True),
+        )
+    )
+    DiscoveryScheduleService(db_session).create(
+        user.id, payload, datetime(2026, 9, 14, 8, tzinfo=UTC)
+    )
+    reader = StaticCandidateReader(
+        snapshot_for_context(CandidateContext(profile_text="ready synthetic candidate"))
+    )
+
+    executions = scheduled_discovery_runner.build_service(
+        db_session, candidate_reader=reader
+    ).process_due(datetime(2026, 9, 14, 12, tzinfo=UTC), limit=1)
+
+    assert len(executions) == 1
+    assert executions[0].status == "failed"
+    assert json.loads(executions[0].failure_summary_json) == {"agentic_web": 1}
+    assert reader.read_user_ids == [user.id]
+    assert semantic_calls == []
 
 
 def test_unavailable_tavily_with_ats_jobs_stops_before_semantic_evaluation(db_session) -> None:
