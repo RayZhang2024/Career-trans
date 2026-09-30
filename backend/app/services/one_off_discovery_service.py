@@ -213,10 +213,11 @@ class OneOffDiscoveryService:
                     max_semantic_candidates=preflight.policy.max_semantic_candidates,
                     max_full_analyses=preflight.policy.max_full_analyses,
                     min_relevance_score=preflight.policy.min_relevance_score,
+                    link_run=lambda run_id: setattr(execution, "discovery_run_id", run_id),
                 )
                 execution.discovery_run_id = evaluated.discovery_run_id
                 summary.update(evaluated.funnel)
-                if evaluated.status == "failed":
+                if evaluated.status in {"failed", "partial_failed"}:
                     failures["evaluation"] = 1
                 status = OneOffStatus(self._agentic_core.final_status(
                     acquisition_failed=acquired.failed,

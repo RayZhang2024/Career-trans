@@ -15,6 +15,7 @@ from app.schemas.discovery import JobSearchQuery
 from app.schemas.discovery import JobListing
 from app.schemas.job_discovery_settings import EffectiveJobDiscoveryProvider
 from app.schemas.one_off_discovery import OneOffLaunchRequest
+from app.schemas.user_job_discovery import DiscoveryRunStatus
 from app.services.job_discovery_settings_service import ResolvedWebSearchProvider
 from app.services.agentic_web_execution_core import AgenticWebExecutionCore
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
@@ -188,7 +189,8 @@ def test_one_off_partial_web_failure_preserves_successful_canonical_evaluation(d
     db_session.commit()
 
     class Runs:
-        def start(self, _user_id, _request):
+        def start(self, _user_id, _request, *, link_run):
+            link_run("partial-run")
             return SimpleNamespace(id="partial-run", status=SimpleNamespace(value="completed"), funnel={})
 
     service, _ = _service(
@@ -282,11 +284,12 @@ def test_one_off_uses_canonical_identity_when_same_url_has_multiple_jobs(db_sess
     core.evaluate = lambda **kwargs: (shared_calls.append("evaluate"), original_evaluate(**kwargs))[1]
 
     class UserRuns:
-        def start(self, user_id, request):
+        def start(self, user_id, request, *, link_run):
             assert user_id == user.id
             assert request.discovered_job_ids == [accepted_id]
             assert request.max_semantic_candidates == 10
             assert request.max_full_analyses == 5
+            link_run("linked-run")
             return SimpleNamespace(id="linked-run", status=SimpleNamespace(value="completed"), funnel={"relevance_screened": 1, "analysed": 1, "reused": 0})
 
     service, _ = _service(
@@ -308,7 +311,8 @@ def test_one_off_uses_canonical_identity_when_same_url_has_multiple_jobs(db_sess
     assert shared_calls == ["acquire", "evaluate"]
 
 
-def test_evaluation_failure_links_terminal_discovery_run_into_one_logical_history_item(db_session):
+@pytest.mark.parametrize("terminal_status", ["failed", "partial_failed"])
+def test_evaluation_failure_links_terminal_discovery_run_into_one_logical_history_item(db_session, terminal_status):
     user = User(email="one-off-failed-evaluation@example.test", password_hash="unused")
     db_session.add(user)
     db_session.commit()
@@ -328,17 +332,24 @@ def test_evaluation_failure_links_terminal_discovery_run_into_one_logical_histor
         return AgenticDiscoveryResponse(listings=[listing], diagnostics=AgenticDiscoveryDiagnostics())
 
     class FailedEvaluation:
-        def start(self, user_id, _request):
+        def start(self, user_id, _request, *, link_run):
             calls.append("evaluate")
             run = DiscoveryRun(
                 id="persisted-failed-run", user_id=user_id, search_input_json="{}",
                 search_input_fingerprint="s" * 64, candidate_evaluation_fingerprint="c" * 64,
-                evaluation_contract_fingerprint="e" * 64, status="failed", funnel_json="{}",
-                failure_summary_json='{"ranking":1}', started_at=now, completed_at=now,
+                evaluation_contract_fingerprint="e" * 64, status="running", funnel_json="{}",
+                failure_summary_json="{}", started_at=now,
             )
             db_session.add(run)
+            db_session.flush()
+            link_run(run.id)
             db_session.commit()
-            raise DiscoveryRunExecutionFailure(run.id)
+            assert db_session.query(OneOffDiscoveryExecution).filter_by(user_id=user_id).one().discovery_run_id == run.id
+            run.status = terminal_status
+            run.failure_summary_json = '{"ranking":1}'
+            run.completed_at = now
+            db_session.commit()
+            raise DiscoveryRunExecutionFailure(run.id, DiscoveryRunStatus(terminal_status))
 
     service, _ = _service(
         db_session, calls=[], discover=discover,
@@ -351,7 +362,7 @@ def test_evaluation_failure_links_terminal_discovery_run_into_one_logical_histor
     ))
 
     assert calls == ["acquire", "evaluate"]
-    assert result.status.value == "failed"
+    assert result.status.value == terminal_status
     assert result.discovery_run_id == "persisted-failed-run"
     assert db_session.query(DiscoveryRun).filter_by(user_id=user.id).count() == 1
     assert db_session.query(OneOffDiscoveryExecution).filter_by(user_id=user.id).count() == 1

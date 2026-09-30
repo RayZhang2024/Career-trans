@@ -6,6 +6,7 @@ resolution and bounded user evaluation steps.
 """
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -122,6 +123,7 @@ class AgenticWebExecutionCore:
         max_semantic_candidates: int,
         max_full_analyses: int,
         min_relevance_score: float,
+        link_run: Callable[[str], None] | None = None,
     ) -> EvaluationOutcome:
         if not canonical_ids:
             return EvaluationOutcome()
@@ -133,11 +135,11 @@ class AgenticWebExecutionCore:
             min_relevance_score=min_relevance_score,
         )
         try:
-            run = user_runs.start(user_id, request)
+            run = user_runs.start(user_id, request, **({"link_run": link_run} if link_run is not None else {}))
         except DiscoveryRunExecutionFailure as exc:
             return EvaluationOutcome(
                 discovery_run_id=exc.run_id,
-                status=DiscoveryRunStatus.FAILED.value,
+                status=exc.status.value,
                 failed=True,
             )
         return EvaluationOutcome(

@@ -15,6 +15,13 @@ type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?
 type InboxDismissalNotice = { decision: UserJobDecision; title: string; message: string };
 const WINDOW = 20;
 const MAX_WINDOW = 100;
+const ONE_OFF_SESSION_NOTICE_KEY = "career-trans.one-off-session-notice";
+const ONE_OFF_SESSION_NOTICE_EVENT = "career-trans-one-off-session-notice";
+const ONE_OFF_SESSION_CHANGED_MESSAGE = "Your session changed during this search. Review the current search and start a fresh launch under this session.";
+function announceOneOffSessionChange() {
+  sessionStorage.setItem(ONE_OFF_SESSION_NOTICE_KEY, ONE_OFF_SESSION_CHANGED_MESSAGE);
+  window.dispatchEvent(new Event(ONE_OFF_SESSION_NOTICE_EVENT));
+}
 const emptyPage = <T,>(): SectionState<T> => ({ phase: "loading" });
 const titleCase = (value: string) => value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 const nextWindow = (current: number) => Math.min(MAX_WINDOW, current + WINDOW);
@@ -40,6 +47,11 @@ type FindRunOutcome =
   | { kind: "already_running"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
   | { kind: "uncertain"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
   | { kind: "post_rejected"; scheduleName: string; status: number };
+type OneOffAuthority = { userKey: string; sessionEpoch: number };
+type OneOffLaunchState =
+  | { kind: "idle" }
+  | { kind: "uncertain"; payload: OneOffLaunch; authority: OneOffAuthority }
+  | { kind: "confirmed"; execution: OneOffExecution };
 
 type JobSearchView = "find" | "saved" | "inbox" | "recommended" | "shortlisted" | "history" | "unknown";
 type JobSearchRoute = { kind: "search"; view: JobSearchView } | { kind: "workspace"; discoveredJobId: string; section: JobWorkspaceSection } | { kind: "unknown" };
@@ -292,9 +304,8 @@ export function JobsPage() {
   const [findRunOutcome, setFindRunOutcome] = useState<FindRunOutcome | null>(null);
   const [findRunning, setFindRunning] = useState(false);
   const [oneOffPending, setOneOffPending] = useState(false);
-  const [oneOffError, setOneOffError] = useState("");
-  const [oneOffExecution, setOneOffExecution] = useState<OneOffExecution | null>(null);
-  const [oneOffUncertainRequest, setOneOffUncertainRequest] = useState<OneOffLaunch | null>(null);
+  const [oneOffError, setOneOffError] = useState(() => sessionStorage.getItem(ONE_OFF_SESSION_NOTICE_KEY) ?? "");
+  const [oneOffState, setOneOffState] = useState<OneOffLaunchState>({ kind: "idle" });
   const [submitting, setSubmitting] = useState(false);
   const [evaluationSnapshot, setEvaluationSnapshot] = useState<{ titles: string[]; query: CreateDiscoveryRun["query"] } | null>(null);
   const [exactEvaluation, setExactEvaluation] = useState<DiscoveryRunCreated | null>(null);
@@ -303,11 +314,14 @@ export function JobsPage() {
   const decisionMutator = useJobDecisionMutator();
   const submitLock = useRef(false);
   const oneOffLock = useRef(false);
+  const oneOffAttempt = useRef(0);
   const alive = useRef(false);
   const opportunitiesRequest = useRef<number | null>(null);
   const runsRequest = useRef<number | null>(null);
   const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, shortlisted: 0, dismissed: 0, savedSchedules: 0, scheduleHistory: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0, oneOffPreflight: 0 });
   const userKey = user?.id ?? "";
+  const currentUserKey = useRef(userKey);
+  currentUserKey.current = userKey;
   const sessionEpoch = api.sessionEpoch();
   const previousUserKey = useRef(userKey);
   const previousSessionEpoch = useRef(sessionEpoch);
@@ -315,13 +329,19 @@ export function JobsPage() {
 
   useEffect(() => {
     if (previousUserKey.current && (previousUserKey.current !== userKey || previousSessionEpoch.current !== sessionEpoch)) {
+      const hadUnresolvedOneOff = oneOffLock.current || oneOffState.kind === "uncertain";
+      if (hadUnresolvedOneOff) announceOneOffSessionChange();
+      oneOffAttempt.current += 1;
+      oneOffLock.current = false;
+      generations.current.oneOffPreflight += 1;
       generations.current.onboarding += 1;
       setOnboarding(emptyPage()); setOpportunities(emptyPage()); setRuns(emptyPage()); setInbox(emptyPage()); setShortlisted(emptyPage()); setDismissed(emptyPage()); setSavedSchedules(emptyPage());
       setSelectedIds(new Set()); setSearchIntent(emptySearchIntent()); setSelectedScheduleId(null); setSelectedRun(null); setSelectedHistorical(null); setSelectedCurrent(null);
       setSearchIntentRevision((revision) => revision + 1);
       setRunDetail(emptyPage()); setHistoricalDetail(emptyPage()); setCurrentDetail(emptyPage()); setEvaluationSnapshot(null); setExactEvaluation(null); setEvaluationMessage(""); setEvaluationError(""); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
       setLastConfirmedInboxDismissal(null);
-      setOneOffPreflight(emptyPage()); setOneOffExecution(null); setOneOffUncertainRequest(null); setOneOffError("");
+      setOneOffPreflight(emptyPage()); setOneOffState({ kind: "idle" }); setOneOffPending(false);
+      setOneOffError(hadUnresolvedOneOff ? ONE_OFF_SESSION_CHANGED_MESSAGE : "");
       setShortlistedLimit(WINDOW); setDismissedLimit(WINDOW); setShowDismissed(false);
     }
     generations.current.shortlisted += 1;
@@ -329,6 +349,17 @@ export function JobsPage() {
     previousUserKey.current = userKey;
     previousSessionEpoch.current = sessionEpoch;
   }, [userKey, sessionEpoch]);
+
+  useEffect(() => {
+    const showNotice = () => {
+      if (!userKey || api.sessionEpoch() !== sessionEpoch) return;
+      const notice = sessionStorage.getItem(ONE_OFF_SESSION_NOTICE_KEY);
+      if (notice) { sessionStorage.removeItem(ONE_OFF_SESSION_NOTICE_KEY); setOneOffError(notice); }
+    };
+    window.addEventListener(ONE_OFF_SESSION_NOTICE_EVENT, showNotice);
+    showNotice();
+    return () => window.removeEventListener(ONE_OFF_SESSION_NOTICE_EVENT, showNotice);
+  }, [api, userKey, sessionEpoch]);
 
   const loadOnboarding = async () => {
     const request = ++generations.current.onboarding;
@@ -483,22 +514,26 @@ export function JobsPage() {
   };
   const loadOneOffPreflight = async (): Promise<boolean> => {
     const request = ++generations.current.oneOffPreflight;
+    const authority = { userKey, sessionEpoch: api.sessionEpoch() };
+    const current = () => alive.current && request === generations.current.oneOffPreflight && api.sessionEpoch() === authority.sessionEpoch && currentUserKey.current === authority.userKey;
     setOneOffPreflight((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
     try {
       const data = await api.request<OneOffPreflight>("/api/v1/jobs/one-off-discovery/preflight");
-      if (alive.current && request === generations.current.oneOffPreflight) { setOneOffPreflight({ phase: "loaded", data }); return true; }
+      if (current()) { setOneOffPreflight({ phase: "loaded", data }); return true; }
       return false;
     } catch {
-      if (alive.current && request === generations.current.oneOffPreflight) setOneOffPreflight((previous) => ({ phase: "error", data: previous.data, error: "One-off discovery readiness is unavailable." }));
+      if (current()) setOneOffPreflight((previous) => ({ phase: "error", data: previous.data, error: "One-off discovery readiness is unavailable." }));
       return false;
     }
   };
   const refreshOneOffExecution = async (executionId: string): Promise<void> => {
+    const authority = { userKey, sessionEpoch: api.sessionEpoch() };
+    const current = () => alive.current && api.sessionEpoch() === authority.sessionEpoch && currentUserKey.current === authority.userKey;
     try {
-      const current = await api.request<OneOffExecution>(`/api/v1/jobs/one-off-discovery/executions/${encodeURIComponent(executionId)}`);
-      if (alive.current) { setOneOffExecution(current); setOneOffError(""); void loadRuns(); }
+      const execution = await api.request<OneOffExecution>(`/api/v1/jobs/one-off-discovery/executions/${encodeURIComponent(executionId)}`);
+      if (current()) { setOneOffState({ kind: "confirmed", execution }); setOneOffError(""); void loadRuns(); }
     } catch {
-      if (alive.current) setOneOffError("The exact one-off execution could not be refreshed. Its current result remains unconfirmed.");
+      if (current()) setOneOffError("The exact one-off execution could not be refreshed. Its current result remains unconfirmed.");
     }
   };
   useEffect(() => {
@@ -597,55 +632,84 @@ export function JobsPage() {
     setSelectedIds((current) => { const next = new Set(current); if (next.has(item.discovered_job_id)) next.delete(item.discovered_job_id); else next.add(item.discovered_job_id); return next; });
   };
   const selectedSchedule = savedSchedules.data?.find((schedule) => schedule.id === selectedScheduleId);
+  const oneOffExecution = oneOffState.kind === "confirmed" ? oneOffState.execution : null;
+  const oneOffUncertainRequest = oneOffState.kind === "uncertain" ? oneOffState.payload : null;
   const selectedScheduleIntent = selectedSchedule ? searchIntentFromQuery(selectedSchedule.query) : null;
   const selectedScheduleDirty = !!selectedScheduleIntent && !searchIntentEquals(searchIntent, selectedScheduleIntent);
   const handoffSearchIntent = () => navigate("/jobs/find/saved", { state: { searchIntent, ...(selectedSchedule ? { scheduleId: selectedSchedule.id } : {}) } });
   const runOneOffDiscovery = async () => {
-    if (selectedSchedule || oneOffLock.current || !ready || !oneOffPreflight.data?.available || searchIntent.themes.length === 0) return;
+    const uncertain = oneOffState.kind === "uncertain" ? oneOffState : null;
+    if (selectedSchedule || oneOffLock.current || (!uncertain && (!ready || !oneOffPreflight.data?.available || searchIntent.themes.length === 0))) return;
+    const authority: OneOffAuthority = uncertain?.authority ?? { userKey, sessionEpoch: api.sessionEpoch() };
+    const attempt = ++oneOffAttempt.current;
+    const current = () => alive.current && attempt === oneOffAttempt.current && api.sessionEpoch() === authority.sessionEpoch && currentUserKey.current === authority.userKey;
+    const sessionChanged = () => {
+      if (attempt !== oneOffAttempt.current) return;
+      announceOneOffSessionChange();
+      if (!alive.current) return;
+      oneOffAttempt.current += 1;
+      oneOffLock.current = false;
+      setOneOffPending(false);
+      setOneOffState({ kind: "idle" });
+      setOneOffError(ONE_OFF_SESSION_CHANGED_MESSAGE);
+    };
+    if (!current()) { sessionChanged(); return; }
     oneOffLock.current = true;
-    setOneOffPending(true); setOneOffError(""); setOneOffExecution(null);
-    let payload = oneOffUncertainRequest;
-    if (!payload) {
-      payload = {
-        client_request_id: crypto.randomUUID(),
-        expected_launch_fingerprint: oneOffPreflight.data.launch_fingerprint,
-        query: searchIntentToQuery(searchIntent),
-      };
-    }
+    setOneOffPending(true); setOneOffError("");
+    if (!uncertain) setOneOffState({ kind: "idle" });
+    const payload: OneOffLaunch = uncertain?.payload ?? {
+      client_request_id: crypto.randomUUID(),
+      expected_launch_fingerprint: oneOffPreflight.data!.launch_fingerprint,
+      query: searchIntentToQuery(searchIntent),
+    };
+    const stalePreflight = (error: unknown) => error instanceof ApiError && error.status === 409 && /changed|refresh preflight/i.test(error.detail ?? error.message);
+    const refreshStalePreflight = async () => {
+      setOneOffState({ kind: "idle" });
+      await loadOneOffPreflight();
+      if (current()) setOneOffError("Provider settings or the one-off policy changed. Review the refreshed summary, then explicitly start again.");
+    };
     try {
       let execution: OneOffExecution;
       try {
         execution = await api.request<OneOffExecution>("/api/v1/jobs/one-off-discovery/executions", { method: "POST", body: JSON.stringify(payload) });
       } catch (firstError) {
+        if (!current()) { sessionChanged(); return; }
         if (firstError instanceof ApiError) {
-          if (firstError.status === 409 && /changed|Refresh preflight/i.test(firstError.detail ?? firstError.message)) {
-            await loadOneOffPreflight();
-            setOneOffError("Provider settings or the one-off policy changed. Review the refreshed summary, then explicitly start again.");
-          } else setOneOffError(firstError.detail ?? "One-off discovery could not be started.");
-          return;
-        }
-        // Retry only the exact same idempotent request so a lost POST response reconciles its claim.
-        try {
-          execution = await api.request<OneOffExecution>("/api/v1/jobs/one-off-discovery/executions", { method: "POST", body: JSON.stringify(payload) });
-        } catch (reconcileError) {
-          if (reconcileError instanceof ApiError) setOneOffError(reconcileError.detail ?? "The original request could not be confirmed. Retry reconciliation to check its exact execution.");
-          else {
-            setOneOffUncertainRequest(payload);
-            setOneOffError("The request was interrupted. Its result is uncertain; use Reconcile search to check the exact request before starting another.");
+          if (stalePreflight(firstError)) await refreshStalePreflight();
+          else if (uncertain || firstError.status >= 500) {
+            setOneOffState({ kind: "uncertain", payload, authority });
+            setOneOffError("The original request could not be confirmed. Use Reconcile search to check the exact request.");
+          } else {
+            setOneOffState({ kind: "idle" });
+            setOneOffError(firstError.detail ?? "One-off discovery could not be started.");
           }
           return;
         }
+        setOneOffState({ kind: "uncertain", payload, authority });
+        // Retry only the exact same idempotent request so a lost POST response reconciles its claim.
+        if (!current()) { sessionChanged(); return; }
+        try {
+          execution = await api.request<OneOffExecution>("/api/v1/jobs/one-off-discovery/executions", { method: "POST", body: JSON.stringify(payload) });
+        } catch (reconcileError) {
+          if (!current()) { sessionChanged(); return; }
+          if (stalePreflight(reconcileError)) await refreshStalePreflight();
+          else setOneOffError("The request was interrupted or could not be confirmed. Its result is uncertain; use Reconcile search to check the exact request before starting another.");
+          return;
+        }
       }
-      setOneOffUncertainRequest(null);
-      setOneOffExecution(execution);
+      if (!current()) { sessionChanged(); return; }
+      setOneOffState({ kind: "confirmed", execution });
       const [inboxUpdated, opportunitiesUpdated, historyUpdated] = await Promise.all([
         loadInbox(WINDOW), loadOpportunities(WINDOW, true), loadRuns(runLimit),
       ]);
+      if (!current()) { sessionChanged(); return; }
       setOneOffError("");
       setFindMessage(`One-off discovery ${execution.status.replaceAll("_", " ")}. Inbox ${inboxUpdated ? "refreshed" : "could not be confirmed as refreshed"}; opportunities ${opportunitiesUpdated ? "refreshed" : "could not be confirmed as refreshed"}; Search History ${historyUpdated ? "refreshed" : "could not be confirmed as refreshed"}.`);
     } finally {
-      oneOffLock.current = false;
-      if (alive.current) setOneOffPending(false);
+      if (attempt === oneOffAttempt.current) {
+        oneOffLock.current = false;
+        if (alive.current) setOneOffPending(false);
+      }
     }
   };
   const runSelectedSchedule = async () => {
@@ -754,7 +818,7 @@ export function JobsPage() {
           {oneOffPreflight.phase === "loading" && !oneOffPreflight.data && <p role="status">Checking one-off discovery configuration…</p>}
           {oneOffPreflight.data && <><p><strong>Provider:</strong> {titleCase(oneOffPreflight.data.effective_provider)} · {oneOffPreflight.data.readiness === "configured_for_launch" ? "Configured for launch" : titleCase(oneOffPreflight.data.readiness)}</p><p><strong>Maximum jobs:</strong> {oneOffPreflight.data.policy.max_discovered_jobs} · <strong>Semantic screening:</strong> {oneOffPreflight.data.policy.max_semantic_candidates} · <strong>Full analyses:</strong> {oneOffPreflight.data.policy.max_full_analyses} · <strong>Minimum relevance:</strong> {numberLabel(oneOffPreflight.data.policy.min_relevance_score * 100)}%</p><p className="muted">Up to {oneOffPreflight.data.policy.max_search_queries} web searches, {oneOffPreflight.data.policy.max_search_results_per_query} results per search, and {oneOffPreflight.data.policy.max_pages_to_open} pages. Remote provider configuration does not confirm live availability.</p>{!oneOffPreflight.data.available && <p className="notice" role="status">{oneOffPreflight.data.reason ?? "One-off discovery is unavailable."} <Link to={oneOffPreflight.data.readiness === "candidate_not_ready" ? "/profile" : "/settings/discovery"}>{oneOffPreflight.data.readiness === "candidate_not_ready" ? "Review Profile" : "Review Job Discovery Settings"}</Link></p>}</>}
           {oneOffPreflight.phase === "error" && !oneOffPreflight.data && <p role="alert">One-off discovery readiness could not be checked. <button type="button" className="button-secondary" onClick={() => void loadOneOffPreflight()}>Retry readiness</button></p>}
-          {!!searchIntent.themes.length && oneOffPreflight.data?.available && <button type="button" onClick={() => void runOneOffDiscovery()} disabled={!ready || oneOffPending || findRunning}>{oneOffPending ? "Finding jobs…" : oneOffUncertainRequest ? "Reconcile search" : "Find jobs now"}</button>}
+          {(oneOffUncertainRequest || (!!searchIntent.themes.length && oneOffPreflight.data?.available)) && <button type="button" onClick={() => void runOneOffDiscovery()} disabled={oneOffPending || findRunning || (!oneOffUncertainRequest && !ready)}>{oneOffPending ? "Finding jobs…" : oneOffUncertainRequest ? "Reconcile search" : "Find jobs now"}</button>}
           {!searchIntent.themes.length && <p className="muted">Add at least one search theme to find jobs.</p>}
           {!ready && <p className="muted">Find jobs now requires confirmed candidate context. You can still edit or save this SearchIntent.</p>}
           {oneOffError && <p className="notice" role="status">{oneOffError}</p>}

@@ -97,6 +97,11 @@ function DecisionProbe() {
   return <div><output>{user?.id ?? "loading"}</output><button type="button" onClick={() => { mutate("job-a", "shortlisted"); mutate("job-a", "dismissed"); }}>Mutate A twice</button><button type="button" onClick={() => mutate("job-b", "shortlisted")}>Mutate B</button><button type="button" onClick={() => api.replaceToken("replacement-token")}>Replace session</button></div>;
 }
 function AuthSwitcher() { const { api, retryRestore } = useAuth(); return <button type="button" onClick={() => { api.replaceToken("user-b-token"); retryRestore(); }}>Switch user</button>; }
+function renderJobsWithAuthSwitcher(fetch: ReturnType<typeof fakeFetch>) {
+  sessionStorage.setItem(TOKEN, "test-token");
+  vi.stubGlobal("fetch", fetch);
+  return render(<MemoryRouter initialEntries={["/jobs/find"]}><AuthProvider><App /><AuthSwitcher /></AuthProvider></MemoryRouter>);
+}
 function requestPaths(fetch: ReturnType<typeof fakeFetch>) { return fetch.mock.calls.map(([input]) => { const url = new URL(String(input), window.location.origin); return `${url.pathname}${url.search}`; }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 async function loaded() { await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Alpha"); }
@@ -1052,7 +1057,7 @@ describe("Issue #261 transient one-off discovery", () => {
     const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => json(oneOffExecution({ status, acquisition_summary: { canonical_jobs: status === "completed" ? 0 : 2, relevance_screened: 1, analysed: 0 } })) });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
     expect(await screen.findByRole("heading", { name: `One-off discovery ${label}` })).toBeInTheDocument();
   });
 
@@ -1082,11 +1087,98 @@ describe("Issue #261 transient one-off discovery", () => {
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
     fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
     expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
+    expect(posts).toBe(2);
+    expect(submitted[1]).toEqual(submitted[0]);
     fireEvent.click(screen.getByRole("button", { name: "Reconcile search" }));
     expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
     expect(posts).toBe(3);
     expect(submitted[1]).toEqual(submitted[0]);
     expect(submitted[2]).toEqual(submitted[0]);
+  });
+
+  it("keeps the exact uncertain payload after a reconciliation HTTP failure", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+      submitted.push(JSON.parse(String(init?.body)));
+      if (submitted.length === 1) return Promise.reject(new TypeError("offline"));
+      if (submitted.length === 2) return json({ detail: "Temporary service failure" }, 503);
+      return json(oneOffExecution());
+    } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
+    expect(screen.getByText(/result is uncertain/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile search" }));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(submitted).toHaveLength(3);
+    expect(submitted[1]).toEqual(submitted[0]);
+    expect(submitted[2]).toEqual(submitted[0]);
+  });
+
+  it("clears obsolete uncertain authority when reconciliation reports stale preflight", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    let preflights = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/one-off-discovery/preflight": () => json(oneOffPreflight({ launch_fingerprint: (++preflights === 1 ? "a" : "b").repeat(64) })),
+      "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+        submitted.push(JSON.parse(String(init?.body)));
+        return submitted.length === 1 ? Promise.reject(new TypeError("offline")) : json({ detail: "Job Discovery settings changed; refresh preflight." }, 409);
+      },
+    });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByText(/review the refreshed summary, then explicitly start again/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Find jobs now" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
+    expect(preflights).toBe(2);
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]).toEqual(submitted[0]);
+  });
+
+  it("does not retry an interrupted one-off POST after the user session changes", async () => {
+    const first = deferred<Response>();
+    let posts = 0;
+    let meCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/users/me": () => json(meCalls++ === 0 ? user : { ...user, id: "user-b" }),
+      "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return first.promise; },
+    });
+    renderJobsWithAuthSwitcher(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+    expect(posts).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
+    first.reject(new TypeError("interrupted"));
+    expect(await screen.findByText(/session changed during this search/i)).toBeInTheDocument();
+    expect(posts).toBe(1);
+    expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /One-off discovery Completed/ })).not.toBeInTheDocument();
+  });
+
+  it("does not reconcile an uncertain request after session replacement during explicit reconciliation", async () => {
+    const third = deferred<Response>();
+    const submitted: Array<Record<string, unknown>> = [];
+    let meCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/users/me": () => json(meCalls++ === 0 ? user : { ...user, id: "user-b" }),
+      "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+        submitted.push(JSON.parse(String(init?.body)));
+        return submitted.length < 3 ? Promise.reject(new TypeError("offline")) : third.promise;
+      },
+    });
+    renderJobsWithAuthSwitcher(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reconcile search" }));
+    expect(submitted).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
+    third.reject(new TypeError("interrupted"));
+    expect(await screen.findByText(/session changed during this search/i)).toBeInTheDocument();
+    expect(submitted).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /One-off discovery Completed/ })).not.toBeInTheDocument();
   });
 
   it("retries an interrupted POST with the same request id to reconcile its execution", async () => {

@@ -288,12 +288,39 @@ def test_unexpected_ranking_exception_terminalizes_run_safely(db_session, monkey
         service.start("user-a", _request(job.id))
     except DiscoveryRunExecutionFailure as exc:
         failed_run_id = exc.run_id
+        assert exc.status.value == "failed"
     else:
         raise AssertionError("Unexpected ranking failure must be re-raised.")
     run = service.list_runs("user-a")[0]
     assert run.id == failed_run_id
     assert run.status == "failed" and run.completed_at is not None
     assert "private" not in str(run.failure_summary)
+
+
+def test_reused_success_then_ranking_failure_retains_partial_status_and_early_link(db_session, monkeypatch) -> None:
+    first, second = _job("1"), _job("2")
+    db_session.add_all([_user("user-a"), first, second]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    UserJobDiscoveryService(db_session, ranking_service=_Ranking()).start("user-a", _request(first.id))
+    linked_ids: list[str] = []
+
+    class BrokenRanking:
+        def rank(self, _request):
+            assert len(linked_ids) == 1
+            assert db_session.get(DiscoveryRun, linked_ids[0]).status == "running"
+            raise RuntimeError("private provider detail")
+
+    service = UserJobDiscoveryService(db_session, ranking_service=BrokenRanking())
+    try:
+        service.start("user-a", _request([first.id, second.id]), link_run=linked_ids.append)
+    except DiscoveryRunExecutionFailure as exc:
+        assert exc.run_id == linked_ids[0]
+        assert exc.status.value == "partial_failed"
+    else:
+        raise AssertionError("The ranking failure must retain its terminal status.")
+    run = service.get_run("user-a", linked_ids[0])
+    assert run.status.value == "partial_failed"
+    assert {row.outcome.value for row in run.jobs} == {"reused_evaluation", "analysis_failed"}
 
 
 def test_authenticated_run_and_opportunity_routes_enforce_user_scope(client, db_session, monkeypatch) -> None:

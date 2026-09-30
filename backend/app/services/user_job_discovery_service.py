@@ -6,6 +6,7 @@ import os
 import subprocess
 from collections import Counter
 from datetime import datetime, timezone
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -47,9 +48,10 @@ _CONTRACT_VERSION = "user-discovery-run-v1"
 class DiscoveryRunExecutionFailure(RuntimeError):
     """Evaluation failed after its durable run row was committed."""
 
-    def __init__(self, run_id: str) -> None:
+    def __init__(self, run_id: str, status: DiscoveryRunStatus = DiscoveryRunStatus.FAILED) -> None:
         super().__init__("Discovery evaluation failed after its run was created.")
         self.run_id = run_id
+        self.status = status
 
 
 def evaluation_contract_fingerprint_for_runtime(runtime_snapshot: ResolvedRuntimeSnapshot) -> str:
@@ -189,7 +191,13 @@ class UserJobDiscoveryService:
         self._runtime_snapshot = runtime_snapshot or resolve_runtime_snapshot(self._settings)
         self._candidate_reader = candidate_reader or CanonicalCandidateReadService(session)
 
-    def start(self, user_id: str, request: DiscoveryRunCreateRequest) -> DiscoveryRunRead:
+    def start(
+        self,
+        user_id: str,
+        request: DiscoveryRunCreateRequest,
+        *,
+        link_run: Callable[[str], None] | None = None,
+    ) -> DiscoveryRunRead:
         if self._ranking_service is None:
             raise RuntimeError("Ranking service is required to create a discovery run.")
         try:
@@ -217,6 +225,11 @@ class UserJobDiscoveryService:
             evaluation_contract_fingerprint=contract_fingerprint,
         )
         self._session.add(run)
+        self._session.flush()
+        if link_run is not None:
+            # The one-off execution link and run row commit atomically before
+            # any ranking/provider work can begin.
+            link_run(run.id)
         self._session.commit()
 
         by_id = {record.id: record for record in records}
@@ -284,7 +297,7 @@ class UserJobDiscoveryService:
             except Exception:
                 self._terminalize_unexpected_failure(run, run_rows)
                 self._session.commit()
-                raise DiscoveryRunExecutionFailure(run.id) from None
+                raise DiscoveryRunExecutionFailure(run.id, DiscoveryRunStatus(run.status)) from None
         self._persist_ranking(run, run_rows, fresh_by_identity, response, user_id, candidate_fingerprint, contract_fingerprint, request.min_relevance_score)
         self._finish_run(run, request, selection, response, reused)
         self._session.commit()
