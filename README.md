@@ -462,6 +462,9 @@ AGENTIC_SEARCH_PROVIDER
 BRAVE_SEARCH_API_KEY
 TAVILY_API_KEY
 TAVILY_CREDENTIAL_ENCRYPTION_KEY
+LOCAL_CODEX_DISCOVERY_ENABLED
+LOCAL_CODEX_SEARCH_MODEL
+LOCAL_CODEX_SCHEDULED_DISCOVERY_CAPABILITY
 ```
 
 Provider-backed semantic operations require the corresponding provider configuration. Deterministic automated tests do not require live provider calls.
@@ -473,6 +476,13 @@ Discovery page also supports a per-user Tavily key; configure
 user-key storage. For Docker Compose, put these optional values in the root
 `.env` (starting from `.env.example`) or provide them in the environment.
 Credential and rotation details are in [backend/README.md](backend/README.md#job-discovery-web-search-providers).
+Local Codex can be selected for browser discovery after the deployment opts in
+with `LOCAL_CODEX_DISCOVERY_ENABLED=true`. It runs under the backend host OS
+account and shares that host's available Codex session with eligible users;
+use it only on a trusted deployment. Its browser-search model defaults to
+`gpt-5.6-luna`. Automatic scheduled use remains unverified and fail-closed
+unless the operator explicitly verifies and enables that execution context.
+See [Local Codex setup](docs/local-codex-job-discovery.md).
 
 Semantic model defaults are deployment-owned through the nine `*_MODEL`
 settings documented in `backend/.env.example`. Authenticated users can choose

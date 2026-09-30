@@ -15,18 +15,23 @@ from app.providers.web_search import (
     TavilyWebSearchProvider,
     WebSearchProvider,
 )
+from app.providers.local_codex import LocalCodexWebSearchProvider
 from app.schemas.job_discovery_settings import (
     EffectiveJobDiscoveryProvider,
     JobDiscoveryCredentialSource,
     JobDiscoveryProvider,
     JobDiscoverySettingsRead,
     JobDiscoverySettingsReplace,
+    LocalCodexScheduledStatus,
+    LocalCodexTestRead,
+    LocalCodexStatusRead,
     TavilyConnectionTestRead,
 )
 from app.services.tavily_credential_encryption import (
     TavilyCredentialEncryption,
     TavilyCredentialEncryptionError,
 )
+from app.services.codex_runtime import CodexRuntimeAdapter
 
 
 class JobDiscoverySettingsConflictError(RuntimeError):
@@ -130,7 +135,12 @@ class JobDiscoverySettingsService:
         self._session.commit()
         return self.read(user_id)
 
-    def resolve_provider(self, user_id: str) -> ResolvedWebSearchProvider:
+    def resolve_provider(
+        self,
+        user_id: str,
+        *,
+        scheduled_due_runner: bool = False,
+    ) -> ResolvedWebSearchProvider:
         settings_row = self._session.get(UserJobDiscoverySettings, user_id)
         selected = (
             settings_row.provider_override
@@ -165,6 +175,31 @@ class JobDiscoverySettingsService:
             return ResolvedWebSearchProvider(
                 BraveWebSearchProvider(api_key=self._settings.brave_search_api_key),
                 {"provider": "brave", "credential_source": "deployment"},
+            )
+        if provider == "local_codex":
+            metadata = {"provider": "local_codex"}
+            if not self._settings.local_codex_discovery_enabled:
+                raise JobDiscoveryProviderNotReady(
+                    "Local Codex is disabled by this deployment.", metadata
+                )
+            scheduled_capability = LocalCodexScheduledStatus(
+                self._settings.local_codex_scheduled_discovery_capability
+            )
+            if scheduled_due_runner and scheduled_capability is not LocalCodexScheduledStatus.SUPPORTED:
+                raise JobDiscoveryProviderNotReady(
+                    "Automatic Local Codex discovery is not enabled because scheduled-runner capability is not verified.",
+                    metadata,
+                )
+            runtime = CodexRuntimeAdapter(settings=self._settings)
+            readiness = runtime.probe()
+            if readiness.manual_discovery_status.value != "ready":
+                raise JobDiscoveryProviderNotReady(readiness.message, metadata)
+            return ResolvedWebSearchProvider(
+                LocalCodexWebSearchProvider(
+                    runtime=runtime,
+                    model=self._settings.local_codex_search_model,
+                ),
+                metadata,
             )
         if provider == "tavily":
             try:
@@ -216,6 +251,30 @@ class JobDiscoverySettingsService:
         return TavilyConnectionTestRead(
             credential_source=source,
             message="Tavily connection test succeeded. This test used one Basic Search request.",
+        )
+
+    def local_codex_status(self) -> LocalCodexStatusRead:
+        return CodexRuntimeAdapter(settings=self._settings).probe()
+
+    def test_local_codex(self) -> LocalCodexTestRead:
+        runtime = CodexRuntimeAdapter(settings=self._settings)
+        readiness = runtime.probe()
+        if readiness.manual_discovery_status.value != "ready":
+            raise JobDiscoveryProviderNotReady(readiness.message, {"provider": "local_codex"})
+        provider = LocalCodexWebSearchProvider(
+            runtime=runtime,
+            model=self._settings.local_codex_search_model,
+            timeout_seconds=45,
+        )
+        results = provider.search("public software engineer job vacancies", 1)
+        if not results:
+            raise JobDiscoverySettingsError(
+                "Local Codex search completed but did not return a usable public result. Check search access and try again."
+            )
+        return LocalCodexTestRead(
+            success=True,
+            result_count=min(len(results), 1),
+            message="Local Codex search succeeded. This test used one live web-search request and may consume Codex usage.",
         )
 
     def _advance_revision(

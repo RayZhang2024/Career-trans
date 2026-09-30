@@ -1,13 +1,10 @@
 """Bounded local Codex CLI adapter for external, non-authoritative job discovery."""
 
 import json
-import os
 import re
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Callable
-from pathlib import Path
 
 from app.schemas.external_discovery import (
     CodexExternalDiscoveryOutput,
@@ -19,21 +16,10 @@ from app.providers.openai_structured_output import (
     StrictStructuredOutputSchemaError,
     strict_schema_from_pydantic_model,
 )
+from app.services.codex_runtime import CodexRuntimeAdapter, codex_subprocess_environment
 
 
 _DIAGNOSTIC_TAIL_BYTES = 2_048
-_CAREER_TRANS_ENV_NAMES = frozenset({"database_url"})
-_CREDENTIAL_ENV_MARKERS = (
-    "api_key",
-    "api-key",
-    "token",
-    "secret",
-    "password",
-    "credential",
-    "authorization",
-    "bearer",
-    "auth",
-)
 _SECRET_PATTERNS = (
     # Covers standalone keys and common prefixed environment names such as
     # OPENAI_API_KEY and GITHUB_TOKEN.
@@ -82,6 +68,11 @@ class CodexExternalDiscoveryRunner:
         self._runner = runner
         self._executable_lookup = executable_lookup
         self._timeout_seconds = timeout_seconds
+        self._runtime = CodexRuntimeAdapter(
+            runner=runner,
+            executable_lookup=executable_lookup,
+            timeout_seconds=timeout_seconds,
+        )
         self._model = (
             get_settings().codex_external_discovery_model
             if model is None
@@ -95,75 +86,52 @@ class CodexExternalDiscoveryRunner:
                 "Codex CLI is unavailable. Install Codex, authenticate with ChatGPT, then retry."
             )
         prompt = self._prompt(context)
-        with tempfile.TemporaryDirectory(prefix="career-trans-codex-") as directory:
-            schema_path = Path(directory) / "external-discovery-output-schema.json"
-            output_path = Path(directory) / "discovered-jobs.json"
-            # The Codex CLI consumes a standard JSON Schema file.  Generate it from the
-            # same canonical Pydantic contract that remains authoritative after the
-            # subprocess completes; do not maintain a second, hand-written contract.
-            try:
-                schema_path.write_text(
-                    json.dumps(self._output_schema(), separators=(",", ":")),
-                    encoding="utf-8",
+        # The CLI consumes a standard JSON Schema file generated from the same
+        # canonical Pydantic contract used below for validation.
+        try:
+            schema = self._output_schema()
+        except StrictStructuredOutputSchemaError as exc:
+            raise CodexExternalDiscoveryError(
+                "Codex discovery cannot generate a strict structured-output contract. "
+                "Check the installed OpenAI SDK."
+            ) from exc
+        # The runtime adapter preserves this advanced workflow's environment,
+        # timeout, live-search flag, and stdin prompt while sharing safe process
+        # construction with browser Local Codex search.
+        try:
+            invocation = self._runtime.invoke_structured(
+                prompt=prompt,
+                schema=schema,
+                model=self._model,
+                schema_filename="external-discovery-output-schema.json",
+                output_filename="discovered-jobs.json",
+                timeout_seconds=self._timeout_seconds,
+                max_output_bytes=4_000_000,
+                isolated_working_directory=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise CodexExternalDiscoveryError(
+                "Codex discovery timed out. Narrow the search or retry."
+            ) from exc
+        except OSError as exc:
+            raise CodexExternalDiscoveryError(
+                "Codex CLI could not be started. Check the local Codex installation and authentication."
+            ) from exc
+        if invocation.returncode != 0:
+            diagnostic = self._safe_diagnostic(invocation.stderr) or self._safe_diagnostic(invocation.stdout)
+            if diagnostic:
+                raise CodexExternalDiscoveryError(
+                    f"Codex discovery failed (exit code {invocation.returncode}): {diagnostic}"
                 )
-            except StrictStructuredOutputSchemaError as exc:
-                raise CodexExternalDiscoveryError(
-                    "Codex discovery cannot generate a strict structured-output contract. "
-                    "Check the installed OpenAI SDK."
-                ) from exc
-            # --search is a global Codex flag and must precede `exec`; current-vacancy
-            # discovery requires live rather than cached web search.
-            # Codex documents `-` as stdin prompt input. Keeping the full task off the
-            # command line avoids cmd.exe reparsing prompt metacharacters via its .cmd shim.
-            command = [
-                executable,
-                "-m",
-                self._model,
-                "--search",
-                "exec",
-                "--output-schema",
-                str(schema_path),
-                "--output-last-message",
-                str(output_path),
-                "-",
-            ]
-            try:
-                result = self._runner(
-                    command,
-                    capture_output=True,
-                    # The JSON output file is authoritative. Keep console diagnostics as
-                    # bytes so Windows code-page output cannot crash Python decoding.
-                    text=False,
-                    input=prompt.encode("utf-8"),
-                    timeout=self._timeout_seconds,
-                    check=False,
-                    shell=False,
-                    env=self._codex_subprocess_environment(),
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise CodexExternalDiscoveryError(
-                    "Codex discovery timed out. Narrow the search or retry."
-                ) from exc
-            except OSError as exc:
-                raise CodexExternalDiscoveryError(
-                    "Codex CLI could not be started. Check the local Codex installation and authentication."
-                ) from exc
-            if result.returncode != 0:
-                diagnostic = self._safe_diagnostic(result.stderr) or self._safe_diagnostic(result.stdout)
-                if diagnostic:
-                    raise CodexExternalDiscoveryError(
-                        f"Codex discovery failed (exit code {result.returncode}): {diagnostic}"
-                    )
-                raise CodexExternalDiscoveryError(
-                    f"Codex discovery failed (exit code {result.returncode}). "
-                    "Retry or run Codex directly for diagnostics."
-                )
-            try:
-                raw_output = output_path.read_text(encoding="utf-8")
-            except OSError as exc:
-                raise CodexExternalDiscoveryError(
-                    "Codex discovery did not return a structured result. Retry the command."
-                ) from exc
+            raise CodexExternalDiscoveryError(
+                f"Codex discovery failed (exit code {invocation.returncode}). "
+                "Retry or run Codex directly for diagnostics."
+            )
+        raw_output = invocation.output_text
+        if raw_output is None:
+            raise CodexExternalDiscoveryError(
+                "Codex discovery did not return a structured result. Retry the command."
+            )
         try:
             return CodexExternalDiscoveryOutput.model_validate(json.loads(raw_output)).jobs
         except (json.JSONDecodeError, ValueError) as exc:
@@ -179,18 +147,7 @@ class CodexExternalDiscoveryRunner:
     @staticmethod
     def _codex_subprocess_environment() -> dict[str, str]:
         """Keep OS/Codex runtime configuration while excluding Career-trans secrets."""
-        environment = os.environ.copy()
-        for name in list(environment):
-            normalized = name.casefold()
-            if normalized.startswith("codex_"):
-                continue
-            if (
-                normalized.startswith("career_trans_")
-                or normalized in _CAREER_TRANS_ENV_NAMES
-                or any(marker in normalized for marker in _CREDENTIAL_ENV_MARKERS)
-            ):
-                environment.pop(name, None)
-        return environment
+        return codex_subprocess_environment()
 
     @staticmethod
     def _safe_diagnostic(value: bytes | str | None) -> str:

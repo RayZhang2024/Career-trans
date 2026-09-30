@@ -278,6 +278,32 @@ class ScheduledDiscoveryExecutionService:
                         "extraction_failures": diagnostics.extraction_failures,
                     },
                 ))
+                provider_metadata = getattr(agentic_service, "provider_metadata", None)
+                if (
+                    isinstance(provider_metadata, dict)
+                    and provider_metadata.get("provider") == "local_codex"
+                    and diagnostics.local_codex_search_failed
+                ):
+                    # A live Local Codex failure ends acquisition before evaluation,
+                    # even if another channel already produced canonical vacancies.
+                    failures = {"agentic_web": 1}
+                    summaries = {
+                        "agentic_web_search_queries_executed": diagnostics.search_queries_executed,
+                        "agentic_web_pages_opened": diagnostics.pages_opened,
+                        "agentic_web_page_fetch_failures": diagnostics.page_fetch_failures,
+                        "agentic_web_extraction_successes": diagnostics.extraction_successes,
+                        "agentic_web_extraction_failures": diagnostics.extraction_failures,
+                    }
+                    canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes))
+                    summaries["canonical_jobs"] = len(canonical_ids)
+                    if acquisition.structured_ats.enabled and outcomes and outcomes[0].failed:
+                        failures["structured_ats"] = 1
+                    status = (
+                        ExecutionStatus.PARTIAL_FAILED
+                        if any(outcome.succeeded for outcome in outcomes)
+                        else ExecutionStatus.FAILED
+                    )
+                    return self._finish(execution, status, now, summaries, failures)
             except Exception:
                 outcomes.append(_ChannelOutcome(succeeded=False, failed=True, counters={"search_queries_executed": 0, "pages_opened": 0, "page_fetch_failures": 0, "extraction_successes": 0, "extraction_failures": 1}))
 
@@ -343,7 +369,7 @@ class ScheduledDiscoveryExecutionService:
         if not isinstance(metadata, dict):
             return
         safe_values = {
-            "provider": {"tavily", "openai", "brave", "disabled", "unsupported"},
+            "provider": {"tavily", "openai", "brave", "local_codex", "disabled", "unsupported"},
             "credential_source": {"user", "deployment", "none"},
             "search_depth": {"basic"},
         }

@@ -238,6 +238,48 @@ def test_unavailable_tavily_with_ats_jobs_stops_before_semantic_evaluation(db_se
     assert "synthetic-secret-must-not-persist" not in persisted_text
 
 
+def test_live_local_codex_search_failure_with_ats_jobs_stops_before_semantic_evaluation(db_session) -> None:
+    user = _user(db_session, "local-codex-live-failure@example.com")
+    listing = _listing()
+    SqlAlchemyDiscoveredJobStateStore(db_session).persist([listing])
+    payload = _payload(acquisition=AcquisitionConfig(
+        structured_ats=StructuredAtsScheduleConfig(enabled=True, providers=["greenhouse"]),
+        agentic_web=AgenticWebScheduleConfig(enabled=True),
+    ))
+    schedule = DiscoveryScheduleService(db_session).create(user.id, payload, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    starts = []
+
+    class Agentic:
+        provider_metadata = {"provider": "local_codex"}
+
+        def discover(self, _request):
+            return AgenticDiscoveryResponse(
+                diagnostics=AgenticDiscoveryDiagnostics(
+                    search_errors={"safe": "Local Codex search timed out."},
+                    local_codex_search_failed=True,
+                )
+            )
+
+    class Runs:
+        def start(self, *args, **kwargs):
+            starts.append(args)
+
+    runner = ScheduledDiscoveryExecutionService(
+        db_session,
+        structured_ats=SimpleNamespace(discover=lambda _request: _ats_response([listing])),
+        agentic_web_factory=lambda: Agentic(),
+        user_runs=Runs(),
+        candidate_reader=StaticCandidateReader(snapshot_for_context(CandidateContext(profile_text="ready fixture"))),
+    )
+    claimed = runner.claim(schedule.id, TriggerKind.MANUAL, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    assert claimed is not None
+    result = runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    assert starts == []
+    assert result.status == "partial_failed"
+    assert json.loads(result.failure_summary_json) == {"agentic_web": 1}
+    assert json.loads(result.web_search_metadata_json) == {"provider": "local_codex"}
+
+
 def test_dst_daily_wall_time_and_nonexistent_and_ambiguous_slots():
     daily = ScheduleSpec(cadence=ScheduleCadence.DAILY, timezone="Europe/London", local_time=time(9, 30))
     before_spring = datetime(2026, 3, 28, 10, 0, tzinfo=UTC)

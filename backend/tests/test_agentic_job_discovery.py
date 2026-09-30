@@ -17,6 +17,7 @@ from app.services.agentic_job_discovery_service import AgenticJobDiscoveryServic
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.job_discovery_service import JobDiscoveryService
 from app.providers.web_search import BraveWebSearchProvider
+from app.providers.local_codex import LocalCodexSearchError
 
 
 class FakeStrategies:
@@ -178,6 +179,26 @@ def test_search_failures_and_candidate_filtering_are_isolated_and_bounded(db_ses
     assert response.diagnostics.deterministic_filtered_count == 1
     assert response.diagnostics.search_errors == {"failed": "RuntimeError: operation failed"}
     assert len(response.listings) == 1
+
+
+def test_live_local_codex_search_failure_stops_all_following_strategies_and_extraction(db_session) -> None:
+    good_url = "https://jobs.example.test/jobs/1"
+    strategies = [strategy("first", priority=2), strategy("second", priority=1)]
+    discovery, _, search, pages, extractor = service(
+        db_session,
+        strategies=strategies,
+        results={
+            "first": LocalCodexSearchError("Local Codex search timed out. Refresh status and retry."),
+            "second": [result("AI Engineer", good_url)],
+        },
+        pages={good_url: page(good_url)},
+        extracted={good_url: ExtractedVacancy(title="AI Engineer")},
+    )
+    response = discovery.discover(request())
+    assert search.calls == [("first", 10)]
+    assert pages.calls == [] and extractor.calls == []
+    assert response.diagnostics.local_codex_search_failed is True
+    assert "timed out" in response.diagnostics.search_errors["first"]
 
 
 def test_fetch_and_extraction_failures_do_not_stop_other_pages_or_invent_facts(db_session) -> None:

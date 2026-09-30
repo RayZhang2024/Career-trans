@@ -9,6 +9,7 @@ from app.schemas.ai_settings import ReasoningEffort
 
 
 _DEFAULT_CODEX_EXTERNAL_DISCOVERY_MODEL = "gpt-5.6-luna"
+_DEFAULT_LOCAL_CODEX_SEARCH_MODEL = "gpt-5.6-luna"
 _CODEX_MODEL_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 
 
@@ -114,6 +115,9 @@ class Settings(BaseSettings):
             "codex_external_discovery_model",
         ),
     )
+    local_codex_discovery_enabled: bool = False
+    local_codex_search_model: str = _DEFAULT_LOCAL_CODEX_SEARCH_MODEL
+    local_codex_scheduled_discovery_capability: str = "unverified"
     openai_web_search_model: str = "gpt-5.6-luna"
 
     langsmith_tracing: bool | None = None
@@ -151,6 +155,34 @@ class Settings(BaseSettings):
                 "CODEX_EXTERNAL_DISCOVERY_MODEL must be a non-empty Codex model identifier."
             )
         return model
+
+    @field_validator("local_codex_search_model", mode="before")
+    @classmethod
+    def _normalize_local_codex_search_model(cls, value: object) -> object:
+        if value is None:
+            return _DEFAULT_LOCAL_CODEX_SEARCH_MODEL
+        if not isinstance(value, str):
+            return value
+        model = value.strip()
+        if not model:
+            return _DEFAULT_LOCAL_CODEX_SEARCH_MODEL
+        if not _CODEX_MODEL_IDENTIFIER.fullmatch(model):
+            raise ValueError(
+                "LOCAL_CODEX_SEARCH_MODEL must be a non-empty Codex model identifier."
+            )
+        return model
+
+    @field_validator("local_codex_scheduled_discovery_capability", mode="before")
+    @classmethod
+    def _validate_local_codex_scheduled_capability(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().casefold()
+        if normalized not in {"supported", "unsupported", "unverified"}:
+            raise ValueError(
+                "LOCAL_CODEX_SCHEDULED_DISCOVERY_CAPABILITY must be supported, unsupported, or unverified."
+            )
+        return normalized
 
     @property
     def openai_job_extraction_model(self) -> str:

@@ -36,7 +36,7 @@ export type AiSettings = {
   effective: Record<SemanticOperation, AiEffectiveOperation>;
 };
 export type AiSettingsReplace = AiPreferences & { expected_revision: number };
-export type DiscoveryProvider = "tavily" | "openai" | "disabled";
+export type DiscoveryProvider = "tavily" | "openai" | "local_codex" | "disabled";
 export type EffectiveDiscoveryProvider = DiscoveryProvider | "brave" | "unsupported";
 export type CredentialSource = "user" | "deployment";
 export type JobDiscoverySettings = {
@@ -46,6 +46,20 @@ export type JobDiscoverySettings = {
   tavily_user_credential_storage_available: boolean; tavily_credential_usable: boolean;
 };
 export type TavilyConnectionTest = { success: boolean; credential_source: CredentialSource; message: string };
+export type LocalCodexCapability = "available" | "unavailable" | "unknown";
+export type LocalCodexAuthentication = "signed_in" | "signed_out" | "unknown";
+export type LocalCodexReadiness = "ready" | "not_ready";
+export type LocalCodexScheduledReadiness = "supported" | "unsupported" | "unverified";
+export type LocalCodexStatus = {
+  enabled_by_deployment: boolean; cli_installed: boolean; version: string | null;
+  authentication_status: LocalCodexAuthentication;
+  structured_invocation_status: LocalCodexCapability;
+  search_capability_status: LocalCodexCapability;
+  manual_discovery_status: LocalCodexReadiness;
+  scheduled_discovery_status: LocalCodexScheduledReadiness;
+  message: string; setup_guidance: string;
+};
+export type LocalCodexTest = { success: boolean; result_count: number; message: string };
 
 export const SEMANTIC_OPERATION_ORDER: ReadonlyArray<{ id: SemanticOperation; label: string }> = [
   { id: "cv_semantic_extraction", label: "CV extraction" },

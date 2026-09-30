@@ -320,9 +320,9 @@ def test_standalone_due_runner_uses_shared_user_scoped_provider_resolver(db_sess
     monkeypatch.setattr(
         scheduled_discovery_runner.deps,
         "get_user_agentic_job_discovery_service_for_user",
-        lambda session, user_id, snapshot: calls.append((session, user_id, snapshot)) or object(),
+        lambda session, user_id, snapshot, **kwargs: calls.append((session, user_id, snapshot, kwargs)) or object(),
     )
     service = scheduled_discovery_runner.build_service(db_session)
     snapshot = object()
     service._agentic_service("scheduled-owner", snapshot)
-    assert calls == [(db_session, "scheduled-owner", snapshot)]
+    assert calls == [(db_session, "scheduled-owner", snapshot, {"scheduled_due_runner": True})]
