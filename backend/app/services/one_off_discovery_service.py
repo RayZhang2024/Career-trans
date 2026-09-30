@@ -10,19 +10,17 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.discovered_job import DiscoveredJob
 from app.models.one_off_discovery_execution import OneOffDiscoveryExecution
 from app.models.user_job_discovery_settings import UserJobDiscoverySettings
-from app.schemas.agentic_discovery import AgenticDiscoveryRequest
 from app.schemas.discovery import JobSearchQuery
 from app.schemas.one_off_discovery import (
     OneOffExecutionRead, OneOffLaunchRequest, OneOffPolicy, OneOffPreflightRead,
     OneOffReadiness, OneOffStatus,
 )
-from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
 from app.services.canonical_candidate_read_service import (
     CandidateEvidenceMaterializationIncomplete, CanonicalCandidateReadService,
 )
+from app.services.agentic_web_execution_core import AgenticWebExecutionCore
 from app.services.job_discovery_settings_service import (
     JobDiscoveryProviderNotReady, JobDiscoverySettingsService, ResolvedWebSearchProvider,
 )
@@ -60,6 +58,7 @@ class OneOffDiscoveryService:
         user_runs_factory,
         candidate_reader: CanonicalCandidateReadService | None = None,
         clock=lambda: datetime.now(timezone.utc),
+        agentic_core: AgenticWebExecutionCore | None = None,
     ) -> None:
         self._session = session
         self._settings = settings_service
@@ -68,6 +67,7 @@ class OneOffDiscoveryService:
         self._user_runs_factory = user_runs_factory
         self._candidate_reader = candidate_reader or CanonicalCandidateReadService(session)
         self._clock = clock
+        self._agentic_core = agentic_core or AgenticWebExecutionCore(session)
 
     def preflight(self, user_id: str) -> OneOffPreflightRead:
         policy = OneOffPolicy()
@@ -187,41 +187,49 @@ class OneOffDiscoveryService:
             now = self._clock()
             runtime = self._runtime_snapshot_resolver(user_id)
             discovery = self._agentic_factory(user_id, runtime, provider_resolution)
-            response = discovery.discover(AgenticDiscoveryRequest(
-                candidate_context=context, query=query, country=preflight.policy.country,
+            acquired = self._agentic_core.acquire(
+                agentic_service=discovery,
+                provider_metadata=getattr(discovery, "provider_metadata", None),
+                candidate_context=context,
+                query=query,
+                country=preflight.policy.country,
                 max_search_queries=preflight.policy.max_search_queries,
                 max_search_results_per_query=preflight.policy.max_search_results_per_query,
                 max_pages_to_open=preflight.policy.max_pages_to_open,
                 max_discovered_jobs=preflight.policy.max_discovered_jobs,
-            ))
-            urls = {row.url for row in response.listings}
-            ids = sorted(self._session.scalars(select(DiscoveredJob.id).where(DiscoveredJob.url.in_(urls))).all()) if urls else []
-            diagnostics = response.diagnostics
-            errors = bool(diagnostics.search_errors or diagnostics.page_errors or diagnostics.page_fetch_failures or diagnostics.extraction_failures)
+            )
+            ids = acquired.canonical_ids
             summary = {
-                "search_queries_executed": diagnostics.search_queries_executed,
-                "pages_opened": diagnostics.pages_opened,
-                "page_fetch_failures": diagnostics.page_fetch_failures,
-                "extraction_successes": diagnostics.extraction_successes,
-                "extraction_failures": diagnostics.extraction_failures,
+                **acquired.counters,
                 "canonical_jobs": len(ids),
             }
-            failures = {"agentic_web": 1} if errors else {}
-            if ids:
-                run = self._user_runs_factory(runtime).start(user_id, DiscoveryRunCreateRequest(
-                    query=query, discovered_job_ids=ids,
+            failures = {"agentic_web": 1} if acquired.failed else {}
+            if ids and not acquired.stop_evaluation:
+                evaluated = self._agentic_core.evaluate(
+                    user_runs=self._user_runs_factory(runtime),
+                    user_id=user_id,
+                    query=query,
+                    canonical_ids=ids,
                     max_semantic_candidates=preflight.policy.max_semantic_candidates,
                     max_full_analyses=preflight.policy.max_full_analyses,
                     min_relevance_score=preflight.policy.min_relevance_score,
-                ))
-                execution.discovery_run_id = run.id
-                summary.update({"reused": run.funnel.get("reused", 0), "relevance_screened": run.funnel.get("relevance_screened", 0), "analysed": run.funnel.get("analysed", 0)})
-                if run.status.value == "failed":
+                )
+                execution.discovery_run_id = evaluated.discovery_run_id
+                summary.update(evaluated.funnel)
+                if evaluated.status == "failed":
                     failures["evaluation"] = 1
-                status = OneOffStatus.PARTIAL_FAILED if failures or run.status.value == "partial_failed" else OneOffStatus.COMPLETED if run.status.value == "completed" else OneOffStatus.FAILED
+                status = OneOffStatus(self._agentic_core.final_status(
+                    acquisition_failed=acquired.failed,
+                    evaluation_status=evaluated.status,
+                    useful_acquisition=True,
+                ))
             else:
                 # A clean search with no accepted vacancies is a completed execution.
-                status = OneOffStatus.FAILED if errors else OneOffStatus.COMPLETED
+                status = OneOffStatus(self._agentic_core.final_status(
+                    acquisition_failed=acquired.failed,
+                    evaluation_status=None,
+                    useful_acquisition=bool(ids),
+                ))
             return self._finish(execution, status, summary, failures, now)
         except Exception:
             self._session.rollback()

@@ -44,6 +44,14 @@ from app.services.user_job_decision_service import utc_timestamp
 _CONTRACT_VERSION = "user-discovery-run-v1"
 
 
+class DiscoveryRunExecutionFailure(RuntimeError):
+    """Evaluation failed after its durable run row was committed."""
+
+    def __init__(self, run_id: str) -> None:
+        super().__init__("Discovery evaluation failed after its run was created.")
+        self.run_id = run_id
+
+
 def evaluation_contract_fingerprint_for_runtime(runtime_snapshot: ResolvedRuntimeSnapshot) -> str:
     return _fingerprint({
         "contract": _CONTRACT_VERSION,
@@ -276,7 +284,7 @@ class UserJobDiscoveryService:
             except Exception:
                 self._terminalize_unexpected_failure(run, run_rows)
                 self._session.commit()
-                raise
+                raise DiscoveryRunExecutionFailure(run.id) from None
         self._persist_ranking(run, run_rows, fresh_by_identity, response, user_id, candidate_fingerprint, contract_fingerprint, request.min_relevance_score)
         self._finish_run(run, request, selection, response, reused)
         self._session.commit()

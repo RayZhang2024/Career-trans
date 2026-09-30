@@ -12,17 +12,15 @@ from sqlalchemy.orm import Session
 
 from app.models.discovered_job import DiscoveredJob
 from app.models.discovery_schedule import DiscoverySchedule, ScheduledDiscoveryExecution
-from app.schemas.agentic_discovery import AgenticDiscoveryRequest
 from app.schemas.discovery import JobSearchQuery
 from app.schemas.discovery_schedule import AcquisitionConfig, EvaluationConfig, ExecutionStatus, TriggerKind
 from app.schemas.structured_ats_discovery import StructuredAtsDiscoveryRequest
-from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
 from app.services.canonical_candidate_read_service import (
     CandidateEvidenceMaterializationIncomplete,
     CanonicalCandidateReadService,
 )
 from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
-from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
+from app.services.agentic_web_execution_core import AgenticWebExecutionCore
 from app.services.llm_runtime import ResolvedRuntimeSnapshot
 
 STALE_EXECUTION_AGE = timedelta(hours=2)
@@ -54,6 +52,7 @@ class ScheduledDiscoveryExecutionService:
         user_runs_factory: Callable[[ResolvedRuntimeSnapshot], object] | None = None,
         runtime_snapshot_resolver: Callable[[str], ResolvedRuntimeSnapshot] | None = None,
         candidate_reader: CanonicalCandidateReadService | None = None,
+        agentic_core: AgenticWebExecutionCore | None = None,
     ) -> None:
         self._session = session
         self._structured_ats = structured_ats
@@ -62,6 +61,7 @@ class ScheduledDiscoveryExecutionService:
         self._user_runs_factory = user_runs_factory
         self._runtime_snapshot_resolver = runtime_snapshot_resolver
         self._candidate_reader = candidate_reader or CanonicalCandidateReadService(session)
+        self._agentic_core = agentic_core or AgenticWebExecutionCore(session)
 
     def process_due(self, now: datetime, limit: int) -> list[ScheduledDiscoveryExecution]:
         schedules = self._session.scalars(
@@ -237,75 +237,45 @@ class ScheduledDiscoveryExecutionService:
                     summaries[f"{name}_{key}"] = value
             canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes)) if outcomes else set()
             summaries["canonical_jobs"] = len(canonical_ids)
-            status = (
-                ExecutionStatus.PARTIAL_FAILED
-                if any(outcome.succeeded for outcome in outcomes)
-                else ExecutionStatus.FAILED
-            )
+            status = ExecutionStatus(self._agentic_core.final_status(
+                acquisition_failed=True, evaluation_status=None,
+                useful_acquisition=any(outcome.succeeded for outcome in outcomes),
+            ))
             return self._finish(execution, status, now, summaries, failures)
 
+        agentic_result = None
         if acquisition.agentic_web.enabled:
-            try:
-                assert agentic_service is not None
-                config = acquisition.agentic_web
-                response = agentic_service.discover(
-                    AgenticDiscoveryRequest(
-                        candidate_context=context,
-                        query=query,
-                        country=config.country,
-                        max_search_queries=config.max_search_queries,
-                        max_search_results_per_query=config.max_search_results_per_query,
-                        max_pages_to_open=config.max_pages_to_open,
-                        max_discovered_jobs=config.max_discovered_jobs,
-                    )
-                )
-                diagnostics = response.diagnostics
-                errors = bool(
-                    diagnostics.search_errors
-                    or diagnostics.page_errors
-                    or diagnostics.page_fetch_failures
-                    or diagnostics.extraction_failures
-                )
-                outcomes.append(_ChannelOutcome(
-                    succeeded=bool(response.listings) or not errors,
-                    failed=errors,
-                    canonical_ids=self._canonical_ids(response.listings),
-                    counters={
-                        "search_queries_executed": diagnostics.search_queries_executed,
-                        "pages_opened": diagnostics.pages_opened,
-                        "page_fetch_failures": diagnostics.page_fetch_failures,
-                        "extraction_successes": diagnostics.extraction_successes,
-                        "extraction_failures": diagnostics.extraction_failures,
-                    },
+            assert agentic_service is not None
+            config = acquisition.agentic_web
+            agentic_result = self._agentic_core.acquire(
+                agentic_service=agentic_service,
+                provider_metadata=getattr(agentic_service, "provider_metadata", None),
+                candidate_context=context,
+                query=query,
+                country=config.country,
+                max_search_queries=config.max_search_queries,
+                max_search_results_per_query=config.max_search_results_per_query,
+                max_pages_to_open=config.max_pages_to_open,
+                max_discovered_jobs=config.max_discovered_jobs,
+            )
+            outcomes.append(_ChannelOutcome(
+                succeeded=agentic_result.succeeded,
+                failed=agentic_result.failed,
+                canonical_ids=agentic_result.canonical_ids,
+                counters=agentic_result.counters,
+            ))
+            if agentic_result.stop_evaluation:
+                failures = {"agentic_web": 1}
+                summaries = {f"agentic_web_{key}": value for key, value in agentic_result.counters.items()}
+                canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes))
+                summaries["canonical_jobs"] = len(canonical_ids)
+                if acquisition.structured_ats.enabled and outcomes and outcomes[0].failed:
+                    failures["structured_ats"] = 1
+                status = ExecutionStatus(self._agentic_core.final_status(
+                    acquisition_failed=True, evaluation_status=None,
+                    useful_acquisition=any(outcome.succeeded for outcome in outcomes),
                 ))
-                provider_metadata = getattr(agentic_service, "provider_metadata", None)
-                if (
-                    isinstance(provider_metadata, dict)
-                    and provider_metadata.get("provider") == "local_codex"
-                    and diagnostics.local_codex_search_failed
-                ):
-                    # A live Local Codex failure ends acquisition before evaluation,
-                    # even if another channel already produced canonical vacancies.
-                    failures = {"agentic_web": 1}
-                    summaries = {
-                        "agentic_web_search_queries_executed": diagnostics.search_queries_executed,
-                        "agentic_web_pages_opened": diagnostics.pages_opened,
-                        "agentic_web_page_fetch_failures": diagnostics.page_fetch_failures,
-                        "agentic_web_extraction_successes": diagnostics.extraction_successes,
-                        "agentic_web_extraction_failures": diagnostics.extraction_failures,
-                    }
-                    canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes))
-                    summaries["canonical_jobs"] = len(canonical_ids)
-                    if acquisition.structured_ats.enabled and outcomes and outcomes[0].failed:
-                        failures["structured_ats"] = 1
-                    status = (
-                        ExecutionStatus.PARTIAL_FAILED
-                        if any(outcome.succeeded for outcome in outcomes)
-                        else ExecutionStatus.FAILED
-                    )
-                    return self._finish(execution, status, now, summaries, failures)
-            except Exception:
-                outcomes.append(_ChannelOutcome(succeeded=False, failed=True, counters={"search_queries_executed": 0, "pages_opened": 0, "page_fetch_failures": 0, "extraction_successes": 0, "extraction_failures": 1}))
+                return self._finish(execution, status, now, summaries, failures)
 
         canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes)) if outcomes else set()
         failures = {}
@@ -318,7 +288,10 @@ class ScheduledDiscoveryExecutionService:
         useful_channel = any(outcome.succeeded for outcome in outcomes)
 
         if not canonical_ids:
-            status = ExecutionStatus.FAILED if failures and not useful_channel else (ExecutionStatus.PARTIAL_FAILED if failures else ExecutionStatus.COMPLETED)
+            status = ExecutionStatus(self._agentic_core.final_status(
+                acquisition_failed=bool(failures), evaluation_status=None,
+                useful_acquisition=useful_channel,
+            ))
             summaries["canonical_jobs"] = 0
             return self._finish(execution, status, now, summaries, failures)
 
@@ -327,24 +300,22 @@ class ScheduledDiscoveryExecutionService:
             if runtime_snapshot is None and self._runtime_snapshot_resolver is not None:
                 runtime_snapshot = self._resolve_runtime(execution.user_id)
             user_runs = self._user_run_service(runtime_snapshot)
-            run = user_runs.start(
-                execution.user_id,
-                DiscoveryRunCreateRequest(
-                    query=query,
-                    discovered_job_ids=sorted(canonical_ids),
-                    max_semantic_candidates=evaluation.max_semantic_candidates,
-                    max_full_analyses=evaluation.max_full_analyses,
-                    min_relevance_score=evaluation.min_relevance_score,
-                ),
+            evaluated = self._agentic_core.evaluate(
+                user_runs=user_runs,
+                user_id=execution.user_id,
+                query=query,
+                canonical_ids=canonical_ids,
+                max_semantic_candidates=evaluation.max_semantic_candidates,
+                max_full_analyses=evaluation.max_full_analyses,
+                min_relevance_score=evaluation.min_relevance_score,
             )
-            execution.discovery_run_id = run.id
-            if run.status.value == "failed":
-                status = ExecutionStatus.FAILED
-            elif failures or run.status.value == "partial_failed":
-                status = ExecutionStatus.PARTIAL_FAILED
-            else:
-                status = ExecutionStatus.COMPLETED
-            summaries.update({"canonical_jobs": len(canonical_ids), "reused": run.funnel.get("reused", 0), "relevance_screened": run.funnel.get("relevance_screened", 0), "analysed": run.funnel.get("analysed", 0)})
+            execution.discovery_run_id = evaluated.discovery_run_id
+            status = ExecutionStatus(self._agentic_core.final_status(
+                acquisition_failed=bool(failures),
+                evaluation_status=evaluated.status,
+                useful_acquisition=useful_channel,
+            ))
+            summaries.update({"canonical_jobs": len(canonical_ids), **evaluated.funnel})
             return self._finish(execution, status, now, summaries, failures)
         except Exception:
             return self._finish(execution, ExecutionStatus.FAILED, now, {"canonical_jobs": len(canonical_ids)}, {"evaluation": 1})
@@ -423,7 +394,4 @@ class ScheduledDiscoveryExecutionService:
         return execution
 
     def _canonical_ids(self, listings: list[object]) -> set[str]:
-        keys = [SqlAlchemyDiscoveredJobStateStore.identity_key(listing) for listing in listings]
-        if not keys:
-            return set()
-        return set(self._session.scalars(select(DiscoveredJob.id).where(DiscoveredJob.identity_key.in_(keys))).all())
+        return self._agentic_core.canonical_ids(listings)

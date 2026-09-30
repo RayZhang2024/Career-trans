@@ -20,7 +20,7 @@ from app.schemas.job_ranking import JobArchetype, JobArchetypeAssessment, JobRan
 from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
 from app.schemas.user_job_decision import UserJobDecisionMutation
-from app.services.user_job_discovery_service import UserJobDiscoveryService
+from app.services.user_job_discovery_service import DiscoveryRunExecutionFailure, UserJobDiscoveryService
 from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
 from app.services.user_job_decision_service import UserJobDecisionService
 from candidate_read_support import StaticCandidateReader, patch_candidate_context, snapshot_for_context
@@ -283,13 +283,15 @@ def test_unexpected_ranking_exception_terminalizes_run_safely(db_session, monkey
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
     patch_candidate_context(monkeypatch, _context())
     service = UserJobDiscoveryService(db_session, ranking_service=BrokenRanking())
+    failed_run_id = None
     try:
         service.start("user-a", _request(job.id))
-    except RuntimeError:
-        pass
+    except DiscoveryRunExecutionFailure as exc:
+        failed_run_id = exc.run_id
     else:
         raise AssertionError("Unexpected ranking failure must be re-raised.")
     run = service.list_runs("user-a")[0]
+    assert run.id == failed_run_id
     assert run.status == "failed" and run.completed_at is not None
     assert "private" not in str(run.failure_summary)
 

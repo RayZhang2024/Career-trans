@@ -481,16 +481,22 @@ scheduled capability is not used for a manual one-off action.
 query, the preflight fingerprint, and a client request UUID. A separate
 `OneOffDiscoveryExecution` row is committed before agentic web acquisition. The
 service reuses the existing `AgenticJobDiscoveryService` persistence path and
-the bounded `UserJobDiscoveryService` evaluation path. It creates no
+the bounded `UserJobDiscoveryService` evaluation path through
+`AgenticWebExecutionCore`, which is also used by saved schedules. The core
+resolves persisted IDs with `SqlAlchemyDiscoveredJobStateStore.identity_key`,
+so equal URLs do not merge different provider/external identities. Evaluation
+failures retain the durable `DiscoveryRun` ID in a typed failure contract. It creates no
 `DiscoverySchedule`; a clean zero-result search has no `DiscoveryRun`. The
 user-scoped `(user_id, client_request_id)` unique key makes retries reconcile
 the original immutable query, policy, and safe provider snapshot.
 
-Exact execution reads and the one-off history list are provider-free. A running
-claim older than two hours is terminalized as failed with a structural
-`stale_execution` reason when reconciled; no recovery path repeats provider
-work. The browser combines one-off records with ordinary run history and hides
-the linked `DiscoveryRun` summary to show one logical entry.
+Exact execution reads and `GET /api/v1/jobs/search-history` are provider-free.
+The backend projection composes one-off executions with ordinary `DiscoveryRun`
+records, suppresses linked runs, and applies one deterministic order and bounded
+window after composition. A running claim older than two hours is terminalized
+as failed with a structural `stale_execution` reason when reconciled; no recovery
+path repeats provider work. The frontend consumes only this unified projection,
+and opens a linked run's exact evaluation detail within its one-off history row.
 
 Persisted detail is monotonic by authority:
 

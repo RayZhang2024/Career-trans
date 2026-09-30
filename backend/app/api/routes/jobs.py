@@ -24,6 +24,7 @@ from app.api.deps import (
     get_user_job_discovery_service,
     get_user_job_discovery_read_service,
     get_user_job_discovery_history_read_service,
+    get_search_history_read_service,
     get_user_job_workspace_read_service,
     get_user_job_decision_service,
     get_discovery_schedule_service,
@@ -73,6 +74,8 @@ from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
 from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
+from app.services.search_history_service import SearchHistoryReadService
+from app.schemas.search_history import SearchHistoryResponse
 from app.services.ats_resolver_service import AtsResolverService
 from app.services.company_source_discovery_service import CompanySourceDiscoveryService
 from app.services.employer_universe_service import EmployerUniverseService
@@ -235,6 +238,15 @@ def list_discovery_runs(
     service: UserJobDiscoveryHistoryReadService = Depends(get_user_job_discovery_history_read_service),
 ) -> DiscoveryRunSummaryResponse:
     return service.list_run_summaries(current_user.id, limit=limit)
+
+
+@router.get("/search-history", response_model=SearchHistoryResponse)
+def list_search_history(
+    current_user: CurrentUser,
+    limit: int = Query(default=20, ge=1, le=100),
+    service: SearchHistoryReadService = Depends(get_search_history_read_service),
+) -> SearchHistoryResponse:
+    return service.list(current_user.id, limit=limit)
 
 
 @router.get("/discovery-runs/{run_id}/jobs/{discovered_job_id}", response_model=DiscoveryRunJobDetailRead)

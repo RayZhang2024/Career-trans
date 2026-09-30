@@ -379,6 +379,10 @@ export type OneOffExecution = {
   failure_summary: Record<string, number>; discovery_run_id: string | null;
 };
 export type OneOffLaunch = { client_request_id: string; expected_launch_fingerprint: string; query: DiscoveryScheduleQuery };
+export type SearchHistoryOneOffItem = { type: "one_off"; id: string; started_at: string; execution: OneOffExecution };
+export type SearchHistoryRunItem = { type: "discovery_run"; id: string; started_at: string; run: DiscoveryRunSummary };
+export type SearchHistoryItem = SearchHistoryOneOffItem | SearchHistoryRunItem;
+export type SearchHistoryResponse = BoundedResponse<SearchHistoryItem>;
 export type DiscoveryScheduleCreate = Omit<DiscoveryScheduleRead, "id" | "next_run_at" | "last_execution_at">;
 export type DiscoverySchedulePatch = Partial<Omit<DiscoveryScheduleCreate, "schedule" | "query" | "acquisition" | "evaluation">> & {
   schedule?: DiscoveryScheduleSpec; query?: DiscoveryScheduleQuery; acquisition?: DiscoveryScheduleAcquisition; evaluation?: DiscoveryScheduleEvaluation;

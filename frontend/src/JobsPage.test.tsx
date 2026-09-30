@@ -54,6 +54,15 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     const path = url.pathname;
     const override = overrides[`${init?.method ?? "GET"} ${path}`] ?? overrides[path];
     if (override) return Promise.resolve(override(url, init));
+    if (path === "/api/v1/jobs/search-history") {
+      const legacyFixture = overrides["/api/v1/jobs/discovery-runs"];
+      if (legacyFixture) return Promise.resolve(legacyFixture(url, init)).then(async (response) => {
+        if (!response.ok) return response;
+        const payload = await response.clone().json() as { items?: DiscoveryRunSummary[]; limit?: number; truncated?: boolean };
+        return json({ ...payload, items: (payload.items ?? []).map((item) => ({ type: "discovery_run", id: item.id, started_at: item.started_at, run: item })) });
+      });
+      return Promise.resolve(json(page([{ type: "discovery_run", id: run().id, started_at: run().started_at, run: run() }])));
+    }
     if (path === "/api/v1/users/me") return Promise.resolve(json(user));
     if (path === "/api/v1/onboarding/status") return Promise.resolve(json(ready));
     if (path === "/api/v1/profile") return Promise.resolve(json({ id: "profile", user_id: user.id, display_name: "Current Person", created_at: "", updated_at: "" }));
@@ -523,10 +532,10 @@ describe("Issue #171 Jobs workspace", () => {
   it("caps discovery runs at 100 and explains a truncated maximum window", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([run()], true)) });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" });
-    await growToLimit(fetch, "/api/v1/jobs/discovery-runs", "Show more runs");
-    expect(screen.queryByRole("button", { name: "Show more runs" })).not.toBeInTheDocument();
-    expect(screen.getByText("Showing the first 100 discovery runs available through this view.")).toBeInTheDocument();
-    const limits = requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/discovery-runs?")).map((path) => Number(new URL(path, window.location.origin).searchParams.get("limit")));
+    await growToLimit(fetch, "/api/v1/jobs/search-history", "Show more search history");
+    expect(screen.queryByRole("button", { name: "Show more search history" })).not.toBeInTheDocument();
+    expect(screen.getByText("Showing the first 100 Search History items available through this view.")).toBeInTheDocument();
+    const limits = requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/search-history?")).map((path) => Number(new URL(path, window.location.origin).searchParams.get("limit")));
     expect(limits).toContain(100); expect(limits.every((limit) => limit <= 100)).toBe(true); expect(limits).not.toContain(120);
   });
 
@@ -1015,6 +1024,71 @@ describe("Issue #261 transient one-off discovery", () => {
     expect(posts).toBe(0);
   });
 
+  it("keeps one-off discovery unavailable while a saved configuration is selected", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]) });
+    renderJobs(fetch); await selectSavedSchedule();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Find jobs now" })).not.toBeInTheDocument();
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/one-off-discovery/executions");
+  });
+
+  it("disables duplicate one-off launches while the exact request is pending", async () => {
+    const pending = deferred<Response>();
+    let posts = 0;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return pending.promise; } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    const launch = screen.getByRole("button", { name: "Find jobs now" });
+    fireEvent.click(launch);
+    expect(await screen.findByText(/One-off job discovery is in progress/)).toBeInTheDocument();
+    fireEvent.click(launch);
+    expect(posts).toBe(1);
+    expect(launch).toBeDisabled();
+    pending.resolve(json(oneOffExecution({ acquisition_summary: { canonical_jobs: 0 } })));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+  });
+
+  it.each([["completed", "Completed"], ["partial_failed", "Partial Failed"], ["failed", "Failed"]] as const)("shows truthful %s execution outcomes", async (status, label) => {
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => json(oneOffExecution({ status, acquisition_summary: { canonical_jobs: status === "completed" ? 0 : 2, relevance_screened: 1, analysed: 0 } })) });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("heading", { name: `One-off discovery ${label}` })).toBeInTheDocument();
+  });
+
+  it("refreshes stale preflight without automatically relaunching", async () => {
+    let preflights = 0;
+    let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/one-off-discovery/preflight": () => { preflights += 1; return json(oneOffPreflight({ launch_fingerprint: preflights === 1 ? "a".repeat(64) : "b".repeat(64) })); },
+      "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return json({ detail: "Job Discovery settings changed; refresh preflight." }, 409); },
+    });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByText(/review the refreshed summary, then explicitly start again/i)).toBeInTheDocument();
+    expect(preflights).toBe(2);
+    expect(posts).toBe(1);
+  });
+
+  it("keeps an unresolved interruption behind explicit Reconcile search with the same request id", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    let posts = 0;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+      submitted.push(JSON.parse(String(init?.body))); posts += 1;
+      return posts < 3 ? Promise.reject(new TypeError("offline")) : json(oneOffExecution());
+    } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile search" }));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(posts).toBe(3);
+    expect(submitted[1]).toEqual(submitted[0]);
+    expect(submitted[2]).toEqual(submitted[0]);
+  });
+
   it("retries an interrupted POST with the same request id to reconcile its execution", async () => {
     const submitted: Array<Record<string, unknown>> = [];
     let count = 0;
@@ -1033,13 +1107,34 @@ describe("Issue #261 transient one-off discovery", () => {
 
   it("projects a linked evaluation as one Search History entry", async () => {
     const linked = oneOffExecution({ discovery_run_id: "run-1" });
-    const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([run()])), "/api/v1/jobs/one-off-discovery/executions": () => json([linked]) });
+    const fetch = fakeFetch({ "/api/v1/jobs/search-history": () => json(page([{ type: "one_off", id: linked.id, started_at: linked.started_at, execution: linked }])) });
     renderJobs(fetch, "/jobs/history");
     expect(await screen.findByRole("heading", { name: "Search history" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "One-off discovery · Completed" })).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { name: /Completed/ })).toHaveLength(1);
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-runs?limit=20");
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/one-off-discovery/executions");
     fireEvent.click(screen.getByRole("link", { name: "View evaluated results" }));
     expect(await screen.findByRole("heading", { name: "Per-job outcomes" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: /One-off discovery · Completed/ })).toHaveLength(1);
+  });
+
+  it("paginates the authoritative mixed history without duplicate linked-run rows", async () => {
+    const linked = oneOffExecution({ discovery_run_id: "linked-run" });
+    const firstItems = Array.from({ length: 20 }, (_, index) => index === 5
+      ? { type: "one_off" as const, id: linked.id, started_at: linked.started_at, execution: linked }
+      : { type: "discovery_run" as const, id: `ordinary-${index}`, started_at: `2026-10-01T00:${String(index).padStart(2, "0")}:00Z`, run: run(`ordinary-${index}`) });
+    const allItems = [...firstItems, { type: "discovery_run" as const, id: "ordinary-next", started_at: "2026-09-30T23:00:00Z", run: run("ordinary-next") }];
+    const fetch = fakeFetch({ "/api/v1/jobs/search-history": (url) => json({ items: allItems.slice(0, Number(url.searchParams.get("limit"))), limit: Number(url.searchParams.get("limit")), truncated: Number(url.searchParams.get("limit")) < allItems.length }) });
+    renderJobs(fetch, "/jobs/history");
+    await screen.findByRole("heading", { name: "One-off discovery · Completed" });
+    expect(screen.getAllByRole("listitem")).toHaveLength(20);
+    fireEvent.click(screen.getByRole("button", { name: "Show more search history" }));
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(21));
+    expect(screen.getAllByRole("listitem")).toHaveLength(21);
+    expect(requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/search-history?")).length).toBeGreaterThan(1);
+    expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/discovery-runs?"))).toBe(false);
+    expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/one-off-discovery/executions?"))).toBe(false);
   });
 });
 
