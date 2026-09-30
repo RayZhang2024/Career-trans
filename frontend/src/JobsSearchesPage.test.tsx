@@ -85,6 +85,40 @@ describe("Issue #175 saved discovery configurations", () => {
     expect(screen.getByLabelText("Remote policy")).toHaveValue("exclude_remote");
   });
 
+  it("preserves incremental multiline editing in every SearchIntent field and saves canonical lines", async () => {
+    const { requests } = renderPage("/jobs/searches", {}, []);
+    await screen.findByText("No saved discovery configurations yet.");
+    fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Multiline search" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Structured ATS/ }));
+    const labels = [
+      "Prioritisation themes (one per line)", "Locations (search criteria, not eligibility)", "Excluded companies (one per line)",
+      "Excluded title terms (one per line)", "Employment types (one per line)",
+    ];
+    for (const label of labels) {
+      const field = screen.getByLabelText(label);
+      fireEvent.change(field, { target: { value: "Agentic" } });
+      expect(field).toHaveValue("Agentic");
+      fireEvent.change(field, { target: { value: "Agentic " } });
+      expect(field).toHaveValue("Agentic ");
+      fireEvent.change(field, { target: { value: "Agentic AI engineering" } });
+      expect(field).toHaveValue("Agentic AI engineering");
+      fireEvent.change(field, { target: { value: "Agentic AI engineering\n" } });
+      expect(field).toHaveValue("Agentic AI engineering\n");
+      fireEvent.change(field, { target: { value: "Agentic AI engineering\n\nApplied AI systems" } });
+      expect(field).toHaveValue("Agentic AI engineering\n\nApplied AI systems");
+      fireEvent.change(field, { target: { value: " Agentic AI engineering   \n\n\nApplied AI systems  \n" } });
+      expect(field).toHaveValue(" Agentic AI engineering   \n\n\nApplied AI systems  \n");
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    await waitFor(() => expect(getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules")).toHaveLength(1));
+    const body = getCalls(requests, "POST", "/api/v1/jobs/discovery-schedules")[0].body as any;
+    for (const field of ["keywords", "locations", "excluded_companies", "excluded_title_terms", "employment_types"]) {
+      expect(body.query[field]).toEqual(["Agentic AI engineering", "Applied AI systems"]);
+      expect(body.query[field]).not.toContain("");
+    }
+  });
+
   it("protects the direct /jobs/searches route and exposes navigation from both authenticated surfaces", async () => {
     const { requests } = renderPage("/jobs");
     expect(await screen.findByRole("link", { name: "Manage saved discovery configurations" })).toHaveAttribute("href", "/jobs/find/saved");
@@ -285,6 +319,18 @@ describe("Issue #175 saved discovery configurations", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed" } }); fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
     await waitFor(() => expect(getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")).toHaveLength(1));
     const calls = getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1"); expect(calls[0].body).toEqual({ name: "Renamed" });
+    expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1")).toHaveLength(1);
+  });
+
+  it("does not treat trailing editor whitespace as a semantic SearchIntent change", async () => {
+    const { requests } = renderPage(); await loaded();
+    fireEvent.click(screen.getByRole("button", { name: "Edit" })); await screen.findByDisplayValue("AI roles");
+    const themes = screen.getByLabelText("Prioritisation themes (one per line)");
+    fireEvent.change(themes, { target: { value: "AI, ML platform\nFDE   " } });
+    expect(themes).toHaveValue("AI, ML platform\nFDE   ");
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    expect(await screen.findByText("There are no saved changes to apply.")).toBeInTheDocument();
+    expect(getCalls(requests, "PATCH", "/api/v1/jobs/discovery-schedules/s-1")).toHaveLength(0);
     expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1")).toHaveLength(1);
   });
 

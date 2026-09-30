@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation, useNavigate, useNavigationType } from "react-router-dom";
@@ -68,10 +69,11 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     throw new Error(`Unexpected request ${init?.method ?? "GET"} ${path}${url.search}`);
   });
 }
-function renderJobs(fetch = fakeFetch(), path = "/jobs/find", showRouteLocation = false) {
+function renderJobs(fetch = fakeFetch(), path = "/jobs/find", showRouteLocation = false, strict = false) {
   sessionStorage.setItem(TOKEN, "test-token");
   vi.stubGlobal("fetch", fetch);
-  return { ...render(<MemoryRouter initialEntries={[path]}><AuthProvider><App />{showRouteLocation && <RouteLocation />}</AuthProvider></MemoryRouter>), fetch };
+  const app = <MemoryRouter initialEntries={[path]}><AuthProvider><App />{showRouteLocation && <RouteLocation />}</AuthProvider></MemoryRouter>;
+  return { ...render(strict ? <StrictMode>{app}</StrictMode> : app), fetch };
 }
 function RouteLocation() { const location = useLocation(); const action = useNavigationType(); return <output aria-label="Route location">{location.pathname}{location.search}:{action}</output>; }
 function HistoryControls() { const navigate = useNavigate(); return <div><button type="button" onClick={() => navigate(-1)}>Back history</button><button type="button" onClick={() => navigate(1)}>Forward history</button></div>; }
@@ -994,12 +996,33 @@ describe("Issue #230 route and shell foundation", () => {
   it("hands a transient SearchIntent to saved searches without creating or running it", async () => {
     const { fetch } = renderJobs(fakeFetch());
     await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Applied AI" } });
+    const themes = screen.getByLabelText("Prioritisation themes (one per line)");
+    fireEvent.change(themes, { target: { value: "Agentic" } }); expect(themes).toHaveValue("Agentic");
+    fireEvent.change(themes, { target: { value: "Agentic " } }); expect(themes).toHaveValue("Agentic ");
+    fireEvent.change(themes, { target: { value: "Agentic AI   " } }); expect(themes).toHaveValue("Agentic AI   ");
+    fireEvent.change(themes, { target: { value: "Agentic AI   \n" } }); expect(themes).toHaveValue("Agentic AI   \n");
+    fireEvent.change(themes, { target: { value: "Agentic AI   \n\nApplied AI\n" } }); expect(themes).toHaveValue("Agentic AI   \n\nApplied AI\n");
     fireEvent.click(screen.getByRole("button", { name: "Save or configure search" }));
     expect(await screen.findByRole("heading", { name: "New saved discovery" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Applied AI");
+    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Agentic AI\nApplied AI");
     expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-schedules/s-1/run-now");
     expect(requestPaths(fetch).filter((path) => path === "/api/v1/jobs/discovery-schedules").length).toBeGreaterThan(0);
+  });
+
+  it("resets raw textarea text when another saved configuration becomes authoritative", async () => {
+    const first = savedSchedule({ name: "First", query: { ...savedSchedule().query, keywords: ["Agentic AI"] } });
+    const second = savedSchedule({ id: "s-2", name: "Second", query: { ...savedSchedule().query, keywords: ["Applied AI"] } });
+    renderJobs(fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([first, second]) }));
+    await screen.findByRole("heading", { name: "Find jobs" });
+    await screen.findByRole("option", { name: "First" });
+    const select = screen.getByLabelText("Saved search configuration");
+    fireEvent.change(select, { target: { value: "s-1" } });
+    const themes = screen.getByLabelText("Prioritisation themes (one per line)");
+    expect(themes).toHaveValue("Agentic AI");
+    fireEvent.change(themes, { target: { value: "Unsaved previous text " } });
+    expect(themes).toHaveValue("Unsaved previous text ");
+    fireEvent.change(select, { target: { value: "s-2" } });
+    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Applied AI");
   });
 
   it("protects Home and sends unauthenticated visitors to sign in", async () => {
@@ -1034,6 +1057,59 @@ describe("Issue #230 route and shell foundation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry readiness" }));
     expect(await screen.findByText("Your confirmed profile context is ready for the workspace.")).toBeInTheDocument();
     expect(attempts).toBe(2);
+  });
+
+  it("keeps StrictMode readiness owned by the replacement request and recovers after failure", async () => {
+    const stale = deferred<Response>();
+    let attempts = 0;
+    const fetch = fakeFetch({ "/api/v1/onboarding/status": () => {
+      attempts += 1;
+      if (attempts === 1) return stale.promise;
+      if (attempts === 2) return Promise.reject(new TypeError("offline"));
+      return json(ready);
+    } });
+    renderJobs(fetch, "/jobs/find", false, true);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Candidate readiness is unavailable");
+    stale.resolve(json(ready));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Candidate readiness is unavailable"));
+    expect(screen.queryByText("Checking candidate readiness…")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry readiness" }));
+    await waitFor(() => expect(screen.queryByText("Checking candidate readiness…")).not.toBeInTheDocument());
+    expect(screen.queryByRole("heading", { name: "Complete your Profile first" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(attempts).toBe(3);
+  });
+
+  it("lets a StrictMode replacement request establish not-ready while ignoring its late predecessor", async () => {
+    const stale = deferred<Response>();
+    let attempts = 0;
+    const fetch = fakeFetch({ "/api/v1/onboarding/status": () => ++attempts === 1 ? stale.promise : json({ ...ready, candidate_context_ready: false }) });
+    renderJobs(fetch, "/jobs/find", false, true);
+    expect(await screen.findByRole("heading", { name: "Complete your Profile first" })).toBeInTheDocument();
+    stale.resolve(json(ready));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Complete your Profile first" })).toBeInTheDocument());
+    expect(screen.queryByText("Checking candidate readiness…")).not.toBeInTheDocument();
+    expect(attempts).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not let a prior-session readiness request overwrite the replacement session", async () => {
+    const priorSession = deferred<Response>();
+    let readinessCalls = 0;
+    let userCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/users/me": () => json(userCalls++ === 0 ? user : { ...user, id: "user-2", email: "second@example.test" }),
+      "/api/v1/onboarding/status": () => ++readinessCalls === 1 ? priorSession.promise : json({ ...ready, candidate_context_ready: false }),
+    });
+    sessionStorage.setItem(TOKEN, "test-token");
+    vi.stubGlobal("fetch", fetch);
+    render(<MemoryRouter initialEntries={["/jobs/find"]}><AuthProvider><App /><AuthSwitcher /></AuthProvider></MemoryRouter>);
+    await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
+    expect(await screen.findByRole("heading", { name: "Complete your Profile first" })).toBeInTheDocument();
+    priorSession.resolve(json(ready));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Complete your Profile first" })).toBeInTheDocument());
+    expect(readinessCalls).toBeGreaterThanOrEqual(2);
   });
 
   it("keeps root and unknown paths as replace redirects to Profile while /jobs redirects to Find jobs", async () => {

@@ -22,30 +22,45 @@ export const emptySearchIntent = (): SearchIntent => ({
   compatibility: { companies: [], maxResults: 50 },
 });
 
-export function searchIntentFromQuery(query: DiscoveryScheduleQuery): SearchIntent {
+const canonicalLines = (items: readonly string[]) => items.flatMap((item) => item.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+
+export function canonicalizeSearchIntent(intent: SearchIntent): SearchIntent {
   return {
+    ...intent,
+    themes: canonicalLines(intent.themes), locations: canonicalLines(intent.locations),
+    excludedCompanies: canonicalLines(intent.excludedCompanies), excludedTitleTerms: canonicalLines(intent.excludedTitleTerms),
+    employmentTypes: canonicalLines(intent.employmentTypes),
+    compatibility: intent.compatibility,
+  };
+}
+
+export function searchIntentFromQuery(query: DiscoveryScheduleQuery): SearchIntent {
+  return canonicalizeSearchIntent({
     themes: [...query.keywords], locations: [...query.locations],
     remotePolicy: query.remote_ok === true ? "legacy_true" : query.remote_ok === false ? "exclude_remote" : "any",
     excludedCompanies: [...query.excluded_companies], excludedTitleTerms: [...query.excluded_title_terms], employmentTypes: [...query.employment_types],
     compatibility: { companies: [...query.companies], maxResults: query.max_results },
-  };
+  });
 }
 
 export function searchIntentToQuery(intent: SearchIntent): DiscoveryScheduleQuery {
+  const canonical = canonicalizeSearchIntent(intent);
   return {
-    keywords: [...intent.themes], locations: [...intent.locations],
-    remote_ok: intent.remotePolicy === "exclude_remote" ? false : intent.remotePolicy === "legacy_true" ? true : null,
-    companies: [...intent.compatibility.companies], excluded_companies: [...intent.excludedCompanies], excluded_title_terms: [...intent.excludedTitleTerms],
-    employment_types: [...intent.employmentTypes], max_results: intent.compatibility.maxResults,
+    keywords: [...canonical.themes], locations: [...canonical.locations],
+    remote_ok: canonical.remotePolicy === "exclude_remote" ? false : canonical.remotePolicy === "legacy_true" ? true : null,
+    companies: [...canonical.compatibility.companies], excluded_companies: [...canonical.excludedCompanies], excluded_title_terms: [...canonical.excludedTitleTerms],
+    employment_types: [...canonical.employmentTypes], max_results: canonical.compatibility.maxResults,
   };
 }
 
 export function searchIntentEquals(left: SearchIntent, right: SearchIntent): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return JSON.stringify(canonicalizeSearchIntent(left)) === JSON.stringify(canonicalizeSearchIntent(right));
 }
 
 export function searchIntentChangedFields(left: SearchIntent, right: SearchIntent): SearchIntentField[] {
-  return (["themes", "locations", "remotePolicy", "excludedCompanies", "excludedTitleTerms", "employmentTypes"] as const).filter((field) => JSON.stringify(left[field]) !== JSON.stringify(right[field]));
+  const canonicalLeft = canonicalizeSearchIntent(left);
+  const canonicalRight = canonicalizeSearchIntent(right);
+  return (["themes", "locations", "remotePolicy", "excludedCompanies", "excludedTitleTerms", "employmentTypes"] as const).filter((field) => JSON.stringify(canonicalLeft[field]) !== JSON.stringify(canonicalRight[field]));
 }
 
 export function mergeSearchIntentIntoQuery(query: DiscoveryScheduleQuery, intent: SearchIntent, dirty: ReadonlySet<SearchIntentField>): DiscoveryScheduleQuery {

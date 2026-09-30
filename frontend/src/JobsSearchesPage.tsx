@@ -410,15 +410,15 @@ export function JobsSearchesPage() {
   const change = <K extends DraftKey>(key: K, value: Draft[K]) => {
     setEditor((old) => {
       if (!old || old.loading || old.pending) return old;
-      const dirty = new Set(old.dirty); dirty.add(key);
+      const dirty = new Set(old.dirty);
       const searchIntentDirty = new Set(old.searchIntentDirty);
       const draft = { ...old.draft, [key]: value } as Draft;
       if (key === "searchIntent") {
-        if (old.baseline) {
-          searchIntentDirty.clear();
-          for (const field of searchIntentChangedFields(searchIntentFromQuery(old.baseline.query), value as SearchIntent)) searchIntentDirty.add(field);
-        } else for (const field of searchIntentChangedFields(old.draft.searchIntent, value as SearchIntent)) searchIntentDirty.add(field);
-      }
+        searchIntentDirty.clear();
+        const baselineIntent = old.baseline ? searchIntentFromQuery(old.baseline.query) : emptySearchIntent();
+        for (const field of searchIntentChangedFields(baselineIntent, value as SearchIntent)) searchIntentDirty.add(field);
+        if (searchIntentDirty.size) dirty.add("searchIntent"); else dirty.delete("searchIntent");
+      } else dirty.add(key);
       if (key === "cadence" && value === "daily") { draft.weekdays = []; dirty.add("weekdays"); }
       if (key === "atsCompanies" && trimLines(String(value)).length && draft.atsScopeMode !== "filtered") { draft.atsScopeMode = "filtered"; dirty.add("atsScopeMode"); }
       if (key === "atsProviders" && (value as string[]).length && draft.atsScopeMode !== "filtered") { draft.atsScopeMode = "filtered"; dirty.add("atsScopeMode"); }
@@ -536,7 +536,7 @@ export function JobsSearchesPage() {
           <label htmlFor="schedule-timezone">IANA timezone</label><input id="schedule-timezone" value={draft.timezone} onChange={(event) => change("timezone", event.target.value)} disabled={value.pending || createPending} />
           <p className="muted">The backend chooses the authoritative next due time. Daylight-saving gaps are skipped; repeated local times use the first occurrence.</p>
         </fieldset>
-        <SearchIntentEditor intent={draft.searchIntent} onChange={(next) => change("searchIntent", next)} disabled={value.pending || createPending} idPrefix="schedule-search-intent" />
+        <SearchIntentEditor key={`${value.id ?? "create"}:${value.baseline?.id ?? "loading"}`} intent={draft.searchIntent} onChange={(next) => change("searchIntent", next)} disabled={value.pending || createPending} idPrefix="schedule-search-intent" />
         <fieldset className="schedule-fieldset"><legend>Acquisition channels</legend><p className="muted">Choose at least one channel explicitly. Saving is configuration-only and does not check readiness. Running a saved discovery requires confirmed candidate context and the required server-side providers.</p>
           <label className="check-line"><input type="checkbox" checked={draft.atsEnabled} onChange={(event) => change("atsEnabled", event.target.checked)} disabled={value.pending || createPending} /> Structured ATS — already-resolved career sources</label>
           <p className="muted">This channel reads the resolved career-source registry. A company filter does not resolve a source; no matching resolved source can yield zero jobs without proving the employer has no open roles.</p>
