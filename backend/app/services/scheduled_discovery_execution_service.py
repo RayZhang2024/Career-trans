@@ -210,10 +210,42 @@ class ScheduledDiscoveryExecutionService:
             except Exception:
                 outcomes.append(_ChannelOutcome(succeeded=False, failed=True, counters={"sources_attempted": 0, "sources_succeeded": 0, "sources_failed": 1}))
 
+        if acquisition.agentic_web.enabled and agentic_setup_error is not None:
+            # A readable ATS result cannot authorize paid semantic evaluation
+            # after the requested web-search provider failed readiness.
+            outcomes.append(_ChannelOutcome(
+                succeeded=False,
+                failed=True,
+                counters={
+                    "search_queries_executed": 0,
+                    "pages_opened": 0,
+                    "page_fetch_failures": 0,
+                    "extraction_successes": 0,
+                    "extraction_failures": 0,
+                },
+            ))
+            failures = {"agentic_web": 1}
+            summaries: dict[str, int] = {}
+            for name, outcome in zip(
+                [name for name, enabled in (("structured_ats", acquisition.structured_ats.enabled), ("agentic_web", acquisition.agentic_web.enabled)) if enabled],
+                outcomes,
+                strict=True,
+            ):
+                if outcome.failed and name != "agentic_web":
+                    failures[name] = 1
+                for key, value in outcome.counters.items():
+                    summaries[f"{name}_{key}"] = value
+            canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes)) if outcomes else set()
+            summaries["canonical_jobs"] = len(canonical_ids)
+            status = (
+                ExecutionStatus.PARTIAL_FAILED
+                if any(outcome.succeeded for outcome in outcomes)
+                else ExecutionStatus.FAILED
+            )
+            return self._finish(execution, status, now, summaries, failures)
+
         if acquisition.agentic_web.enabled:
             try:
-                if agentic_setup_error is not None:
-                    raise agentic_setup_error
                 assert agentic_service is not None
                 config = acquisition.agentic_web
                 response = agentic_service.discover(

@@ -1,5 +1,6 @@
 import base64
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -257,12 +258,50 @@ def test_authenticated_settings_api_never_returns_key_and_test_connection_is_one
         assert saved.status_code == 200
         assert "user-secret-value" not in saved.text
         assert db_session.get(UserTavilyCredential, db_session.scalar(select(User.id).where(User.email == credentials["email"])))
+        after_save = client.get("/api/v1/job-discovery/settings", headers=headers)
+        assert after_save.status_code == 200
+        assert after_save.json()["tavily_credential_source"] == "user"
+        assert "user-secret-value" not in after_save.text
 
         tested = client.post("/api/v1/job-discovery/tavily-connection-test", headers=headers, json={})
         assert tested.status_code == 200
         assert tested.json()["credential_source"] == "user"
         assert seen == [("Tavily API connection test", 1)]
         assert db_session.query(UserTavilyCredential).count() == 1
+    finally:
+        app.dependency_overrides.pop(settings_route._service, None)
+
+
+@pytest.mark.parametrize("encryption_key", [None, "not-valid-base64-and-not-a-32-byte-key"])
+def test_authenticated_credential_save_fails_safely_without_advancing_revision(
+    client, db_session, encryption_key
+) -> None:
+    credentials = {
+        "email": f"missing-encryption-{uuid4()}@example.com",
+        "password": "Strong-password-123",
+    }
+    assert client.post("/api/v1/auth/register", json=credentials).status_code == 201
+    token = client.post("/api/v1/auth/login", json=credentials).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    user_id = db_session.scalar(select(User.id).where(User.email == credentials["email"]))
+    submitted_key = "synthetic-tavily-secret-must-not-appear-in-errors"
+    api_settings = _settings(tavily_credential_encryption_key=encryption_key)
+    app.dependency_overrides[settings_route._service] = lambda: JobDiscoverySettingsService(
+        db_session, settings=api_settings
+    )
+    try:
+        response = client.put(
+            "/api/v1/job-discovery/tavily-credential",
+            headers=headers,
+            json={"expected_revision": 0, "api_key": submitted_key},
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"] == (
+            "Per-user Tavily credential storage is not configured. Ask the administrator to configure the credential-encryption key."
+        )
+        assert submitted_key not in response.text
+        assert db_session.get(UserJobDiscoverySettings, user_id) is None
+        assert db_session.get(UserTavilyCredential, user_id) is None
     finally:
         app.dependency_overrides.pop(settings_route._service, None)
 

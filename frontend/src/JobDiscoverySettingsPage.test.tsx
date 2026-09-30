@@ -11,27 +11,79 @@ const configured = (overrides: Partial<JobDiscoverySettings> = {}): JobDiscovery
   tavily_credential_configured: false, tavily_credential_source: null,
   tavily_user_credential_storage_available: true, tavily_credential_usable: false, ...overrides,
 });
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+let receivedJsonBodies: unknown[] = [];
+const json = (body: unknown, status = 200) => {
+  receivedJsonBodies.push(body);
+  return new Response(JSON.stringify(body), { status });
+};
+const storageContents = (storage: Storage) => Array.from({ length: storage.length }, (_, index) => {
+  const key = storage.key(index);
+  return key === null ? "" : `${key}=${storage.getItem(key) ?? ""}`;
+}).join(" ");
 
-function renderDiscovery() {
+type HarnessOptions = {
+  initialSettings?: JobDiscoverySettings;
+  deploymentTavilyConfigured?: boolean;
+  authoritativeAfterConflict?: JobDiscoverySettings;
+  conflictOn?: "provider" | "credential";
+};
+
+function renderDiscovery(options: HarnessOptions = {}) {
   const calls: Array<{ method: string; path: string; body?: string }> = [];
+  let serverSettings = options.initialSettings ?? configured();
+  let conflictUsed = false;
   sessionStorage.setItem(TOKEN, "session-token");
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), window.location.origin);
     const method = init?.method ?? "GET";
     calls.push({ method, path: url.pathname, body: typeof init?.body === "string" ? init.body : undefined });
-    if (url.pathname === "/api/v1/users/me") return Promise.resolve(json({ id: "owner", email: "owner@example.test", created_at: "2026-01-01T00:00:00Z" }));
-    if (url.pathname === "/api/v1/job-discovery/settings" && method === "PUT") return Promise.resolve(json(configured({ revision: 1, provider_override: "disabled", effective_provider: "disabled" })));
-    if (url.pathname === "/api/v1/job-discovery/settings") return Promise.resolve(json(configured()));
-    if (url.pathname === "/api/v1/job-discovery/tavily-credential") return Promise.resolve(json(configured({ revision: 1, tavily_credential_configured: true, tavily_credential_source: "user", tavily_credential_usable: true })));
-    if (url.pathname === "/api/v1/job-discovery/tavily-connection-test") return Promise.resolve(json({ success: true, credential_source: "user", message: "Tavily connection test succeeded. This test used one Basic Search request." }));
+    if (url.pathname === "/api/v1/users/me") {
+      return Promise.resolve(json({ id: "owner", email: "owner@example.test", created_at: "2026-01-01T00:00:00Z" }));
+    }
+    if (url.pathname === "/api/v1/job-discovery/settings" && method === "GET") {
+      return Promise.resolve(json(serverSettings));
+    }
+    if (url.pathname === "/api/v1/job-discovery/settings" && method === "PUT") {
+      if (options.conflictOn === "provider" && !conflictUsed) {
+        conflictUsed = true;
+        serverSettings = options.authoritativeAfterConflict ?? configured({ revision: 3, deployment_provider: "tavily", effective_provider: "tavily" });
+        return Promise.resolve(json({ detail: "Job Discovery settings changed. Reload the current settings and try again." }, 409));
+      }
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { provider_override: JobDiscoverySettings["provider_override"] };
+      const effective = payload.provider_override ?? serverSettings.deployment_provider;
+      serverSettings = { ...serverSettings, revision: serverSettings.revision + 1, provider_override: payload.provider_override, effective_provider: effective };
+      return Promise.resolve(json(serverSettings));
+    }
+    if (url.pathname === "/api/v1/job-discovery/tavily-credential" && method === "PUT") {
+      if (options.conflictOn === "credential" && !conflictUsed) {
+        conflictUsed = true;
+        serverSettings = options.authoritativeAfterConflict ?? configured({ revision: 2, deployment_provider: "tavily", effective_provider: "tavily", tavily_credential_configured: true, tavily_credential_source: "deployment", tavily_credential_usable: true });
+        return Promise.resolve(json({ detail: "Job Discovery settings changed. Reload the current settings and try again." }, 409));
+      }
+      serverSettings = { ...serverSettings, revision: serverSettings.revision + 1, tavily_credential_configured: true, tavily_credential_source: "user", tavily_credential_usable: true };
+      return Promise.resolve(json(serverSettings));
+    }
+    if (url.pathname === "/api/v1/job-discovery/tavily-credential" && method === "DELETE") {
+      const hasDeploymentKey = options.deploymentTavilyConfigured ?? false;
+      serverSettings = {
+        ...serverSettings,
+        revision: serverSettings.revision + 1,
+        tavily_credential_configured: hasDeploymentKey,
+        tavily_credential_source: hasDeploymentKey ? "deployment" : null,
+        tavily_credential_usable: hasDeploymentKey,
+      };
+      return Promise.resolve(json(serverSettings));
+    }
+    if (url.pathname === "/api/v1/job-discovery/tavily-connection-test") {
+      return Promise.resolve(json({ success: true, credential_source: "user", message: "Tavily connection test succeeded. This test used one Basic Search request." }));
+    }
     throw new Error(`Unexpected request: ${method} ${url.pathname}`);
   }));
   render(<MemoryRouter initialEntries={["/settings/discovery"]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
   return calls;
 }
 
-beforeEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
+beforeEach(() => { localStorage.clear(); sessionStorage.clear(); receivedJsonBodies = []; vi.restoreAllMocks(); });
 afterEach(cleanup);
 
 describe("Issue #256 Settings → Job Discovery", () => {
@@ -45,20 +97,94 @@ describe("Issue #256 Settings → Job Discovery", () => {
     expect(screen.getByRole("link", { name: "Job Discovery" })).toHaveAttribute("aria-current", "page");
   });
 
-  it("saves the key without retaining or displaying it and can test the connection", async () => {
+  it("can clear an explicit choice and return to the inherited Tavily deployment provider", async () => {
+    const calls = renderDiscovery({
+      initialSettings: configured({ provider_override: "disabled", deployment_provider: "tavily", effective_provider: "disabled", revision: 1 }),
+    });
+    await screen.findByRole("button", { name: "Save provider" });
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "inherit" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+    expect(await screen.findByText("Job Discovery provider settings saved.")).toBeInTheDocument();
+    const saved = calls.find((call) => call.method === "PUT" && call.path.endsWith("/settings"));
+    expect(JSON.parse(saved?.body ?? "{}")).toEqual({ expected_revision: 1, provider_override: null });
+    expect(screen.getAllByText("Tavily")[0].closest("p")).toHaveTextContent("Effective provider: Tavily (deployment default).");
+  });
+
+  it("replaces a user key, clears the plaintext input, and keeps settings responses redacted", async () => {
+    const calls = renderDiscovery({
+      initialSettings: configured({ tavily_credential_configured: true, tavily_credential_source: "user", tavily_credential_usable: true, revision: 2 }),
+    });
+    const input = await screen.findByLabelText("Replace saved Tavily key");
+    expect(input).toHaveAttribute("type", "password");
+    expect(screen.queryByText("old-personal-key")).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "replacement-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+    await screen.findByText("Tavily key saved securely. The key is not shown again.");
+    expect(input).toHaveValue("");
+    expect(screen.queryByText("replacement-secret")).not.toBeInTheDocument();
+    expect(calls.filter((call) => call.method === "GET" && call.path.endsWith("/settings"))).toHaveLength(1);
+    const save = calls.find((call) => call.method === "PUT" && call.path.endsWith("tavily-credential"));
+    expect(JSON.parse(save?.body ?? "{}")).toMatchObject({ expected_revision: 2, api_key: "replacement-secret" });
+    expect(screen.getByText("A key is configured (your saved key).")).toBeInTheDocument();
+    expect(JSON.stringify(receivedJsonBodies)).not.toContain("replacement-secret");
+  });
+
+  it.each([true, false])("removes a personal key and reflects deployment fallback (deployment key=%s)", async (deploymentKey) => {
+    renderDiscovery({
+      initialSettings: configured({ tavily_credential_configured: true, tavily_credential_source: "user", tavily_credential_usable: true, revision: 4 }),
+      deploymentTavilyConfigured: deploymentKey,
+    });
+    await screen.findByRole("button", { name: "Remove saved key" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove saved key" }));
+    if (deploymentKey) {
+      expect(await screen.findByText("A key is configured (deployment key).")).toBeInTheDocument();
+    } else {
+      expect(await screen.findByText("No Tavily key is configured.")).toBeInTheDocument();
+    }
+  });
+
+  it("disables personal key entry when encryption storage is unavailable but shows deployment Tavily", async () => {
+    renderDiscovery({
+      initialSettings: configured({ deployment_provider: "tavily", effective_provider: "tavily", tavily_credential_configured: true, tavily_credential_source: "deployment", tavily_credential_usable: true, tavily_user_credential_storage_available: false }),
+    });
+    const input = await screen.findByLabelText("Tavily API key");
+    expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save key" })).toBeDisabled();
+    expect(screen.getByRole("note")).toHaveTextContent("administrator configures the credential-encryption key");
+    expect(screen.getByText("A key is configured (deployment key).")).toBeInTheDocument();
+  });
+
+  it("reloads authoritative settings after a 409 and clears the submitted secret", async () => {
+    const calls = renderDiscovery({
+      conflictOn: "credential",
+      authoritativeAfterConflict: configured({ revision: 3, deployment_provider: "tavily", effective_provider: "tavily", tavily_credential_configured: true, tavily_credential_source: "deployment", tavily_credential_usable: true }),
+    });
+    const input = await screen.findByLabelText("Tavily API key");
+    fireEvent.change(input, { target: { value: "do-not-restore-after-conflict" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save key" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Settings changed elsewhere. Current settings were reloaded");
+    expect(input).toHaveValue("");
+    expect(screen.getAllByText("Tavily")[0].closest("p")).toHaveTextContent("Effective provider: Tavily (deployment default).");
+    expect(calls.filter((call) => call.method === "GET" && call.path.endsWith("/settings"))).toHaveLength(2);
+    expect(sessionStorage.getItem("tavily-api-key")).toBeNull();
+    expect(storageContents(localStorage)).not.toContain("do-not-restore-after-conflict");
+    expect(storageContents(sessionStorage)).not.toContain("do-not-restore-after-conflict");
+  });
+
+  it("does not write Tavily key text to browser storage or expose it after saving", async () => {
     const calls = renderDiscovery();
-    await screen.findByRole("heading", { name: "Job Discovery" });
     const input = await screen.findByLabelText("Tavily API key");
     fireEvent.change(input, { target: { value: "private-test-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Save key" }));
     await screen.findByText("Tavily key saved securely. The key is not shown again.");
     expect(input).toHaveValue("");
     expect(screen.queryByText("private-test-key")).not.toBeInTheDocument();
-    const saveCall = calls.find((call) => call.method === "PUT" && call.path.endsWith("tavily-credential"));
-    expect(JSON.parse(saveCall?.body ?? "{}")).toMatchObject({ expected_revision: 0, api_key: "private-test-key" });
-    fireEvent.click(await screen.findByRole("button", { name: "Test connection" }));
-    expect(await screen.findByText(/used one Basic Search request/)).toBeInTheDocument();
-    await waitFor(() => expect(calls.some((call) => call.path.endsWith("tavily-connection-test"))).toBe(true));
+    expect(localStorage.getItem("private-test-key")).toBeNull();
+    expect(storageContents(localStorage)).not.toContain("private-test-key");
+    expect(storageContents(sessionStorage)).not.toContain("private-test-key");
+    expect(calls.filter((call) => call.method === "GET" && call.path.endsWith("/settings"))).toHaveLength(1);
+    expect(screen.getByText("A key is configured (your saved key).")).toBeInTheDocument();
+    expect(JSON.stringify(receivedJsonBodies)).not.toContain("private-test-key");
   });
 
   it("persists the explicit Disabled choice with optimistic revision", async () => {

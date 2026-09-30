@@ -29,7 +29,12 @@ export function JobDiscoverySettingsPage() {
         method: "PUT", body: JSON.stringify({ expected_revision: settings.revision, provider_override: override === "inherit" ? null : override }),
       });
       setSettings(saved); setNotice({ text: "Job Discovery provider settings saved.", role: "status" });
-    } catch (error) { setNotice({ text: detail(error, "Could not save provider settings."), role: "alert" }); if (error instanceof ApiError && error.status === 409) void load(); }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        await load();
+        setNotice({ text: "Settings changed elsewhere. Current settings were reloaded; review your provider choice and try again.", role: "alert" });
+      } else setNotice({ text: detail(error, "Could not save provider settings."), role: "alert" });
+    }
     finally { setPending(false); }
   }
 
@@ -41,7 +46,13 @@ export function JobDiscoverySettingsPage() {
         method: "PUT", body: JSON.stringify({ expected_revision: settings.revision, api_key: key }),
       });
       setSettings(saved); setKey(""); setNotice({ text: "Tavily key saved securely. The key is not shown again.", role: "status" });
-    } catch (error) { setNotice({ text: detail(error, "Could not save the Tavily key."), role: "alert" }); if (error instanceof ApiError && error.status === 409) void load(); }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        setKey("");
+        await load();
+        setNotice({ text: "Settings changed elsewhere. Current settings were reloaded; enter the key again if you still want to save it.", role: "alert" });
+      } else setNotice({ text: detail(error, "Could not save the Tavily key."), role: "alert" });
+    }
     finally { setPending(false); }
   }
 

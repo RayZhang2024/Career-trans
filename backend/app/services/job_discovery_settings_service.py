@@ -92,7 +92,12 @@ class JobDiscoverySettingsService:
         secret = api_key.strip()
         if not secret or len(secret) > 512:
             raise JobDiscoverySettingsError("Enter a valid Tavily API key.")
-        nonce, ciphertext, version = self._encryption.encrypt(user_id, secret)
+        try:
+            nonce, ciphertext, version = self._encryption.encrypt(user_id, secret)
+        except TavilyCredentialEncryptionError as exc:
+            raise JobDiscoverySettingsError(
+                "Per-user Tavily credential storage is not configured. Ask the administrator to configure the credential-encryption key."
+            ) from exc
         row = self._advance_revision(user_id, expected_revision)
         credential = self._session.get(UserTavilyCredential, user_id)
         if credential is None:

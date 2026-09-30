@@ -20,6 +20,7 @@ from app.schemas.agentic_discovery import AgenticDiscoveryDiagnostics, AgenticDi
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
+from app.services.job_discovery_settings_service import JobDiscoveryProviderNotReady
 from app.services.llm_runtime import resolve_runtime_snapshot
 from candidate_read_support import StaticCandidateReader, snapshot_for_context
 
@@ -160,6 +161,81 @@ def test_scheduled_agentic_provider_resolves_once_for_owner_and_persists_safe_me
     assert provider_builds == [(user.id, None)]
     assert metadata == {"credential_source": "user", "provider": "tavily", "search_depth": "basic"}
     assert "must-not-persist" not in result.web_search_metadata_json
+
+
+def test_unavailable_tavily_with_ats_jobs_stops_before_semantic_evaluation(db_session) -> None:
+    user = _user(db_session, "provider-unavailable-owner@example.com")
+    listing = _listing()
+    SqlAlchemyDiscoveredJobStateStore(db_session).persist([listing])
+    payload = _payload(acquisition=AcquisitionConfig(
+        structured_ats=StructuredAtsScheduleConfig(enabled=True, providers=["greenhouse"]),
+        agentic_web=AgenticWebScheduleConfig(enabled=True),
+    ))
+    schedule = DiscoveryScheduleService(db_session).create(
+        user.id, payload, datetime(2026, 9, 14, 8, tzinfo=UTC)
+    )
+    ats_calls: list[str] = []
+    agentic_discover_calls: list[str] = []
+    semantic_factory_calls: list[str] = []
+    user_run_calls: list[str] = []
+
+    class AtsService:
+        def discover(self, request):
+            ats_calls.append("structured_ats")
+            return _ats_response([listing])
+
+    class UserRuns:
+        def start(self, *_args, **_kwargs):
+            user_run_calls.append("start")
+            return None
+
+    def unavailable_provider(owner_id, snapshot):
+        raise JobDiscoveryProviderNotReady(
+            "Tavily is selected, but no usable Tavily API key is configured.",
+            {
+                "provider": "tavily",
+                "credential_source": "none",
+                "search_depth": "basic",
+                "api_key": "synthetic-secret-must-not-persist",
+            },
+        )
+
+    def build_semantic_run_service(snapshot):
+        semantic_factory_calls.append("user_runs_factory")
+        return UserRuns()
+
+    runner = ScheduledDiscoveryExecutionService(
+        db_session,
+        structured_ats=AtsService(),
+        agentic_web_factory=unavailable_provider,
+        user_runs=UserRuns(),
+        user_runs_factory=build_semantic_run_service,
+        runtime_snapshot_resolver=lambda owner_id: SimpleNamespace(owner_id=owner_id),
+        candidate_reader=StaticCandidateReader(snapshot_for_context(CandidateContext(profile_text="ready fixture"))),
+    )
+    claimed = runner.claim(schedule.id, TriggerKind.MANUAL, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    assert claimed is not None
+
+    result = runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC))
+
+    assert ats_calls == ["structured_ats"]
+    assert agentic_discover_calls == []
+    assert user_run_calls == []
+    assert semantic_factory_calls == []
+    assert result.status == "partial_failed"
+    assert json.loads(result.failure_summary_json) == {"agentic_web": 1}
+    assert json.loads(result.web_search_metadata_json) == {
+        "credential_source": "none",
+        "provider": "tavily",
+        "search_depth": "basic",
+    }
+    persisted_text = " ".join((
+        result.web_search_metadata_json,
+        result.failure_summary_json,
+        result.acquisition_summary_json,
+        result.config_snapshot_json,
+    ))
+    assert "synthetic-secret-must-not-persist" not in persisted_text
 
 
 def test_dst_daily_wall_time_and_nonexistent_and_ambiguous_slots():
