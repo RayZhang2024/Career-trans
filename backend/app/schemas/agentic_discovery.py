@@ -83,6 +83,7 @@ class AgenticDiscoveryDiagnostics(BaseModel):
     search_strategies_generated: int = 0
     search_queries_executed: int = 0
     search_results_raw: int = 0
+    local_codex_search_failed: bool = False
     search_results_unique: int = 0
     deterministic_filtered_count: int = 0
     pages_selected: int = 0

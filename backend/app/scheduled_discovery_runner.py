@@ -11,23 +11,29 @@ from datetime import datetime, timezone
 from app.api import deps
 from app.core.database import SessionLocal
 from app.schemas.discovery_schedule import ExecutionStatus
+from app.services.ai_settings_service import AiSettingsService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
+from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 
 
-def build_service(session) -> ScheduledDiscoveryExecutionService:
-    graph = deps.get_career_analysis_graph(
-        deps.get_job_analysis_service(),
-        deps.get_requirement_matching_service(),
-        deps.get_career_assessment_service(),
-    )
-    ranking = deps.get_job_ranking_service(deps.get_job_relevance_agent(), deps.get_job_archetype_agent(), graph)
+def build_service(
+    session,
+    *,
+    candidate_reader: CanonicalCandidateReadService | None = None,
+) -> ScheduledDiscoveryExecutionService:
+    def build_user_runs(runtime_snapshot):
+        ranking = deps.get_user_job_ranking_service(runtime_snapshot)
+        return deps.get_user_job_discovery_service(session, ranking, runtime_snapshot)
+
     return ScheduledDiscoveryExecutionService(
         session,
         structured_ats=deps.get_structured_ats_discovery_service(session),
         agentic_web_factory=lambda user_id, snapshot: deps.get_user_agentic_job_discovery_service_for_user(
-            session, user_id, snapshot
+            session, user_id, snapshot, scheduled_due_runner=True
         ),
-        user_runs=deps.get_user_job_discovery_service(session, ranking),
+        user_runs_factory=build_user_runs,
+        runtime_snapshot_resolver=lambda user_id: AiSettingsService(session).snapshot_for_user(user_id),
+        candidate_reader=candidate_reader,
     )
 
 

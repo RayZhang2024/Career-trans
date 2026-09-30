@@ -12,7 +12,7 @@ class UserJobDiscoverySettings(Base):
     __tablename__ = "user_job_discovery_settings"
     __table_args__ = (
         CheckConstraint(
-            "provider_override IS NULL OR provider_override IN ('tavily', 'openai', 'disabled')",
+            "provider_override IS NULL OR provider_override IN ('tavily', 'openai', 'local_codex', 'disabled')",
             name="ck_user_job_discovery_provider_override",
         ),
         CheckConstraint("revision >= 1", name="ck_user_job_discovery_revision"),

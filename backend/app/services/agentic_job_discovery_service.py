@@ -7,6 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 from app.agents.agentic_discovery import PageVacancyExtractor, SearchStrategyGenerator
 from app.providers.page_fetch import PageFetcher
 from app.providers.web_search import WebSearchProvider
+from app.providers.local_codex import LocalCodexSearchError
 from app.schemas.agentic_discovery import (
     AgenticDiscoveryDiagnostics,
     AgenticDiscoveryRequest,
@@ -114,7 +115,12 @@ class AgenticJobDiscoveryService:
             try:
                 results.extend(self._search_provider.search(strategy.query, request.max_search_results_per_query))
             except Exception as exc:
-                diagnostics.search_errors[strategy.query] = self._error(exc)
+                diagnostics.search_errors[strategy.query] = (
+                    str(exc) if isinstance(exc, LocalCodexSearchError) else self._error(exc)
+                )
+                if isinstance(exc, LocalCodexSearchError):
+                    diagnostics.local_codex_search_failed = True
+                    return []
         diagnostics.search_results_raw = len(results)
         return results
 

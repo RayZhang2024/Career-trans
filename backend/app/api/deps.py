@@ -88,6 +88,8 @@ from app.providers.llm import (
     validate_openai_structured_output_model,
 )
 from app.providers.web_search import BraveWebSearchProvider, OpenAIWebSearchProvider, TavilyWebSearchProvider, WebSearchProvider
+from app.providers.local_codex import LocalCodexWebSearchProvider
+from app.services.codex_runtime import CodexRuntimeAdapter
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
 from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
 from app.providers.jobs.probes.lever import LeverJobSourceProbe
@@ -512,6 +514,17 @@ def get_agentic_web_search_provider(settings: Settings) -> WebSearchProvider:
                 detail="Tavily web search is not configured for this deployment.",
             )
         return TavilyWebSearchProvider(api_key=settings.tavily_api_key)
+    if provider == "local_codex":
+        if not settings.local_codex_discovery_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Local Codex is disabled by this deployment.",
+            )
+        runtime = CodexRuntimeAdapter(settings=settings)
+        readiness = runtime.probe()
+        if readiness.manual_discovery_status.value != "ready":
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=readiness.message)
+        return LocalCodexWebSearchProvider(runtime=runtime, model=settings.local_codex_search_model)
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Unsupported deployment web-search provider.",
@@ -535,7 +548,7 @@ def _build_agentic_job_discovery_service(
         search_provider = get_agentic_web_search_provider(settings)
         selected_provider = settings.agentic_search_provider.casefold().strip()
         provider_metadata = {
-            "provider": selected_provider if selected_provider in {"openai", "brave", "tavily"} else "unsupported",
+            "provider": selected_provider if selected_provider in {"openai", "brave", "tavily", "local_codex"} else "unsupported",
             "credential_source": "deployment",
             **({"search_depth": "basic"} if selected_provider == "tavily" else {}),
         }
@@ -591,10 +604,13 @@ def get_user_agentic_job_discovery_service_for_user(
     runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
     *,
     settings: Settings | None = None,
+    scheduled_due_runner: bool = False,
 ) -> AgenticJobDiscoveryService:
     """Shared HTTP/standalone authority for a user's current web-search settings."""
     selected_settings = settings or get_settings()
-    resolution = JobDiscoverySettingsService(db, settings=selected_settings).resolve_provider(user_id)
+    resolution = JobDiscoverySettingsService(db, settings=selected_settings).resolve_provider(
+        user_id, scheduled_due_runner=scheduled_due_runner
+    )
     snapshot = runtime_snapshot or AiSettingsService(db, settings=selected_settings).snapshot_for_user(user_id)
     return _build_agentic_job_discovery_service(
         db,

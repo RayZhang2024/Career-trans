@@ -65,8 +65,9 @@ backend-only values are never made available to the frontend container.
 
 The authenticated **Settings → Job Discovery** page selects the search provider
 for manual and scheduled agentic job discovery. “Use deployment default” keeps
-the administrator's `AGENTIC_SEARCH_PROVIDER`; Tavily, OpenAI web search, and
-Disabled can be selected per user. Brave remains a deployment-only option. The
+the administrator's `AGENTIC_SEARCH_PROVIDER`; Tavily, OpenAI web search,
+Local Codex, and Disabled can be selected per user. Brave remains a
+deployment-only option. The
 selected provider is resolved once when a run starts, and the application does
 not fall back to another provider when it is unavailable. Semantic AI work is
 configured independently in **Settings → AI Models**.
@@ -88,6 +89,15 @@ history contain only provider/source/depth metadata, never credentials.
 Tavily uses its Basic Search endpoint with result text normalized into the
 existing web-search result contract. “Test connection” makes one Basic Search
 request and does not start a discovery run or update a schedule.
+
+Local Codex runs under the backend host OS account. Enabling it shares that
+host's Codex session/subscription with eligible Career-trans users, so it is
+intended for trusted/local deployments unless the operator accepts this trust
+boundary. Configure `LOCAL_CODEX_DISCOVERY_ENABLED=true` to opt in;
+`LOCAL_CODEX_SEARCH_MODEL` defaults to `gpt-5.6-luna`. Automatic due-runner use
+is fail-closed unless `LOCAL_CODEX_SCHEDULED_DISCOVERY_CAPABILITY=supported`
+has been verified. See `docs/local-codex-job-discovery.md` for setup and
+migration details. The Settings live test may consume Codex usage.
 
 For an existing database, apply
 `backend/migrations/20260930_job_discovery_settings.sql` before using the new

@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from app.api.deps import CurrentUser, DbSession
 from app.schemas.job_discovery_settings import (
+    LocalCodexStatusRead,
+    LocalCodexTestRead,
     JobDiscoverySettingsRead,
     JobDiscoverySettingsReplace,
     TavilyConnectionTestRead,
@@ -29,6 +31,26 @@ def read_settings(
     service: JobDiscoverySettingsService = Depends(_service),
 ) -> JobDiscoverySettingsRead:
     return service.read(current_user.id)
+
+
+@router.get("/local-codex/status", response_model=LocalCodexStatusRead)
+def read_local_codex_status(
+    current_user: CurrentUser,
+    service: JobDiscoverySettingsService = Depends(_service),
+) -> LocalCodexStatusRead:
+    """Return safe backend-host readiness without creating discovery state."""
+    return service.local_codex_status()
+
+
+@router.post("/local-codex/test", response_model=LocalCodexTestRead)
+def test_local_codex(
+    current_user: CurrentUser,
+    service: JobDiscoverySettingsService = Depends(_service),
+) -> LocalCodexTestRead:
+    try:
+        return service.test_local_codex()
+    except JobDiscoverySettingsError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @router.put("/settings", response_model=JobDiscoverySettingsRead)

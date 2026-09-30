@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { AuthProvider } from "./auth";
 import { App } from "./App";
 import type { JobDiscoverySettings } from "./api";
+import type { LocalCodexStatus } from "./api";
 
 const TOKEN = "career-trans.access-token";
 const configured = (overrides: Partial<JobDiscoverySettings> = {}): JobDiscoverySettings => ({
@@ -11,6 +12,12 @@ const configured = (overrides: Partial<JobDiscoverySettings> = {}): JobDiscovery
   tavily_credential_configured: false, tavily_credential_source: null,
   tavily_user_credential_storage_available: true, tavily_credential_usable: false, ...overrides,
 });
+const localStatus: LocalCodexStatus = {
+  enabled_by_deployment: true, cli_installed: true, version: "0.155.0", authentication_status: "signed_out",
+  structured_invocation_status: "available", search_capability_status: "available",
+  manual_discovery_status: "not_ready", scheduled_discovery_status: "unverified",
+  message: "Codex authentication is required on the backend host.", setup_guidance: "Complete codex login on the backend host.",
+};
 let receivedJsonBodies: unknown[] = [];
 const json = (body: unknown, status = 200) => {
   receivedJsonBodies.push(body);
@@ -43,6 +50,8 @@ function renderDiscovery(options: HarnessOptions = {}) {
     if (url.pathname === "/api/v1/job-discovery/settings" && method === "GET") {
       return Promise.resolve(json(serverSettings));
     }
+    if (url.pathname === "/api/v1/job-discovery/local-codex/status") return Promise.resolve(json(localStatus));
+    if (url.pathname === "/api/v1/job-discovery/local-codex/test") return Promise.resolve(json({ success: true, result_count: 1, message: "Local Codex search succeeded. This test used one live web-search request and may consume Codex usage." }));
     if (url.pathname === "/api/v1/job-discovery/settings" && method === "PUT") {
       if (options.conflictOn === "provider" && !conflictUsed) {
         conflictUsed = true;
@@ -97,6 +106,24 @@ describe("Issue #256 Settings → Job Discovery", () => {
     expect(screen.getByRole("link", { name: "Job Discovery" })).toHaveAttribute("aria-current", "page");
   });
 
+  it("shows Local Codex backend-host readiness and runs the explicit live test", async () => {
+    const calls = renderDiscovery();
+    fireEvent.change(await screen.findByLabelText("Provider"), { target: { value: "local_codex" } });
+    expect(screen.getByRole("option", { name: "Local Codex" })).toBeInTheDocument();
+    expect(screen.getByText(/Runs on the machine hosting the Career-trans backend/)).toBeInTheDocument();
+    expect(screen.getByText(/lets eligible Career-trans users consume the Codex session available to the backend OS account/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Codex.*(token|credential)/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh status" }));
+    expect(await screen.findByText("Sign-in required")).toBeInTheDocument();
+    expect(screen.getByText("Unverified")).toBeInTheDocument();
+    expect(screen.getByText(/Complete codex login on the backend host/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Test Local Codex" }));
+    expect(await screen.findByText(/may consume Codex usage/)).toBeInTheDocument();
+    expect(calls.some((call) => call.path.endsWith("/local-codex/status"))).toBe(true);
+    expect(calls.some((call) => call.path.endsWith("/local-codex/test"))).toBe(true);
+  });
+
   it("can clear an explicit choice and return to the inherited Tavily deployment provider", async () => {
     const calls = renderDiscovery({
       initialSettings: configured({ provider_override: "disabled", deployment_provider: "tavily", effective_provider: "disabled", revision: 1 }),
@@ -108,6 +135,16 @@ describe("Issue #256 Settings → Job Discovery", () => {
     const saved = calls.find((call) => call.method === "PUT" && call.path.endsWith("/settings"));
     expect(JSON.parse(saved?.body ?? "{}")).toEqual({ expected_revision: 1, provider_override: null });
     expect(screen.getAllByText("Tavily")[0].closest("p")).toHaveTextContent("Effective provider: Tavily (deployment default).");
+  });
+
+  it("persists Local Codex as the explicit provider identifier", async () => {
+    const calls = renderDiscovery();
+    await screen.findByRole("button", { name: "Save provider" });
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "local_codex" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+    expect(await screen.findByText("Job Discovery provider settings saved.")).toBeInTheDocument();
+    const saved = calls.find((call) => call.method === "PUT" && call.path.endsWith("/settings"));
+    expect(JSON.parse(saved?.body ?? "{}")).toEqual({ expected_revision: 0, provider_override: "local_codex" });
   });
 
   it("replaces a user key, clears the plaintext input, and keeps settings responses redacted", async () => {
