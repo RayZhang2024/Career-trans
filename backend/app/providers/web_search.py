@@ -1,7 +1,8 @@
 import json
+from urllib.error import HTTPError, URLError
 from typing import Any, Callable, Protocol
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from app.schemas.agentic_discovery import SearchResult
 from app.agents.openai_client import create_traced_openai_client
@@ -134,3 +135,145 @@ class BraveWebSearchProvider:
     @staticmethod
     def _text(value: object) -> str | None:
         return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+class TavilyProviderError(RuntimeError):
+    """Safe, bounded Tavily failure category; never contains provider response text."""
+
+    def __init__(self, message: str, *, category: str) -> None:
+        super().__init__(message)
+        self.category = category
+
+
+TavilyJsonPoster = Callable[[str, dict[str, str], dict[str, object], float], dict[str, Any]]
+
+
+class TavilyWebSearchProvider:
+    """Tavily Basic Search adapter normalized to the existing SearchResult contract."""
+
+    _endpoint = "https://api.tavily.com/search"
+    _timeout_seconds = 10.0
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        post_json: TavilyJsonPoster | None = None,
+        timeout_seconds: float = _timeout_seconds,
+    ) -> None:
+        if not api_key:
+            raise ValueError("A Tavily API key is required for Tavily web search.")
+        self._api_key = api_key
+        self._post_json = post_json or self._post_public_json
+        self._timeout_seconds = max(0.1, min(float(timeout_seconds), 30.0))
+
+    def search(self, query: str, limit: int) -> list[SearchResult]:
+        bounded_limit = max(0, min(int(limit), 20))
+        if not query.strip() or bounded_limit == 0:
+            return []
+        payload: dict[str, object] = {
+            "query": query,
+            "search_depth": "basic",
+            "max_results": bounded_limit,
+            "include_answer": False,
+            "include_raw_content": False,
+        }
+        try:
+            response = self._post_json(
+                self._endpoint,
+                {
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                payload,
+                self._timeout_seconds,
+            )
+        except TavilyProviderError:
+            raise
+        except Exception as exc:
+            raise TavilyProviderError(
+                "Tavily search is temporarily unavailable.", category="unavailable"
+            ) from exc
+        raw_results = response.get("results") if isinstance(response, dict) else None
+        if not isinstance(raw_results, list):
+            raise TavilyProviderError(
+                "Tavily returned an invalid search response.", category="invalid_response"
+            )
+        results: list[SearchResult] = []
+        seen_urls: set[str] = set()
+        for position, result in enumerate(raw_results, start=1):
+            if not isinstance(result, dict):
+                continue
+            title = self._text(result.get("title"))
+            url = self._text(result.get("url"))
+            if not title or not url or url in seen_urls:
+                continue
+            parsed_url = urlsplit(url)
+            domain = (parsed_url.hostname or "").casefold()
+            if parsed_url.scheme not in {"http", "https"} or not domain:
+                continue
+            seen_urls.add(url)
+            results.append(
+                SearchResult(
+                    title=title,
+                    snippet=self._text(result.get("content")) or "",
+                    url=url,
+                    domain=domain,
+                    rank=position,
+                )
+            )
+            if len(results) >= bounded_limit:
+                break
+        return results
+
+    @classmethod
+    def _post_public_json(
+        cls,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, object],
+        timeout: float,
+    ) -> dict[str, Any]:
+        request = Request(
+            url,
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            opener = build_opener(_NoTavilyRedirectHandler())
+            with opener.open(request, timeout=timeout) as response:  # noqa: S310 - fixed Tavily API host
+                decoded = json.load(response)
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise TavilyProviderError(
+                    "Tavily rejected the configured credential.", category="authentication"
+                ) from exc
+            raise TavilyProviderError(
+                "Tavily search is temporarily unavailable.", category="unavailable"
+            ) from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise TavilyProviderError(
+                "Tavily search is temporarily unavailable.", category="unavailable"
+            ) from exc
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise TavilyProviderError(
+                "Tavily returned an invalid search response.", category="invalid_response"
+            ) from exc
+        if not isinstance(decoded, dict):
+            raise TavilyProviderError(
+                "Tavily returned an invalid search response.", category="invalid_response"
+            )
+        return decoded
+
+    @staticmethod
+    def _text(value: object) -> str | None:
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+class _NoTavilyRedirectHandler(HTTPRedirectHandler):
+    """Do not forward the Authorization header across redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None

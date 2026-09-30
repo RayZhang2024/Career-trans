@@ -24,7 +24,9 @@ def build_service(session) -> ScheduledDiscoveryExecutionService:
     return ScheduledDiscoveryExecutionService(
         session,
         structured_ats=deps.get_structured_ats_discovery_service(session),
-        agentic_web_factory=lambda: deps.get_agentic_job_discovery_service(session),
+        agentic_web_factory=lambda user_id, snapshot: deps.get_user_agentic_job_discovery_service_for_user(
+            session, user_id, snapshot
+        ),
         user_runs=deps.get_user_job_discovery_service(session, ranking),
     )
 

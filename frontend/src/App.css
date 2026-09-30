@@ -188,6 +188,12 @@ h2 { font-size: 1.2rem; }
 .ai-summary-grid dt { color: #58657a; font-size: 0.85rem; }
 .ai-summary-grid dd { font-weight: 650; margin: 0.15rem 0 0; overflow-wrap: anywhere; }
 .ai-provider-summary > .muted, .ai-effective .muted { font-size: 0.84rem; }
+.settings-tabs { border-bottom: 1px solid #d9e0ea; display: flex; gap: 1rem; margin: -0.25rem 0 1rem; }
+.settings-tabs a { border-bottom: 0.2rem solid transparent; color: #34445f; padding: 0.65rem 0.25rem; text-decoration: none; }
+.settings-tabs a[aria-current="page"] { border-color: #2456a6; color: #173d7a; font-weight: 700; }
+.settings-form { display: grid; gap: 0.65rem; max-width: 38rem; }
+.settings-form label { font-weight: 650; }
+.settings-form input, .settings-form select { max-width: 100%; padding: 0.65rem; }
 .ai-advanced > summary { cursor: pointer; font-size: 1.1rem; font-weight: 700; }
 .ai-operation-list { display: grid; gap: 0.75rem; min-width: 0; }
 .ai-operation-card { border: 1px solid #d9e0ea; border-radius: 0.55rem; display: grid; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; padding: 0.8rem; }

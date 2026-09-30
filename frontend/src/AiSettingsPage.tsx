@@ -233,6 +233,7 @@ export function AiSettingsPage() {
 
   return <main className="ai-settings-page">
     <header className="workspace-header"><div><p className="eyebrow"><Link to="/settings/ai">Settings</Link> / AI Models</p><h1>AI Models</h1></div></header>
+    <nav className="settings-tabs" aria-label="Settings"><Link aria-current="page" to="/settings/ai">AI Models</Link><Link to="/settings/discovery">Job Discovery</Link></nav>
     <div className="ai-settings-content">
       <section className="card ai-boundary-copy">
         <h2>About these settings</h2>

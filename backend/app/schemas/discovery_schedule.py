@@ -131,6 +131,7 @@ class ScheduledExecutionRead(BaseModel):
     scheduled_for: datetime | None
     status: ExecutionStatus
     config_snapshot: dict[str, object]
+    web_search: dict[str, str | None] | None = None
     discovery_run_id: str | None
     acquisition_summary: dict[str, int]
     failure_summary: dict[str, int]

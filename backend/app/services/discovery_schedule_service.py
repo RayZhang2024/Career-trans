@@ -133,4 +133,5 @@ class DiscoveryScheduleService:
 
     @staticmethod
     def execution_read(record: ScheduledDiscoveryExecution) -> ScheduledExecutionRead:
-        return ScheduledExecutionRead(id=record.id, trigger_kind=TriggerKind(record.trigger_kind), scheduled_for=_utc(record.scheduled_for) if record.scheduled_for else None, status=ExecutionStatus(record.status), config_snapshot=json.loads(record.config_snapshot_json), discovery_run_id=record.discovery_run_id, acquisition_summary=json.loads(record.acquisition_summary_json), failure_summary=json.loads(record.failure_summary_json), started_at=_utc(record.started_at), completed_at=_utc(record.completed_at) if record.completed_at else None)
+        web_search = json.loads(record.web_search_metadata_json or "{}")
+        return ScheduledExecutionRead(id=record.id, trigger_kind=TriggerKind(record.trigger_kind), scheduled_for=_utc(record.scheduled_for) if record.scheduled_for else None, status=ExecutionStatus(record.status), config_snapshot=json.loads(record.config_snapshot_json), web_search=web_search or None, discovery_run_id=record.discovery_run_id, acquisition_summary=json.loads(record.acquisition_summary_json), failure_summary=json.loads(record.failure_summary_json), started_at=_utc(record.started_at), completed_at=_utc(record.completed_at) if record.completed_at else None)

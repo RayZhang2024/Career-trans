@@ -35,12 +35,19 @@ class AgenticJobDiscoveryService:
         page_fetcher: PageFetcher,
         vacancy_extractor: PageVacancyExtractor,
         state_store: DiscoveredJobStateStore,
+        provider_metadata: dict[str, str | None] | None = None,
     ) -> None:
         self._strategy_generator = strategy_generator
         self._search_provider = search_provider
         self._page_fetcher = page_fetcher
         self._vacancy_extractor = vacancy_extractor
         self._state_store = state_store
+        self.provider_metadata = {
+            key: value
+            for key, value in (provider_metadata or {}).items()
+            if key in {"provider", "credential_source", "search_depth"}
+            and isinstance(value, str)
+        }
         self._deduplicator = JobDeduplicationService()
         self._screening = JobScreeningService()
 

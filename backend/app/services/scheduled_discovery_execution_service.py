@@ -166,6 +166,20 @@ class ScheduledDiscoveryExecutionService:
             else None
         )
 
+        agentic_service: object | None = None
+        agentic_setup_error: Exception | None = None
+        if acquisition.agentic_web.enabled:
+            try:
+                agentic_service = self._agentic_service(execution.user_id, runtime_snapshot)
+                self._record_web_search_metadata(
+                    execution, getattr(agentic_service, "provider_metadata", None)
+                )
+            except Exception as exc:
+                agentic_setup_error = exc
+                self._record_web_search_metadata(
+                    execution, getattr(exc, "provider_metadata", None)
+                )
+
         if acquisition.structured_ats.enabled:
             try:
                 config = acquisition.structured_ats
@@ -196,10 +210,45 @@ class ScheduledDiscoveryExecutionService:
             except Exception:
                 outcomes.append(_ChannelOutcome(succeeded=False, failed=True, counters={"sources_attempted": 0, "sources_succeeded": 0, "sources_failed": 1}))
 
+        if acquisition.agentic_web.enabled and agentic_setup_error is not None:
+            # A readable ATS result cannot authorize paid semantic evaluation
+            # after the requested web-search provider failed readiness.
+            outcomes.append(_ChannelOutcome(
+                succeeded=False,
+                failed=True,
+                counters={
+                    "search_queries_executed": 0,
+                    "pages_opened": 0,
+                    "page_fetch_failures": 0,
+                    "extraction_successes": 0,
+                    "extraction_failures": 0,
+                },
+            ))
+            failures = {"agentic_web": 1}
+            summaries: dict[str, int] = {}
+            for name, outcome in zip(
+                [name for name, enabled in (("structured_ats", acquisition.structured_ats.enabled), ("agentic_web", acquisition.agentic_web.enabled)) if enabled],
+                outcomes,
+                strict=True,
+            ):
+                if outcome.failed and name != "agentic_web":
+                    failures[name] = 1
+                for key, value in outcome.counters.items():
+                    summaries[f"{name}_{key}"] = value
+            canonical_ids = set().union(*(outcome.canonical_ids for outcome in outcomes)) if outcomes else set()
+            summaries["canonical_jobs"] = len(canonical_ids)
+            status = (
+                ExecutionStatus.PARTIAL_FAILED
+                if any(outcome.succeeded for outcome in outcomes)
+                else ExecutionStatus.FAILED
+            )
+            return self._finish(execution, status, now, summaries, failures)
+
         if acquisition.agentic_web.enabled:
             try:
+                assert agentic_service is not None
                 config = acquisition.agentic_web
-                response = self._agentic_service(runtime_snapshot).discover(
+                response = agentic_service.discover(
                     AgenticDiscoveryRequest(
                         candidate_context=context,
                         query=query,
@@ -278,9 +327,37 @@ class ScheduledDiscoveryExecutionService:
         assert self._runtime_snapshot_resolver is not None
         return self._runtime_snapshot_resolver(user_id)
 
-    def _agentic_service(self, runtime_snapshot: ResolvedRuntimeSnapshot | None) -> object:
+    def _agentic_service(
+        self, user_id: str, runtime_snapshot: ResolvedRuntimeSnapshot | None
+    ) -> object:
         parameters = inspect.signature(self._agentic_web_factory).parameters
-        return self._agentic_web_factory(runtime_snapshot) if parameters else self._agentic_web_factory()
+        if len(parameters) >= 2:
+            return self._agentic_web_factory(user_id, runtime_snapshot)
+        if parameters:
+            return self._agentic_web_factory(runtime_snapshot)
+        return self._agentic_web_factory()
+
+    def _record_web_search_metadata(
+        self, execution: ScheduledDiscoveryExecution, metadata: object
+    ) -> None:
+        if not isinstance(metadata, dict):
+            return
+        safe_values = {
+            "provider": {"tavily", "openai", "brave", "disabled", "unsupported"},
+            "credential_source": {"user", "deployment", "none"},
+            "search_depth": {"basic"},
+        }
+        safe: dict[str, str] = {}
+        for key, allowed in safe_values.items():
+            value = metadata.get(key)
+            if isinstance(value, str) and value in allowed:
+                safe[key] = value
+        if not safe:
+            return
+        execution.web_search_metadata_json = json.dumps(safe, sort_keys=True)
+        # Persist safe resolution metadata before provider work begins. It contains
+        # no credential material and remains immutable if settings later change.
+        self._session.commit()
 
     def _user_run_service(self, runtime_snapshot: ResolvedRuntimeSnapshot | None) -> object:
         if runtime_snapshot is not None and self._user_runs_factory is not None:
