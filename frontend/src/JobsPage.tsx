@@ -284,6 +284,7 @@ export function JobsPage() {
   const [staleNotice, setStaleNotice] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchIntent, setSearchIntent] = useState<SearchIntent>(emptySearchIntent());
+  const [searchIntentRevision, setSearchIntentRevision] = useState(0);
   const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
   const [findMessage, setFindMessage] = useState("");
   const [findError, setFindError] = useState("");
@@ -297,7 +298,6 @@ export function JobsPage() {
   const decisionMutator = useJobDecisionMutator();
   const submitLock = useRef(false);
   const alive = useRef(false);
-  const onboardingRequest = useRef<number | null>(null);
   const opportunitiesRequest = useRef<number | null>(null);
   const runsRequest = useRef<number | null>(null);
   const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, shortlisted: 0, dismissed: 0, savedSchedules: 0, scheduleHistory: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0 });
@@ -305,11 +305,14 @@ export function JobsPage() {
   const sessionEpoch = api.sessionEpoch();
   const previousUserKey = useRef(userKey);
   const previousSessionEpoch = useRef(sessionEpoch);
+  const onboardingScope = useRef({ userKey, sessionEpoch });
 
   useEffect(() => {
     if (previousUserKey.current && (previousUserKey.current !== userKey || previousSessionEpoch.current !== sessionEpoch)) {
+      generations.current.onboarding += 1;
       setOnboarding(emptyPage()); setOpportunities(emptyPage()); setRuns(emptyPage()); setInbox(emptyPage()); setShortlisted(emptyPage()); setDismissed(emptyPage()); setSavedSchedules(emptyPage());
       setSelectedIds(new Set()); setSearchIntent(emptySearchIntent()); setSelectedScheduleId(null); setSelectedRun(null); setSelectedHistorical(null); setSelectedCurrent(null);
+      setSearchIntentRevision((revision) => revision + 1);
       setRunDetail(emptyPage()); setHistoricalDetail(emptyPage()); setCurrentDetail(emptyPage()); setEvaluationSnapshot(null); setExactEvaluation(null); setEvaluationMessage(""); setEvaluationError(""); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
       setLastConfirmedInboxDismissal(null);
       setShortlistedLimit(WINDOW); setDismissedLimit(WINDOW); setShowDismissed(false);
@@ -321,17 +324,13 @@ export function JobsPage() {
   }, [userKey, sessionEpoch]);
 
   const loadOnboarding = async () => {
-    if (onboardingRequest.current !== null) return;
     const request = ++generations.current.onboarding;
-    onboardingRequest.current = request;
-    setOnboarding((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
+    setOnboarding({ phase: "loading" });
     try {
       const data = await api.request<OnboardingStatus>("/api/v1/onboarding/status");
       if (alive.current && request === generations.current.onboarding) setOnboarding({ phase: "loaded", data });
     } catch {
-      if (alive.current && request === generations.current.onboarding) setOnboarding((previous) => ({ phase: previous.data ? "error" : "error", data: previous.data, error: "Candidate readiness is unavailable." }));
-    } finally {
-      if (onboardingRequest.current === request) onboardingRequest.current = null;
+      if (alive.current && request === generations.current.onboarding) setOnboarding({ phase: "error", error: "Candidate readiness is unavailable." });
     }
   };
   const acceptOnboardingAuthority = (data: OnboardingStatus | undefined) => {
@@ -481,9 +480,12 @@ export function JobsPage() {
   }, [api, userKey]);
 
   useEffect(() => {
-    if (view === "find") { if (!onboarding.data) void loadOnboarding(); void loadSavedSchedules(); }
-    else if (view === "inbox") { if (!onboarding.data) void loadOnboarding(); void loadInbox(WINDOW); }
-    else if (view === "recommended") { if (!onboarding.data) void loadOnboarding(); void loadOpportunities(WINDOW); }
+    const scopeChanged = onboardingScope.current.userKey !== userKey || onboardingScope.current.sessionEpoch !== sessionEpoch;
+    onboardingScope.current = { userKey, sessionEpoch };
+    if (["find", "inbox", "recommended"].includes(view) && ((!onboarding.data && onboarding.phase !== "error") || scopeChanged)) void loadOnboarding();
+    if (view === "find") void loadSavedSchedules();
+    else if (view === "inbox") void loadInbox(WINDOW);
+    else if (view === "recommended") void loadOpportunities(WINDOW);
     else if (view === "shortlisted") void loadShortlisted(WINDOW);
     else if (view === "history") void loadRuns(WINDOW);
   }, [view, userKey, sessionEpoch]);
@@ -581,6 +583,7 @@ export function JobsPage() {
       if (result.kind === "changed") {
         setSavedSchedules((old) => old.data ? { ...old, phase: "loaded", data: old.data.map((item) => item.id === result.schedule.id ? result.schedule : item) } : old);
         setSearchIntent(searchIntentFromQuery(result.schedule.query));
+        setSearchIntentRevision((revision) => revision + 1);
         setFindRunOutcome({ kind: "changed", scheduleName: schedule.name });
         setFindMessage("The saved configuration changed before Run now started. The SearchIntent and persisted channels were refreshed; review them and explicitly run again. No execution was submitted.");
       } else if (result.kind === "preflight_stale" || result.kind === "post_stale") {
@@ -664,8 +667,8 @@ export function JobsPage() {
       {view === "find" && <section aria-labelledby="find-jobs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="find-jobs-heading">Find jobs</h2><p className="muted">Build a SearchIntent for discovery and prioritisation. Search context is not eligibility, evidence, or proof of fit.</p></div></div>
         {savedSchedules.phase === "loading" && !savedSchedules.data && <p className="muted" role="status">Loading saved configurations…</p>}
         {savedSchedules.phase === "error" && !savedSchedules.data && <p className="notice" role="status">Saved configurations are unavailable. You can still prepare a transient SearchIntent.</p>}
-        <label htmlFor="saved-search-selection">Saved search configuration</label><select id="saved-search-selection" aria-label="Saved search configuration" value={selectedScheduleId ?? ""} onChange={(event) => { const id = event.target.value || null; setSelectedScheduleId(id); const schedule = savedSchedules.data?.find((item) => item.id === id); if (schedule) setSearchIntent(searchIntentFromQuery(schedule.query)); setFindMessage(""); setFindError(""); }}><option value="">Use a transient SearchIntent</option>{savedSchedules.data?.map((schedule) => <option value={schedule.id} key={schedule.id}>{schedule.name}</option>)}</select>
-        <SearchIntentEditor intent={searchIntent} onChange={(next) => { setSearchIntent(next); setFindMessage(""); setFindError(""); }} idPrefix="find-search-intent" disabled={findRunning || submitting} />
+        <label htmlFor="saved-search-selection">Saved search configuration</label><select id="saved-search-selection" aria-label="Saved search configuration" value={selectedScheduleId ?? ""} onChange={(event) => { const id = event.target.value || null; setSelectedScheduleId(id); const schedule = savedSchedules.data?.find((item) => item.id === id); if (schedule) setSearchIntent(searchIntentFromQuery(schedule.query)); setSearchIntentRevision((revision) => revision + 1); setFindMessage(""); setFindError(""); }}><option value="">Use a transient SearchIntent</option>{savedSchedules.data?.map((schedule) => <option value={schedule.id} key={schedule.id}>{schedule.name}</option>)}</select>
+        <SearchIntentEditor key={`${selectedScheduleId ?? "transient"}:${searchIntentRevision}`} intent={searchIntent} onChange={(next) => { setSearchIntent(next); setFindMessage(""); setFindError(""); }} idPrefix="find-search-intent" disabled={findRunning || submitting} />
         {selectedSchedule && <div className="card"><p><strong>Persisted channels:</strong> {selectedSchedule.acquisition.structured_ats.enabled ? "Structured ATS" : ""}{selectedSchedule.acquisition.structured_ats.enabled && selectedSchedule.acquisition.agentic_web.enabled ? " · " : ""}{selectedSchedule.acquisition.agentic_web.enabled ? "Profile-driven bounded server-side web discovery" : ""}</p><p><strong>Evaluation:</strong> {selectedSchedule.evaluation.max_semantic_candidates} semantic candidates · {selectedSchedule.evaluation.max_full_analyses} full analyses · minimum relevance {selectedSchedule.evaluation.min_relevance_score}</p><p className="muted">Candidate readiness controls whether the persisted schedule can run. Semantic configuration is advisory and is not provider readiness.</p>{selectedScheduleDirty && <p className="notice">This SearchIntent differs from the persisted saved configuration. Hand it off to Saved searches to review and save; it is explicitly dirty.</p>}</div>}
         {findMessage && <p className="notice" role="status">{findMessage}</p>}{findError && <p className="notice" role="status">{findError}</p>}
         {findRunOutcome && <section className="card" aria-label="Run now result"><h3>Run now result</h3>
