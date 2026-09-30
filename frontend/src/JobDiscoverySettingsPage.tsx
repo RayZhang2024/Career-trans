@@ -74,6 +74,16 @@ export function JobDiscoverySettingsPage() {
     finally { setPending(false); }
   }
 
+  const hasUsableTavilyCredential = Boolean(
+    settings?.tavily_credential_configured && settings.tavily_credential_usable,
+  );
+  const hasUnreadableUserCredential = Boolean(
+    settings?.tavily_credential_configured
+    && settings.tavily_credential_source === "user"
+    && !settings.tavily_credential_usable,
+  );
+  const tavilyReadinessWarning = settings?.effective_provider === "tavily" && !hasUsableTavilyCredential;
+
   return <main className="workspace ai-settings-page">
     <header className="workspace-header"><div><p className="eyebrow"><Link to="/settings/ai">Settings</Link> / Job Discovery</p><h1>Job Discovery</h1><p>Choose the web-search provider used to find job listings.</p></div></header>
     <nav className="settings-tabs" aria-label="Settings"><Link to="/settings/ai">AI Models</Link><Link aria-current="page" to="/settings/discovery">Job Discovery</Link></nav>
@@ -95,7 +105,13 @@ export function JobDiscoverySettingsPage() {
       </section>
       <section className="card ai-state-card">
         <h2>Tavily API key</h2>
-        <p>{settings.tavily_credential_configured ? `A key is configured (${settings.tavily_credential_source === "user" ? "your saved key" : "deployment key"}).` : "No Tavily key is configured."}</p>
+        <p>{hasUnreadableUserCredential
+          ? "A saved Tavily key exists but cannot currently be used."
+          : hasUsableTavilyCredential
+            ? `A key is configured (${settings.tavily_credential_source === "user" ? "your saved key" : "deployment key"}).`
+            : "No usable Tavily key is configured."}</p>
+        {hasUnreadableUserCredential && <p role="alert" className="profile-warning">Your saved Tavily key cannot be read with the current credential-encryption configuration. Replace or remove the saved key.</p>}
+        {tavilyReadinessWarning && <p role="alert" className="profile-warning">Job Discovery cannot use Tavily until a usable credential is available.</p>}
         {!settings.tavily_user_credential_storage_available && <p role="note">User key storage is unavailable until the administrator configures the credential-encryption key. A deployment key can still be used.</p>}
         <p className="muted">Saving a personal key uses it before the deployment key whenever Tavily is selected. Keys are stored encrypted and are never displayed again.</p>
         <form onSubmit={saveKey} className="settings-form">
@@ -103,7 +119,7 @@ export function JobDiscoverySettingsPage() {
           <input id="tavily-api-key" type="password" autoComplete="new-password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="Paste a Tavily API key" disabled={pending || !settings.tavily_user_credential_storage_available} />
           <div className="ai-actions"><button type="submit" disabled={pending || !key.trim() || !settings.tavily_user_credential_storage_available}>Save key</button>
             {settings.tavily_credential_source === "user" && <button type="button" className="secondary-button" onClick={() => void removeKey()} disabled={pending}>Remove saved key</button>}
-            <button type="button" className="secondary-button" onClick={() => void testConnection()} disabled={pending || !settings.tavily_credential_configured}>Test connection</button></div>
+            <button type="button" className="secondary-button" onClick={() => void testConnection()} disabled={pending || !hasUsableTavilyCredential}>Test connection</button></div>
         </form>
         <p className="muted">Test connection sends one Basic Search request and uses one Tavily API credit. It does not save discovery results or change a schedule.</p>
       </section>

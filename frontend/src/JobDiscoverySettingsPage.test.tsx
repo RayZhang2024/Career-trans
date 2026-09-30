@@ -126,7 +126,47 @@ describe("Issue #256 Settings → Job Discovery", () => {
     const save = calls.find((call) => call.method === "PUT" && call.path.endsWith("tavily-credential"));
     expect(JSON.parse(save?.body ?? "{}")).toMatchObject({ expected_revision: 2, api_key: "replacement-secret" });
     expect(screen.getByText("A key is configured (your saved key).")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeEnabled();
     expect(JSON.stringify(receivedJsonBodies)).not.toContain("replacement-secret");
+  });
+
+  it("warns when a saved user credential is unusable while allowing replacement or removal", async () => {
+    renderDiscovery({
+      initialSettings: configured({
+        provider_override: "tavily", effective_provider: "tavily",
+        tavily_credential_configured: true, tavily_credential_source: "user", tavily_credential_usable: false,
+      }),
+    });
+    const warnings = await screen.findAllByRole("alert");
+    expect(warnings[0]).toHaveTextContent("Your saved Tavily key cannot be read with the current credential-encryption configuration. Replace or remove the saved key.");
+    expect(screen.getByText("A saved Tavily key exists but cannot currently be used.")).toBeInTheDocument();
+    expect(warnings.some((warning) => warning.textContent?.includes("Job Discovery cannot use Tavily until a usable credential is available."))).toBe(true);
+    expect(screen.queryByText("A key is configured (your saved key).")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeDisabled();
+    expect(screen.getByLabelText("Replace saved Tavily key")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Remove saved key" })).toBeEnabled();
+  });
+
+  it("warns when Tavily is selected without a usable credential and leaves key entry available", async () => {
+    renderDiscovery({
+      initialSettings: configured({ provider_override: "tavily", effective_provider: "tavily" }),
+    });
+    expect(await screen.findByText("Job Discovery cannot use Tavily until a usable credential is available.")).toBeInTheDocument();
+    expect(screen.getByText("No usable Tavily key is configured.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeDisabled();
+    expect(screen.getByLabelText("Tavily API key")).toBeEnabled();
+  });
+
+  it("keeps a usable deployment key configured and testable", async () => {
+    renderDiscovery({
+      initialSettings: configured({
+        deployment_provider: "tavily", effective_provider: "tavily",
+        tavily_credential_configured: true, tavily_credential_source: "deployment", tavily_credential_usable: true,
+      }),
+    });
+    expect(await screen.findByText("A key is configured (deployment key).")).toBeInTheDocument();
+    expect(screen.queryByText("Job Discovery cannot use Tavily until a usable credential is available.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeEnabled();
   });
 
   it.each([true, false])("removes a personal key and reflects deployment fallback (deployment key=%s)", async (deploymentKey) => {
@@ -139,7 +179,7 @@ describe("Issue #256 Settings → Job Discovery", () => {
     if (deploymentKey) {
       expect(await screen.findByText("A key is configured (deployment key).")).toBeInTheDocument();
     } else {
-      expect(await screen.findByText("No Tavily key is configured.")).toBeInTheDocument();
+      expect(await screen.findByText("No usable Tavily key is configured.")).toBeInTheDocument();
     }
   });
 
@@ -202,7 +242,7 @@ describe("Issue #256 Settings → Job Discovery", () => {
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), window.location.origin);
       if (url.pathname === "/api/v1/users/me") return Promise.resolve(json({ id: "owner", email: "owner@example.test", created_at: "now" }));
-      if (url.pathname === "/api/v1/job-discovery/settings") return Promise.resolve(json(configured({ tavily_credential_configured: true, tavily_credential_source: "deployment" })));
+      if (url.pathname === "/api/v1/job-discovery/settings") return Promise.resolve(json(configured({ tavily_credential_configured: true, tavily_credential_source: "deployment", tavily_credential_usable: true })));
       if (url.pathname === "/api/v1/job-discovery/tavily-connection-test") return Promise.resolve(json({ detail: "Tavily rejected the configured key." }, 502));
       throw new Error(`Unexpected request: ${init?.method} ${url.pathname}`);
     }));
