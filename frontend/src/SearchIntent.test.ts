@@ -11,6 +11,39 @@ describe("SearchIntent adapter", () => {
     expect(searchIntentToQuery(searchIntentFromQuery(query))).toEqual(query);
   });
 
+  it("preserves compatibility values exactly while canonicalizing only editable lists", () => {
+    const query = {
+      keywords: [" Agentic AI "], locations: [" London "], remote_ok: null,
+      companies: [" Legacy Co ", "One\nValue"], excluded_companies: [" Avoid Co "],
+      excluded_title_terms: [" Intern "], employment_types: [" Full-time "], max_results: 73,
+    };
+    const intent = searchIntentFromQuery(query);
+
+    expect(intent.themes).toEqual(["Agentic AI"]);
+    expect(intent.locations).toEqual(["London"]);
+    expect(intent.excludedCompanies).toEqual(["Avoid Co"]);
+    expect(intent.excludedTitleTerms).toEqual(["Intern"]);
+    expect(intent.employmentTypes).toEqual(["Full-time"]);
+    expect(intent.compatibility).toEqual({ companies: [" Legacy Co ", "One\nValue"], maxResults: 73 });
+    expect(searchIntentToQuery(intent)).toEqual({
+      ...query, keywords: ["Agentic AI"], locations: ["London"], excluded_companies: ["Avoid Co"],
+      excluded_title_terms: ["Intern"], employment_types: ["Full-time"],
+    });
+
+    const sameEditableIntent = {
+      ...intent,
+      themes: ["Agentic AI   "], locations: ["  London"], excludedCompanies: ["Avoid Co  "],
+      excludedTitleTerms: ["Intern"], employmentTypes: [" Full-time"],
+    };
+    expect(searchIntentEquals(intent, sameEditableIntent)).toBe(true);
+
+    const changedCompatibility = {
+      ...intent,
+      compatibility: { ...intent.compatibility, companies: ["Legacy Co", "One", "Value"] },
+    };
+    expect(searchIntentEquals(intent, changedCompatibility)).toBe(false);
+  });
+
   it("preserves compatibility fields when the user edits search themes", () => {
     const intent = searchIntentFromQuery({ keywords: ["AI"], locations: [], remote_ok: false, companies: ["Example Co"], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 42 });
     const edited = { ...intent, themes: ["Applied AI"] };

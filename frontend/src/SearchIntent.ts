@@ -30,7 +30,7 @@ export function canonicalizeSearchIntent(intent: SearchIntent): SearchIntent {
     themes: canonicalLines(intent.themes), locations: canonicalLines(intent.locations),
     excludedCompanies: canonicalLines(intent.excludedCompanies), excludedTitleTerms: canonicalLines(intent.excludedTitleTerms),
     employmentTypes: canonicalLines(intent.employmentTypes),
-    compatibility: { ...intent.compatibility, companies: canonicalLines(intent.compatibility.companies) },
+    compatibility: intent.compatibility,
   };
 }
 
