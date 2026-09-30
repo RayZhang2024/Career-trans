@@ -1,5 +1,6 @@
 import io
 import json
+from pathlib import Path
 
 from docx import Document
 from pypdf import PdfWriter
@@ -63,6 +64,31 @@ class CapturingResponseClient:
     @property
     def responses(self):
         return self._Responses(self)
+
+
+class FixedCVInterpreter:
+    def __init__(self, output: CandidateCVData) -> None:
+        self.output = output
+
+    def interpret(self, documents):
+        self.documents = documents
+        return self.output.model_copy(deep=True)
+
+
+def _benchmark_cv_bytes() -> bytes:
+    return (Path(__file__).parent / "fixtures" / "issue_254_benchmark_cv.md").read_bytes()
+
+
+def _evidence_output(document_sha256: str, segment_ids: list[str], *, title: str = "Senior software engineer") -> CandidateCVData:
+    return CandidateCVData.model_validate({
+        "evidence": [{
+            "evidence_type": "employment",
+            "title": title,
+            "text": "Built a document review service and reduced manual processing time by 40%.",
+            "skills": ["Python"],
+            "provenance": [{"document_sha256": document_sha256, "segment_ids": segment_ids}],
+        }]
+    })
 
 
 def _pdf_with_pages(*pages: str) -> bytes:
@@ -349,6 +375,7 @@ def test_docx_extraction_and_conservative_merge_preserve_distinct_evidence() -> 
     assert [item.name for item in merged.skills] == ["Python", "Rust"]
     assert [item.title for item in merged.evidence] == ["A", "B"]
     assert {item.document_sha256 for item in merged.evidence[0].provenance} == {"a", "b"}
+    assert {tuple(item.segment_ids) for item in merged.evidence[0].provenance} == {("a:1",), ("b:1",)}
 
 
 def test_file_validation_rejects_unreadable_or_non_schema_input() -> None:
@@ -403,6 +430,14 @@ def test_semantic_cv_interpreter_uses_provider_strict_schema_and_keeps_pydantic_
     assert response_format["strict"] is True
     schema = response_format["schema"]
     assert set(schema["required"]) == set(schema["properties"])
+    payload = json.loads(client.kwargs["input"][1]["content"].split("INPUT:\n", 1)[1])
+    supplied_document = payload["documents"][0]
+    provenance_schema = schema["$defs"]["EvidenceProvenance"]["properties"]
+    assert provenance_schema["document_sha256"]["enum"] == [document.provenance.document_sha256]
+    assert provenance_schema["segment_ids"]["items"]["enum"] == document.provenance.segment_ids
+    assert [segment["segment_id"] for segment in supplied_document["segments"]] == document.provenance.segment_ids
+    assert supplied_document["provenance"]["segment_ids"] == provenance_schema["segment_ids"]["items"]["enum"]
+    assert "Copy each `segment_ids` value exactly" in client.kwargs["input"][0]["content"]
     encoded_schema = json.dumps(schema)
     assert "certification" in encoded_schema
     assert "professional_registration" in encoded_schema
@@ -430,6 +465,130 @@ def test_semantic_cv_interpreter_uses_provider_strict_schema_and_keeps_pydantic_
                     }
                 ]
             }
+        )
+
+
+def test_benchmark_markdown_with_unknown_provider_segment_is_rejected_without_promotion(client, db_session, runtime_snapshot_a) -> None:
+    content = _benchmark_cv_bytes()
+    extracted = CVFileExtractionService().extract(
+        filename="issue_254_benchmark_cv.md", content_type="text/markdown", content=content
+    )
+    invalid_output = _evidence_output(
+        extracted.provenance.document_sha256, ["segment-1"]
+    )
+    provider = CapturingResponseClient(invalid_output.model_dump_json())
+    service = CVIngestionService(
+        db_session,
+        interpreter=SemanticCVInterpreter(provider, "test-model"),
+        runtime_snapshot=runtime_snapshot_a,
+    )
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: service
+    try:
+        headers = _auth(client, "issue-254-unknown@example.com")
+        upload = client.post(
+            "/api/v1/cv-ingestion/upload",
+            headers=headers,
+            files=[("files", ("issue_254_benchmark_cv.md", content, "text/markdown"))],
+        )
+        assert upload.status_code == 201
+        draft_id = upload.json()["id"]
+        response = client.post(f"/api/v1/cv-ingestion/{draft_id}/interpret", headers=headers)
+        assert response.status_code == 422
+        assert response.json()["detail"] == "CV evidence provenance must reference supplied source segments."
+
+        request_payload = json.loads(provider.kwargs["input"][1]["content"].split("INPUT:\n", 1)[1])
+        request_document = request_payload["documents"][0]
+        request_segment_ids = [segment["segment_id"] for segment in request_document["segments"]]
+        provenance_schema = provider.kwargs["text"]["format"]["schema"]["$defs"]["EvidenceProvenance"]["properties"]
+        assert request_segment_ids == extracted.provenance.segment_ids
+        assert request_document["provenance"]["segment_ids"] == request_segment_ids
+        assert provenance_schema["document_sha256"]["enum"] == [extracted.provenance.document_sha256]
+        assert provenance_schema["segment_ids"]["items"]["enum"] == extracted.provenance.segment_ids
+        assert "segment-1" not in provenance_schema["segment_ids"]["items"]["enum"]
+
+        persisted = db_session.get(CandidateCVIngestionDraft, draft_id)
+        assert persisted is not None and persisted.state == "uploaded" and persisted.merged_json is None
+        assert db_session.scalar(select(CandidateCVReviewBaseline).where(CandidateCVReviewBaseline.draft_id == draft_id)) is None
+        assert db_session.scalars(select(CandidateEvidenceRecord)).all() == []
+        assert db_session.scalars(select(CandidateStructuredProfile)).all() == []
+    finally:
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
+
+
+def test_valid_benchmark_markdown_provenance_is_accepted_and_confirmed(client, db_session, runtime_snapshot_a) -> None:
+    content = _benchmark_cv_bytes()
+    extracted = CVFileExtractionService().extract(
+        filename="issue_254_benchmark_cv.md", content_type="text/markdown", content=content
+    )
+    interpreter = FixedCVInterpreter(
+        _evidence_output(extracted.provenance.document_sha256, [extracted.segments[0].segment_id])
+    )
+    service = CVIngestionService(db_session, interpreter=interpreter, runtime_snapshot=runtime_snapshot_a)
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: service
+    try:
+        headers = _auth(client, "issue-254-valid@example.com")
+        upload = client.post(
+            "/api/v1/cv-ingestion/upload",
+            headers=headers,
+            files=[("files", ("issue_254_benchmark_cv.md", content, "text/markdown"))],
+        )
+        draft_id = upload.json()["id"]
+        interpreted = client.post(f"/api/v1/cv-ingestion/{draft_id}/interpret", headers=headers)
+        assert interpreted.status_code == 200
+        assert interpreted.json()["state"] == "review_ready"
+        provenance = interpreted.json()["merged"]["evidence"][0]["provenance"][0]
+        assert provenance == {
+            "document_sha256": extracted.provenance.document_sha256,
+            "segment_ids": [extracted.segments[0].segment_id],
+            "source_kind": "cv",
+        }
+        confirmed = client.post(f"/api/v1/cv-ingestion/{draft_id}/confirm", headers=headers)
+        assert confirmed.status_code == 200
+        record = db_session.scalar(select(CandidateEvidenceRecord))
+        assert record is not None
+        assert json.loads(record.provenance_json) == [{**provenance, "source_ref": None}]
+    finally:
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
+
+
+def test_mixed_valid_and_unknown_provider_provenance_rejects_whole_interpretation(client, db_session, runtime_snapshot_a) -> None:
+    content = _benchmark_cv_bytes()
+    extracted = CVFileExtractionService().extract(
+        filename="issue_254_benchmark_cv.md", content_type="text/markdown", content=content
+    )
+    output = _evidence_output(extracted.provenance.document_sha256, [extracted.segments[0].segment_id])
+    output.evidence.append(_evidence_output(
+        extracted.provenance.document_sha256, ["unknown-segment"], title="Unknown source claim"
+    ).evidence[0])
+    service = CVIngestionService(
+        db_session, interpreter=FixedCVInterpreter(output), runtime_snapshot=runtime_snapshot_a
+    )
+    app.dependency_overrides[get_user_cv_ingestion_service] = lambda: service
+    try:
+        headers = _auth(client, "issue-254-mixed@example.com")
+        uploaded = client.post(
+            "/api/v1/cv-ingestion/upload",
+            headers=headers,
+            files=[("files", ("issue_254_benchmark_cv.md", content, "text/markdown"))],
+        )
+        draft_id = uploaded.json()["id"]
+        response = client.post(f"/api/v1/cv-ingestion/{draft_id}/interpret", headers=headers)
+        assert response.status_code == 422
+        assert db_session.get(CandidateCVIngestionDraft, draft_id).state == "uploaded"
+        assert db_session.scalars(select(CandidateEvidenceRecord)).all() == []
+        assert db_session.scalars(select(CandidateStructuredProfile)).all() == []
+    finally:
+        app.dependency_overrides.pop(get_user_cv_ingestion_service, None)
+
+
+def test_provenance_cannot_pair_a_valid_segment_with_the_wrong_document() -> None:
+    extractor = CVFileExtractionService()
+    first = extractor.extract(filename="first.md", content_type="text/markdown", content=b"# First\nSource A")
+    second = extractor.extract(filename="second.md", content_type="text/markdown", content=b"# Second\nSource B")
+    cross_document = _evidence_output(first.provenance.document_sha256, [second.segments[0].segment_id])
+    with pytest.raises(ValueError, match="supplied source segments"):
+        CVIngestionService._enrich_provenance(
+            cross_document, [first, second], allow_missing_provenance=False
         )
 
 

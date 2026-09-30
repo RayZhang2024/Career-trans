@@ -32,6 +32,18 @@ class SemanticCVInterpreter:
             raise SemanticOutputError(
                 "The installed semantic SDK cannot build a CV interpretation Structured Outputs schema."
             ) from exc
+        allowed_documents = sorted({document.provenance.document_sha256 for document in documents})
+        allowed_segments = sorted({segment_id for document in documents for segment_id in document.provenance.segment_ids})
+        if not allowed_documents or not allowed_segments:
+            raise SemanticOutputError("CV interpretation requires source documents with source segments.")
+        for document in documents:
+            provenance_ids = set(document.provenance.segment_ids)
+            segment_ids = {segment.segment_id for segment in document.segments}
+            if not provenance_ids or provenance_ids != segment_ids:
+                raise SemanticOutputError("CV source segment identifiers are inconsistent.")
+        provenance_schema = schema["$defs"]["EvidenceProvenance"]["properties"]
+        provenance_schema["document_sha256"]["enum"] = allowed_documents
+        provenance_schema["segment_ids"]["items"]["enum"] = allowed_segments
         response = self._client.responses.create(
             model=self._model,
             input=[
