@@ -16,4 +16,4 @@ Keep a coherent unit of work together when its details describe the same role, p
 
 Do not infer a concrete technology or practice from an adjacent one. For example, do not infer OpenAI API use from LangGraph, vector databases from RAG, a cloud provider from generic cloud work, IAM/security from containers, production ownership from a prototype, or regulated-domain experience from unrelated work.
 
-Every evidence item must include provenance that identifies the source document and the specific source segment(s) supporting it. Do not cite a document or segment that is not present in the input.
+Every evidence item must include provenance that identifies the source document and the specific source segment(s) supporting it. Copy `document_sha256` exactly from that document's `provenance.document_sha256`. Copy each `segment_ids` value exactly from a supporting `segments[].segment_id` in that same document. These are canonical identifiers, not section numbers or aliases: never shorten, reconstruct, or invent them. Use only the supplied identifiers; do not cite a document or segment that is not present in the input.
