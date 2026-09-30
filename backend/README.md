@@ -61,6 +61,39 @@ root-level Compose `.env`; `backend/.env` is not read automatically by
 Compose. No secret file is needed for credential-free startup, and those
 backend-only values are never made available to the frontend container.
 
+## Job Discovery web-search providers
+
+The authenticated **Settings → Job Discovery** page selects the search provider
+for manual and scheduled agentic job discovery. “Use deployment default” keeps
+the administrator's `AGENTIC_SEARCH_PROVIDER`; Tavily, OpenAI web search, and
+Disabled can be selected per user. Brave remains a deployment-only option. The
+selected provider is resolved once when a run starts, and the application does
+not fall back to another provider when it is unavailable. Semantic AI work is
+configured independently in **Settings → AI Models**.
+
+Set `TAVILY_API_KEY` to provide a deployment-wide Tavily key. To allow users to
+save their own keys, configure a separate 32-byte URL-safe base64 key in
+`TAVILY_CREDENTIAL_ENCRYPTION_KEY`, for example:
+
+```powershell
+python -c "import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+Keep this encryption key in deployment secret storage, separate from the JWT
+secret and database. User keys are AES-GCM encrypted before storage. If the
+encryption key is missing, user key storage is disabled while a deployment key
+continues to work. Rotating the encryption key makes existing user keys
+unreadable; users must replace those keys after rotation. Settings and schedule
+history contain only provider/source/depth metadata, never credentials.
+Tavily uses its Basic Search endpoint with result text normalized into the
+existing web-search result contract. “Test connection” makes one Basic Search
+request and does not start a discovery run or update a schedule.
+
+For an existing database, apply
+`backend/migrations/20260930_job_discovery_settings.sql` before using the new
+settings and scheduled-run metadata. Fresh development databases receive these
+tables from SQLAlchemy `create_all()`.
+
 ## Host-side Codex discovery model
 
 Native `career-trans jobs discover-external` and `career-trans jobs hunt` invoke

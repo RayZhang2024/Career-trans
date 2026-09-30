@@ -29,3 +29,15 @@ class User(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    job_discovery_settings = relationship(
+        "UserJobDiscoverySettings",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    tavily_credential = relationship(
+        "UserTavilyCredential",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )

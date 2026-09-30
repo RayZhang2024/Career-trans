@@ -55,6 +55,12 @@ from app.services.application_preparation_service import ApplicationPreparationR
 from app.services.application_tracking_service import ApplicationTrackingService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.services.ai_settings_service import AiSettingsService
+from app.services.job_discovery_settings_service import (
+    JobDiscoveryProviderNotReady,
+    JobDiscoverySettingsError,
+    JobDiscoverySettingsService,
+    ResolvedWebSearchProvider,
+)
 from app.services.llm_runtime import (
     JOB_EVALUATION_OPERATIONS,
     PREPARATION_OPERATIONS,
@@ -81,7 +87,7 @@ from app.providers.llm import (
     SemanticProviderConfigurationError,
     validate_openai_structured_output_model,
 )
-from app.providers.web_search import BraveWebSearchProvider, OpenAIWebSearchProvider, WebSearchProvider
+from app.providers.web_search import BraveWebSearchProvider, OpenAIWebSearchProvider, TavilyWebSearchProvider, WebSearchProvider
 from app.providers.jobs.probes.ashby import AshbyJobSourceProbe
 from app.providers.jobs.probes.greenhouse import GreenhouseJobSourceProbe
 from app.providers.jobs.probes.lever import LeverJobSourceProbe
@@ -499,9 +505,16 @@ def get_agentic_web_search_provider(settings: Settings) -> WebSearchProvider:
                 detail="Brave web search is not configured. Set BRAVE_SEARCH_API_KEY in backend/.env.",
             )
         return BraveWebSearchProvider(api_key=settings.brave_search_api_key)
+    if provider == "tavily":
+        if not settings.tavily_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Tavily web search is not configured for this deployment.",
+            )
+        return TavilyWebSearchProvider(api_key=settings.tavily_api_key)
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Unsupported AGENTIC_SEARCH_PROVIDER. Supported values: disabled, openai, brave.",
+        detail="Unsupported deployment web-search provider.",
     )
 
 
@@ -514,10 +527,21 @@ def _build_agentic_job_discovery_service(
     db: Session,
     settings: Settings,
     runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+    resolved_search_provider: ResolvedWebSearchProvider | None = None,
 ) -> AgenticJobDiscoveryService:
     # Resolve the search capability first so disabled mode fails before any in-process
     # semantic components are constructed.
-    search_provider = get_agentic_web_search_provider(settings)
+    if resolved_search_provider is None:
+        search_provider = get_agentic_web_search_provider(settings)
+        selected_provider = settings.agentic_search_provider.casefold().strip()
+        provider_metadata = {
+            "provider": selected_provider if selected_provider in {"openai", "brave", "tavily"} else "unsupported",
+            "credential_source": "deployment",
+            **({"search_depth": "basic"} if selected_provider == "tavily" else {}),
+        }
+    else:
+        search_provider = resolved_search_provider.provider
+        provider_metadata = resolved_search_provider.metadata
     return AgenticJobDiscoveryService(
         strategy_generator=OpenAISearchStrategyGenerator(
             api_key="",
@@ -542,14 +566,42 @@ def _build_agentic_job_discovery_service(
             ),
         ),
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
+        provider_metadata=provider_metadata,
     )
 
 
 def get_user_agentic_job_discovery_service(
     db: DbSession,
+    current_user: CurrentUser,
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
 ) -> AgenticJobDiscoveryService:
-    return _build_agentic_job_discovery_service(db, get_settings(), runtime_snapshot)
+    try:
+        return get_user_agentic_job_discovery_service_for_user(
+            db, current_user.id, runtime_snapshot
+        )
+    except JobDiscoverySettingsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+
+
+def get_user_agentic_job_discovery_service_for_user(
+    db: Session,
+    user_id: str,
+    runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+    *,
+    settings: Settings | None = None,
+) -> AgenticJobDiscoveryService:
+    """Shared HTTP/standalone authority for a user's current web-search settings."""
+    selected_settings = settings or get_settings()
+    resolution = JobDiscoverySettingsService(db, settings=selected_settings).resolve_provider(user_id)
+    snapshot = runtime_snapshot or AiSettingsService(db, settings=selected_settings).snapshot_for_user(user_id)
+    return _build_agentic_job_discovery_service(
+        db,
+        selected_settings,
+        snapshot,
+        resolved_search_provider=resolution,
+    )
 
 
 @lru_cache
@@ -773,7 +825,9 @@ def get_scheduled_discovery_execution_service(
     return ScheduledDiscoveryExecutionService(
         db,
         structured_ats=structured_ats,
-        agentic_web_factory=lambda snapshot: _build_agentic_job_discovery_service(db, get_settings(), snapshot),
+        agentic_web_factory=lambda user_id, snapshot: get_user_agentic_job_discovery_service_for_user(
+            db, user_id, snapshot, settings=get_settings()
+        ),
         user_runs_factory=lambda snapshot: UserJobDiscoveryService(
             db,
             ranking_service=_build_user_job_ranking_service(get_settings(), snapshot),

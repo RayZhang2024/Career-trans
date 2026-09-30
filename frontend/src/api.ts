@@ -36,6 +36,16 @@ export type AiSettings = {
   effective: Record<SemanticOperation, AiEffectiveOperation>;
 };
 export type AiSettingsReplace = AiPreferences & { expected_revision: number };
+export type DiscoveryProvider = "tavily" | "openai" | "disabled";
+export type EffectiveDiscoveryProvider = DiscoveryProvider | "brave" | "unsupported";
+export type CredentialSource = "user" | "deployment";
+export type JobDiscoverySettings = {
+  revision: number; provider_override: DiscoveryProvider | null;
+  deployment_provider: EffectiveDiscoveryProvider; effective_provider: EffectiveDiscoveryProvider;
+  tavily_credential_configured: boolean; tavily_credential_source: CredentialSource | null;
+  tavily_user_credential_storage_available: boolean; tavily_credential_usable: boolean;
+};
+export type TavilyConnectionTest = { success: boolean; credential_source: CredentialSource; message: string };
 
 export const SEMANTIC_OPERATION_ORDER: ReadonlyArray<{ id: SemanticOperation; label: string }> = [
   { id: "cv_semantic_extraction", label: "CV extraction" },

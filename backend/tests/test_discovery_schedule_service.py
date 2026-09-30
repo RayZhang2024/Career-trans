@@ -124,6 +124,44 @@ def test_claimed_execution_skips_unready_candidate_before_acquisition(
     assert reader.read_user_ids == [user.id]
 
 
+def test_scheduled_agentic_provider_resolves_once_for_owner_and_persists_safe_metadata(db_session) -> None:
+    user = _user(db_session, "provider-owner@example.com")
+    payload = _payload(acquisition=AcquisitionConfig(
+        structured_ats=StructuredAtsScheduleConfig(enabled=False),
+        agentic_web=AgenticWebScheduleConfig(enabled=True),
+    ))
+    schedule = DiscoveryScheduleService(db_session).create(
+        user.id, payload, datetime(2026, 9, 14, 8, tzinfo=UTC)
+    )
+    provider_builds: list[tuple[str, object]] = []
+
+    class ProviderService:
+        provider_metadata = {"provider": "tavily", "credential_source": "user", "search_depth": "basic", "api_key": "must-not-persist"}
+
+        def discover(self, request):
+            return _agentic_response()
+
+    def resolve_provider(owner_id, snapshot):
+        provider_builds.append((owner_id, snapshot))
+        return ProviderService()
+
+    runner = ScheduledDiscoveryExecutionService(
+        db_session,
+        structured_ats=object(),
+        agentic_web_factory=resolve_provider,
+        user_runs=object(),
+        candidate_reader=StaticCandidateReader(snapshot_for_context(CandidateContext(profile_text="ready fixture"))),
+    )
+    claimed = runner.claim(schedule.id, TriggerKind.MANUAL, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    assert claimed is not None
+    result = runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC))
+    metadata = json.loads(result.web_search_metadata_json)
+    assert result.status == "completed"
+    assert provider_builds == [(user.id, None)]
+    assert metadata == {"credential_source": "user", "provider": "tavily", "search_depth": "basic"}
+    assert "must-not-persist" not in result.web_search_metadata_json
+
+
 def test_dst_daily_wall_time_and_nonexistent_and_ambiguous_slots():
     daily = ScheduleSpec(cadence=ScheduleCadence.DAILY, timezone="Europe/London", local_time=time(9, 30))
     before_spring = datetime(2026, 3, 28, 10, 0, tzinfo=UTC)

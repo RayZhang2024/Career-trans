@@ -166,6 +166,20 @@ class ScheduledDiscoveryExecutionService:
             else None
         )
 
+        agentic_service: object | None = None
+        agentic_setup_error: Exception | None = None
+        if acquisition.agentic_web.enabled:
+            try:
+                agentic_service = self._agentic_service(execution.user_id, runtime_snapshot)
+                self._record_web_search_metadata(
+                    execution, getattr(agentic_service, "provider_metadata", None)
+                )
+            except Exception as exc:
+                agentic_setup_error = exc
+                self._record_web_search_metadata(
+                    execution, getattr(exc, "provider_metadata", None)
+                )
+
         if acquisition.structured_ats.enabled:
             try:
                 config = acquisition.structured_ats
@@ -198,8 +212,11 @@ class ScheduledDiscoveryExecutionService:
 
         if acquisition.agentic_web.enabled:
             try:
+                if agentic_setup_error is not None:
+                    raise agentic_setup_error
+                assert agentic_service is not None
                 config = acquisition.agentic_web
-                response = self._agentic_service(runtime_snapshot).discover(
+                response = agentic_service.discover(
                     AgenticDiscoveryRequest(
                         candidate_context=context,
                         query=query,
@@ -278,9 +295,37 @@ class ScheduledDiscoveryExecutionService:
         assert self._runtime_snapshot_resolver is not None
         return self._runtime_snapshot_resolver(user_id)
 
-    def _agentic_service(self, runtime_snapshot: ResolvedRuntimeSnapshot | None) -> object:
+    def _agentic_service(
+        self, user_id: str, runtime_snapshot: ResolvedRuntimeSnapshot | None
+    ) -> object:
         parameters = inspect.signature(self._agentic_web_factory).parameters
-        return self._agentic_web_factory(runtime_snapshot) if parameters else self._agentic_web_factory()
+        if len(parameters) >= 2:
+            return self._agentic_web_factory(user_id, runtime_snapshot)
+        if parameters:
+            return self._agentic_web_factory(runtime_snapshot)
+        return self._agentic_web_factory()
+
+    def _record_web_search_metadata(
+        self, execution: ScheduledDiscoveryExecution, metadata: object
+    ) -> None:
+        if not isinstance(metadata, dict):
+            return
+        safe_values = {
+            "provider": {"tavily", "openai", "brave", "disabled", "unsupported"},
+            "credential_source": {"user", "deployment", "none"},
+            "search_depth": {"basic"},
+        }
+        safe: dict[str, str] = {}
+        for key, allowed in safe_values.items():
+            value = metadata.get(key)
+            if isinstance(value, str) and value in allowed:
+                safe[key] = value
+        if not safe:
+            return
+        execution.web_search_metadata_json = json.dumps(safe, sort_keys=True)
+        # Persist safe resolution metadata before provider work begins. It contains
+        # no credential material and remains immutable if settings later change.
+        self._session.commit()
 
     def _user_run_service(self, runtime_snapshot: ResolvedRuntimeSnapshot | None) -> object:
         if runtime_snapshot is not None and self._user_runs_factory is not None:

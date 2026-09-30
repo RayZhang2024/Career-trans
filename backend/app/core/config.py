@@ -127,6 +127,8 @@ class Settings(BaseSettings):
     smartrecruiters_company_ids: str = ""
     recruitee_company_tokens: str = ""
     brave_search_api_key: str | None = None
+    tavily_api_key: str | None = None
+    tavily_credential_encryption_key: str | None = None
     # Paid OpenAI web search is opt-in. Semantic OpenAI operations remain independent.
     agentic_search_provider: str = "disabled"
 

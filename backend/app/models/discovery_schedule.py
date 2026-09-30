@@ -35,6 +35,7 @@ class ScheduledDiscoveryExecution(Base):
     trigger_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     config_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    web_search_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="running", index=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
