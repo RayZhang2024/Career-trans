@@ -28,6 +28,7 @@ from app.api.deps import (
     get_user_job_decision_service,
     get_discovery_schedule_service,
     get_scheduled_discovery_execution_service,
+    get_one_off_discovery_service,
 )
 from app.schemas.discovery import (
     JobDiscoveryResponse,
@@ -67,6 +68,7 @@ from app.schemas.user_job_discovery import (
 from app.schemas.job_workspace import JobWorkspaceRead
 from app.schemas.user_job_decision import UserJobDecisionListResponse, UserJobDecisionMutation, UserJobDecisionRead, UserJobDecisionValue
 from app.schemas.discovery_schedule import DiscoveryScheduleCreate, DiscoverySchedulePatch, DiscoveryScheduleRead, ScheduledExecutionRead
+from app.schemas.one_off_discovery import OneOffExecutionRead, OneOffLaunchRequest, OneOffPreflightRead
 from app.schemas.job import JobAnalysisRequest, JobAnalysisResponse
 from app.schemas.matching import JobMatchMeRequest, JobMatchRequest, JobMatchResponse
 from app.services.job_analysis_service import JobAnalysisService
@@ -88,9 +90,38 @@ from app.services.user_job_workspace_service import UserJobWorkspaceReadService
 from app.services.user_job_decision_service import UserJobDecisionConflict, UserJobDecisionService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
+from app.services.one_off_discovery_service import OneOffDiscoveryService, OneOffLaunchConflict, OneOffLaunchUnavailable
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+
+
+@router.get("/one-off-discovery/preflight", response_model=OneOffPreflightRead)
+def one_off_discovery_preflight(current_user: CurrentUser, service: OneOffDiscoveryService = Depends(get_one_off_discovery_service)) -> OneOffPreflightRead:
+    return service.preflight(current_user.id)
+
+
+@router.post("/one-off-discovery/executions", response_model=OneOffExecutionRead)
+def launch_one_off_discovery(payload: OneOffLaunchRequest, current_user: CurrentUser, service: OneOffDiscoveryService = Depends(get_one_off_discovery_service)) -> OneOffExecutionRead:
+    try:
+        return service.launch(current_user.id, payload)
+    except OneOffLaunchConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except OneOffLaunchUnavailable as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/one-off-discovery/executions", response_model=list[OneOffExecutionRead])
+def list_one_off_discovery_executions(current_user: CurrentUser, limit: int = Query(default=20, ge=1, le=100), service: OneOffDiscoveryService = Depends(get_one_off_discovery_service)) -> list[OneOffExecutionRead]:
+    return service.list_history(current_user.id, limit=limit)
+
+
+@router.get("/one-off-discovery/executions/{execution_id}", response_model=OneOffExecutionRead)
+def get_one_off_discovery_execution(execution_id: str, current_user: CurrentUser, service: OneOffDiscoveryService = Depends(get_one_off_discovery_service)) -> OneOffExecutionRead:
+    try:
+        return service.reconcile(current_user.id, execution_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One-off discovery execution not found.") from exc
 
 
 @router.get("/decisions/{discovered_job_id}", response_model=UserJobDecisionRead)

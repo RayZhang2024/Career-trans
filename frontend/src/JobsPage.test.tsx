@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation, useNavigate, useNavigationType } from "react-router-dom";
-import type { ApplicationPreparation, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
+import type { ApplicationPreparation, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, OneOffExecution, OneOffPreflight, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
 import { App } from "./App";
 import { AuthProvider, useAuth } from "./auth";
 import { undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
@@ -35,6 +35,8 @@ const savedExecution = (status: ScheduledExecutionRead["status"] = "completed"):
   config_snapshot: { schedule: savedSchedule().schedule, query: savedSchedule().query, acquisition: savedSchedule().acquisition, evaluation: savedSchedule().evaluation },
   discovery_run_id: status === "running" ? null : "run-1", acquisition_summary: {}, failure_summary: {}, started_at: "2026-02-01T12:00:00Z", completed_at: status === "running" ? null : "2026-02-01T12:05:00Z",
 });
+const oneOffPreflight = (patch: Partial<OneOffPreflight> = {}): OneOffPreflight => ({ effective_provider: "tavily", readiness: "configured_for_launch", available: true, reason: null, policy: { version: "v1", country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 12, max_discovered_jobs: 20, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 }, provider_settings_revision: 2, launch_fingerprint: "a".repeat(64), ...patch });
+const oneOffExecution = (patch: Partial<OneOffExecution> = {}): OneOffExecution => ({ id: "one-off-1", client_request_id: "request-1", query: { keywords: ["AI"], locations: [], remote_ok: null, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 }, policy: oneOffPreflight().policy, provider: { provider: "tavily", credential_source: "user", search_depth: "basic" }, status: "completed", started_at: "2026-10-01T00:00:00Z", completed_at: "2026-10-01T00:01:00Z", acquisition_summary: { canonical_jobs: 0, relevance_screened: 0, analysed: 0 }, failure_summary: {}, discovery_run_id: null, ...patch });
 const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
 const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1, decision: decision(id) });
 const workspaceJob = (patch: Record<string, unknown> = {}) => ({ id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z", ...patch });
@@ -62,6 +64,8 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     if (path === "/api/v1/jobs/inbox") return Promise.resolve(json(page([inboxItem("actionable"), inboxItem("blocked", false)])));
     if (path === "/api/v1/jobs/decisions") return Promise.resolve(json(page([])));
     if (path === "/api/v1/jobs/discovery-schedules") return Promise.resolve(json([]));
+    if (path === "/api/v1/jobs/one-off-discovery/preflight") return Promise.resolve(json(oneOffPreflight()));
+    if (path === "/api/v1/jobs/one-off-discovery/executions") return Promise.resolve(json(init?.method === "POST" ? oneOffExecution() : []));
     if (path === "/api/v1/jobs/opportunities/eval-alpha") return Promise.resolve(json(ranked("Alpha detail")));
     if (path === "/api/v1/jobs/discovery-runs/run-1") return Promise.resolve(json(runDetail()));
     if (path === "/api/v1/jobs/discovery-runs/run-1/jobs/job-0") return Promise.resolve(json(historyDetail));
@@ -979,6 +983,63 @@ describe("Issue #234 Find jobs saved-schedule execution", () => {
     const fetch = scheduleFetch(savedSchedule(), { "/api/v1/jobs/inbox": () => { inboxCalls += 1; return Promise.reject(new TypeError("offline")); }, "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => json(savedExecution()) });
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Completed"); expect(screen.getByText(/Recent vacancies refresh: could not be confirmed as refreshed/)).toBeInTheDocument(); expect(screen.getByRole("link", { name: "Review recent vacancies" })).toBeInTheDocument();
+  });
+});
+
+describe("Issue #261 transient one-off discovery", () => {
+  it("shows the server policy and launches directly from a transient SearchIntent", async () => {
+    let submitted: Record<string, unknown> | undefined;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => { submitted = JSON.parse(String(init?.body)); return json(oneOffExecution()); } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(await screen.findByText(/Tavily · Configured for launch/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "One-off discovery policy" })).toHaveTextContent("Maximum jobs: 20");
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "  AI roles  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(submitted).toMatchObject({ expected_launch_fingerprint: "a".repeat(64), query: { keywords: ["AI roles"] } });
+    expect(submitted?.client_request_id).toEqual(expect.any(String));
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-schedules/s-1/run-now");
+  });
+
+  it("keeps an unavailable provider actionable and does not submit", async () => {
+    let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/one-off-discovery/preflight": () => json(oneOffPreflight({ available: false, readiness: "not_configured", reason: "Tavily is not configured." })),
+      "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return json(oneOffExecution()); },
+    });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    expect(await screen.findByText(/Tavily is not configured/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review Job Discovery Settings" })).toHaveAttribute("href", "/settings/discovery");
+    expect(screen.queryByRole("button", { name: "Find jobs now" })).not.toBeInTheDocument();
+    expect(posts).toBe(0);
+  });
+
+  it("retries an interrupted POST with the same request id to reconcile its execution", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    let count = 0;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+      submitted.push(JSON.parse(String(init?.body)));
+      count += 1;
+      return count === 1 ? Promise.reject(new TypeError("offline")) : json(oneOffExecution());
+    } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]).toEqual(submitted[0]);
+  });
+
+  it("projects a linked evaluation as one Search History entry", async () => {
+    const linked = oneOffExecution({ discovery_run_id: "run-1" });
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([run()])), "/api/v1/jobs/one-off-discovery/executions": () => json([linked]) });
+    renderJobs(fetch, "/jobs/history");
+    expect(await screen.findByRole("heading", { name: "Search history" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "One-off discovery · Completed" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: /Completed/ })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("link", { name: "View evaluated results" }));
+    expect(await screen.findByRole("heading", { name: "Per-job outcomes" })).toBeInTheDocument();
   });
 });
 

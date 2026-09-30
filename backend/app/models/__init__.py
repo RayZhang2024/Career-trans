@@ -10,6 +10,7 @@ from app.models.discovered_job import DiscoveredJob
 from app.models.discovered_job_provenance import DiscoveredJobProvenance
 from app.models.user_job_discovery import DiscoveryRun, DiscoveryRunJob, UserJobEvaluation
 from app.models.discovery_schedule import DiscoverySchedule, ScheduledDiscoveryExecution
+from app.models.one_off_discovery_execution import OneOffDiscoveryExecution
 from app.models.application_preparation import ApplicationPreparation
 from app.models.application_tracking import ApplicationTrackingEvent, ApplicationTrackingRecord
 from app.models.user_ai_settings import UserAiSettings
@@ -17,4 +18,4 @@ from app.models.user import User
 from app.models.user_job_decision import UserJobDecision
 from app.models.user_job_discovery_settings import UserJobDiscoverySettings, UserTavilyCredential
 
-__all__ = ["CandidateProfile", "CandidateProfileRevisionRecord", "CandidateCVIngestionDraft", "CandidateCVReviewBaseline", "CandidateCVOverlapReviewRecord", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CandidateAdviserProfileProposalRecord", "CandidateStructuredItemLineageRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "DiscoverySchedule", "ScheduledDiscoveryExecution", "ApplicationPreparation", "ApplicationTrackingRecord", "ApplicationTrackingEvent", "UserAiSettings", "User", "UserJobDecision", "UserJobDiscoverySettings", "UserTavilyCredential"]
+__all__ = ["CandidateProfile", "CandidateProfileRevisionRecord", "CandidateCVIngestionDraft", "CandidateCVReviewBaseline", "CandidateCVOverlapReviewRecord", "CandidateEvidenceRecord", "CandidateStructuredProfile", "CandidateAdviserIntakeRecord", "CandidateAdviserAssessmentRecord", "CandidateAdviserClarificationRecord", "CandidateAdviserProfileProposalRecord", "CandidateStructuredItemLineageRecord", "CompanyCareerSource", "DiscoveredJob", "DiscoveredJobProvenance", "DiscoveryRun", "DiscoveryRunJob", "UserJobEvaluation", "DiscoverySchedule", "ScheduledDiscoveryExecution", "OneOffDiscoveryExecution", "ApplicationPreparation", "ApplicationTrackingRecord", "ApplicationTrackingEvent", "UserAiSettings", "User", "UserJobDecision", "UserJobDiscoverySettings", "UserTavilyCredential"]

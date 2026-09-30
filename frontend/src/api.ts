@@ -362,6 +362,23 @@ export type DiscoveryScheduleRead = {
   id: string; name: string; enabled: boolean; schedule: DiscoveryScheduleSpec; query: DiscoveryScheduleQuery;
   acquisition: DiscoveryScheduleAcquisition; evaluation: DiscoveryScheduleEvaluation; next_run_at: string | null; last_execution_at: string | null;
 };
+export type OneOffReadiness = "configured_for_launch" | "not_configured" | "unsupported" | "manual_runtime_not_ready" | "candidate_not_ready";
+export type OneOffPolicy = {
+  version: string; country: string; max_search_queries: number; max_search_results_per_query: number;
+  max_pages_to_open: number; max_discovered_jobs: number; max_semantic_candidates: number;
+  max_full_analyses: number; min_relevance_score: number;
+};
+export type OneOffPreflight = {
+  effective_provider: EffectiveDiscoveryProvider; readiness: OneOffReadiness; available: boolean;
+  reason: string | null; policy: OneOffPolicy; provider_settings_revision: number; launch_fingerprint: string;
+};
+export type OneOffExecution = {
+  id: string; client_request_id: string; query: DiscoveryScheduleQuery; policy: OneOffPolicy;
+  provider: Record<string, string>; status: "running" | "completed" | "partial_failed" | "failed";
+  started_at: string; completed_at: string | null; acquisition_summary: Record<string, number>;
+  failure_summary: Record<string, number>; discovery_run_id: string | null;
+};
+export type OneOffLaunch = { client_request_id: string; expected_launch_fingerprint: string; query: DiscoveryScheduleQuery };
 export type DiscoveryScheduleCreate = Omit<DiscoveryScheduleRead, "id" | "next_run_at" | "last_execution_at">;
 export type DiscoverySchedulePatch = Partial<Omit<DiscoveryScheduleCreate, "schedule" | "query" | "acquisition" | "evaluation">> & {
   schedule?: DiscoveryScheduleSpec; query?: DiscoveryScheduleQuery; acquisition?: DiscoveryScheduleAcquisition; evaluation?: DiscoveryScheduleEvaluation;

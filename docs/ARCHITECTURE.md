@@ -468,6 +468,30 @@ employer detail produce the canonical actionable `JobListing`; unresolved,
 stale, and provider-detail failures remain unverified diagnostics and do not
 enter semantic or deep ranking.
 
+## Transient one-off discovery
+
+`GET /api/v1/jobs/one-off-discovery/preflight` resolves the authenticated user's
+effective web-search provider and returns its safe configuration readiness, the
+server-owned V1 policy, the Job Discovery settings revision, and a fingerprint
+binding those values. Remote provider configuration does not represent a live
+health check. Local Codex uses the established manual readiness boundary; its
+scheduled capability is not used for a manual one-off action.
+
+`POST /api/v1/jobs/one-off-discovery/executions` accepts a committed SearchIntent
+query, the preflight fingerprint, and a client request UUID. A separate
+`OneOffDiscoveryExecution` row is committed before agentic web acquisition. The
+service reuses the existing `AgenticJobDiscoveryService` persistence path and
+the bounded `UserJobDiscoveryService` evaluation path. It creates no
+`DiscoverySchedule`; a clean zero-result search has no `DiscoveryRun`. The
+user-scoped `(user_id, client_request_id)` unique key makes retries reconcile
+the original immutable query, policy, and safe provider snapshot.
+
+Exact execution reads and the one-off history list are provider-free. A running
+claim older than two hours is terminalized as failed with a structural
+`stale_execution` reason when reconciled; no recovery path repeats provider
+work. The browser combines one-off records with ordinary run history and hides
+the linked `DiscoveryRun` summary to show one logical entry.
+
 Persisted detail is monotonic by authority:
 
 ```text

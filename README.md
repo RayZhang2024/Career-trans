@@ -56,6 +56,7 @@ The authenticated browser workspace includes:
 - bounded discovery-run history with lazy run and historical job detail;
 - a recent shared imported-vacancy inbox and selection of actionable records for evaluation;
 - saved discovery configurations with daily/weekly recurrence setup, pause/resume, manual execution of persisted configurations, execution history, and historical configuration snapshots.
+- transient SearchIntent one-off discovery with a server-owned web/evaluation budget, durable idempotent execution, and reconciliation history.
 - application preparation from current ranked opportunities, saved preparation history, evidence-grounded CV / cover-letter / question review, and authenticated DOCX/PDF downloads.
 - user-started application tracking from saved preparations, with six manually recorded statuses and append-only revision history.
 
@@ -101,6 +102,7 @@ Current backend capabilities include:
 - job ranking and current-user ranking;
 - persisted user discovery runs and current opportunities;
 - recurring discovery schedules and execution history;
+- transient one-off discovery preflight, bounded launch, durable user-owned execution history, and linked evaluation runs;
 - application preparation with grounded CV/cover-letter drafting;
 - downloadable CV and cover-letter DOCX/PDF outputs;
 - provider-free, user-scoped reads of persisted application preparations;
@@ -115,6 +117,8 @@ The browser can save discovery configurations, configure daily/weekly recurrence
 An enabled configuration means recurrence is configured, not that the scheduler is running. Automatic due execution requires the server-side scheduled-discovery operator and the required provider configuration. The current local Compose stack does not continuously run that operator. Missed due slots are coalesced by backend semantics rather than replayed individually. Pausing affects future recurrence only and does not cancel an already-running execution; the browser has no execution-cancel control. History snapshots represent the configuration used at claim time and do not imply a historical name, enabled state, or scheduler health.
 
 Broad external Codex discovery remains a separate host-side workflow outside the browser and containers. The browser does not invoke Codex and does not expose its credentials. The Jobs inbox reads persisted public vacancies; it does not run browser-side discovery.
+
+Transient **Find jobs now** uses only the effective web-search provider from Job Discovery Settings and never invents ATS scope or a saved schedule. The V1 server policy allows up to 6 search queries, 10 results per query, 12 pages, 20 canonical jobs, 10 semantic candidates, and 5 full analyses at a 0.5 minimum relevance score. Preflight reports configuration readiness, not live remote-provider health. Each launch is claimed before provider work and is idempotent by user and client request ID. Interrupted requests reconcile that execution; running claims older than two hours are marked failed on reconciliation and are never rerun. A clean zero-result search is a completed one-off history item without an empty evaluation run.
 
 Application preparation includes a historical evidence-review workspace for newly created V2C2 preparations. Review shows persisted job requirements and matches, the bounded preparation-time evidence snapshot, per-reference drafting admission, and citations that remain in the final persisted materials. Older V2C1 preparations remain reviewable but explicitly report that complete drafting-context evidence was not stored. Review never substitutes current candidate data for missing historical evidence. Generated content remains immutable; editing/regeneration remains future work.
 
