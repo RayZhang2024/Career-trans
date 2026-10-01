@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
-import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, Profile, RankedJobOpportunity, ScheduledExecutionRead, UserJobDecision, UserJobDecisionListItem, UserJobDecisionValue, UserOpportunitySummary } from "./api";
+import type { ApplicationPreparation, ApplicationPrepareRequest, BoundedResponse, CreateDiscoveryRun, DiscoveryRunCreated, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, OneOffExecution, OneOffLaunch, OneOffPreflight, Profile, RankedJobOpportunity, ScheduledExecutionRead, SearchHistoryResponse, UserJobDecision, UserJobDecisionListItem, UserJobDecisionValue, UserOpportunitySummary } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
 import JobWorkspacePage, { type JobWorkspaceSection } from "./JobWorkspacePage";
@@ -15,6 +15,13 @@ type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?
 type InboxDismissalNotice = { decision: UserJobDecision; title: string; message: string };
 const WINDOW = 20;
 const MAX_WINDOW = 100;
+const ONE_OFF_SESSION_NOTICE_KEY = "career-trans.one-off-session-notice";
+const ONE_OFF_SESSION_NOTICE_EVENT = "career-trans-one-off-session-notice";
+const ONE_OFF_SESSION_CHANGED_MESSAGE = "Your session changed during this search. Review the current search and start a fresh launch under this session.";
+function announceOneOffSessionChange() {
+  sessionStorage.setItem(ONE_OFF_SESSION_NOTICE_KEY, ONE_OFF_SESSION_CHANGED_MESSAGE);
+  window.dispatchEvent(new Event(ONE_OFF_SESSION_NOTICE_EVENT));
+}
 const emptyPage = <T,>(): SectionState<T> => ({ phase: "loading" });
 const titleCase = (value: string) => value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 const nextWindow = (current: number) => Math.min(MAX_WINDOW, current + WINDOW);
@@ -40,6 +47,11 @@ type FindRunOutcome =
   | { kind: "already_running"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
   | { kind: "uncertain"; scheduleName: string; reconciliation: DiscoveryRunReconciliation<ScheduledExecutionRead[]> }
   | { kind: "post_rejected"; scheduleName: string; status: number };
+type OneOffAuthority = { userKey: string; sessionEpoch: number };
+type OneOffLaunchState =
+  | { kind: "idle" }
+  | { kind: "uncertain"; payload: OneOffLaunch; authority: OneOffAuthority }
+  | { kind: "confirmed"; execution: OneOffExecution };
 
 type JobSearchView = "find" | "saved" | "inbox" | "recommended" | "shortlisted" | "history" | "unknown";
 type JobSearchRoute = { kind: "search"; view: JobSearchView } | { kind: "workspace"; discoveredJobId: string; section: JobWorkspaceSection } | { kind: "unknown" };
@@ -263,11 +275,12 @@ export function JobsPage() {
   const view: JobSearchView = route.kind === "search" ? route.view : route.kind === "workspace" ? "unknown" : "unknown";
   const [onboarding, setOnboarding] = useState<SectionState<OnboardingStatus>>({ phase: "loading" });
   const [opportunities, setOpportunities] = useState<SectionState<BoundedResponse<UserOpportunitySummary>>>({ phase: "loading" });
-  const [runs, setRuns] = useState<SectionState<BoundedResponse<DiscoveryRunSummary>>>({ phase: "loading" });
+  const [runs, setRuns] = useState<SectionState<SearchHistoryResponse>>({ phase: "loading" });
   const [inbox, setInbox] = useState<SectionState<BoundedResponse<InboxSummary>>>({ phase: "loading" });
   const [shortlisted, setShortlisted] = useState<SectionState<BoundedResponse<UserJobDecisionListItem>>>({ phase: "loading" });
   const [dismissed, setDismissed] = useState<SectionState<BoundedResponse<UserJobDecisionListItem>>>({ phase: "loading" });
   const [savedSchedules, setSavedSchedules] = useState<SectionState<DiscoveryScheduleRead[]>>({ phase: "loading" });
+  const [oneOffPreflight, setOneOffPreflight] = useState<SectionState<OneOffPreflight>>({ phase: "loading" });
   const [opportunityLimit, setOpportunityLimit] = useState(WINDOW);
   const [runLimit, setRunLimit] = useState(WINDOW);
   const [inboxLimit, setInboxLimit] = useState(WINDOW);
@@ -290,6 +303,9 @@ export function JobsPage() {
   const [findError, setFindError] = useState("");
   const [findRunOutcome, setFindRunOutcome] = useState<FindRunOutcome | null>(null);
   const [findRunning, setFindRunning] = useState(false);
+  const [oneOffPending, setOneOffPending] = useState(false);
+  const [oneOffError, setOneOffError] = useState(() => sessionStorage.getItem(ONE_OFF_SESSION_NOTICE_KEY) ?? "");
+  const [oneOffState, setOneOffState] = useState<OneOffLaunchState>({ kind: "idle" });
   const [submitting, setSubmitting] = useState(false);
   const [evaluationSnapshot, setEvaluationSnapshot] = useState<{ titles: string[]; query: CreateDiscoveryRun["query"] } | null>(null);
   const [exactEvaluation, setExactEvaluation] = useState<DiscoveryRunCreated | null>(null);
@@ -297,11 +313,15 @@ export function JobsPage() {
   const [evaluationError, setEvaluationError] = useState("");
   const decisionMutator = useJobDecisionMutator();
   const submitLock = useRef(false);
+  const oneOffLock = useRef(false);
+  const oneOffAttempt = useRef(0);
   const alive = useRef(false);
   const opportunitiesRequest = useRef<number | null>(null);
   const runsRequest = useRef<number | null>(null);
-  const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, shortlisted: 0, dismissed: 0, savedSchedules: 0, scheduleHistory: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0 });
+  const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, shortlisted: 0, dismissed: 0, savedSchedules: 0, scheduleHistory: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0, oneOffPreflight: 0 });
   const userKey = user?.id ?? "";
+  const currentUserKey = useRef(userKey);
+  currentUserKey.current = userKey;
   const sessionEpoch = api.sessionEpoch();
   const previousUserKey = useRef(userKey);
   const previousSessionEpoch = useRef(sessionEpoch);
@@ -309,12 +329,19 @@ export function JobsPage() {
 
   useEffect(() => {
     if (previousUserKey.current && (previousUserKey.current !== userKey || previousSessionEpoch.current !== sessionEpoch)) {
+      const hadUnresolvedOneOff = oneOffLock.current || oneOffState.kind === "uncertain";
+      if (hadUnresolvedOneOff) announceOneOffSessionChange();
+      oneOffAttempt.current += 1;
+      oneOffLock.current = false;
+      generations.current.oneOffPreflight += 1;
       generations.current.onboarding += 1;
       setOnboarding(emptyPage()); setOpportunities(emptyPage()); setRuns(emptyPage()); setInbox(emptyPage()); setShortlisted(emptyPage()); setDismissed(emptyPage()); setSavedSchedules(emptyPage());
       setSelectedIds(new Set()); setSearchIntent(emptySearchIntent()); setSelectedScheduleId(null); setSelectedRun(null); setSelectedHistorical(null); setSelectedCurrent(null);
       setSearchIntentRevision((revision) => revision + 1);
       setRunDetail(emptyPage()); setHistoricalDetail(emptyPage()); setCurrentDetail(emptyPage()); setEvaluationSnapshot(null); setExactEvaluation(null); setEvaluationMessage(""); setEvaluationError(""); setFindMessage(""); setFindError(""); setFindRunOutcome(null);
       setLastConfirmedInboxDismissal(null);
+      setOneOffPreflight(emptyPage()); setOneOffState({ kind: "idle" }); setOneOffPending(false);
+      setOneOffError(hadUnresolvedOneOff ? ONE_OFF_SESSION_CHANGED_MESSAGE : "");
       setShortlistedLimit(WINDOW); setDismissedLimit(WINDOW); setShowDismissed(false);
     }
     generations.current.shortlisted += 1;
@@ -322,6 +349,17 @@ export function JobsPage() {
     previousUserKey.current = userKey;
     previousSessionEpoch.current = sessionEpoch;
   }, [userKey, sessionEpoch]);
+
+  useEffect(() => {
+    const showNotice = () => {
+      if (!userKey || api.sessionEpoch() !== sessionEpoch) return;
+      const notice = sessionStorage.getItem(ONE_OFF_SESSION_NOTICE_KEY);
+      if (notice) { sessionStorage.removeItem(ONE_OFF_SESSION_NOTICE_KEY); setOneOffError(notice); }
+    };
+    window.addEventListener(ONE_OFF_SESSION_NOTICE_EVENT, showNotice);
+    showNotice();
+    return () => window.removeEventListener(ONE_OFF_SESSION_NOTICE_EVENT, showNotice);
+  }, [api, userKey, sessionEpoch]);
 
   const loadOnboarding = async () => {
     const request = ++generations.current.onboarding;
@@ -359,7 +397,7 @@ export function JobsPage() {
     runsRequest.current = request;
     setRuns((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
     try {
-      const data = await api.request<BoundedResponse<DiscoveryRunSummary>>(`/api/v1/jobs/discovery-runs?limit=${limit}`);
+      const data = await api.request<SearchHistoryResponse>(`/api/v1/jobs/search-history?limit=${limit}`);
       if (alive.current && request === generations.current.runs) { setRuns({ phase: "loaded", data }); return true; }
       return false;
     } catch {
@@ -474,6 +512,30 @@ export function JobsPage() {
       return false;
     }
   };
+  const loadOneOffPreflight = async (): Promise<boolean> => {
+    const request = ++generations.current.oneOffPreflight;
+    const authority = { userKey, sessionEpoch: api.sessionEpoch() };
+    const current = () => alive.current && request === generations.current.oneOffPreflight && api.sessionEpoch() === authority.sessionEpoch && currentUserKey.current === authority.userKey;
+    setOneOffPreflight((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
+    try {
+      const data = await api.request<OneOffPreflight>("/api/v1/jobs/one-off-discovery/preflight");
+      if (current()) { setOneOffPreflight({ phase: "loaded", data }); return true; }
+      return false;
+    } catch {
+      if (current()) setOneOffPreflight((previous) => ({ phase: "error", data: previous.data, error: "One-off discovery readiness is unavailable." }));
+      return false;
+    }
+  };
+  const refreshOneOffExecution = async (executionId: string): Promise<void> => {
+    const authority = { userKey, sessionEpoch: api.sessionEpoch() };
+    const current = () => alive.current && api.sessionEpoch() === authority.sessionEpoch && currentUserKey.current === authority.userKey;
+    try {
+      const execution = await api.request<OneOffExecution>(`/api/v1/jobs/one-off-discovery/executions/${encodeURIComponent(executionId)}`);
+      if (current()) { setOneOffState({ kind: "confirmed", execution }); setOneOffError(""); void loadRuns(); }
+    } catch {
+      if (current()) setOneOffError("The exact one-off execution could not be refreshed. Its current result remains unconfirmed.");
+    }
+  };
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; for (const key of Object.keys(generations.current) as Array<keyof typeof generations.current>) generations.current[key] += 1; };
@@ -483,11 +545,11 @@ export function JobsPage() {
     const scopeChanged = onboardingScope.current.userKey !== userKey || onboardingScope.current.sessionEpoch !== sessionEpoch;
     onboardingScope.current = { userKey, sessionEpoch };
     if (["find", "inbox", "recommended"].includes(view) && ((!onboarding.data && onboarding.phase !== "error") || scopeChanged)) void loadOnboarding();
-    if (view === "find") void loadSavedSchedules();
+    if (view === "find") { void loadSavedSchedules(); void loadOneOffPreflight(); }
     else if (view === "inbox") void loadInbox(WINDOW);
     else if (view === "recommended") void loadOpportunities(WINDOW);
     else if (view === "shortlisted") void loadShortlisted(WINDOW);
-    else if (view === "history") void loadRuns(WINDOW);
+    else if (view === "history") { void loadRuns(WINDOW); }
   }, [view, userKey, sessionEpoch]);
   useEffect(() => { if (view === "shortlisted" && showDismissed) void loadDismissed(dismissedLimit); }, [view, showDismissed]);
   useEffect(() => {
@@ -570,9 +632,86 @@ export function JobsPage() {
     setSelectedIds((current) => { const next = new Set(current); if (next.has(item.discovered_job_id)) next.delete(item.discovered_job_id); else next.add(item.discovered_job_id); return next; });
   };
   const selectedSchedule = savedSchedules.data?.find((schedule) => schedule.id === selectedScheduleId);
+  const oneOffExecution = oneOffState.kind === "confirmed" ? oneOffState.execution : null;
+  const oneOffUncertainRequest = oneOffState.kind === "uncertain" ? oneOffState.payload : null;
   const selectedScheduleIntent = selectedSchedule ? searchIntentFromQuery(selectedSchedule.query) : null;
   const selectedScheduleDirty = !!selectedScheduleIntent && !searchIntentEquals(searchIntent, selectedScheduleIntent);
   const handoffSearchIntent = () => navigate("/jobs/find/saved", { state: { searchIntent, ...(selectedSchedule ? { scheduleId: selectedSchedule.id } : {}) } });
+  const runOneOffDiscovery = async () => {
+    const uncertain = oneOffState.kind === "uncertain" ? oneOffState : null;
+    if (selectedSchedule || oneOffLock.current || (!uncertain && (!ready || !oneOffPreflight.data?.available || searchIntent.themes.length === 0))) return;
+    const authority: OneOffAuthority = uncertain?.authority ?? { userKey, sessionEpoch: api.sessionEpoch() };
+    const attempt = ++oneOffAttempt.current;
+    const current = () => alive.current && attempt === oneOffAttempt.current && api.sessionEpoch() === authority.sessionEpoch && currentUserKey.current === authority.userKey;
+    const sessionChanged = () => {
+      if (attempt !== oneOffAttempt.current) return;
+      announceOneOffSessionChange();
+      if (!alive.current) return;
+      oneOffAttempt.current += 1;
+      oneOffLock.current = false;
+      setOneOffPending(false);
+      setOneOffState({ kind: "idle" });
+      setOneOffError(ONE_OFF_SESSION_CHANGED_MESSAGE);
+    };
+    if (!current()) { sessionChanged(); return; }
+    oneOffLock.current = true;
+    setOneOffPending(true); setOneOffError("");
+    if (!uncertain) setOneOffState({ kind: "idle" });
+    const payload: OneOffLaunch = uncertain?.payload ?? {
+      client_request_id: crypto.randomUUID(),
+      expected_launch_fingerprint: oneOffPreflight.data!.launch_fingerprint,
+      query: searchIntentToQuery(searchIntent),
+    };
+    const stalePreflight = (error: unknown) => error instanceof ApiError && error.status === 409 && /changed|refresh preflight/i.test(error.detail ?? error.message);
+    const refreshStalePreflight = async () => {
+      setOneOffState({ kind: "idle" });
+      await loadOneOffPreflight();
+      if (current()) setOneOffError("Provider settings or the one-off policy changed. Review the refreshed summary, then explicitly start again.");
+    };
+    try {
+      let execution: OneOffExecution;
+      try {
+        execution = await api.request<OneOffExecution>("/api/v1/jobs/one-off-discovery/executions", { method: "POST", body: JSON.stringify(payload) });
+      } catch (firstError) {
+        if (!current()) { sessionChanged(); return; }
+        if (firstError instanceof ApiError) {
+          if (stalePreflight(firstError)) await refreshStalePreflight();
+          else if (uncertain || firstError.status >= 500) {
+            setOneOffState({ kind: "uncertain", payload, authority });
+            setOneOffError("The original request could not be confirmed. Use Reconcile search to check the exact request.");
+          } else {
+            setOneOffState({ kind: "idle" });
+            setOneOffError(firstError.detail ?? "One-off discovery could not be started.");
+          }
+          return;
+        }
+        setOneOffState({ kind: "uncertain", payload, authority });
+        // Retry only the exact same idempotent request so a lost POST response reconciles its claim.
+        if (!current()) { sessionChanged(); return; }
+        try {
+          execution = await api.request<OneOffExecution>("/api/v1/jobs/one-off-discovery/executions", { method: "POST", body: JSON.stringify(payload) });
+        } catch (reconcileError) {
+          if (!current()) { sessionChanged(); return; }
+          if (stalePreflight(reconcileError)) await refreshStalePreflight();
+          else setOneOffError("The request was interrupted or could not be confirmed. Its result is uncertain; use Reconcile search to check the exact request before starting another.");
+          return;
+        }
+      }
+      if (!current()) { sessionChanged(); return; }
+      setOneOffState({ kind: "confirmed", execution });
+      const [inboxUpdated, opportunitiesUpdated, historyUpdated] = await Promise.all([
+        loadInbox(WINDOW), loadOpportunities(WINDOW, true), loadRuns(runLimit),
+      ]);
+      if (!current()) { sessionChanged(); return; }
+      setOneOffError("");
+      setFindMessage(`One-off discovery ${execution.status.replaceAll("_", " ")}. Inbox ${inboxUpdated ? "refreshed" : "could not be confirmed as refreshed"}; opportunities ${opportunitiesUpdated ? "refreshed" : "could not be confirmed as refreshed"}; Search History ${historyUpdated ? "refreshed" : "could not be confirmed as refreshed"}.`);
+    } finally {
+      if (attempt === oneOffAttempt.current) {
+        oneOffLock.current = false;
+        if (alive.current) setOneOffPending(false);
+      }
+    }
+  };
   const runSelectedSchedule = async () => {
     const schedule = selectedSchedule;
     if (!schedule || !ready || selectedScheduleDirty || findRunning) return;
@@ -642,7 +781,10 @@ export function JobsPage() {
   };
 
   const ready = onboarding.data?.candidate_context_ready === true;
-  const noRuns = runs.data?.items.length === 0 && runs.phase === "loaded";
+  const historyItems = runs.data?.items ?? [];
+  const historyRuns = historyItems.flatMap((item) => item.type === "discovery_run" ? [item.run] : []);
+  const representedRunIds = new Set(historyItems.flatMap((item) => item.type === "discovery_run" ? [item.run.id] : item.execution.discovery_run_id ? [item.execution.discovery_run_id] : []));
+  const noRuns = historyItems.length === 0 && runs.phase === "loaded";
   const confirmedWindow = opportunities.data?.items ?? [];
 
   if (route.kind === "unknown") { navigate("/jobs/find", { replace: true }); return null; }
@@ -671,6 +813,18 @@ export function JobsPage() {
         <SearchIntentEditor key={`${selectedScheduleId ?? "transient"}:${searchIntentRevision}`} intent={searchIntent} onChange={(next) => { setSearchIntent(next); setFindMessage(""); setFindError(""); }} idPrefix="find-search-intent" disabled={findRunning || submitting} />
         {selectedSchedule && <div className="card"><p><strong>Persisted channels:</strong> {selectedSchedule.acquisition.structured_ats.enabled ? "Structured ATS" : ""}{selectedSchedule.acquisition.structured_ats.enabled && selectedSchedule.acquisition.agentic_web.enabled ? " · " : ""}{selectedSchedule.acquisition.agentic_web.enabled ? "Profile-driven bounded server-side web discovery" : ""}</p><p><strong>Evaluation:</strong> {selectedSchedule.evaluation.max_semantic_candidates} semantic candidates · {selectedSchedule.evaluation.max_full_analyses} full analyses · minimum relevance {selectedSchedule.evaluation.min_relevance_score}</p><p className="muted">Candidate readiness controls whether the persisted schedule can run. Semantic configuration is advisory and is not provider readiness.</p>{selectedScheduleDirty && <p className="notice">This SearchIntent differs from the persisted saved configuration. Hand it off to Saved searches to review and save; it is explicitly dirty.</p>}</div>}
         {findMessage && <p className="notice" role="status">{findMessage}</p>}{findError && <p className="notice" role="status">{findError}</p>}
+        {!selectedSchedule && <section className="card" aria-label="One-off discovery policy">
+          <h3>Effective search</h3>
+          {oneOffPreflight.phase === "loading" && !oneOffPreflight.data && <p role="status">Checking one-off discovery configuration…</p>}
+          {oneOffPreflight.data && <><p><strong>Provider:</strong> {titleCase(oneOffPreflight.data.effective_provider)} · {oneOffPreflight.data.readiness === "configured_for_launch" ? "Configured for launch" : titleCase(oneOffPreflight.data.readiness)}</p><p><strong>Maximum jobs:</strong> {oneOffPreflight.data.policy.max_discovered_jobs} · <strong>Semantic screening:</strong> {oneOffPreflight.data.policy.max_semantic_candidates} · <strong>Full analyses:</strong> {oneOffPreflight.data.policy.max_full_analyses} · <strong>Minimum relevance:</strong> {numberLabel(oneOffPreflight.data.policy.min_relevance_score * 100)}%</p><p className="muted">Up to {oneOffPreflight.data.policy.max_search_queries} web searches, {oneOffPreflight.data.policy.max_search_results_per_query} results per search, and {oneOffPreflight.data.policy.max_pages_to_open} pages. Remote provider configuration does not confirm live availability.</p>{!oneOffPreflight.data.available && <p className="notice" role="status">{oneOffPreflight.data.reason ?? "One-off discovery is unavailable."} <Link to={oneOffPreflight.data.readiness === "candidate_not_ready" ? "/profile" : "/settings/discovery"}>{oneOffPreflight.data.readiness === "candidate_not_ready" ? "Review Profile" : "Review Job Discovery Settings"}</Link></p>}</>}
+          {oneOffPreflight.phase === "error" && !oneOffPreflight.data && <p role="alert">One-off discovery readiness could not be checked. <button type="button" className="button-secondary" onClick={() => void loadOneOffPreflight()}>Retry readiness</button></p>}
+          {(oneOffUncertainRequest || (!!searchIntent.themes.length && oneOffPreflight.data?.available)) && <button type="button" onClick={() => void runOneOffDiscovery()} disabled={oneOffPending || findRunning || (!oneOffUncertainRequest && !ready)}>{oneOffPending ? "Finding jobs…" : oneOffUncertainRequest ? "Reconcile search" : "Find jobs now"}</button>}
+          {!searchIntent.themes.length && <p className="muted">Add at least one search theme to find jobs.</p>}
+          {!ready && <p className="muted">Find jobs now requires confirmed candidate context. You can still edit or save this SearchIntent.</p>}
+          {oneOffError && <p className="notice" role="status">{oneOffError}</p>}
+          {oneOffPending && <p role="status">One-off job discovery is in progress. Your current SearchIntent remains visible above.</p>}
+          {oneOffExecution && <div className="card" aria-label="One-off discovery result"><h4>One-off discovery {titleCase(oneOffExecution.status)}</h4><p>Canonical jobs: {oneOffExecution.acquisition_summary.canonical_jobs ?? 0} · Relevance screened: {oneOffExecution.acquisition_summary.relevance_screened ?? 0} · Analysed: {oneOffExecution.acquisition_summary.analysed ?? 0}</p>{oneOffExecution.status === "running" && <p role="status">The exact execution is still running. These counts are not a zero-result confirmation.</p>}<div className="card-actions">{oneOffExecution.status === "running" && <button type="button" className="button-secondary" onClick={() => void refreshOneOffExecution(oneOffExecution.id)}>Refresh execution</button>}<Link className="button-secondary" to="/jobs/inbox">Review recent vacancies</Link><Link className="button-secondary" to="/jobs/opportunities/recommended">Review opportunities</Link><Link className="button-secondary" to={oneOffExecution.discovery_run_id ? `/jobs/history?run=${encodeURIComponent(oneOffExecution.discovery_run_id)}` : "/jobs/history"}>View Search history</Link></div></div>}
+        </section>}
         {findRunOutcome && <section className="card" aria-label="Run now result"><h3>Run now result</h3>
           {findRunOutcome.kind === "execution" && <><p role="status"><strong>Saved discovery:</strong> {findRunOutcome.scheduleName} · <strong>Status:</strong> {titleCase(findRunOutcome.status)}</p>{(findRunOutcome.status === "completed" || findRunOutcome.status === "partial_failed") && <><p>Recent vacancies refresh: {findRunOutcome.inboxRefresh ? "refreshed" : "could not be confirmed as refreshed"}.</p><p className="muted">Recent vacancies is a shared persisted slice, not an exact execution result set.</p><Link className="button-secondary" to="/jobs/inbox">Review recent vacancies</Link></>}</>}
           {findRunOutcome.kind === "changed" && <p role="status">The saved configuration changed before execution started. No execution was submitted.</p>}
@@ -693,9 +847,8 @@ export function JobsPage() {
           {opportunities.data?.truncated && (opportunityLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(opportunityLimit); setOpportunityLimit(next); void loadOpportunities(next); }}>Show more current opportunities</button> : <p className="muted">Showing the first 100 current opportunities available through this view.</p>)}
         </StateMessage>
       </section>}
-      {view === "history" && <section aria-labelledby="runs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="runs-heading">Search history</h2><p className="muted">Recent discovery runs and their stored query/funnel summaries.</p></div><button type="button" className="button-secondary" onClick={() => void loadRuns()}>Refresh</button></div>
-        <StateMessage state={runs} empty={false} onRetry={() => void loadRuns()}>{noRuns && <p className="muted">No discovery runs yet.</p>}{!!runs.data?.items.length && <ol className="run-list">{runs.data.items.map((run) => <li className="card run-card" key={run.id}><div className="section-heading"><div><h3>{run.status === "running" ? "Evaluation in progress" : titleCase(run.status)}</h3><p>Started {new Date(run.started_at).toLocaleString()}{run.completed_at ? ` · completed ${new Date(run.completed_at).toLocaleString()}` : ""}</p></div><button type="button" className="button-secondary" aria-label={`${selectedRun === run.id ? "Close run" : "View run"} for ${runContextLabel(run)}`} aria-expanded={selectedRun === run.id} onClick={() => selectedRun === run.id ? closeSelectedRun() : void openRun(run.id)}>{selectedRun === run.id ? "Close run" : "View run"}</button></div><RunSnapshot run={run} />{selectedRun === run.id && <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(run.id)}>{runDetail.data && <RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${run.id}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(run.id)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(run.id, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(run.id, jobId)} />}</StateMessage>}</li>)}</ol>}{selectedRun && runs.data && !runs.data.items.some((item) => item.id === selectedRun) && <section className="card run-card" aria-label="Selected search history run"><div className="section-heading"><div><h3>{runDetail.data ? (runDetail.data.status === "running" ? "Evaluation in progress" : titleCase(runDetail.data.status)) : "Selected search history run"}</h3></div><button type="button" className="button-secondary" aria-label={`Close run for ${runDetail.data ? runContextLabel(runDetail.data) : "selected search history run"}`} aria-expanded="true" onClick={closeSelectedRun}>Close run</button></div>{runDetail.data ? <><RunSnapshot run={runDetail.data} /><RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${selectedRun}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(selectedRun)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(selectedRun, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(selectedRun, jobId)} /></> : <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(selectedRun)}>{null}</StateMessage>}</section>}{runs.data?.truncated && (runLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(runLimit); setRunLimit(next); void loadRuns(next); }}>Show more runs</button> : <p className="muted">Showing the first 100 discovery runs available through this view.</p>)}</StateMessage>
-        {selectedRun && !runs.data && <section className="card run-card" aria-label="Selected search history run"><div className="section-heading"><div><h3>{runDetail.data ? (runDetail.data.status === "running" ? "Evaluation in progress" : titleCase(runDetail.data.status)) : "Selected search history run"}</h3></div><button type="button" className="button-secondary" aria-label={`Close run for ${runDetail.data ? runContextLabel(runDetail.data) : "selected search history run"}`} aria-expanded="true" onClick={closeSelectedRun}>Close run</button></div>{runDetail.data ? <><RunSnapshot run={runDetail.data} /><RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${selectedRun}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(selectedRun)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(selectedRun, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(selectedRun, jobId)} /></> : <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(selectedRun)}>{null}</StateMessage>}</section>}
+      {view === "history" && <section aria-labelledby="runs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="runs-heading">Search history</h2><p className="muted">Recent one-off searches and discovery runs, shown as one ordered history.</p></div><button type="button" className="button-secondary" onClick={() => void loadRuns()}>Refresh</button></div>
+        <StateMessage state={runs} empty={false} onRetry={() => void loadRuns()}>{noRuns && <p className="muted">No discovery runs yet.</p>}{!!historyItems.length && <ol className="run-list">{historyItems.map((item) => item.type === "one_off" ? <li className="card run-card" key={`one-off-${item.execution.id}`}><h3>One-off discovery · {item.execution.status === "running" ? "In progress" : titleCase(item.execution.status)}</h3><p>Started {new Date(item.execution.started_at).toLocaleString()}{item.execution.completed_at ? ` · completed ${new Date(item.execution.completed_at).toLocaleString()}` : ""}</p><p>Search themes: {item.execution.query.keywords.join(", ")} · locations: {item.execution.query.locations.join(", ") || "Any"}</p><p>Canonical jobs: {item.execution.acquisition_summary.canonical_jobs ?? 0} · Relevance screened: {item.execution.acquisition_summary.relevance_screened ?? 0} · Analysed: {item.execution.acquisition_summary.analysed ?? 0}</p>{item.execution.failure_summary.agentic_web || item.execution.failure_summary.evaluation ? <p>One or more discovery or evaluation stages failed.</p> : null}<div className="card-actions">{item.execution.discovery_run_id && <Link className="button-secondary" to={`/jobs/history?run=${encodeURIComponent(item.execution.discovery_run_id)}`}>View evaluated results</Link>}<Link className="button-secondary" to="/jobs/inbox">Review recent vacancies</Link></div>{selectedRun && selectedRun === item.execution.discovery_run_id && item.execution.discovery_run_id && <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(item.execution.discovery_run_id!)}>{runDetail.data && <><RunSnapshot run={runDetail.data} /><RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${selectedRun}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(selectedRun)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(selectedRun, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(selectedRun, jobId)} /></>}</StateMessage>}</li> : <li className="card run-card" key={item.run.id}><div className="section-heading"><div><h3>{item.run.status === "running" ? "Evaluation in progress" : titleCase(item.run.status)}</h3><p>Started {new Date(item.run.started_at).toLocaleString()}{item.run.completed_at ? ` · completed ${new Date(item.run.completed_at).toLocaleString()}` : ""}</p></div><button type="button" className="button-secondary" aria-label={`${selectedRun === item.run.id ? "Close run" : "View run"} for ${runContextLabel(item.run)}`} aria-expanded={selectedRun === item.run.id} onClick={() => selectedRun === item.run.id ? closeSelectedRun() : void openRun(item.run.id)}>{selectedRun === item.run.id ? "Close run" : "View run"}</button></div><RunSnapshot run={item.run} />{selectedRun === item.run.id && <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(item.run.id)}>{runDetail.data && <RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${item.run.id}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(item.run.id)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(item.run.id, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(item.run.id, jobId)} />}</StateMessage>}</li>)}</ol>}{selectedRun && runs.data && !representedRunIds.has(selectedRun) && <section className="card run-card" aria-label="Selected search history run"><div className="section-heading"><div><h3>{runDetail.data ? (runDetail.data.status === "running" ? "Evaluation in progress" : titleCase(runDetail.data.status)) : "Selected search history run"}</h3></div><button type="button" className="button-secondary" aria-label={`Close run for ${runDetail.data ? runContextLabel(runDetail.data) : "selected search history run"}`} aria-expanded="true" onClick={closeSelectedRun}>Close run</button></div>{runDetail.data ? <><RunSnapshot run={runDetail.data} /><RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${selectedRun}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(selectedRun)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(selectedRun, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(selectedRun, jobId)} /></> : <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(selectedRun)}>{null}</StateMessage>}</section>}{runs.data?.truncated && (runLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(runLimit); setRunLimit(next); void loadRuns(next); }}>Show more search history</button> : <p className="muted">Showing the first 100 Search History items available through this view.</p>)}</StateMessage>{selectedRun && !runs.data && <section className="card run-card" aria-label="Selected search history run"><div className="section-heading"><h3>{runDetail.data ? runContextLabel(runDetail.data) : "Selected search history run"}</h3><button type="button" className="button-secondary" aria-label={`Close run for ${runDetail.data ? runContextLabel(runDetail.data) : "selected search history run"}`} onClick={closeSelectedRun}>Close run</button></div>{runDetail.data ? <><RunSnapshot run={runDetail.data} /><RunRows run={runDetail.data} onHistorical={(jobId) => selectedHistorical === `${selectedRun}:${jobId}` ? (navigate(`/jobs/history?run=${encodeURIComponent(selectedRun)}`, { replace: true }), setSelectedHistorical(null)) : void openHistorical(selectedRun, jobId)} selectedHistorical={selectedHistorical} historicalDetail={historicalDetail} onRetryHistorical={(jobId) => void openHistorical(selectedRun, jobId)} /></> : <StateMessage state={runDetail} empty={false} onRetry={() => void openRun(selectedRun)}>{null}</StateMessage>}</section>}
       </section>}
       {view === "inbox" && <section aria-labelledby="inbox-heading" className="jobs-section"><div className="section-heading"><div><h2 id="inbox-heading">Inbox</h2><p className="muted">Showing recent shared persisted public vacancies. This is not all jobs, a live search, or a shortlist.</p></div><button type="button" className="button-secondary" onClick={() => void loadInbox()}>Refresh</button></div>
         {lastConfirmedInboxDismissal && <p className="notice" role="status">{lastConfirmedInboxDismissal.message} <button type="button" className="button-secondary" onClick={() => void undoInboxDismissal()}>Undo</button></p>}

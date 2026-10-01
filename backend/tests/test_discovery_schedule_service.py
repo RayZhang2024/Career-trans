@@ -20,6 +20,7 @@ from app.schemas.structured_ats_discovery import StructuredAtsDiscoveryResponse,
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
 from app.schemas.agentic_discovery import AgenticDiscoveryDiagnostics, AgenticDiscoveryResponse
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
+from app.services.agentic_web_execution_core import AgenticWebExecutionCore
 from app.services.discovery_schedule_service import DiscoveryScheduleService, most_recent_due, next_occurrence
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.services.job_discovery_settings_service import JobDiscoveryProviderNotReady
@@ -478,6 +479,12 @@ def test_scheduled_agentic_acquisition_and_evaluation_share_one_owner_snapshot(d
     acquisition_snapshots = []
     evaluation_snapshots = []
     settings_change = {"model": "gpt-5.6-terra"}
+    shared_calls = []
+    core = AgenticWebExecutionCore(db_session)
+    original_acquire = core.acquire
+    original_evaluate = core.evaluate
+    core.acquire = lambda **kwargs: (shared_calls.append("acquire"), original_acquire(**kwargs))[1]
+    core.evaluate = lambda **kwargs: (shared_calls.append("evaluate"), original_evaluate(**kwargs))[1]
 
     class Agentic:
         def discover(self, request):
@@ -500,6 +507,7 @@ def test_scheduled_agentic_acquisition_and_evaluation_share_one_owner_snapshot(d
         agentic_web_factory=lambda snapshot: acquisition_snapshots.append(snapshot) or Agentic(),
         user_runs_factory=lambda snapshot: evaluation_snapshots.append(snapshot) or Runs(),
         runtime_snapshot_resolver=resolve,
+        agentic_core=core,
     )
     patch_candidate_context(monkeypatch, CandidateContext())
     claimed = runner.claim(schedule.id, TriggerKind.MANUAL, datetime(2026, 9, 14, 8, tzinfo=UTC))
@@ -514,6 +522,7 @@ def test_scheduled_agentic_acquisition_and_evaluation_share_one_owner_snapshot(d
     assert acquisition_snapshots[0] is evaluation_snapshots[0]
     assert resolved.operation("agentic_discovery").model == "gpt-5.6-sol"
     assert settings_change["model"] == "gpt-5.6-luna"
+    assert shared_calls == ["acquire", "evaluate"]
 
 
 def test_channel_statuses_zero_handoff_and_linked_run(db_session, monkeypatch):

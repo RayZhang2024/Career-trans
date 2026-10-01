@@ -48,12 +48,15 @@ from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
+from app.services.agentic_web_execution_core import AgenticWebExecutionCore
+from app.services.search_history_service import SearchHistoryReadService
 from app.services.user_job_workspace_service import UserJobWorkspaceReadService
 from app.services.user_job_decision_service import UserJobDecisionService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
 from app.services.application_tracking_service import ApplicationTrackingService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
+from app.services.one_off_discovery_service import OneOffDiscoveryService
 from app.services.ai_settings_service import AiSettingsService
 from app.services.job_discovery_settings_service import (
     JobDiscoveryProviderNotReady,
@@ -605,10 +608,11 @@ def get_user_agentic_job_discovery_service_for_user(
     *,
     settings: Settings | None = None,
     scheduled_due_runner: bool = False,
+    resolved_search_provider: ResolvedWebSearchProvider | None = None,
 ) -> AgenticJobDiscoveryService:
     """Shared HTTP/standalone authority for a user's current web-search settings."""
     selected_settings = settings or get_settings()
-    resolution = JobDiscoverySettingsService(db, settings=selected_settings).resolve_provider(
+    resolution = resolved_search_provider or JobDiscoverySettingsService(db, settings=selected_settings).resolve_provider(
         user_id, scheduled_due_runner=scheduled_due_runner
     )
     snapshot = runtime_snapshot or AiSettingsService(db, settings=selected_settings).snapshot_for_user(user_id)
@@ -787,6 +791,11 @@ def get_user_job_discovery_history_read_service(db: DbSession) -> UserJobDiscove
     return UserJobDiscoveryHistoryReadService(db)
 
 
+def get_search_history_read_service(db: DbSession) -> SearchHistoryReadService:
+    """The logical history projection reads stored snapshots only."""
+    return SearchHistoryReadService(db)
+
+
 def get_user_job_workspace_read_service(db: DbSession) -> UserJobWorkspaceReadService:
     """Workspace reads are provider-free; runtime resolution is deferred to current-fit projection."""
     return UserJobWorkspaceReadService(
@@ -850,6 +859,24 @@ def get_scheduled_discovery_execution_service(
             runtime_snapshot=snapshot,
         ),
         runtime_snapshot_resolver=lambda user_id: AiSettingsService(db).snapshot_for_user(user_id),
+        agentic_core=AgenticWebExecutionCore(db),
+    )
+
+
+def get_one_off_discovery_service(db: DbSession) -> OneOffDiscoveryService:
+    settings = get_settings()
+    settings_service = JobDiscoverySettingsService(db, settings=settings)
+    return OneOffDiscoveryService(
+        db,
+        settings_service=settings_service,
+        runtime_snapshot_resolver=lambda user_id: AiSettingsService(db, settings=settings).snapshot_for_user(user_id),
+        agentic_factory=lambda user_id, snapshot, provider: get_user_agentic_job_discovery_service_for_user(
+            db, user_id, snapshot, settings=settings, resolved_search_provider=provider,
+        ),
+        user_runs_factory=lambda snapshot: UserJobDiscoveryService(
+            db, ranking_service=_build_user_job_ranking_service(settings, snapshot), runtime_snapshot=snapshot,
+        ),
+        agentic_core=AgenticWebExecutionCore(db),
     )
 
 

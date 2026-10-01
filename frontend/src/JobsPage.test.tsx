@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation, useNavigate, useNavigationType } from "react-router-dom";
-import type { ApplicationPreparation, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
+import type { ApplicationPreparation, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, OneOffExecution, OneOffPreflight, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
 import { App } from "./App";
 import { AuthProvider, useAuth } from "./auth";
 import { undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
@@ -35,6 +35,8 @@ const savedExecution = (status: ScheduledExecutionRead["status"] = "completed"):
   config_snapshot: { schedule: savedSchedule().schedule, query: savedSchedule().query, acquisition: savedSchedule().acquisition, evaluation: savedSchedule().evaluation },
   discovery_run_id: status === "running" ? null : "run-1", acquisition_summary: {}, failure_summary: {}, started_at: "2026-02-01T12:00:00Z", completed_at: status === "running" ? null : "2026-02-01T12:05:00Z",
 });
+const oneOffPreflight = (patch: Partial<OneOffPreflight> = {}): OneOffPreflight => ({ effective_provider: "tavily", readiness: "configured_for_launch", available: true, reason: null, policy: { version: "v1", country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 12, max_discovered_jobs: 20, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 }, provider_settings_revision: 2, launch_fingerprint: "a".repeat(64), ...patch });
+const oneOffExecution = (patch: Partial<OneOffExecution> = {}): OneOffExecution => ({ id: "one-off-1", client_request_id: "request-1", query: { keywords: ["AI"], locations: [], remote_ok: null, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 }, policy: oneOffPreflight().policy, provider: { provider: "tavily", credential_source: "user", search_depth: "basic" }, status: "completed", started_at: "2026-10-01T00:00:00Z", completed_at: "2026-10-01T00:01:00Z", acquisition_summary: { canonical_jobs: 0, relevance_screened: 0, analysed: 0 }, failure_summary: {}, discovery_run_id: null, ...patch });
 const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
 const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1, decision: decision(id) });
 const workspaceJob = (patch: Record<string, unknown> = {}) => ({ id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z", ...patch });
@@ -52,6 +54,15 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     const path = url.pathname;
     const override = overrides[`${init?.method ?? "GET"} ${path}`] ?? overrides[path];
     if (override) return Promise.resolve(override(url, init));
+    if (path === "/api/v1/jobs/search-history") {
+      const legacyFixture = overrides["/api/v1/jobs/discovery-runs"];
+      if (legacyFixture) return Promise.resolve(legacyFixture(url, init)).then(async (response) => {
+        if (!response.ok) return response;
+        const payload = await response.clone().json() as { items?: DiscoveryRunSummary[]; limit?: number; truncated?: boolean };
+        return json({ ...payload, items: (payload.items ?? []).map((item) => ({ type: "discovery_run", id: item.id, started_at: item.started_at, run: item })) });
+      });
+      return Promise.resolve(json(page([{ type: "discovery_run", id: run().id, started_at: run().started_at, run: run() }])));
+    }
     if (path === "/api/v1/users/me") return Promise.resolve(json(user));
     if (path === "/api/v1/onboarding/status") return Promise.resolve(json(ready));
     if (path === "/api/v1/profile") return Promise.resolve(json({ id: "profile", user_id: user.id, display_name: "Current Person", created_at: "", updated_at: "" }));
@@ -62,6 +73,8 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     if (path === "/api/v1/jobs/inbox") return Promise.resolve(json(page([inboxItem("actionable"), inboxItem("blocked", false)])));
     if (path === "/api/v1/jobs/decisions") return Promise.resolve(json(page([])));
     if (path === "/api/v1/jobs/discovery-schedules") return Promise.resolve(json([]));
+    if (path === "/api/v1/jobs/one-off-discovery/preflight") return Promise.resolve(json(oneOffPreflight()));
+    if (path === "/api/v1/jobs/one-off-discovery/executions") return Promise.resolve(json(init?.method === "POST" ? oneOffExecution() : []));
     if (path === "/api/v1/jobs/opportunities/eval-alpha") return Promise.resolve(json(ranked("Alpha detail")));
     if (path === "/api/v1/jobs/discovery-runs/run-1") return Promise.resolve(json(runDetail()));
     if (path === "/api/v1/jobs/discovery-runs/run-1/jobs/job-0") return Promise.resolve(json(historyDetail));
@@ -84,6 +97,11 @@ function DecisionProbe() {
   return <div><output>{user?.id ?? "loading"}</output><button type="button" onClick={() => { mutate("job-a", "shortlisted"); mutate("job-a", "dismissed"); }}>Mutate A twice</button><button type="button" onClick={() => mutate("job-b", "shortlisted")}>Mutate B</button><button type="button" onClick={() => api.replaceToken("replacement-token")}>Replace session</button></div>;
 }
 function AuthSwitcher() { const { api, retryRestore } = useAuth(); return <button type="button" onClick={() => { api.replaceToken("user-b-token"); retryRestore(); }}>Switch user</button>; }
+function renderJobsWithAuthSwitcher(fetch: ReturnType<typeof fakeFetch>) {
+  sessionStorage.setItem(TOKEN, "test-token");
+  vi.stubGlobal("fetch", fetch);
+  return render(<MemoryRouter initialEntries={["/jobs/find"]}><AuthProvider><App /><AuthSwitcher /></AuthProvider></MemoryRouter>);
+}
 function requestPaths(fetch: ReturnType<typeof fakeFetch>) { return fetch.mock.calls.map(([input]) => { const url = new URL(String(input), window.location.origin); return `${url.pathname}${url.search}`; }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 async function loaded() { await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Alpha"); }
@@ -519,10 +537,10 @@ describe("Issue #171 Jobs workspace", () => {
   it("caps discovery runs at 100 and explains a truncated maximum window", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([run()], true)) });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" });
-    await growToLimit(fetch, "/api/v1/jobs/discovery-runs", "Show more runs");
-    expect(screen.queryByRole("button", { name: "Show more runs" })).not.toBeInTheDocument();
-    expect(screen.getByText("Showing the first 100 discovery runs available through this view.")).toBeInTheDocument();
-    const limits = requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/discovery-runs?")).map((path) => Number(new URL(path, window.location.origin).searchParams.get("limit")));
+    await growToLimit(fetch, "/api/v1/jobs/search-history", "Show more search history");
+    expect(screen.queryByRole("button", { name: "Show more search history" })).not.toBeInTheDocument();
+    expect(screen.getByText("Showing the first 100 Search History items available through this view.")).toBeInTheDocument();
+    const limits = requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/search-history?")).map((path) => Number(new URL(path, window.location.origin).searchParams.get("limit")));
     expect(limits).toContain(100); expect(limits.every((limit) => limit <= 100)).toBe(true); expect(limits).not.toContain(120);
   });
 
@@ -979,6 +997,236 @@ describe("Issue #234 Find jobs saved-schedule execution", () => {
     const fetch = scheduleFetch(savedSchedule(), { "/api/v1/jobs/inbox": () => { inboxCalls += 1; return Promise.reject(new TypeError("offline")); }, "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => json(savedExecution()) });
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Completed"); expect(screen.getByText(/Recent vacancies refresh: could not be confirmed as refreshed/)).toBeInTheDocument(); expect(screen.getByRole("link", { name: "Review recent vacancies" })).toBeInTheDocument();
+  });
+});
+
+describe("Issue #261 transient one-off discovery", () => {
+  it("shows the server policy and launches directly from a transient SearchIntent", async () => {
+    let submitted: Record<string, unknown> | undefined;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => { submitted = JSON.parse(String(init?.body)); return json(oneOffExecution()); } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    expect(await screen.findByText(/Tavily · Configured for launch/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "One-off discovery policy" })).toHaveTextContent("Maximum jobs: 20");
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "  AI roles  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(submitted).toMatchObject({ expected_launch_fingerprint: "a".repeat(64), query: { keywords: ["AI roles"] } });
+    expect(submitted?.client_request_id).toEqual(expect.any(String));
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-schedules/s-1/run-now");
+  });
+
+  it("keeps an unavailable provider actionable and does not submit", async () => {
+    let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/one-off-discovery/preflight": () => json(oneOffPreflight({ available: false, readiness: "not_configured", reason: "Tavily is not configured." })),
+      "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return json(oneOffExecution()); },
+    });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    expect(await screen.findByText(/Tavily is not configured/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review Job Discovery Settings" })).toHaveAttribute("href", "/settings/discovery");
+    expect(screen.queryByRole("button", { name: "Find jobs now" })).not.toBeInTheDocument();
+    expect(posts).toBe(0);
+  });
+
+  it("keeps one-off discovery unavailable while a saved configuration is selected", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]) });
+    renderJobs(fetch); await selectSavedSchedule();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Find jobs now" })).not.toBeInTheDocument();
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/one-off-discovery/executions");
+  });
+
+  it("disables duplicate one-off launches while the exact request is pending", async () => {
+    const pending = deferred<Response>();
+    let posts = 0;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return pending.promise; } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    const launch = screen.getByRole("button", { name: "Find jobs now" });
+    fireEvent.click(launch);
+    expect(await screen.findByText(/One-off job discovery is in progress/)).toBeInTheDocument();
+    fireEvent.click(launch);
+    expect(posts).toBe(1);
+    expect(launch).toBeDisabled();
+    pending.resolve(json(oneOffExecution({ acquisition_summary: { canonical_jobs: 0 } })));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+  });
+
+  it.each([["completed", "Completed"], ["partial_failed", "Partial Failed"], ["failed", "Failed"]] as const)("shows truthful %s execution outcomes", async (status, label) => {
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => json(oneOffExecution({ status, acquisition_summary: { canonical_jobs: status === "completed" ? 0 : 2, relevance_screened: 1, analysed: 0 } })) });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("heading", { name: `One-off discovery ${label}` })).toBeInTheDocument();
+  });
+
+  it("refreshes stale preflight without automatically relaunching", async () => {
+    let preflights = 0;
+    let posts = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/one-off-discovery/preflight": () => { preflights += 1; return json(oneOffPreflight({ launch_fingerprint: preflights === 1 ? "a".repeat(64) : "b".repeat(64) })); },
+      "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return json({ detail: "Job Discovery settings changed; refresh preflight." }, 409); },
+    });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByText(/review the refreshed summary, then explicitly start again/i)).toBeInTheDocument();
+    expect(preflights).toBe(2);
+    expect(posts).toBe(1);
+  });
+
+  it("keeps an unresolved interruption behind explicit Reconcile search with the same request id", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    let posts = 0;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+      submitted.push(JSON.parse(String(init?.body))); posts += 1;
+      return posts < 3 ? Promise.reject(new TypeError("offline")) : json(oneOffExecution());
+    } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
+    expect(posts).toBe(2);
+    expect(submitted[1]).toEqual(submitted[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile search" }));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(posts).toBe(3);
+    expect(submitted[1]).toEqual(submitted[0]);
+    expect(submitted[2]).toEqual(submitted[0]);
+  });
+
+  it("keeps the exact uncertain payload after a reconciliation HTTP failure", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+      submitted.push(JSON.parse(String(init?.body)));
+      if (submitted.length === 1) return Promise.reject(new TypeError("offline"));
+      if (submitted.length === 2) return json({ detail: "Temporary service failure" }, 503);
+      return json(oneOffExecution());
+    } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
+    expect(screen.getByText(/result is uncertain/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile search" }));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(submitted).toHaveLength(3);
+    expect(submitted[1]).toEqual(submitted[0]);
+    expect(submitted[2]).toEqual(submitted[0]);
+  });
+
+  it("clears obsolete uncertain authority when reconciliation reports stale preflight", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    let preflights = 0;
+    const fetch = fakeFetch({
+      "/api/v1/jobs/one-off-discovery/preflight": () => json(oneOffPreflight({ launch_fingerprint: (++preflights === 1 ? "a" : "b").repeat(64) })),
+      "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+        submitted.push(JSON.parse(String(init?.body)));
+        return submitted.length === 1 ? Promise.reject(new TypeError("offline")) : json({ detail: "Job Discovery settings changed; refresh preflight." }, 409);
+      },
+    });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByText(/review the refreshed summary, then explicitly start again/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Find jobs now" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
+    expect(preflights).toBe(2);
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]).toEqual(submitted[0]);
+  });
+
+  it("does not retry an interrupted one-off POST after the user session changes", async () => {
+    const first = deferred<Response>();
+    let posts = 0;
+    let meCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/users/me": () => json(meCalls++ === 0 ? user : { ...user, id: "user-b" }),
+      "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return first.promise; },
+    });
+    renderJobsWithAuthSwitcher(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+    expect(posts).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
+    first.reject(new TypeError("interrupted"));
+    expect(await screen.findByText(/session changed during this search/i)).toBeInTheDocument();
+    expect(posts).toBe(1);
+    expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /One-off discovery Completed/ })).not.toBeInTheDocument();
+  });
+
+  it("does not reconcile an uncertain request after session replacement during explicit reconciliation", async () => {
+    const third = deferred<Response>();
+    const submitted: Array<Record<string, unknown>> = [];
+    let meCalls = 0;
+    const fetch = fakeFetch({
+      "/api/v1/users/me": () => json(meCalls++ === 0 ? user : { ...user, id: "user-b" }),
+      "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+        submitted.push(JSON.parse(String(init?.body)));
+        return submitted.length < 3 ? Promise.reject(new TypeError("offline")) : third.promise;
+      },
+    });
+    renderJobsWithAuthSwitcher(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Reconcile search" }));
+    expect(submitted).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
+    third.reject(new TypeError("interrupted"));
+    expect(await screen.findByText(/session changed during this search/i)).toBeInTheDocument();
+    expect(submitted).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /One-off discovery Completed/ })).not.toBeInTheDocument();
+  });
+
+  it("retries an interrupted POST with the same request id to reconcile its execution", async () => {
+    const submitted: Array<Record<string, unknown>> = [];
+    let count = 0;
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": (_url, init) => {
+      submitted.push(JSON.parse(String(init?.body)));
+      count += 1;
+      return count === 1 ? Promise.reject(new TypeError("offline")) : json(oneOffExecution());
+    } });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]).toEqual(submitted[0]);
+  });
+
+  it("projects a linked evaluation as one Search History entry", async () => {
+    const linked = oneOffExecution({ discovery_run_id: "run-1" });
+    const fetch = fakeFetch({ "/api/v1/jobs/search-history": () => json(page([{ type: "one_off", id: linked.id, started_at: linked.started_at, execution: linked }])) });
+    renderJobs(fetch, "/jobs/history");
+    expect(await screen.findByRole("heading", { name: "Search history" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "One-off discovery · Completed" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: /Completed/ })).toHaveLength(1);
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-runs?limit=20");
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/one-off-discovery/executions");
+    fireEvent.click(screen.getByRole("link", { name: "View evaluated results" }));
+    expect(await screen.findByRole("heading", { name: "Per-job outcomes" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: /One-off discovery · Completed/ })).toHaveLength(1);
+  });
+
+  it("paginates the authoritative mixed history without duplicate linked-run rows", async () => {
+    const linked = oneOffExecution({ discovery_run_id: "linked-run" });
+    const firstItems = Array.from({ length: 20 }, (_, index) => index === 5
+      ? { type: "one_off" as const, id: linked.id, started_at: linked.started_at, execution: linked }
+      : { type: "discovery_run" as const, id: `ordinary-${index}`, started_at: `2026-10-01T00:${String(index).padStart(2, "0")}:00Z`, run: run(`ordinary-${index}`) });
+    const allItems = [...firstItems, { type: "discovery_run" as const, id: "ordinary-next", started_at: "2026-09-30T23:00:00Z", run: run("ordinary-next") }];
+    const fetch = fakeFetch({ "/api/v1/jobs/search-history": (url) => json({ items: allItems.slice(0, Number(url.searchParams.get("limit"))), limit: Number(url.searchParams.get("limit")), truncated: Number(url.searchParams.get("limit")) < allItems.length }) });
+    renderJobs(fetch, "/jobs/history");
+    await screen.findByRole("heading", { name: "One-off discovery · Completed" });
+    expect(screen.getAllByRole("listitem")).toHaveLength(20);
+    fireEvent.click(screen.getByRole("button", { name: "Show more search history" }));
+    await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(21));
+    expect(screen.getAllByRole("listitem")).toHaveLength(21);
+    expect(requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/search-history?")).length).toBeGreaterThan(1);
+    expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/discovery-runs?"))).toBe(false);
+    expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/one-off-discovery/executions?"))).toBe(false);
   });
 });
 
