@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,6 +33,7 @@ class DiscoveryRunCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query: JobSearchQuery
+    client_request_id: UUID | None = None
     discovered_job_ids: list[str] = Field(min_length=1, max_length=100)
     max_semantic_candidates: int = Field(default=10, ge=1, le=100)
     max_full_analyses: int = Field(default=5, ge=1, le=30)

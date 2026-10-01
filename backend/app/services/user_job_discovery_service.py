@@ -198,6 +198,10 @@ class UserJobDiscoveryService:
         *,
         link_run: Callable[[str], None] | None = None,
     ) -> DiscoveryRunRead:
+        if request.client_request_id is not None:
+            existing = self._by_client_request_id(user_id, str(request.client_request_id))
+            if existing is not None:
+                return self._return_idempotent_run(existing, request, link_run)
         if self._ranking_service is None:
             raise RuntimeError("Ranking service is required to create a discovery run.")
         try:
@@ -219,13 +223,23 @@ class UserJobDiscoveryService:
             raise ValueError("One or more submitted jobs are unavailable.")
         run = DiscoveryRun(
             user_id=user_id,
+            client_request_id=str(request.client_request_id) if request.client_request_id is not None else None,
             search_input_json=_canonical_json(self._run_input_snapshot(request)),
             search_input_fingerprint=self.search_input_fingerprint(request.query),
             candidate_evaluation_fingerprint=candidate_fingerprint,
             evaluation_contract_fingerprint=contract_fingerprint,
         )
         self._session.add(run)
-        self._session.flush()
+        try:
+            self._session.flush()
+        except IntegrityError:
+            self._session.rollback()
+            if request.client_request_id is None:
+                raise
+            existing = self._by_client_request_id(user_id, str(request.client_request_id))
+            if existing is None:
+                raise
+            return self._return_idempotent_run(existing, request, link_run)
         if link_run is not None:
             # The one-off execution link and run row commit atomically before
             # any ranking/provider work can begin.
@@ -312,6 +326,26 @@ class UserJobDiscoveryService:
         if run is None:
             raise LookupError("Discovery run not found.")
         return self._read_run(run)
+
+    def _by_client_request_id(self, user_id: str, request_id: str) -> DiscoveryRun | None:
+        return self._session.scalar(select(DiscoveryRun).where(
+            DiscoveryRun.user_id == user_id,
+            DiscoveryRun.client_request_id == request_id,
+        ))
+
+    def _return_idempotent_run(
+        self,
+        existing: DiscoveryRun,
+        request: DiscoveryRunCreateRequest,
+        link_run: Callable[[str], None] | None,
+    ) -> DiscoveryRunRead:
+        expected = self._run_input_snapshot(request)
+        if json.loads(existing.search_input_json) != expected:
+            raise ValueError("This request ID is already associated with a different evaluation input.")
+        if link_run is not None:
+            link_run(existing.id)
+            self._session.commit()
+        return self.get_run(existing.user_id, existing.id)
 
     def current_opportunities(self, user_id: str) -> UserOpportunityResponse:
         try:
@@ -450,12 +484,16 @@ class UserJobDiscoveryService:
     @staticmethod
     def _run_input_snapshot(request: DiscoveryRunCreateRequest) -> dict[str, object]:
         """Historical execution input, separate from query-only identity."""
-        return {
+        snapshot = {
             "query": UserJobDiscoveryService._normalised_search_input(request.query),
+            "discovered_job_ids": list(dict.fromkeys(request.discovered_job_ids)),
             "max_semantic_candidates": request.max_semantic_candidates,
             "max_full_analyses": request.max_full_analyses,
             "min_relevance_score": request.min_relevance_score,
         }
+        if request.client_request_id is not None:
+            snapshot["client_request_id"] = str(request.client_request_id)
+        return snapshot
 
     @staticmethod
     def candidate_evaluation_fingerprint(context: CandidateContext) -> str:

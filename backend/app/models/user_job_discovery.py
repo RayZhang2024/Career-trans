@@ -11,9 +11,11 @@ class DiscoveryRun(Base):
     """One authenticated user's explicit discovery/evaluation execution."""
 
     __tablename__ = "discovery_runs"
+    __table_args__ = (UniqueConstraint("user_id", "client_request_id", name="uq_discovery_run_client_request"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     search_input_json: Mapped[str] = mapped_column(Text, nullable=False)
     search_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     candidate_evaluation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

@@ -346,6 +346,7 @@ export type InboxSummary = {
 };
 export type CreateDiscoveryRun = {
   query: { keywords: string[]; locations: string[]; remote_ok: boolean | null; companies: string[]; excluded_companies: string[]; excluded_title_terms: string[]; employment_types: string[]; max_results: number };
+  client_request_id?: string;
   discovered_job_ids: string[]; max_semantic_candidates: number; max_full_analyses: number; min_relevance_score: number;
 };
 export type DiscoveryScheduleSpec = { cadence: "daily" | "weekly"; timezone: string; local_time: string; weekdays: number[] };

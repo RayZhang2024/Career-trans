@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
+from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -295,6 +296,44 @@ def test_unexpected_ranking_exception_terminalizes_run_safely(db_session, monkey
     assert run.id == failed_run_id
     assert run.status == "failed" and run.completed_at is not None
     assert "private" not in str(run.failure_summary)
+
+
+def test_repeated_client_request_id_returns_the_run_committed_before_provider_failure(db_session, monkeypatch) -> None:
+    class BrokenRanking:
+        def rank(self, _request):
+            raise RuntimeError("synthetic provider failure")
+
+    job, other = _job(), _job("other"); db_session.add_all([_user("user-a"), job, other]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    request_id = uuid4()
+    request = _request(job.id).model_copy(update={"client_request_id": request_id})
+    service = UserJobDiscoveryService(db_session, ranking_service=BrokenRanking())
+    try:
+        service.start("user-a", request)
+    except DiscoveryRunExecutionFailure as exc:
+        created_id = exc.run_id
+    else:
+        raise AssertionError("The synthetic provider error should happen after the run commits.")
+
+    db_session.expire_all()
+    persisted = db_session.get(DiscoveryRun, created_id)
+    assert persisted is not None
+    assert json.loads(persisted.search_input_json)["client_request_id"] == str(request_id)
+
+    # A retry with the same key returns the durable outcome even if the ranking
+    # service is currently unavailable; it cannot create a second logical run.
+    retried = UserJobDiscoveryService(db_session).start("user-a", request)
+    assert retried.id == created_id
+    assert retried.status == "failed"
+    try:
+        UserJobDiscoveryService(db_session).start(
+            "user-a", request.model_copy(update={"discovered_job_ids": [other.id]})
+        )
+    except ValueError as exc:
+        assert "different evaluation input" in str(exc)
+    else:
+        raise AssertionError("The same request ID must not be reused with a different job selection.")
+    assert len(db_session.scalars(select(DiscoveryRun).where(DiscoveryRun.user_id == "user-a")).all()) == 1
 
 
 def test_reused_success_then_ranking_failure_retains_partial_status_and_early_link(db_session, monkeypatch) -> None:
