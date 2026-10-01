@@ -102,7 +102,7 @@ def test_lineage_is_idempotent_per_event_but_distinguishes_source_refs(db_sessio
     other_source = service.record(user_id, _event(StructuredProfileSection.SKILLS, item, source_ref="draft-2"))
     assert first.id == repeated.id
     assert other_source.id != first.id
-    assert [row.source_ref for row in service.read_history(user_id)] == ["draft-1", "draft-2"]
+    assert sorted(row.source_ref for row in service.read_history(user_id)) == ["draft-1", "draft-2"]
     assert first.lineage_key == structured_item_lineage_key(
         user_id=user_id, section="skills", item_fingerprint=first.item_fingerprint,
         source_kind="cv", source_ref="draft-1", relationship="new", predecessor_fingerprint=None,

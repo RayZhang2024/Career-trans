@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import json
+import runpy
 from uuid import uuid4
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -387,6 +389,56 @@ def test_authenticated_run_and_opportunity_routes_enforce_user_scope(client, db_
     finally:
         fastapi_app.dependency_overrides.pop(get_user_job_discovery_service, None)
         fastapi_app.dependency_overrides.pop(get_user_job_discovery_read_service, None)
+
+
+def test_search_history_and_inbox_reads_work_after_existing_sqlite_schema_upgrade(client, db_session) -> None:
+    connection = db_session.connection()
+    sqlite_connection = connection.connection.driver_connection
+    connection.exec_driver_sql("DROP TABLE IF EXISTS discovery_run_jobs")
+    connection.exec_driver_sql("DROP TABLE discovery_runs")
+    connection.exec_driver_sql(
+        "CREATE TABLE discovery_runs ("
+        "id VARCHAR(36) NOT NULL, user_id VARCHAR(36) NOT NULL, "
+        "search_input_json TEXT NOT NULL, search_input_fingerprint VARCHAR(64) NOT NULL, "
+        "candidate_evaluation_fingerprint VARCHAR(64) NOT NULL, "
+        "evaluation_contract_fingerprint VARCHAR(64) NOT NULL, status VARCHAR(32) NOT NULL, "
+        "funnel_json TEXT NOT NULL, failure_summary_json TEXT NOT NULL, started_at DATETIME NOT NULL, "
+        "completed_at DATETIME, PRIMARY KEY (id), "
+        "FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE)"
+    )
+    db_session.commit()
+
+    migration = Path(__file__).resolve().parents[1] / "migrations" / "20261002_discovery_run_request_id_sqlite.py"
+    upgrade = runpy.run_path(str(migration))["upgrade"]
+    upgrade(sqlite_connection)
+    db_session.expire_all()
+
+    job = _job()
+    job.source = "agent_runtime"
+    db_session.add_all([
+        _user("user-a"),
+        job,
+        DiscoveryRun(
+            id="legacy-run-after-upgrade",
+            user_id="user-a",
+            search_input_json='{"query":{"keywords":["ai"]}}',
+            search_input_fingerprint="s" * 64,
+            candidate_evaluation_fingerprint="c" * 64,
+            evaluation_contract_fingerprint="e" * 64,
+            status="completed",
+            funnel_json="{}",
+            failure_summary_json="{}",
+        ),
+    ])
+    db_session.commit()
+
+    headers = {"Authorization": f"Bearer {create_access_token('user-a')}"}
+    history = client.get("/api/v1/jobs/search-history?limit=20", headers=headers)
+    inbox = client.get("/api/v1/jobs/inbox?limit=20", headers=headers)
+    assert history.status_code == 200
+    assert any(item["id"] == "legacy-run-after-upgrade" for item in history.json()["items"])
+    assert inbox.status_code == 200
+    assert any(item["discovered_job_id"] == job.id for item in inbox.json()["items"])
 
 
 def test_read_models_revalidate_current_recency_without_mutating_historical_snapshot(db_session, monkeypatch) -> None:

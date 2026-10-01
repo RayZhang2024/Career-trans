@@ -10,6 +10,7 @@ import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchInt
 import { runSavedDiscoveryNowWithReconciliation, type DiscoveryRunReconciliation } from "./discoveryRunNow";
 import { DecisionControls, undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
 import { createApplicationPreparation, type PreparationPrerequisites } from "./applicationPreparationController";
+import { unicodeCaseFold } from "./unicodeCaseFold";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
 type InboxDismissalNotice = { decision: UserJobDecision; title: string; message: string };
@@ -46,7 +47,7 @@ const stableJson = (value: unknown): string => JSON.stringify(value, (_key, item
 const normalizedRunQuery = (query: CreateDiscoveryRun["query"]) => {
   const normalized = { ...query };
   for (const key of ["keywords", "locations", "companies", "excluded_companies", "excluded_title_terms", "employment_types"] as const) {
-    normalized[key] = Array.from(new Set(query[key].map((value) => value.trim().split(/\s+/).filter(Boolean).join(" ").toLowerCase()).filter(Boolean))).sort();
+    normalized[key] = Array.from(new Set(query[key].map((value) => unicodeCaseFold(value.trim().split(/\s+/).filter(Boolean).join(" "))).filter(Boolean))).sort();
   }
   return normalized;
 };

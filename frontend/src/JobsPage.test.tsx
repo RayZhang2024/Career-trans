@@ -801,6 +801,28 @@ describe("Issue #171 Jobs workspace", () => {
     expect(posts).toBe(1);
   });
 
+  it("reconciles non-English search terms using backend-compatible Unicode case folding", async () => {
+    let payload: CreateDiscoveryRun | undefined;
+    const savedInput = () => ({
+      client_request_id: payload?.client_request_id,
+      query: { keywords: ["strasse"], locations: ["london"], remote_ok: null, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 },
+      discovered_job_ids: ["actionable"], max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5,
+    });
+    const savedRun = () => ({ ...run("run-unicode"), run_input: savedInput() });
+    const fetch = fakeFetch({
+      "POST /api/v1/jobs/discovery-runs": (_url, init) => { payload = JSON.parse(String(init?.body)) as CreateDiscoveryRun; return Promise.reject(new TypeError("offline")); },
+      "/api/v1/jobs/search-history": () => json(page(payload ? [{ type: "discovery_run", id: "run-unicode", started_at: new Date().toISOString(), run: savedRun() }] : [])),
+      "/api/v1/jobs/discovery-runs/run-unicode": () => json({ ...savedRun(), jobs: [{ discovered_job_id: "actionable", evaluation_id: null, outcome: "analysis_failed", failure_stage: "career_analysis", failure_kind: "provider_unavailable", opportunity: null }] }),
+    });
+    renderJobs(fetch); await loaded();
+    await editIntentOnFind("Straße", "London");
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    expect(await screen.findByRole("region", { name: "Reconciled Inbox evaluation" })).toBeInTheDocument();
+    expect(payload?.query.keywords).toEqual(["Straße"]);
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-unicode");
+  });
+
   it("treats only a request-validation response as proof that no run was created", async () => {
     let runRequests = 0;
     const fetch = fakeFetch({
