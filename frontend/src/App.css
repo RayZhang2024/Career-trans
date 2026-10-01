@@ -54,6 +54,9 @@ h2 { font-size: 1.2rem; }
 .profile-card { width: 100%; }
 .cv-page { display: block; max-width: 70rem; }
 .cv-page > .card { margin-top: 1rem; }
+.cv-source-representation, .cv-source-history { min-width: 0; overflow-wrap: anywhere; }
+.cv-source-reference { min-width: 0; overflow-wrap: anywhere; }
+.cv-source-text { max-width: 100%; overflow-x: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
 .cv-review { display: grid; gap: 1rem; }
 .cv-section { border-top: 1px solid #d9e0ea; display: grid; gap: 0.75rem; padding-top: 1rem; }
 .section-heading { align-items: center; display: flex; gap: 1rem; justify-content: space-between; }

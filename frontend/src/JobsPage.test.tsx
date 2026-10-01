@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation, useNavigate, useNavigationType } from "react-router-dom";
-import type { ApplicationPreparation, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, OneOffExecution, OneOffPreflight, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
+import type { ApplicationPreparation, CreateDiscoveryRun, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, OneOffExecution, OneOffPreflight, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
 import { App } from "./App";
 import { AuthProvider, useAuth } from "./auth";
 import { undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
@@ -727,12 +727,20 @@ describe("Issue #171 Jobs workspace", () => {
 
   it("refreshes run history and reports neutral uncertainty after an interrupted POST", async () => {
     let runRequests = 0;
-    const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => { runRequests += 1; return json(page([run(`run-${runRequests}`)])); }, "POST /api/v1/jobs/discovery-runs": () => Promise.reject(new TypeError("offline")) });
+    let postRequests = 0;
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => { runRequests += 1; return json(page([run(`run-${runRequests}`)])); }, "POST /api/v1/jobs/discovery-runs": () => { postRequests += 1; return Promise.reject(new TypeError("offline")); } });
     renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
-    expect(await screen.findByText(/cannot confirm from this response whether the run started/)).toBeInTheDocument();
-    expect(runRequests).toBe(1);
+    expect(await screen.findByRole("region", { name: "Unconfirmed Inbox evaluation" })).toBeInTheDocument();
+    expect(await screen.findByText(/request outcome is still unconfirmed/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Submitted evaluation" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Evaluation outcome unconfirmed" })).toBeDisabled();
+    await waitFor(() => expect(runRequests).toBe(1));
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile run history" }));
+    await waitFor(() => expect(runRequests).toBeGreaterThanOrEqual(2));
+    expect(postRequests).toBe(1);
+    expect(sessionStorage.getItem("career-trans.inbox-evaluation-uncertain")).not.toBeNull();
   });
 
   it("does not claim run history refreshed when the post-transport-failure GET also fails", async () => {
@@ -745,10 +753,43 @@ describe("Issue #171 Jobs workspace", () => {
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
-    expect(await screen.findByText(/cannot confirm from this response whether the run started/)).toBeInTheDocument();
-    expect(screen.getByText(/Recent run history could not be confirmed as refreshed/)).toBeInTheDocument();
-    expect(screen.queryByText(/Recent run history has been refreshed/)).not.toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Unconfirmed Inbox evaluation" })).toBeInTheDocument();
+    expect(await screen.findByText(/saved Search History could not be refreshed/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Evaluation outcome unconfirmed" })).toBeDisabled();
     expect(runRequests).toBe(1);
+  });
+
+  it("reconciles an interrupted Inbox request to its exact saved run without reposting", async () => {
+    let payload: CreateDiscoveryRun | undefined;
+    let posts = 0;
+    const runId = "run-reconciled";
+    const fetch = fakeFetch({
+      "POST /api/v1/jobs/discovery-runs": (_url, init) => {
+        posts += 1;
+        payload = JSON.parse(String(init?.body)) as CreateDiscoveryRun;
+        return Promise.reject(new TypeError("offline"));
+      },
+      "/api/v1/jobs/search-history": () => {
+        const summary = {
+          ...run(runId), started_at: new Date(Date.now() + 1000).toISOString(),
+          run_input: { query: payload?.query, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 },
+        };
+        return json(page([{ type: "discovery_run", id: runId, started_at: summary.started_at, run: summary }]));
+      },
+      [`/api/v1/jobs/discovery-runs/${runId}`]: () => json({
+        ...run(runId), started_at: new Date(Date.now() + 1000).toISOString(),
+        jobs: [{ discovered_job_id: "actionable", evaluation_id: null, outcome: "analysis_failed", failure_stage: "career_analysis", failure_kind: "provider_unavailable", opportunity: null }],
+      }),
+    });
+    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); await editIntentOnFind("AI");
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    expect(await screen.findByRole("region", { name: "Reconciled Inbox evaluation" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review saved evaluation" })).toHaveAttribute("href", `/jobs/history?run=${runId}`);
+    expect(screen.queryByRole("region", { name: "Unconfirmed Inbox evaluation" })).not.toBeInTheDocument();
+    expect(sessionStorage.getItem("career-trans.inbox-evaluation-uncertain")).toBeNull();
+    expect(screen.getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
+    expect(posts).toBe(1);
   });
 
   it("reports an authoritative HTTP evaluation error separately from transport uncertainty", async () => {
@@ -761,8 +802,10 @@ describe("Issue #171 Jobs workspace", () => {
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
-    expect(await screen.findByText(/Career-trans returned an error while creating the evaluation/)).toBeInTheDocument();
+    expect(await screen.findByText(/Career-trans rejected the evaluation request\. No evaluation was submitted/)).toBeInTheDocument();
     expect(screen.getByText(/Recent run history has been refreshed/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Submitted evaluation" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Evaluate 1 jobs" })).toBeEnabled();
     expect(screen.queryByText(/cannot confirm from this response whether the run started/)).not.toBeInTheDocument();
     expect(runRequests).toBe(1);
   });
@@ -1520,6 +1563,17 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     expect(await screen.findByText("Refresh failed. Previously loaded information is still shown.")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /^Close run/ })).toHaveLength(1);
     expect(screen.queryByRole("region", { name: "Selected search history run" })).not.toBeInTheDocument();
+  });
+
+  it.each(["/jobs/history?run=run-1", "/jobs/history?run=missing-run"])("settles Search History after a StrictMode direct visit to %s", async (path) => {
+    const fetch = fakeFetch({
+      "GET /api/v1/jobs/discovery-runs/missing-run": () => json({ detail: "not found" }, 404),
+    });
+    renderJobs(fetch, path, false, true);
+    await screen.findByRole("heading", { name: "Search history" });
+    await waitFor(() => expect(screen.queryByText("Loading…")).not.toBeInTheDocument());
+    expect(screen.queryByText("Loading discovery runs…")).not.toBeInTheDocument();
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/search-history?limit=20");
   });
 
   it("normalizes a job-only history URL and supports browser back and forward", async () => {

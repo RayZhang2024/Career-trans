@@ -23,6 +23,7 @@ from app.schemas.application_preparation import ApplicationPreparationResult, Ap
 from app.schemas.matching import RequirementMatch
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.user_job_workspace_service import UserJobWorkspaceReadService
+from app.services.application_preparation_service import ApplicationPreparationReadService
 from app.services.user_job_decision_service import UserJobDecisionService
 from app.schemas.user_job_decision import UserJobDecisionMutation
 from app.services.llm_runtime import RuntimePreferenceError
@@ -343,7 +344,7 @@ def _workspace_preparation(preparation_id: str, user_id: str, job_id: str | None
     )
     return ApplicationPreparation(
         id=preparation_id, user_id=user_id, target_snapshot_json=target.model_dump_json(),
-        identity_snapshot_json="{}", preparation_input_fingerprint="a" * 64,
+        identity_snapshot_json='{"display_name":"Synthetic Candidate","email":"candidate@example.test"}', preparation_input_fingerprint="a" * 64,
         preparation_contract_fingerprint="b" * 64,
         preparation_result_json=result.model_dump_json() if legacy else '{"persistence_version":2,"result":' + result.model_dump_json() + ',"evidence_snapshot_status":"available","evidence_sources":[]}',
         created_at=created_at,
@@ -378,6 +379,24 @@ def test_workspace_application_projection_is_scoped_bounded_ordered_and_set_join
     assert workspace.applications.items[0].tracking is None
     assert workspace.applications.items[1].tracking is not None
     assert workspace.applications.items[1].tracking.current_status == "interview"
+
+
+def test_applications_and_workspace_return_the_same_utc_time_for_existing_naive_preparation(db_session):
+    job = _job(2640)
+    db_session.add_all([_user("owner"), job])
+    db_session.commit()
+    # SQLite strips tzinfo from existing timezone=True values; treat that persisted
+    # legacy representation as UTC in both read models.
+    created_at = datetime(2026, 10, 1, 5, 20, 56, 216154)
+    db_session.add(_workspace_preparation("prep-2640", "owner", job.id, job.content_hash, created_at))
+    db_session.commit()
+
+    application = ApplicationPreparationReadService(db_session).list_preparations("owner")[0]
+    workspace = UserJobWorkspaceReadService(db_session).read("owner", job.id)
+    workspace_application = workspace.applications.items[0]
+
+    assert application.created_at.isoformat() == workspace_application.created_at.isoformat()
+    assert application.created_at.utcoffset() == timezone.utc.utcoffset(application.created_at)
 
 
 def test_workspace_application_projection_safely_excludes_malformed_targets_and_supports_legacy_results(db_session):
