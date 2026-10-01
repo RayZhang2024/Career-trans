@@ -10,11 +10,14 @@ import { emptySearchIntent, searchIntentEquals, searchIntentFromQuery, searchInt
 import { runSavedDiscoveryNowWithReconciliation, type DiscoveryRunReconciliation } from "./discoveryRunNow";
 import { DecisionControls, undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
 import { createApplicationPreparation, type PreparationPrerequisites } from "./applicationPreparationController";
+import { unicodeCaseFold } from "./unicodeCaseFold";
 
 type SectionState<T> = { phase: "loading" | "loaded" | "error"; data?: T; error?: string };
 type InboxDismissalNotice = { decision: UserJobDecision; title: string; message: string };
+type UncertainInboxEvaluation = { user_id: string; started_at: string; payload: CreateDiscoveryRun; titles: string[]; retry_allowed?: boolean };
 const WINDOW = 20;
 const MAX_WINDOW = 100;
+const INBOX_UNCERTAIN_KEY = "career-trans.inbox-evaluation-uncertain";
 const ONE_OFF_SESSION_NOTICE_KEY = "career-trans.one-off-session-notice";
 const ONE_OFF_SESSION_NOTICE_EVENT = "career-trans-one-off-session-notice";
 const ONE_OFF_SESSION_CHANGED_MESSAGE = "Your session changed during this search. Review the current search and start a fresh launch under this session.";
@@ -27,6 +30,40 @@ const titleCase = (value: string) => value.replaceAll("_", " ").replace(/\b\w/g,
 const nextWindow = (current: number) => Math.min(MAX_WINDOW, current + WINDOW);
 const numberLabel = (value: number) => Number.isInteger(value) ? String(value) : value.toFixed(1);
 const dateLabel = (value: string | null | undefined) => value ? new Date(value).toLocaleString() : "time unavailable";
+function readUncertainInboxEvaluations(): Record<string, UncertainInboxEvaluation> {
+  try {
+    const value = sessionStorage.getItem(INBOX_UNCERTAIN_KEY);
+    if (!value) return {};
+    const parsed = JSON.parse(value) as Record<string, UncertainInboxEvaluation> | UncertainInboxEvaluation;
+    const legacy = parsed as UncertainInboxEvaluation;
+    if (typeof legacy.user_id === "string") return { [legacy.user_id]: legacy };
+    return parsed as Record<string, UncertainInboxEvaluation>;
+  } catch { return {}; }
+}
+const stableJson = (value: unknown): string => JSON.stringify(value, (_key, item) => {
+  if (item && typeof item === "object" && !Array.isArray(item)) return Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right)));
+  return item;
+});
+const normalizedRunQuery = (query: CreateDiscoveryRun["query"]) => {
+  const normalized = { ...query };
+  for (const key of ["keywords", "locations", "companies", "excluded_companies", "excluded_title_terms", "employment_types"] as const) {
+    normalized[key] = Array.from(new Set(query[key].map((value) => unicodeCaseFold(value.trim().split(/\s+/).filter(Boolean).join(" "))).filter(Boolean))).sort();
+  }
+  return normalized;
+};
+const runInputMatchesRequest = (runInput: Record<string, unknown>, uncertain: UncertainInboxEvaluation) => {
+  const requestId = uncertain.payload.client_request_id;
+  if (!requestId || runInput.client_request_id !== requestId) return false;
+  return stableJson(runInput) === stableJson({
+    client_request_id: requestId,
+    query: normalizedRunQuery(uncertain.payload.query),
+    discovered_job_ids: Array.from(new Set(uncertain.payload.discovered_job_ids)),
+    max_semantic_candidates: uncertain.payload.max_semantic_candidates,
+    max_full_analyses: uncertain.payload.max_full_analyses,
+    min_relevance_score: uncertain.payload.min_relevance_score,
+  });
+};
+const isProvablyPreCreationRejection = (error: unknown) => error instanceof ApiError && [401, 403, 422].includes(error.status);
 const jobContextLabel = (title: string, company?: string | null, location?: string | null, discriminator?: string) => [title, company, location, discriminator].filter(Boolean).join(" · ") || "this job";
 const runContextLabel = (run: Pick<DiscoveryRunSummary, "status" | "started_at">) => `${run.status === "running" ? "evaluation in progress" : titleCase(run.status)} · started ${dateLabel(run.started_at)}`;
 
@@ -309,15 +346,18 @@ export function JobsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [evaluationSnapshot, setEvaluationSnapshot] = useState<{ titles: string[]; query: CreateDiscoveryRun["query"] } | null>(null);
   const [exactEvaluation, setExactEvaluation] = useState<DiscoveryRunCreated | null>(null);
+  const [uncertainEvaluations, setUncertainEvaluations] = useState<Record<string, UncertainInboxEvaluation>>(readUncertainInboxEvaluations);
+  const [reconcilingEvaluation, setReconcilingEvaluation] = useState(false);
+  const [reconciledInboxRun, setReconciledInboxRun] = useState<DiscoveryRunDetail | null>(null);
   const [evaluationMessage, setEvaluationMessage] = useState("");
   const [evaluationError, setEvaluationError] = useState("");
   const decisionMutator = useJobDecisionMutator();
   const submitLock = useRef(false);
   const oneOffLock = useRef(false);
   const oneOffAttempt = useRef(0);
+  const evaluationReconcileLock = useRef(false);
   const alive = useRef(false);
   const opportunitiesRequest = useRef<number | null>(null);
-  const runsRequest = useRef<number | null>(null);
   const generations = useRef({ onboarding: 0, opportunities: 0, runs: 0, inbox: 0, shortlisted: 0, dismissed: 0, savedSchedules: 0, scheduleHistory: 0, runDetail: 0, historicalDetail: 0, currentDetail: 0, oneOffPreflight: 0 });
   const userKey = user?.id ?? "";
   const currentUserKey = useRef(userKey);
@@ -392,9 +432,7 @@ export function JobsPage() {
     }
   };
   const loadRuns = async (limit = runLimit): Promise<boolean> => {
-    if (runsRequest.current !== null) return false;
     const request = ++generations.current.runs;
-    runsRequest.current = request;
     setRuns((previous) => ({ ...previous, phase: previous.data ? "loaded" : "loading", error: undefined }));
     try {
       const data = await api.request<SearchHistoryResponse>(`/api/v1/jobs/search-history?limit=${limit}`);
@@ -403,9 +441,63 @@ export function JobsPage() {
     } catch {
       if (alive.current && request === generations.current.runs) setRuns((previous) => ({ phase: "error", data: previous.data, error: "Discovery run history is unavailable." }));
       return false;
-    } finally {
-      if (runsRequest.current === request) runsRequest.current = null;
     }
+  };
+  const activeUncertainEvaluation = uncertainEvaluations[userKey] ?? null;
+  const inboxSearchIntent = activeUncertainEvaluation ? searchIntentFromQuery(activeUncertainEvaluation.payload.query) : searchIntent;
+  const clearUncertainEvaluation = () => {
+    setUncertainEvaluations((previous) => {
+      const next = { ...previous };
+      delete next[userKey];
+      if (Object.keys(next).length) sessionStorage.setItem(INBOX_UNCERTAIN_KEY, JSON.stringify(next));
+      else sessionStorage.removeItem(INBOX_UNCERTAIN_KEY);
+      return next;
+    });
+  };
+  const saveUncertainEvaluation = (uncertain: UncertainInboxEvaluation) => {
+    const next = { ...readUncertainInboxEvaluations(), [uncertain.user_id]: uncertain };
+    sessionStorage.setItem(INBOX_UNCERTAIN_KEY, JSON.stringify(next));
+    setUncertainEvaluations(next);
+  };
+  const reconcileUncertainEvaluation = async () => {
+    const uncertain = activeUncertainEvaluation;
+    if (!uncertain || evaluationReconcileLock.current) return;
+    evaluationReconcileLock.current = true;
+    const authority = { userKey, sessionEpoch: api.sessionEpoch() };
+    const current = () => alive.current && currentUserKey.current === authority.userKey && api.sessionEpoch() === authority.sessionEpoch;
+    setReconcilingEvaluation(true);
+    setEvaluationError("");
+    try {
+      const history = await api.request<SearchHistoryResponse>(`/api/v1/jobs/search-history?limit=${MAX_WINDOW}`);
+      if (!current()) return;
+      setRuns({ phase: "loaded", data: history });
+      const possibleRuns = history.items.filter((item): item is Extract<SearchHistoryResponse["items"][number], { type: "discovery_run" }> => item.type === "discovery_run"
+        && runInputMatchesRequest(item.run.run_input, uncertain));
+      for (const item of possibleRuns) {
+        try {
+          const detail = await api.request<DiscoveryRunDetail>(`/api/v1/jobs/discovery-runs/${encodeURIComponent(item.run.id)}`);
+          if (!current()) return;
+          const expectedIds = [...new Set(uncertain.payload.discovered_job_ids)].sort();
+          const actualIds = [...new Set(detail.jobs.map((job) => job.discovered_job_id))].sort();
+          if (runInputMatchesRequest(detail.run_input, uncertain) && stableJson(actualIds) === stableJson(expectedIds)) {
+            setReconciledInboxRun(detail);
+            setSelectedIds(new Set());
+            clearUncertainEvaluation();
+            setEvaluationError("");
+            return;
+          }
+        } catch { /* A detail read that fails cannot resolve the uncertain request. */ }
+      }
+      if (!current()) return;
+      const retryReady = { ...uncertain, retry_allowed: true };
+      saveUncertainEvaluation(retryReady);
+      setEvaluationError("No saved run matches this request ID yet. Your selected jobs and SearchIntent are preserved. You can safely retry this same request; Career-trans will reuse its request ID instead of creating a duplicate.");
+    } catch {
+      if (current()) {
+        saveUncertainEvaluation({ ...uncertain, retry_allowed: false });
+        setEvaluationError("The request outcome is still unconfirmed, and saved Search History could not be refreshed. Retry reconciliation before trying the same request again.");
+      }
+    } finally { evaluationReconcileLock.current = false; setReconcilingEvaluation(false); }
   };
   const loadInbox = async (limit = inboxLimit): Promise<boolean> => {
     const request = ++generations.current.inbox;
@@ -551,6 +643,15 @@ export function JobsPage() {
     else if (view === "shortlisted") void loadShortlisted(WINDOW);
     else if (view === "history") { void loadRuns(WINDOW); }
   }, [view, userKey, sessionEpoch]);
+  useEffect(() => {
+    if (view === "inbox" && activeUncertainEvaluation) void reconcileUncertainEvaluation();
+  }, [view, userKey, activeUncertainEvaluation?.started_at]);
+  useEffect(() => {
+    const uncertain = activeUncertainEvaluation;
+    if (!uncertain || uncertain.user_id !== userKey) return;
+    setSearchIntent(searchIntentFromQuery(uncertain.payload.query));
+    setSelectedIds(new Set(uncertain.payload.discovered_job_ids));
+  }, [userKey, sessionEpoch, activeUncertainEvaluation?.started_at]);
   useEffect(() => { if (view === "shortlisted" && showDismissed) void loadDismissed(dismissedLimit); }, [view, showDismissed]);
   useEffect(() => {
     const refresh = () => {
@@ -757,26 +858,58 @@ export function JobsPage() {
       }
     } finally { if (alive.current) setFindRunning(false); }
   };
+  const completeInboxEvaluation = async (result: DiscoveryRunCreated, payload: CreateDiscoveryRun, titles: string[]) => {
+    clearUncertainEvaluation();
+    setEvaluationSnapshot({ titles, query: payload.query });
+    setExactEvaluation(result);
+    setReconciledInboxRun(null);
+    setEvaluationMessage("Evaluation completed. Refreshing recent runs and current opportunities…");
+    setEvaluationError("");
+    setSelectedIds(new Set()); setOpportunityLimit(WINDOW);
+    const [runsRefreshed, opportunitiesRefreshed] = await Promise.all([loadRuns(runLimit), loadOpportunities(WINDOW, true)]);
+    setEvaluationMessage(`Evaluation completed. Recent runs ${runsRefreshed ? "were refreshed" : "could not be confirmed as refreshed"}; current opportunities ${opportunitiesRefreshed ? "were refreshed" : "could not be confirmed as refreshed"}.`);
+  };
+  const handleInboxEvaluationFailure = async (error: unknown, payload: CreateDiscoveryRun, titles: string[], startedAt: string) => {
+    setEvaluationSnapshot(null);
+    setExactEvaluation(null);
+    if (isProvablyPreCreationRejection(error)) {
+      clearUncertainEvaluation();
+      const runsRefreshed = await loadRuns(runLimit);
+      setEvaluationError(`Career-trans rejected the evaluation before a run could be created. No evaluation was submitted. ${runsRefreshed ? "Recent run history has been refreshed." : "Recent run history could not be confirmed as refreshed."}`);
+      return;
+    }
+    const uncertain: UncertainInboxEvaluation = { user_id: userKey, started_at: startedAt, payload, titles, retry_allowed: false };
+    saveUncertainEvaluation(uncertain);
+    setEvaluationError(error instanceof ApiError
+      ? "Career-trans returned an error after the request may have created a run. Its outcome is unconfirmed; saved Search History will be checked before any retry."
+      : "The evaluation request was interrupted. Its outcome is unconfirmed; saved Search History will be checked before any retry.");
+  };
+  const retryUncertainEvaluation = async () => {
+    const uncertain = activeUncertainEvaluation;
+    if (!uncertain?.retry_allowed || !uncertain.payload.client_request_id || submitLock.current || submitting) return;
+    submitLock.current = true; setSubmitting(true); setEvaluationError(""); setEvaluationMessage("");
+    saveUncertainEvaluation({ ...uncertain, retry_allowed: false });
+    try {
+      const result = await api.request<DiscoveryRunCreated>("/api/v1/jobs/discovery-runs", { method: "POST", body: JSON.stringify(uncertain.payload) });
+      await completeInboxEvaluation(result, uncertain.payload, uncertain.titles);
+    } catch (error) {
+      await handleInboxEvaluationFailure(error, uncertain.payload, uncertain.titles, uncertain.started_at);
+    } finally { submitLock.current = false; if (alive.current) setSubmitting(false); }
+  };
   const submitEvaluation = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (submitLock.current || submitting || !onboarding.data?.candidate_context_ready || selectedIds.size === 0 || searchIntent.themes.length === 0) return;
+    if (submitLock.current || submitting || activeUncertainEvaluation || !onboarding.data?.candidate_context_ready || selectedIds.size === 0 || searchIntent.themes.length === 0) return;
     const query = searchIntentToQuery(searchIntent);
     const ids = Array.from(selectedIds);
     const titles = inbox.data?.items.filter((item) => selectedIds.has(item.discovered_job_id)).map((item) => item.title) ?? [];
-    const payload: CreateDiscoveryRun = { query, discovered_job_ids: ids, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 };
+    const payload: CreateDiscoveryRun = { client_request_id: crypto.randomUUID(), query, discovered_job_ids: ids, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 };
+    const startedAt = new Date().toISOString();
     submitLock.current = true; setSubmitting(true); setEvaluationSnapshot({ titles, query }); setExactEvaluation(null); setEvaluationMessage(""); setEvaluationError("");
     try {
       const result = await api.request<DiscoveryRunCreated>("/api/v1/jobs/discovery-runs", { method: "POST", body: JSON.stringify(payload) });
-      setExactEvaluation(result);
-      setEvaluationMessage("Evaluation completed. Refreshing recent runs and current opportunities…");
-      setSelectedIds(new Set()); setOpportunityLimit(WINDOW);
-      const [runsRefreshed, opportunitiesRefreshed] = await Promise.all([loadRuns(runLimit), loadOpportunities(WINDOW, true)]);
-      setEvaluationMessage(`Evaluation completed. Recent runs ${runsRefreshed ? "were refreshed" : "could not be confirmed as refreshed"}; current opportunities ${opportunitiesRefreshed ? "were refreshed" : "could not be confirmed as refreshed"}.`);
+      await completeInboxEvaluation(result, payload, titles);
     } catch (error) {
-      const runsRefreshed = await loadRuns(runLimit);
-      setEvaluationError(error instanceof ApiError
-        ? `Career-trans returned an error while creating the evaluation. ${runsRefreshed ? "Recent run history has been refreshed." : "Recent run history could not be confirmed as refreshed."}`
-        : `The evaluation request was interrupted. Career-trans cannot confirm from this response whether the run started. ${runsRefreshed ? "Recent run history has been refreshed." : "Recent run history could not be confirmed as refreshed."}`);
+      await handleInboxEvaluationFailure(error, payload, titles, startedAt);
     } finally { submitLock.current = false; if (alive.current) setSubmitting(false); }
   };
 
@@ -804,7 +937,9 @@ export function JobsPage() {
     {evaluationMessage && <p className="notice" role="status">{evaluationMessage}</p>}{evaluationError && <p className="notice" role="status">{evaluationError}</p>}{staleNotice && <p className="notice" role="status">{staleNotice}</p>}
     {evaluationSnapshot && submitting && <section className="card evaluation-snapshot"><h2>Evaluation in progress</h2><p role="status">Evaluating selected jobs… this may take several minutes.</p><p>Selected jobs: {evaluationSnapshot.titles.join(", ") || "Selection submitted"}</p><p>Search themes: {evaluationSnapshot.query.keywords.join(", ")} · locations: {evaluationSnapshot.query.locations.join(", ") || "Any"} · remote policy: {evaluationSnapshot.query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p></section>}
     {exactEvaluation && <ExactEvaluationResult run={exactEvaluation} fallbackQuery={evaluationSnapshot?.query} />}
-    {evaluationSnapshot && !submitting && <section className="card evaluation-snapshot"><h2>Submitted evaluation</h2><p>Selected jobs: {evaluationSnapshot.titles.join(", ") || "Selection submitted"}</p><p>Search themes: {evaluationSnapshot.query.keywords.join(", ")} · locations: {evaluationSnapshot.query.locations.join(", ") || "Any"} · remote policy: {evaluationSnapshot.query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p></section>}
+    {evaluationSnapshot && !submitting && exactEvaluation && <section className="card evaluation-snapshot"><h2>Submitted evaluation</h2><p>Selected jobs: {evaluationSnapshot.titles.join(", ") || "Selection submitted"}</p><p>Search themes: {evaluationSnapshot.query.keywords.join(", ")} · locations: {evaluationSnapshot.query.locations.join(", ") || "Any"} · remote policy: {evaluationSnapshot.query.remote_ok === false ? "Exclude remote jobs" : "No remote restriction"}</p></section>}
+    {view === "inbox" && activeUncertainEvaluation && <section className="card evaluation-snapshot" aria-label="Unconfirmed Inbox evaluation"><h2>Evaluation outcome unconfirmed</h2><p>The request may have created a saved run. Another evaluation is blocked until Search History has been checked for its request ID.</p><p>Selected jobs: {activeUncertainEvaluation.titles.join(", ") || "Selection details unavailable"}</p><button type="button" className="button-secondary" disabled={reconcilingEvaluation || submitting} onClick={() => void reconcileUncertainEvaluation()}>{reconcilingEvaluation ? "Checking Search History…" : "Reconcile run history"}</button>{activeUncertainEvaluation.retry_allowed && activeUncertainEvaluation.payload.client_request_id && <button type="button" className="button-secondary" disabled={reconcilingEvaluation || submitting} onClick={() => void retryUncertainEvaluation()}>Retry this same evaluation safely</button>}{activeUncertainEvaluation.retry_allowed && !activeUncertainEvaluation.payload.client_request_id && <p role="status">This older interrupted request has no request ID and cannot be matched or retried safely. Review Search History before clearing it and starting a new evaluation.</p>} <Link className="button-secondary" to="/jobs/history">Open Search History</Link></section>}
+    {view === "inbox" && reconciledInboxRun && <section className="card evaluation-snapshot" aria-label="Reconciled Inbox evaluation"><h2>Saved evaluation found</h2><p>Search History contains the exact selected jobs and search settings for this interrupted request.</p><Link className="button-secondary" to={`/jobs/history?run=${encodeURIComponent(reconciledInboxRun.id)}`}>Review saved evaluation</Link></section>}
     <div className="jobs-content">
       {view === "find" && <section aria-labelledby="find-jobs-heading" className="jobs-section"><div className="section-heading"><div><h2 id="find-jobs-heading">Find jobs</h2><p className="muted">Build a SearchIntent for discovery and prioritisation. Search context is not eligibility, evidence, or proof of fit.</p></div></div>
         {savedSchedules.phase === "loading" && !savedSchedules.data && <p className="muted" role="status">Loading saved configurations…</p>}
@@ -858,7 +993,7 @@ export function JobsPage() {
             <ul className="inbox-list">{inbox.data.items.map((item) => { const context = jobContextLabel(item.title, item.company, item.location, `last seen ${dateLabel(item.last_seen_at)}`); return <li className={`card inbox-card${selectedIds.has(item.discovered_job_id) ? " is-selected" : ""}`} key={item.discovered_job_id}><label className="selection-label"><input type="checkbox" checked={selectedIds.has(item.discovered_job_id)} disabled={!item.actionable || !ready || submitting} onChange={() => toggleJob(item)} aria-label={`Select ${context}`} /><span>{item.title}</span></label><p>{[item.company, item.location, item.work_arrangement, item.employment_type].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Lifecycle: {titleCase(item.state)} · Verification: {titleCase(item.verification_status)} · {item.actionable ? "Actionable" : "Not actionable"}</p>{item.verification_reason && <p>Verification note: {titleCase(item.verification_reason)}</p>}<p>Last seen: {new Date(item.last_seen_at).toLocaleString()}</p>{item.provenance.length > 0 && <p>Recent provenance: {item.provenance.map((source) => `${source.runtime}${source.discovered_via ? ` · ${source.discovered_via}` : ""}`).join("; ")}</p>}<div className="card-actions"><Link className="button-secondary" aria-label={`Open workspace for ${context}`} to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" aria-label={`View Fit for ${context}`} to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link><a aria-label={`Open vacancy for ${context}`} href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></div><DecisionControls decision={item.decision} context={context} disabled={decisionMutator.pending.has(item.discovered_job_id)} onMutate={(target) => void mutateDecision(item.decision, target, "inbox")} />{decisionMutator.notices[item.discovered_job_id] && <p className="notice" role="status">{decisionMutator.notices[item.discovered_job_id]}</p>}</li>; })}</ul>
             {inbox.data.truncated && (inboxLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(inboxLimit); setInboxLimit(next); void loadInbox(next); }}>Show more recent vacancies</button> : <p className="muted">Showing the first 100 recent vacancies available through this view.</p>)}
           </>}
-          {ready && <form className="card evaluation-form" onSubmit={(event) => void submitEvaluation(event)}><h3>Evaluate selected actionable jobs</h3><p className="muted">This evaluates persisted vacancies with the same explicit SearchIntent used by Find jobs. It does not start internet discovery.</p><p><strong>SearchIntent:</strong> {searchIntent.themes.join(", ") || "Not set"} · locations: {searchIntent.locations.join(", ") || "Any"} · remote policy: {searchIntent.remotePolicy === "exclude_remote" ? "Exclude remote jobs" : searchIntent.remotePolicy === "legacy_true" ? "No remote restriction (legacy stored value)" : "No remote restriction"}</p><p className="muted">SearchIntent is discovery context, not eligibility or evidence. <Link className="button-secondary" to="/jobs/find">Edit SearchIntent in Find jobs</Link></p><button type="submit" disabled={submitting || selectedIds.size === 0 || searchIntent.themes.length === 0}>{submitting ? "Evaluating…" : `Evaluate ${selectedIds.size || "selected"} jobs`}</button>{!searchIntent.themes.length && <p className="muted">Set an explicit SearchIntent in Find jobs before evaluating.</p>}{!selectedIds.size && <p className="muted">Select one or more actionable vacancies to continue.</p>}</form>}
+          {ready && <form className="card evaluation-form" onSubmit={(event) => void submitEvaluation(event)}><h3>Evaluate selected actionable jobs</h3><p className="muted">This evaluates persisted vacancies with the same explicit SearchIntent used by Find jobs. It does not start internet discovery.</p><p><strong>SearchIntent:</strong> {inboxSearchIntent.themes.join(", ") || "Not set"} · locations: {inboxSearchIntent.locations.join(", ") || "Any"} · remote policy: {inboxSearchIntent.remotePolicy === "exclude_remote" ? "Exclude remote jobs" : inboxSearchIntent.remotePolicy === "legacy_true" ? "No remote restriction (legacy stored value)" : "No remote restriction"}</p><p className="muted">SearchIntent is discovery context, not eligibility or evidence. <Link className="button-secondary" to="/jobs/find">Edit SearchIntent in Find jobs</Link></p><button type="submit" disabled={submitting || Boolean(activeUncertainEvaluation) || selectedIds.size === 0 || inboxSearchIntent.themes.length === 0}>{submitting ? "Evaluating…" : activeUncertainEvaluation ? "Evaluation outcome unconfirmed" : `Evaluate ${selectedIds.size || "selected"} jobs`}</button>{!inboxSearchIntent.themes.length && <p className="muted">Set an explicit SearchIntent in Find jobs before evaluating.</p>}{!selectedIds.size && <p className="muted">Select one or more actionable vacancies to continue.</p>}</form>}
         </StateMessage>
       </section>}
       {view === "shortlisted" && <section aria-labelledby="shortlisted-heading" className="jobs-section"><OpportunitiesNavigation view={view} /><div className="section-heading"><div><h2 id="shortlisted-heading">Shortlisted</h2><p className="muted">Jobs you explicitly shortlisted. This list is independent of recommendations, Fit, and evaluation history.</p></div><button type="button" className="button-secondary" onClick={() => void loadShortlisted()}>Refresh</button></div><StateMessage state={shortlisted} empty={false} onRetry={() => void loadShortlisted()}>{shortlisted.phase === "loaded" && shortlisted.data?.items.length === 0 && <p className="muted">No shortlisted jobs yet.</p>}{!!shortlisted.data?.items.length && <><ul className="opportunity-list">{shortlisted.data.items.map((item) => { const context = jobContextLabel(item.title, item.company, item.location, `decision updated ${dateLabel(item.updated_at)}`); return <li className="card opportunity-card" key={item.discovered_job_id}><h3>{item.title}</h3><p>{[item.company, item.location, item.work_arrangement].filter(Boolean).join(" · ") || "Details not provided"}</p><p>Decision updated {item.updated_at ? new Date(item.updated_at).toLocaleString() : "recently"} · {item.actionable ? "Actionable" : "Not actionable"}</p><div className="card-actions"><Link className="button-secondary" aria-label={`Open workspace for ${context}`} to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" aria-label={`View Fit for ${context}`} to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link><a aria-label={`Open vacancy for ${context}`} href={item.url} target="_blank" rel="noopener noreferrer">Open vacancy</a></div><DecisionControls decision={item} context={context} disabled={decisionMutator.pending.has(item.discovered_job_id)} onMutate={(target) => void mutateDecision(item, target, "shortlisted")} />{decisionMutator.notices[item.discovered_job_id] && <p className="notice" role="status">{decisionMutator.notices[item.discovered_job_id]}</p>}</li>; })}</ul>{shortlisted.data.truncated && (shortlistedLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(shortlistedLimit); setShortlistedLimit(next); void loadShortlisted(next); }}>Show more shortlisted jobs</button> : <p className="muted">Showing the first 100 shortlisted jobs; more matching decisions exist.</p>)}</>}{shortlisted.data && <section className="card" aria-labelledby="dismissed-heading"><div className="section-heading"><h3 id="dismissed-heading">Dismissed jobs</h3><button type="button" className="button-secondary" aria-expanded={showDismissed} onClick={() => setShowDismissed((value) => !value)}>{showDismissed ? "Hide dismissed jobs" : "Manage dismissed jobs"}</button></div>{showDismissed && <StateMessage state={dismissed} empty={false} onRetry={() => void loadDismissed()}>{dismissed.phase === "loaded" && dismissed.data?.items.length === 0 && <p className="muted">No dismissed jobs.</p>}{!!dismissed.data?.items.length && <><ul className="opportunity-list">{dismissed.data.items.map((item) => { const context = jobContextLabel(item.title, item.company, item.location, `decision updated ${dateLabel(item.updated_at)}`); return <li className="card opportunity-card" key={item.discovered_job_id}><h4>{item.title}</h4><p>{[item.company, item.location].filter(Boolean).join(" · ") || "Details not provided"}</p><div className="card-actions"><Link className="button-secondary" aria-label={`Open workspace for ${context}`} to={`/jobs/${encodeURIComponent(item.discovered_job_id)}`}>Open workspace</Link><Link className="button-secondary" aria-label={`View Fit for ${context}`} to={`/jobs/${encodeURIComponent(item.discovered_job_id)}/fit`}>View Fit</Link></div><DecisionControls decision={item} context={context} disabled={decisionMutator.pending.has(item.discovered_job_id)} onMutate={(target) => void mutateDecision(item, target, "dismissed")} />{decisionMutator.notices[item.discovered_job_id] && <p className="notice" role="status">{decisionMutator.notices[item.discovered_job_id]}</p>}</li>; })}</ul>{dismissed.data.truncated && (dismissedLimit < MAX_WINDOW ? <button type="button" className="button-secondary" onClick={() => { const next = nextWindow(dismissedLimit); setDismissedLimit(next); void loadDismissed(next); }}>Show more dismissed jobs</button> : <p className="muted">Showing the first 100 dismissed jobs; more matching decisions exist.</p>)}</>}</StateMessage>}</section>}</StateMessage></section>}

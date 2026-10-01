@@ -58,6 +58,28 @@ it("status failure stays unavailable and never masquerades as no draft", async (
   expect(screen.queryByRole("heading", { name: "Upload your CV" })).not.toBeInTheDocument();
 });
 
+it("keeps uploaded hashes and extracted source references in a wrapping container", async () => {
+  const hash = "a".repeat(64);
+  const segmentId = "cv-segment-" + "b".repeat(64);
+  request
+    .mockResolvedValueOnce(statusWith("draft-source", "uploaded"))
+    .mockResolvedValueOnce({
+      id: "draft-source", state: "uploaded", merged: null, created_at: "", updated_at: "", runtime_attribution: null,
+      documents: [{
+        provenance: { filename: "synthetic.md", media_type: "text/markdown", document_sha256: hash, segment_ids: [segmentId] },
+        segments: [{ segment_id: segmentId, heading: "Synthetic source", page_number: 1, text: "Synthetic extracted content" }],
+      }],
+    });
+  render(<CvPage />);
+  const sourceHeading = await screen.findByRole("heading", { name: "Uploaded source representation" });
+  const source = sourceHeading.closest("section")!;
+  expect(source).toHaveClass("cv-source-representation");
+  const hashReference = source.querySelector("li");
+  expect(hashReference).toHaveClass("cv-source-reference");
+  expect(hashReference).toHaveTextContent(hash);
+  expect(within(source).getByText("Synthetic extracted content").closest("pre")).toHaveClass("cv-source-text");
+});
+
 it("does not render first-upload UI while a known latest draft is still loading", async () => {
   let finishDraft!: (value: unknown) => void;
   request

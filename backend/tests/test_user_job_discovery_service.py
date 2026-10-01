@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import json
+import runpy
+from uuid import uuid4
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -297,6 +300,44 @@ def test_unexpected_ranking_exception_terminalizes_run_safely(db_session, monkey
     assert "private" not in str(run.failure_summary)
 
 
+def test_repeated_client_request_id_returns_the_run_committed_before_provider_failure(db_session, monkeypatch) -> None:
+    class BrokenRanking:
+        def rank(self, _request):
+            raise RuntimeError("synthetic provider failure")
+
+    job, other = _job(), _job("other"); db_session.add_all([_user("user-a"), job, other]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    request_id = uuid4()
+    request = _request(job.id).model_copy(update={"client_request_id": request_id})
+    service = UserJobDiscoveryService(db_session, ranking_service=BrokenRanking())
+    try:
+        service.start("user-a", request)
+    except DiscoveryRunExecutionFailure as exc:
+        created_id = exc.run_id
+    else:
+        raise AssertionError("The synthetic provider error should happen after the run commits.")
+
+    db_session.expire_all()
+    persisted = db_session.get(DiscoveryRun, created_id)
+    assert persisted is not None
+    assert json.loads(persisted.search_input_json)["client_request_id"] == str(request_id)
+
+    # A retry with the same key returns the durable outcome even if the ranking
+    # service is currently unavailable; it cannot create a second logical run.
+    retried = UserJobDiscoveryService(db_session).start("user-a", request)
+    assert retried.id == created_id
+    assert retried.status == "failed"
+    try:
+        UserJobDiscoveryService(db_session).start(
+            "user-a", request.model_copy(update={"discovered_job_ids": [other.id]})
+        )
+    except ValueError as exc:
+        assert "different evaluation input" in str(exc)
+    else:
+        raise AssertionError("The same request ID must not be reused with a different job selection.")
+    assert len(db_session.scalars(select(DiscoveryRun).where(DiscoveryRun.user_id == "user-a")).all()) == 1
+
+
 def test_reused_success_then_ranking_failure_retains_partial_status_and_early_link(db_session, monkeypatch) -> None:
     first, second = _job("1"), _job("2")
     db_session.add_all([_user("user-a"), first, second]); db_session.commit()
@@ -348,6 +389,56 @@ def test_authenticated_run_and_opportunity_routes_enforce_user_scope(client, db_
     finally:
         fastapi_app.dependency_overrides.pop(get_user_job_discovery_service, None)
         fastapi_app.dependency_overrides.pop(get_user_job_discovery_read_service, None)
+
+
+def test_search_history_and_inbox_reads_work_after_existing_sqlite_schema_upgrade(client, db_session) -> None:
+    connection = db_session.connection()
+    sqlite_connection = connection.connection.driver_connection
+    connection.exec_driver_sql("DROP TABLE IF EXISTS discovery_run_jobs")
+    connection.exec_driver_sql("DROP TABLE discovery_runs")
+    connection.exec_driver_sql(
+        "CREATE TABLE discovery_runs ("
+        "id VARCHAR(36) NOT NULL, user_id VARCHAR(36) NOT NULL, "
+        "search_input_json TEXT NOT NULL, search_input_fingerprint VARCHAR(64) NOT NULL, "
+        "candidate_evaluation_fingerprint VARCHAR(64) NOT NULL, "
+        "evaluation_contract_fingerprint VARCHAR(64) NOT NULL, status VARCHAR(32) NOT NULL, "
+        "funnel_json TEXT NOT NULL, failure_summary_json TEXT NOT NULL, started_at DATETIME NOT NULL, "
+        "completed_at DATETIME, PRIMARY KEY (id), "
+        "FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE)"
+    )
+    db_session.commit()
+
+    migration = Path(__file__).resolve().parents[1] / "migrations" / "20261002_discovery_run_request_id_sqlite.py"
+    upgrade = runpy.run_path(str(migration))["upgrade"]
+    upgrade(sqlite_connection)
+    db_session.expire_all()
+
+    job = _job()
+    job.source = "agent_runtime"
+    db_session.add_all([
+        _user("user-a"),
+        job,
+        DiscoveryRun(
+            id="legacy-run-after-upgrade",
+            user_id="user-a",
+            search_input_json='{"query":{"keywords":["ai"]}}',
+            search_input_fingerprint="s" * 64,
+            candidate_evaluation_fingerprint="c" * 64,
+            evaluation_contract_fingerprint="e" * 64,
+            status="completed",
+            funnel_json="{}",
+            failure_summary_json="{}",
+        ),
+    ])
+    db_session.commit()
+
+    headers = {"Authorization": f"Bearer {create_access_token('user-a')}"}
+    history = client.get("/api/v1/jobs/search-history?limit=20", headers=headers)
+    inbox = client.get("/api/v1/jobs/inbox?limit=20", headers=headers)
+    assert history.status_code == 200
+    assert any(item["id"] == "legacy-run-after-upgrade" for item in history.json()["items"])
+    assert inbox.status_code == 200
+    assert any(item["discovered_job_id"] == job.id for item in inbox.json()["items"])
 
 
 def test_read_models_revalidate_current_recency_without_mutating_historical_snapshot(db_session, monkeypatch) -> None:

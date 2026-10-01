@@ -91,7 +91,12 @@ class ApplicationPreparationReadService:
     @staticmethod
     def _read(row: ApplicationPreparation) -> ApplicationPreparationRead:
         result, _, _ = _decode_persisted_result(row.preparation_result_json)
-        return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=result, created_at=row.created_at, runtime_attribution=read_attribution(row.runtime_attribution_json))
+        return ApplicationPreparationRead(id=row.id, target=ApplicationTargetSnapshot.model_validate_json(row.target_snapshot_json), identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json), preparation_input_fingerprint=row.preparation_input_fingerprint, preparation_contract_fingerprint=row.preparation_contract_fingerprint, result=result, created_at=_as_utc(row.created_at), runtime_attribution=read_attribution(row.runtime_attribution_json))
+
+
+def _as_utc(value: datetime) -> datetime:
+    """SQLite returns existing timezone=True timestamps as naive UTC values."""
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def _decode_persisted_result(raw: str) -> tuple[ApplicationPreparationResult, ApplicationEvidenceSnapshotStatus, list[ApplicationEvidenceSource]]:
