@@ -213,7 +213,10 @@ it("drives generate, review, confirm, stale reassessment, and all assessment sec
   request.mockResolvedValueOnce(assessment("review_ready")); fireEvent.click(screen.getByRole("button", { name: "Create a different assessment" }));
   await screen.findByRole("heading", { name: "Review your assessment" });
   request.mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("stale"));
-  fireEvent.click(screen.getByRole("button", { name: "Review and confirm this assessment" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review this assessment" }));
+  expect(screen.getByRole("button", { name: "Looks right — use this" })).toBeEnabled();
+  expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/assessment/confirm")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Looks right — use this" }));
   await screen.findByRole("button", { name: "Update my assessment" });
   request.mockResolvedValueOnce(assessment("review_ready")); fireEvent.click(screen.getByRole("button", { name: "Update my assessment" }));
   await screen.findByRole("heading", { name: "Review your assessment" });
@@ -398,12 +401,14 @@ it("prevents duplicate clarification confirmation and retires its editor after o
 it("blocks every lifecycle and clarification mutation while the authoritative intake is dirty", async () => {
   const reviewing = { ...unanswered(), status: "review_ready" as const, answer_text: "Answer", interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Context", proposed_evidence: [] } };
   request.mockResolvedValueOnce(status()).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("review_ready"));
-  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findByRole("button", { name: "Review and confirm this assessment" });
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>); await screen.findByRole("button", { name: "Review this assessment" });
   fireEvent.change(screen.getByRole("textbox", { name: "Where would you like your career to go?" }), { target: { value: "Dirty" } });
   expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Create a different assessment" })).toBeDisabled();
   request.mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce(status()).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([reviewing]);
-  fireEvent.click(screen.getByRole("button", { name: "Discard changes" })); fireEvent.click(screen.getByRole("button", { name: "Review and confirm this assessment" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review this assessment" }));
+  fireEvent.click(screen.getByRole("button", { name: "Looks right — use this" }));
   await screen.findByRole("button", { name: "Yes, that’s right" });
   fireEvent.change(screen.getByRole("textbox", { name: "Where would you like your career to go?" }), { target: { value: "Dirty again" } });
   expect(screen.getByRole("textbox", { name: "Your answer" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
@@ -433,7 +438,8 @@ it("clears confirmed siblings and completes a fresh clarification cycle", async 
   request.mockResolvedValueOnce(assessment("review_ready")); fireEvent.click(screen.getByRole("button", { name: "Update my assessment" })); await screen.findByRole("heading", { name: "Review your assessment" });
   expect(request.mock.calls.filter((call) => call[0] === "/api/v1/candidate-adviser/clarifications")).toHaveLength(1);
   request.mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce({ ...status(), adviser: { ...status().adviser, intake_exists: true, assessment_status: "confirmed", confirmed_clarification_count: 3, journey: { ...status().adviser.journey, intake_exists: true, assessment_status: "confirmed", confirmed_guidance_active: true, confirmed_clarification_count: 3, next_action: "find_jobs", status_category: "up_to_date" } } }).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([next]);
-  fireEvent.click(screen.getByRole("button", { name: "Review and confirm this assessment" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review this assessment" }));
+  fireEvent.click(screen.getByRole("button", { name: "Looks right — use this" }));
   expect(await screen.findByText("Question next")).toBeInTheDocument(); expect(screen.queryByText("Question sibling")).not.toBeInTheDocument();
 });
 
@@ -609,4 +615,46 @@ it("isolates profile suggestion history failures from the Adviser assessment lif
   fireEvent.click(screen.getByRole("button", { name: "Create my career assessment" }));
   expect(await screen.findByRole("heading", { name: "Review your assessment" })).toBeInTheDocument();
   expect(screen.getByRole("alert")).toHaveTextContent("Profile suggestions could not be loaded.");
+});
+
+
+it("honors persisted Profile enrichment priority after a fresh Adviser page load", async () => {
+  const base = status(true, "stale");
+  const persisted = {
+    ...base,
+    adviser: {
+      ...base.adviser,
+      assessment_status: "stale",
+      journey: {
+        ...base.adviser.journey,
+        assessment_status: "stale",
+        confirmed_guidance_active: false,
+        unresolved_profile_enrichment_count: 1,
+        next_enrichment_clarification_id: "career-fact",
+        next_enrichment: {
+          clarification_id: "career-fact",
+          question_text: "What delivery outcome should be added?",
+          confirmed_context_summary: "Delivered a production system.",
+          has_profile_evidence: true,
+        },
+        next_action: "review_profile_enrichment",
+        status_category: "review",
+      },
+    },
+  };
+  request.mockResolvedValueOnce(persisted).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("stale"));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect((await screen.findAllByRole("button", { name: "Review for Profile" })).length).toBeGreaterThan(0);
+  expect(screen.queryByRole("button", { name: "Update my assessment" })).not.toBeInTheDocument();
+});
+
+it("keeps clarification confirmation beside the reviewed interpretation", async () => {
+  const reviewing = { ...unanswered(), status: "review_ready" as const, answer_text: "Answer", interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Reviewed context", proposed_evidence: [] } };
+  request.mockResolvedValueOnce(status(true, "confirmed")).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([reviewing]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const review = await screen.findByRole("button", { name: "Review what I understood" });
+  fireEvent.click(review);
+  expect(request.mock.calls.filter((call) => String(call[0]).endsWith("/confirm"))).toHaveLength(0);
+  expect(screen.getByRole("heading", { name: "Here’s what I understood" }).closest("article")).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Yes, that’s right" })).toBeEnabled();
 });
