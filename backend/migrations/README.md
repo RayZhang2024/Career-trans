@@ -70,3 +70,35 @@ GET /api/v1/jobs/inbox?limit=20
 Both should return HTTP 200. Search History should continue to include legacy
 rows; Inbox should return its normal bounded response. These GETs are read-only
 and do not call a search provider.
+
+## Adviser enrichment resolution migration (Issue #266)
+
+Apply this migration after the existing Candidate Adviser and Profile proposal
+migrations have been applied, and before starting the updated app:
+
+1. Back up the database and stop application instances that write Adviser or
+   Profile proposal data.
+2. Apply the SQLite or PostgreSQL enrichment migration to the existing database.
+3. Verify the new `candidate_adviser_enrichments` table and its
+   `(user_id, clarification_id)` primary key.
+4. Start the updated app.
+5. Authenticate as a synthetic/test user and request
+   `GET /api/v1/onboarding/status`; the nested Adviser journey should load
+   without provider calls or clarification materialization.
+
+SQLite:
+
+```powershell
+python backend/migrations/20261002_candidate_adviser_enrichments_sqlite.py "sqlite:///D:/Career-trans-data/career_agent.db"
+```
+
+PostgreSQL:
+
+```powershell
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20261002_candidate_adviser_enrichments_postgresql.sql
+```
+
+Both migrations are safe to rerun. Confirmed career-fact/mixed clarifications
+with existing proposal rows are backfilled as `proposals_created`; eligible
+clarifications without proposal rows are backfilled as `pending`. Missing
+proposal history is never interpreted as a historical successful empty result.

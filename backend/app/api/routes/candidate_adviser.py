@@ -155,6 +155,22 @@ def generate_profile_proposals(
         ) from exc
 
 
+@router.post("/clarifications/{clarification_id}/profile-enrichment/defer", status_code=status.HTTP_204_NO_CONTENT)
+def defer_profile_enrichment(
+    clarification_id: str,
+    current_user: CurrentUser,
+    service: CandidateAdviserProfileProposalGenerationService = Depends(
+        get_user_candidate_adviser_profile_proposal_generation_service
+    ),
+) -> None:
+    try:
+        service.defer(current_user.id, clarification_id)
+    except CandidateAdviserProfileProposalNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clarification not found.") from exc
+    except CandidateAdviserProfileProposalConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.get("/profile-proposals", response_model=list[CandidateAdviserProfileProposalRead])
 def list_profile_proposals(
     current_user: CurrentUser,

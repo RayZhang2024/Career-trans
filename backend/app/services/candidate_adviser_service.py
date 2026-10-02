@@ -11,6 +11,7 @@ from app.agents.candidate_adviser import CandidateAdviserAgent
 from app.agents.candidate_adviser_clarification import CandidateAdviserClarificationInterpreter
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord, CandidateAdviserIntakeRecord
 from app.models.candidate_cv_ingestion import CandidateStructuredProfile
+from app.models.candidate_adviser_profile_proposal import CandidateAdviserEnrichmentRecord
 from app.schemas.candidate_adviser import (
     AdviserInsight,
     CandidateAdviserAssessmentContent,
@@ -182,6 +183,18 @@ class CandidateAdviserService:
             record.status = CandidateAdviserClarificationStatus.CONFIRMED
             record.confirmed_at = datetime.now(timezone.utc)
             self._session.flush()
+            interpretation = ClarificationInterpretation.model_validate_json(record.interpretation_json)
+            if interpretation.answer_kind in {ClarificationAnswerKind.CAREER_FACT, ClarificationAnswerKind.MIXED}:
+                enrichment = self._session.get(
+                    CandidateAdviserEnrichmentRecord, (user_id, clarification_id)
+                )
+                if enrichment is None:
+                    self._session.add(CandidateAdviserEnrichmentRecord(
+                        user_id=user_id,
+                        clarification_id=clarification_id,
+                        source_assessment_fingerprint=record.origin_assessment_fingerprint,
+                        state="pending",
+                    ))
             # The resolver remains the only active-evidence authority.
             self._resolve_active_evidence(user_id)
         self._session.commit()

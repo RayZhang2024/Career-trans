@@ -4,10 +4,15 @@ from dataclasses import dataclass
 from typing import Callable
 
 from pydantic import TypeAdapter, ValidationError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalGenerator
 from app.models.candidate_adviser import CandidateAdviserClarificationRecord
+from app.models.candidate_adviser_profile_proposal import (
+    CandidateAdviserEnrichmentRecord,
+    CandidateAdviserProfileProposalRecord,
+)
 from app.providers.llm import SemanticOutputError
 from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalGeneration,
@@ -72,8 +77,43 @@ class CandidateAdviserProfileProposalGenerationService:
     def generate(self, user_id: str, clarification_id: str) -> CandidateAdviserProfileProposalGenerationRead:
         lifecycle = CandidateAdviserProfileProposalService(self._session)
         source_record, source = lifecycle.generation_source(user_id, clarification_id)
-        if not source.proposed_evidence:
+        enrichment = self._session.get(
+            CandidateAdviserEnrichmentRecord, (user_id, clarification_id)
+        )
+        if enrichment is None:
+            enrichment = CandidateAdviserEnrichmentRecord(
+                user_id=user_id,
+                clarification_id=clarification_id,
+                source_assessment_fingerprint=source_record.origin_assessment_fingerprint,
+                state="pending",
+            )
+            self._session.add(enrichment)
+            self._session.commit()
+
+        existing = self._session.scalars(
+            select(CandidateAdviserProfileProposalRecord).where(
+                CandidateAdviserProfileProposalRecord.user_id == user_id,
+                CandidateAdviserProfileProposalRecord.source_clarification_id == clarification_id,
+            ).order_by(CandidateAdviserProfileProposalRecord.created_at,
+                       CandidateAdviserProfileProposalRecord.id)
+        ).all()
+        if existing:
+            enrichment.state = "proposals_created"
+            self._session.commit()
+            return CandidateAdviserProfileProposalGenerationRead(
+                proposals=[lifecycle._read(row) for row in existing]
+            )
+        if enrichment.state == "reviewed_no_update":
             return CandidateAdviserProfileProposalGenerationRead(proposals=[])
+        if not source.proposed_evidence:
+            enrichment.state = "reviewed_no_update"
+            self._session.commit()
+            return CandidateAdviserProfileProposalGenerationRead(proposals=[])
+        # A deferred enrichment is retryable only when the user explicitly
+        # re-enters Review for Profile through this endpoint.
+        if enrichment.state == "deferred":
+            enrichment.state = "pending"
+            self._session.commit()
         source_baseline = _ConfirmedSourceBaseline.capture(source_record)
 
         catalogue = lifecycle.target_catalogue(user_id)
@@ -103,7 +143,38 @@ class CandidateAdviserProfileProposalGenerationService:
         persisted = lifecycle.materialize_batch_from_confirmed_clarification(
             user_id, clarification_id, updates
         )
+        enrichment = self._session.get(
+            CandidateAdviserEnrichmentRecord, (user_id, clarification_id)
+        )
+        if enrichment is None:
+            enrichment = CandidateAdviserEnrichmentRecord(
+                user_id=user_id,
+                clarification_id=clarification_id,
+                source_assessment_fingerprint=source_record.origin_assessment_fingerprint,
+                state="pending",
+            )
+            self._session.add(enrichment)
+        enrichment.state = "proposals_created" if persisted else "reviewed_no_update"
+        self._session.commit()
         return CandidateAdviserProfileProposalGenerationRead(proposals=persisted)
+
+    def defer(self, user_id: str, clarification_id: str) -> None:
+        lifecycle = CandidateAdviserProfileProposalService(self._session)
+        source_record, _ = lifecycle.generation_source(user_id, clarification_id)
+        enrichment = self._session.get(
+            CandidateAdviserEnrichmentRecord, (user_id, clarification_id)
+        )
+        if enrichment is None:
+            enrichment = CandidateAdviserEnrichmentRecord(
+                user_id=user_id,
+                clarification_id=clarification_id,
+                source_assessment_fingerprint=source_record.origin_assessment_fingerprint,
+                state="pending",
+            )
+            self._session.add(enrichment)
+        if enrichment.state == "pending":
+            enrichment.state = "deferred"
+            self._session.commit()
 
     @staticmethod
     def _canonical_updates(

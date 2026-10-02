@@ -11,7 +11,7 @@ from app.agents.candidate_adviser_profile_proposal import SemanticCandidateAdvis
 from app.main import app
 from app.core.database import Base
 from app.models.candidate_adviser import CandidateAdviserClarificationRecord
-from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
+from app.models.candidate_adviser_profile_proposal import CandidateAdviserEnrichmentRecord, CandidateAdviserProfileProposalRecord
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
 from app.providers.llm import (
@@ -429,6 +429,53 @@ def test_identical_regeneration_preserves_edited_pending_proposal(db_session):
     assert len(_rows(db_session, user_id)) == 1
 
 
+def test_successful_empty_generation_is_durable_and_not_repeated(db_session):
+    user_id = _user(db_session)
+    clarification_id = _source(db_session, user_id)
+    first_generator = FakeGenerator([])
+    first = _service(db_session, first_generator).generate(user_id, clarification_id)
+    assert first.proposals == []
+    assert first_generator.calls == 1
+    state = db_session.get(CandidateAdviserEnrichmentRecord, (user_id, clarification_id))
+    assert state is not None and state.state == "reviewed_no_update"
+
+    class MustNotRetry:
+        def generate(self, *, generation_input):
+            raise AssertionError("an authoritative empty success must not call the provider again")
+
+    retry = _service(db_session, MustNotRetry()).generate(user_id, clarification_id)
+    assert retry.proposals == []
+
+
+def test_retry_after_committed_proposals_reconciles_without_provider_call(db_session):
+    user_id = _user(db_session)
+    clarification_id = _source(db_session, user_id)
+    first = _service(db_session, FakeGenerator([_skill_update()])).generate(user_id, clarification_id)
+    assert len(first.proposals) == 1
+
+    class MustNotRetry:
+        def generate(self, *, generation_input):
+            raise AssertionError("persisted proposals must reconcile without another provider call")
+
+    repeated = _service(db_session, MustNotRetry()).generate(user_id, clarification_id)
+    assert [proposal.id for proposal in repeated.proposals] == [proposal.id for proposal in first.proposals]
+    state = db_session.get(CandidateAdviserEnrichmentRecord, (user_id, clarification_id))
+    assert state is not None and state.state == "proposals_created"
+
+
+def test_successful_generation_with_no_source_evidence_resolves_without_provider(db_session):
+    user_id = _user(db_session)
+    clarification_id = _source(db_session, user_id, evidence=False)
+
+    class MustNotRun:
+        def generate(self, *, generation_input):
+            raise AssertionError("no proposed career evidence means there is nothing to generate")
+
+    assert _service(db_session, MustNotRun()).generate(user_id, clarification_id).proposals == []
+    state = db_session.get(CandidateAdviserEnrichmentRecord, (user_id, clarification_id))
+    assert state is not None and state.state == "reviewed_no_update"
+
+
 @pytest.mark.parametrize("error", [
     SemanticOutputError("invalid"),
     SemanticProviderConfigurationError("unavailable config"),
@@ -445,6 +492,8 @@ def test_provider_failures_leave_no_proposals(db_session, error):
     with pytest.raises(type(error)):
         _service(db_session, FailedGenerator()).generate(user_id, clarification_id)
     assert _rows(db_session, user_id) == []
+    enrichment = db_session.get(CandidateAdviserEnrichmentRecord, (user_id, clarification_id))
+    assert enrichment is not None and enrichment.state == "pending"
 
 
 def test_malformed_semantic_output_leaves_no_proposals(db_session):

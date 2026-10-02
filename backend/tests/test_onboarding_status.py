@@ -5,6 +5,7 @@ import json
 from sqlalchemy import event, select
 
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord
+from app.models.candidate_adviser_profile_proposal import CandidateAdviserEnrichmentRecord
 from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.candidate_profile import CandidateProfile
 from app.models.user import User
@@ -25,6 +26,8 @@ from app.schemas.cv_overlap_review import (
 )
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.services.candidate_adviser_service import CandidateAdviserService
+from app.services.candidate_adviser_journey_service import CandidateAdviserJourneyService
+from app.services.profile_revision_service import CandidateProfileRevisionService
 from app.services.cv_overlap_review_service import CVOverlapReviewService
 from app.services.cv_ingestion_service import CVIngestionService
 from tests.test_profile import auth_header, register_and_login
@@ -216,6 +219,87 @@ def test_onboarding_status_with_assessment_is_provider_free_read_only_and_uses_e
     assert response.status_code == 200
     assert response.json()["adviser"]["assessment_status"] == "confirmed"
     assert writes == []
+
+
+def test_shared_journey_projection_reports_followup_without_materializing_clarifications(client, db_session, monkeypatch):
+    token = register_and_login(client, "journey-followup@example.com")
+    user = db_session.query(User).filter_by(email="journey-followup@example.com").one()
+    service = _assessment_state(db_session, user.id)
+    record = db_session.scalar(select(CandidateAdviserAssessmentRecord).where(
+        CandidateAdviserAssessmentRecord.user_id == user.id
+    ))
+    payload = _adviser_content()
+    payload["open_questions"] = [{
+        "text": "What delivery outcome should we understand?",
+        "source_references": [{"source_type": "intake", "reference": "career_direction"}],
+    }]
+    record.assessment_json = json.dumps(payload)
+    record.input_fingerprint = service.input_fingerprint(user.id)
+    db_session.commit()
+    monkeypatch.setattr(CandidateAdviserService, "list_clarifications", lambda *_args: (_ for _ in ()).throw(AssertionError("shared read must not materialize clarifications")))
+    writes: list[str] = []
+
+    def observe(_conn, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+            writes.append(statement)
+
+    event.listen(db_session.bind, "before_cursor_execute", observe)
+    try:
+        response = client.get("/api/v1/onboarding/status", headers=auth_header(token))
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", observe)
+    journey = response.json()["adviser"]["journey"]
+    assert response.status_code == 200
+    assert journey["confirmed_guidance_active"] is True
+    assert journey["current_follow_up_available"] is True
+    assert journey["next_action"] == "find_jobs"
+    assert journey["job_search_ready"] is True
+    assert db_session.scalars(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user.id
+    )).all() == []
+    assert writes == []
+
+
+def test_journey_next_action_prioritizes_enrichment_and_oldest_unresolved_first(db_session):
+    from datetime import timedelta
+
+    from app.schemas.candidate_adviser_journey import AdviserNextAction
+
+    user = User(email="journey-order@example.com", password_hash="unused")
+    db_session.add(user); db_session.commit()
+    _assessment_state(db_session, user.id)
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    for clarification_id, confirmed_at in (("b" * 64, now + timedelta(days=1)), ("a" * 64, now)):
+        db_session.add(CandidateAdviserClarificationRecord(
+            user_id=user.id, clarification_id=clarification_id,
+            question_key=clarification_id, origin_assessment_fingerprint="a" * 64,
+            question_text="Confirmed career fact", question_source_references_json="[]",
+            priority_index=0, answer_text="Synthetic factual answer",
+            interpretation_json=json.dumps({
+                "answer_kind": "career_fact", "confirmed_context_summary": "Synthetic fact",
+                "proposed_evidence": [],
+            }), status="confirmed", confirmed_at=confirmed_at,
+        ))
+    db_session.commit()
+    # An active draft is exposed to prevent a known proposal-transfer dead end.
+    CandidateProfileRevisionService(db_session).create_or_resume(user.id)
+    journey = CandidateAdviserJourneyService(db_session).read(user.id)
+    assert journey.assessment_status == "stale"
+    assert journey.unresolved_profile_enrichment_count == 2
+    assert journey.next_enrichment_clarification_id == "a" * 64
+    assert journey.next_action is AdviserNextAction.REVIEW_PROFILE_ENRICHMENT
+    assert journey.active_profile_draft is True
+
+
+def test_journey_next_action_precedence_keeps_adviser_optional_and_job_search_separate():
+    from app.schemas.candidate_adviser import CandidateAdviserAssessmentStatus
+    from app.schemas.candidate_adviser_journey import AdviserNextAction
+
+    precedence = CandidateAdviserJourneyService._next_action
+    assert precedence(candidate_context_ready=False, intake_exists=False, assessment_status=None, clarification_review_pending=False, pending_enrichment=False)[0] is AdviserNextAction.COMPLETE_PROFILE
+    assert precedence(candidate_context_ready=True, intake_exists=False, assessment_status=None, clarification_review_pending=False, pending_enrichment=False)[0] is AdviserNextAction.START_INTAKE
+    assert precedence(candidate_context_ready=True, intake_exists=True, assessment_status=CandidateAdviserAssessmentStatus.REVIEW_READY, clarification_review_pending=True, pending_enrichment=True)[0] is AdviserNextAction.REVIEW_ASSESSMENT
+    assert precedence(candidate_context_ready=True, intake_exists=True, assessment_status=CandidateAdviserAssessmentStatus.CONFIRMED, clarification_review_pending=True, pending_enrichment=True)[0] is AdviserNextAction.CONFIRM_CLARIFICATION
 
 
 def test_onboarding_status_counts_only_persisted_confirmed_clarifications_and_never_creates_them(client, db_session):
