@@ -438,3 +438,16 @@ it("does not let an old Adviser history GET erase a newer saved add-as-new decis
   expect(screen.getAllByText(/You chose to keep this as a separate Profile item/).length).toBeGreaterThan(0);
   expect(screen.queryByText(/New information — no overlapping current Profile item/)).not.toBeInTheDocument();
 });
+
+
+it("allows Adviser suggestion generation with an active Profile draft but still blocks transfer", async () => {
+  const pending = proposal();
+  request.mockResolvedValueOnce([]).mockResolvedValueOnce({ proposals: [pending] }).mockResolvedValueOnce([pending]);
+  render(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft /></MemoryRouter>);
+  const review = await screen.findByRole("button", { name: "Review for Profile" });
+  expect(review).toBeEnabled();
+  expect(screen.getByText(/You can review this Adviser suggestion now/)).toBeInTheDocument();
+  fireEvent.click(review);
+  expect(await screen.findByText("Pending suggestion — this is not part of your current Profile.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeDisabled();
+});
