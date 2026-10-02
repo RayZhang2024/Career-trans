@@ -443,11 +443,16 @@ it("does not let an old Adviser history GET erase a newer saved add-as-new decis
 it("allows Adviser suggestion generation with an active Profile draft but still blocks transfer", async () => {
   const pending = proposal();
   request.mockResolvedValueOnce([]).mockResolvedValueOnce({ proposals: [pending] }).mockResolvedValueOnce([pending]);
-  render(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft /></MemoryRouter>);
+  const { rerender } = render(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft /></MemoryRouter>);
   const review = await screen.findByRole("button", { name: "Review for Profile" });
   expect(review).toBeEnabled();
-  expect(screen.getByText(/You can review this Adviser suggestion now/)).toBeInTheDocument();
+  expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be sent/)).toBeInTheDocument();
   fireEvent.click(review);
   expect(await screen.findByText("Pending suggestion — this is not part of your current Profile.")).toBeInTheDocument();
+  expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be sent/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Edit suggestion" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeDisabled();
+  rerender(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft={false} /></MemoryRouter>);
+  expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeEnabled();
 });

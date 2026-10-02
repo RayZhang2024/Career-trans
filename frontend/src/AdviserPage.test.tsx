@@ -152,7 +152,7 @@ it("restores the deterministic review-ready clarification, normalized answer, an
   expect(screen.queryByText("Later question")).not.toBeInTheDocument();
   fireEvent.change(answer, { target: { value: "Edited answer" } });
   expect(screen.getByText("You changed your answer. Review it again before confirming.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Yes, that’s right" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Yes, that’s right" })).not.toBeInTheDocument();
 });
 
 it("keeps a confirmed clarification read-only through dependent refresh until reassessment replaces it", async () => {
@@ -237,7 +237,7 @@ it("adopts normalized interpretation answers, re-interprets edited answers, and 
   expect(screen.queryByText("Returned evidence")).not.toBeInTheDocument();
   fireEvent.change(editor, { target: { value: "edited" } });
   expect(screen.getByText("You changed your answer. Review it again before confirming.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Yes, that’s right" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Yes, that’s right" })).not.toBeInTheDocument();
   request.mockResolvedValueOnce(second); fireEvent.click(screen.getByRole("button", { name: "Review my answer" }));
   await vi.waitFor(() => expect(editor).toHaveValue("Second normalized answer"));
   expect(screen.queryByText("Returned evidence")).not.toBeInTheDocument(); expect(screen.queryByText("Only returned evidence")).not.toBeInTheDocument();
@@ -644,7 +644,8 @@ it("honors persisted Profile enrichment priority after a fresh Adviser page load
   };
   request.mockResolvedValueOnce(persisted).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("stale"));
   render(<MemoryRouter><AdviserPage /></MemoryRouter>);
-  expect((await screen.findAllByRole("button", { name: "Review for Profile" })).length).toBeGreaterThan(0);
+  const journey = await screen.findByRole("region", { name: "Career Adviser" });
+  expect(await within(journey).findByRole("button", { name: "Review for Profile" })).toBeEnabled();
   expect(screen.queryByRole("button", { name: "Update my assessment" })).not.toBeInTheDocument();
 });
 
