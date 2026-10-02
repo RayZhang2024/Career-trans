@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.schemas.candidate_adviser import CandidateAdviserAssessmentStatus
+from app.schemas.candidate_adviser_journey import CandidateAdviserJourneyRead
 from app.schemas.cv_ingestion import CVIngestionState
 
 
@@ -21,6 +22,7 @@ class OnboardingAdviserStatus(BaseModel):
     intake_exists: bool
     assessment_status: CandidateAdviserAssessmentStatus | None = None
     confirmed_clarification_count: int
+    journey: CandidateAdviserJourneyRead
 
 
 class OnboardingStatusRead(BaseModel):

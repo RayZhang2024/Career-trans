@@ -54,22 +54,32 @@ function transferRead(record: AdviserProfileProposal): AdviserProfileProposalTra
 
 it.each(["career_fact", "mixed"])("shows generation only for affirmative confirmed career clarifications (%s)", async (kind) => {
   mount(clarification(kind));
-  expect(await screen.findByRole("button", { name: "Generate profile suggestions" })).toBeEnabled();
+  expect(await screen.findByRole("button", { name: "Review for Profile" })).toBeEnabled();
   expect(request).not.toHaveBeenCalled();
   expect(screen.getByText(/Suggestions use only the career facts you confirmed above/)).toBeInTheDocument();
 });
 
 it.each(["eligibility_fact", "preference_intent", "insufficient"])("does not offer Profile generation for non-career clarifications (%s)", (kind) => {
   mount(clarification(kind));
-  expect(screen.queryByRole("button", { name: "Generate profile suggestions" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Review for Profile" })).not.toBeInTheDocument();
   expect(request).not.toHaveBeenCalled();
 });
 
 it("does not generate when a career clarification contains no affirmative evidence", () => {
   mount(clarification("career_fact", []));
   expect(screen.getByText("This clarification did not produce a structured Profile suggestion.")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Generate profile suggestions" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Review for Profile" })).not.toBeInTheDocument();
   expect(request).not.toHaveBeenCalled();
+});
+
+it("resolves a durable enrichment with no Profile update without repeating provider work", async () => {
+  let resolved = false;
+  request.mockResolvedValueOnce([]).mockResolvedValueOnce({ proposals: [] }).mockResolvedValueOnce([]);
+  render(<MemoryRouter><ProfileSuggestions api={api} enrichment={{ clarification_id: "clarification-1", question_text: "Which language did you use?", confirmed_context_summary: "I used Rust.", has_profile_evidence: false }} onResolved={() => { resolved = true; }} /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole("button", { name: "Finish Profile review" }));
+  expect(await screen.findByText("No structured Profile suggestions were produced from this clarification. Your current Profile is unchanged.")).toBeInTheDocument();
+  expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/clarifications/clarification-1/profile-proposals", { method: "POST" });
+  expect(resolved).toBe(true);
 });
 
 it("loads history only on request, isolates failures, and recovers on Retry", async () => {
@@ -91,17 +101,17 @@ it("prevents duplicate generation, sends one no-body request, and handles zero s
   let finishGeneration!: (result: unknown) => void;
   request.mockResolvedValueOnce([]).mockReturnValueOnce(new Promise((resolve) => { finishGeneration = resolve; })).mockResolvedValueOnce([]);
   mount(clarification());
-  const generate = await screen.findByRole("button", { name: "Generate profile suggestions" });
+  const generate = await screen.findByRole("button", { name: "Review for Profile" });
   fireEvent.click(generate);
-  expect(await screen.findByRole("button", { name: "Generating profile suggestions…" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "Generating profile suggestions…" }));
+  expect(await screen.findByRole("button", { name: "Preparing Profile changes…" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Preparing Profile changes…" }));
   expect(request.mock.calls.filter(([path]) => String(path).includes("/clarifications/clarification-1/profile-proposals")).length).toBe(1);
   expect(request).toHaveBeenCalledWith(
     "/api/v1/candidate-adviser/clarifications/clarification-1/profile-proposals",
     { method: "POST" },
   );
   await act(async () => finishGeneration({ proposals: [] } satisfies AdviserProfileProposalGenerationRead));
-  expect(await screen.findByRole("status")).toHaveTextContent("No structured Profile suggestions were produced from this clarification. Your current Profile is unchanged.");
+  expect(await screen.findByText("No structured Profile suggestions were produced from this clarification. Your current Profile is unchanged.")).toBeInTheDocument();
 });
 
 it("renders returned proposals and preserves backend states", async () => {
@@ -110,7 +120,7 @@ it("renders returned proposals and preserves backend states", async () => {
   const transferred = proposal({ id: "transferred", state: "transferred", revision: 2, transferred_at: createdAt, transferred_profile_revision_id: "revision-1" });
   request.mockResolvedValueOnce([]).mockResolvedValueOnce({ proposals: [pending, rejected, transferred] }).mockResolvedValueOnce([pending, rejected, transferred]);
   mount(clarification());
-  fireEvent.click(await screen.findByRole("button", { name: "Generate profile suggestions" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Review for Profile" }));
   expect(await screen.findByText("Profile suggestions are ready for review. Your current Profile has not changed.")).toBeInTheDocument();
   expect(screen.getByText("Pending suggestion — this is not part of your current Profile.")).toBeInTheDocument();
   expect(screen.getByText("Rejected — your Profile was not changed.")).toBeInTheDocument();
@@ -136,7 +146,7 @@ it("keeps transferred and rejected proposal cards read-only", async () => {
 it.each([502, 503])("shows safe generation error copy for HTTP %i without provider details", async (status) => {
   request.mockResolvedValueOnce([]).mockRejectedValueOnce(new ApiError(status, "private provider response"));
   mount(clarification());
-  fireEvent.click(await screen.findByRole("button", { name: "Generate profile suggestions" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Review for Profile" }));
   const message = status === 502
     ? "Profile suggestion generation could not return valid suggestions. Try again."
     : "Profile suggestion generation is temporarily unavailable.";
@@ -147,7 +157,7 @@ it.each([502, 503])("shows safe generation error copy for HTTP %i without provid
 it.each([404, 409])("reports a safe source-state generation conflict for HTTP %i", async (status) => {
   request.mockResolvedValueOnce([]).mockRejectedValueOnce(new ApiError(status, "private backend detail")).mockResolvedValueOnce([]);
   mount(clarification());
-  fireEvent.click(await screen.findByRole("button", { name: "Generate profile suggestions" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Review for Profile" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("This clarification is no longer available for Profile suggestions.");
   expect(screen.queryByText("private backend detail")).not.toBeInTheDocument();
 });
@@ -157,7 +167,7 @@ it("does not encourage repeated generation when history already has suggestions 
   mount(clarification());
   fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
   expect(await screen.findByText("Profile suggestions from this clarification are available below.")).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Generate profile suggestions" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Review for Profile" })).not.toBeInTheDocument();
 });
 
 it("displays original and edited suggestion values without exposing target fingerprints", async () => {
@@ -344,8 +354,8 @@ it("does not let a delayed generation response replace a newer rejected record",
   const rejected = proposal({ state: "rejected", revision: 2, rejected_at: createdAt });
   request.mockResolvedValueOnce([]).mockReturnValueOnce(new Promise((resolve) => { finishGeneration = resolve; })).mockResolvedValueOnce([rejected]).mockResolvedValueOnce([rejected]);
   mount(clarification());
-  fireEvent.click(await screen.findByRole("button", { name: "Generate profile suggestions" }));
-  expect(await screen.findByRole("button", { name: "Generating profile suggestions…" })).toBeDisabled();
+  fireEvent.click(await screen.findByRole("button", { name: "Review for Profile" }));
+  expect(await screen.findByRole("button", { name: "Preparing Profile changes…" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Refresh profile suggestions" }));
   expect(await screen.findByText("Rejected — your Profile was not changed.")).toBeInTheDocument();
   await act(async () => finishGeneration({ proposals: [proposal()] }));
@@ -427,4 +437,22 @@ it("does not let an old Adviser history GET erase a newer saved add-as-new decis
   await act(async () => finishOldHistory([record]));
   expect(screen.getAllByText(/You chose to keep this as a separate Profile item/).length).toBeGreaterThan(0);
   expect(screen.queryByText(/New information — no overlapping current Profile item/)).not.toBeInTheDocument();
+});
+
+
+it("allows Adviser suggestion generation with an active Profile draft but still blocks transfer", async () => {
+  const pending = proposal();
+  request.mockResolvedValueOnce([]).mockResolvedValueOnce({ proposals: [pending] }).mockResolvedValueOnce([pending]);
+  const { rerender } = render(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft /></MemoryRouter>);
+  const review = await screen.findByRole("button", { name: "Review for Profile" });
+  expect(review).toBeEnabled();
+  expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be sent/)).toBeInTheDocument();
+  fireEvent.click(review);
+  expect(await screen.findByText("Pending suggestion — this is not part of your current Profile.")).toBeInTheDocument();
+  expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be sent/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Edit suggestion" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeDisabled();
+  rerender(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft={false} /></MemoryRouter>);
+  expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeEnabled();
 });

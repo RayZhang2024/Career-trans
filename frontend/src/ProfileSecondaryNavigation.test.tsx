@@ -11,7 +11,7 @@ vi.mock("./auth", () => ({
   ApiError: class ApiError extends Error { constructor(public status: number, message = "Request failed") { super(message); } },
 }));
 
-const onboarding = { profile_exists: false, candidate_context_ready: false, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 } };
+const onboarding = { profile_exists: false, candidate_context_ready: false, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0, journey: { candidate_context_ready: false, job_search_ready: false, intake_exists: false, assessment_status: null, confirmed_guidance_active: false, current_follow_up_available: false, clarification_interpretation_awaiting_confirmation: false, unresolved_profile_enrichment_count: 0, next_enrichment_clarification_id: null, next_enrichment: null, active_profile_draft: false, next_action: "complete_profile", status_category: "setup", confirmed_clarification_count: 0 } } };
 const snapshot = { profile: null, structured_profile: null, active_evidence: [], adviser_intake: null, eligibility: { work_authorisation: [], security_clearances: [], locations: [] }, adviser_assessment: null, adviser_assessment_status: "not_available", readiness: { structured_profile_available: false, ready_for_candidate_context: false, evidence_materialization_status: "not_applicable", expected_evidence_count: 0, materialized_evidence_count: 0, missing_evidence_count: 0, stale_evidence_count: 0, latest_cv_draft_state: null } };
 
 function renderShell(path: string) {
@@ -100,7 +100,7 @@ describe("Profile secondary navigation", () => {
     expect(screen.getByRole("navigation", { name: "Profile sections" })).toBeInTheDocument();
     expect(screen.getByText("Loading Career Adviser…")).toBeInTheDocument();
     resolveStatus(onboarding);
-    expect(await screen.findByRole("heading", { name: "Complete your CV first" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Set up Career Adviser" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Profile sections" })).toBeInTheDocument();
     expect(request).toHaveBeenCalledTimes(1);
   });
@@ -115,7 +115,7 @@ describe("Profile secondary navigation", () => {
   it.each([
     ["/", "/profile", "Your career profile"],
     ["/cv", "/profile/cv", "Upload your CV"],
-    ["/adviser", "/profile/adviser", "Complete your CV first"],
+    ["/adviser", "/profile/adviser", "Set up Career Adviser"],
   ])("preserves the %s compatibility route as a replace redirect", async (legacy, canonical, content) => {
     request.mockImplementation(async (path: unknown) => { const requestPath = String(path); return requestPath === "/api/v1/profile/snapshot" ? snapshot : requestPath === "/api/v1/profile/revisions/active" ? null : onboarding; });
     renderApp(legacy);

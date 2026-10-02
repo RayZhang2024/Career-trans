@@ -228,7 +228,20 @@ export type CanonicalCandidateReadSnapshot = {
 export type OnboardingStatus = {
   profile_exists: boolean; candidate_context_ready: boolean;
   latest_cv_draft: { id: string; state: "uploaded" | "review_ready" | "confirmed"; created_at: string; updated_at: string } | null;
-  adviser: { intake_exists: boolean; assessment_status: "review_ready" | "confirmed" | "stale" | null; confirmed_clarification_count: number };
+  adviser: {
+    intake_exists: boolean; assessment_status: "review_ready" | "confirmed" | "stale" | null; confirmed_clarification_count: number;
+    journey: {
+      candidate_context_ready: boolean; job_search_ready: boolean; intake_exists: boolean;
+      assessment_status: "review_ready" | "confirmed" | "stale" | null; confirmed_guidance_active: boolean;
+      current_follow_up_available: boolean; clarification_interpretation_awaiting_confirmation: boolean;
+      unresolved_profile_enrichment_count: number; next_enrichment_clarification_id: string | null;
+      next_enrichment: { clarification_id: string; question_text: string; confirmed_context_summary: string; has_profile_evidence: boolean } | null;
+      active_profile_draft: boolean;
+      next_action: "complete_profile" | "start_intake" | "create_assessment" | "review_assessment" | "confirm_clarification" | "review_profile_enrichment" | "update_assessment" | "find_jobs";
+      status_category: "setup" | "review" | "update" | "up_to_date" | "unavailable";
+      confirmed_clarification_count: number;
+    };
+  };
 };
 
 export type PostingRecency = { legitimacy: "high_confidence" | "proceed_with_caution" | "unknown"; reasoning: string };

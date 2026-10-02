@@ -170,10 +170,23 @@ function Register() {
   </form></AuthPage>;
 }
 
+function adviserJourneyLabel(status: OnboardingStatus["adviser"]["journey"]): string {
+  switch (status.next_action) {
+    case "complete_profile": return "Set up Career Adviser — confirm your CV first";
+    case "start_intake": return "Set up Career Adviser";
+    case "create_assessment": return "Create career assessment";
+    case "review_assessment": return "Review career assessment";
+    case "confirm_clarification": return "Review your follow-up";
+    case "review_profile_enrichment": return "Review for Profile";
+    case "update_assessment": return "Update career assessment";
+    case "find_jobs": return "Career Adviser is up to date";
+  }
+}
+
 function OnboardingCard({ status, error }: { status: OnboardingStatus | undefined; error: string }) {
   if (!status) return <section className="card onboarding-card"><h2>Getting started</h2>{error ? <p role="alert">{error}</p> : <p className="muted">Loading onboarding status…</p>}</section>;
-  const adviserLabel = !status.candidate_context_ready ? "Complete CV first" : !status.adviser.intake_exists ? "Start Career Adviser" : status.adviser.assessment_status === "stale" ? "Reassessment needed" : status.adviser.assessment_status === "review_ready" ? "Review adviser assessment" : status.adviser.assessment_status === "confirmed" ? "Adviser assessment current" : "Intake saved";
-  return <section className="card onboarding-card"><h2>Getting started</h2>{error && <p role="alert">{error}</p>}<ol className="onboarding-list"><li><strong>Account</strong><span>Ready</span></li><li><strong>Profile</strong><span>{status.profile_exists ? "Saved" : "Not saved yet"}</span></li><li><strong>CV</strong><Link to="/profile/cv">{status.latest_cv_draft?.state === "confirmed" ? "Confirmed" : "Continue CV onboarding"}</Link></li><li>{status.candidate_context_ready ? <><strong>Career Adviser</strong><Link to="/profile/adviser">{adviserLabel}</Link></> : <><strong>Career Adviser</strong><span>{adviserLabel}</span></>}</li></ol></section>;
+  const journey = status.adviser.journey;
+  return <section className="card onboarding-card"><h2>Getting started</h2>{error && <p role="alert">{error}</p>}<ol className="onboarding-list"><li><strong>Account</strong><span>Ready</span></li><li><strong>Profile</strong><span>{status.profile_exists ? "Saved" : "Not saved yet"}</span></li><li><strong>CV</strong><Link to="/profile/cv">{status.latest_cv_draft?.state === "confirmed" ? "Confirmed" : "Continue CV onboarding"}</Link></li><li><strong>Career Adviser</strong><Link to="/profile/adviser">{adviserJourneyLabel(journey)}</Link>{journey.current_follow_up_available && <span>Optional follow-up available</span>}</li><li><strong>Job Search</strong>{journey.job_search_ready ? <Link to="/jobs">Available when you’re ready</Link> : <span>Confirm your CV and Profile to check readiness</span>}</li></ol></section>;
 }
 
 function DetailList({ items }: { items: string[] }) {
@@ -248,18 +261,12 @@ function ProfileSourceHistory({ api, structured, refreshToken }: { api: Pick<Ses
   </section>;
 }
 
-function ProfileReadView({ snapshot, api, provenanceRefresh }: { snapshot: CanonicalCandidateReadSnapshot; api: Pick<SessionApi, "request">; provenanceRefresh: number }) {
+function ProfileReadView({ snapshot, journey, api, provenanceRefresh }: { snapshot: CanonicalCandidateReadSnapshot; journey: OnboardingStatus["adviser"]["journey"] | undefined; api: Pick<SessionApi, "request">; provenanceRefresh: number }) {
   const profile = snapshot.profile;
   const intake = snapshot.adviser_intake;
   const pendingCv = snapshot.structured_profile !== null && (snapshot.readiness.latest_cv_draft_state === "uploaded" || snapshot.readiness.latest_cv_draft_state === "review_ready");
   const incomplete = snapshot.readiness.evidence_materialization_status === "incomplete";
-  const adviserLabel: Record<CanonicalCandidateReadSnapshot["adviser_assessment_status"], string> = {
-    confirmed: "Career Adviser — confirmed and current",
-    review_ready: "Career Adviser assessment needs review",
-    stale: "Career Adviser reassessment needed",
-    unavailable: "Career Adviser information is currently unavailable",
-    not_available: "Career Adviser is not set up yet",
-  };
+  const adviserLabel = journey ? adviserJourneyLabel(journey) : "Career Adviser status is loading";
   return <div className="profile-view">
     {incomplete && <div className="profile-warning" role="alert"><h2>Candidate evidence needs attention</h2><p>Career-trans detected an internal candidate-evidence consistency issue. Some matching or application actions may be temporarily unavailable.</p><p>Expected: {snapshot.readiness.expected_evidence_count}; materialised: {snapshot.readiness.materialized_evidence_count}; missing: {snapshot.readiness.missing_evidence_count}; stale: {snapshot.readiness.stale_evidence_count}.</p></div>}
     {pendingCv && <p className="notice profile-notice" role="status">Your current structured career information remains in use. A newer CV update is awaiting review. <Link to="/profile/cv">Review CV update</Link>.</p>}
@@ -269,7 +276,7 @@ function ProfileReadView({ snapshot, api, provenanceRefresh }: { snapshot: Canon
     <ProfileSourceHistory api={api} structured={snapshot.structured_profile} refreshToken={provenanceRefresh} />
     {(profile?.career_goal || profile?.job_search_criteria || intake) && <section className="card profile-section"><h2>Career goals and current preferences</h2>{profile?.career_goal && <div><h3>Career goal</h3><p className="profile-prose">{profile.career_goal}</p></div>}{profile?.job_search_criteria && <div><h3>Job-search criteria</h3><p className="profile-prose">{profile.job_search_criteria}</p></div>}{intake?.career_direction && <div><h3>Career direction</h3><p className="profile-prose">{intake.career_direction}</p></div>}{intake && ([ ["Work preferences", intake.work_preferences], ["Constraints", intake.constraints], ["Trade-offs", intake.tradeoffs], ["Self-assessment", intake.self_assessment], ["Motivations", intake.motivations] ] as const).filter(([, items]) => items.length > 0).map(([label, items]) => <div key={label}><h3>{label}</h3><DetailList items={items} /></div>)}</section>}
     <EligibilityView eligibility={snapshot.eligibility} />
-    <section className="card profile-section"><h2>{adviserLabel[snapshot.adviser_assessment_status]}</h2>{snapshot.adviser_assessment_status === "confirmed" && snapshot.adviser_assessment ? <div className="profile-adviser"><p>{snapshot.adviser_assessment.professional_positioning.text}</p><h3>Career strategy</h3><p>{snapshot.adviser_assessment.career_strategy_summary.text}</p><h3>Job-search strategy</h3><p>{snapshot.adviser_assessment.job_search_strategy_summary.text}</p></div> : snapshot.adviser_assessment_status === "review_ready" ? <p>The draft assessment is not shown as current. <Link to="/profile/adviser">Review Career Adviser assessment</Link>.</p> : snapshot.adviser_assessment_status === "stale" ? <p>The saved assessment needs a fresh review. <Link to="/profile/adviser">Revisit Career Adviser</Link>.</p> : snapshot.adviser_assessment_status === "unavailable" ? <p className="muted">Current Career Adviser information is unavailable.</p> : <p className="muted">No current assessment is available. <Link to="/profile/adviser">Set up Career Adviser</Link>.</p>}</section>
+    <section className="card profile-section"><h2>{adviserLabel}</h2>{snapshot.adviser_assessment_status === "confirmed" && journey?.confirmed_guidance_active && snapshot.adviser_assessment ? <div className="profile-adviser"><p>{snapshot.adviser_assessment.professional_positioning.text}</p><h3>Career strategy</h3><p>{snapshot.adviser_assessment.career_strategy_summary.text}</p><h3>Job-search strategy</h3><p>{snapshot.adviser_assessment.job_search_strategy_summary.text}</p><p>Confirmed career guidance adds context to opportunity evaluation. Career Adviser is optional.</p></div> : journey?.assessment_status === "review_ready" ? <p>This assessment is ready for your review before its guidance is used. <Link to="/profile/adviser">Review career assessment</Link>.</p> : journey?.assessment_status === "stale" ? <p>New information is available. <Link to="/profile/adviser">Update career assessment</Link>.</p> : <p className="muted"><Link to="/profile/adviser">{adviserLabel}</Link>{journey?.current_follow_up_available && <> · Optional follow-up available</>}</p>}</section>
     {snapshot.active_evidence.length > 0 && <details className="card profile-section profile-evidence"><summary>Evidence Career-trans currently uses ({snapshot.active_evidence.length})</summary><ul className="profile-record-list">{snapshot.active_evidence.map((item) => <li key={item.evidence_id}><h3>{item.title}</h3><p className="muted">{item.evidence_type.replaceAll("_", " ")}</p><p className="profile-prose">{item.text}</p><DetailList items={item.skills} /></li>)}</ul></details>}
   </div>;
 }
@@ -326,7 +333,7 @@ export function ProfileHome() {
     setProvenanceRefresh((value) => value + 1);
     return current;
   };
-  return <ProfileFamilyShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Your career profile</h1><p className="muted">This is the information Career-trans currently uses for matching, job discovery and application preparation.</p></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area" aria-busy={snapshotLoading}><ProfileRevisionWorkflow snapshot={snapshot} onConfirmed={profileConfirmed} />{snapshot === undefined ? snapshotError ? <div className="card section-error"><p role="alert">{snapshotError}</p><button onClick={() => void loadSnapshot()}>Retry profile</button></div> : <p className="muted" role="status">Loading your career profile…</p> : <><div className="profile-refresh">{snapshotLoading && <p className="muted" role="status">Refreshing your career profile…</p>}<button className="button-secondary" onClick={() => void loadSnapshot()}>Refresh profile</button></div><ProfileReadView snapshot={snapshot} api={api} provenanceRefresh={provenanceRefresh} /></>}</section></main></ProfileFamilyShell>;
+  return <ProfileFamilyShell><header className="workspace-header"><div><p className="eyebrow">Career workspace</p><h1>Your career profile</h1><p className="muted">This is the information Career-trans currently uses for matching, job discovery and application preparation.</p></div><button className="button-secondary" onClick={logout}>Sign out</button></header><main className="workspace"><OnboardingCard status={status} error={statusError} /><section className="profile-area" aria-busy={snapshotLoading}><ProfileRevisionWorkflow snapshot={snapshot} onConfirmed={profileConfirmed} />{snapshot === undefined ? snapshotError ? <div className="card section-error"><p role="alert">{snapshotError}</p><button onClick={() => void loadSnapshot()}>Retry profile</button></div> : <p className="muted" role="status">Loading your career profile…</p> : <><div className="profile-refresh">{snapshotLoading && <p className="muted" role="status">Refreshing your career profile…</p>}<button className="button-secondary" onClick={() => void loadSnapshot()}>Refresh profile</button></div><ProfileReadView snapshot={snapshot} journey={status?.adviser.journey} api={api} provenanceRefresh={provenanceRefresh} /></>}</section></main></ProfileFamilyShell>;
 }
 
 function LegacySavedSearchesRedirect() {

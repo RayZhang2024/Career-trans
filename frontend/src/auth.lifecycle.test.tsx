@@ -10,7 +10,7 @@ const status = {
   profile_exists: false,
   candidate_context_ready: false,
   latest_cv_draft: null,
-  adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 },
+  adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0, journey: { candidate_context_ready: false, job_search_ready: false, intake_exists: false, assessment_status: null, confirmed_guidance_active: false, current_follow_up_available: false, clarification_interpretation_awaiting_confirmation: false, unresolved_profile_enrichment_count: 0, next_enrichment_clarification_id: null, next_enrichment: null, active_profile_draft: false, next_action: "complete_profile", status_category: "setup", confirmed_clarification_count: 0 } },
 };
 const snapshot = (profile: unknown = null) => ({
   profile, structured_profile: null, active_evidence: [], adviser_intake: null,
@@ -71,10 +71,10 @@ describe("AuthProvider routed lifecycle", () => {
 
   it("exposes the Career Adviser link when confirmed candidate context is ready", async () => {
     sessionStorage.setItem(TOKEN, "stored-token");
-    const readyStatus = { ...status, candidate_context_ready: true, latest_cv_draft: { id: "draft", state: "confirmed", created_at: "", updated_at: "" } };
+    const readyStatus = { ...status, candidate_context_ready: true, latest_cv_draft: { id: "draft", state: "confirmed", created_at: "", updated_at: "" }, adviser: { ...status.adviser, journey: { ...status.adviser.journey, candidate_context_ready: true, job_search_ready: true, next_action: "start_intake", status_category: "setup" } } };
     vi.stubGlobal("fetch", authenticatedFetch({ "/api/v1/onboarding/status": () => response(readyStatus) }));
     renderApp();
-    expect(await screen.findByRole("link", { name: "Start Career Adviser" })).toHaveAttribute("href", "/profile/adviser");
+    expect((await screen.findAllByRole("link", { name: "Set up Career Adviser" })).every((link) => link.getAttribute("href") === "/profile/adviser")).toBe(true);
   });
 
   it("keeps protected UI in checking state without a login flicker", async () => {
@@ -654,6 +654,6 @@ describe("AuthProvider routed lifecycle", () => {
     const cvLinks = await screen.findAllByRole("link", { name: "Continue CV onboarding" });
     expect(cvLinks.length).toBeGreaterThanOrEqual(1);
     expect(cvLinks.every((link) => link.getAttribute("href") === "/profile/cv")).toBe(true);
-    expect(screen.getByText("Complete CV first").closest("li")).toBeInTheDocument();
+    expect(screen.getAllByText("Set up Career Adviser — confirm your CV first").length).toBeGreaterThanOrEqual(1);
   });
 });
