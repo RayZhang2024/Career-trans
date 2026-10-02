@@ -10,7 +10,7 @@ vi.mock("./auth", () => ({
 }));
 afterEach(() => { cleanup(); request.mockReset(); });
 
-const noDraft = { profile_exists: true, candidate_context_ready: false, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 } };
+const noDraft = { profile_exists: true, candidate_context_ready: false, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0, journey: { candidate_context_ready: false, job_search_ready: false, intake_exists: false, assessment_status: null, confirmed_guidance_active: false, current_follow_up_available: false, clarification_interpretation_awaiting_confirmation: false, unresolved_profile_enrichment_count: 0, next_enrichment_clarification_id: null, next_enrichment: null, active_profile_draft: false, next_action: "complete_profile", status_category: "setup", confirmed_clarification_count: 0 } } };
 type TestCVData = {
   employment: Array<Record<string, unknown>>;
   education: Array<Record<string, unknown>>;

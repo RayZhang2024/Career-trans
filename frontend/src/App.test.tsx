@@ -14,9 +14,9 @@ const emptySnapshot = () => ({
   adviser_assessment_status: "not_available",
   readiness: { structured_profile_available: false, ready_for_candidate_context: false, evidence_materialization_status: "not_applicable", expected_evidence_count: 0, materialized_evidence_count: 0, missing_evidence_count: 0, stale_evidence_count: 0, latest_cv_draft_state: null },
 });
-const onboarding = { profile_exists: false, candidate_context_ready: false, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0 } };
-function renderHome(snapshot: unknown = emptySnapshot(), active: unknown = null) {
-  request.mockImplementation(async (path) => path === "/api/v1/profile/snapshot" ? snapshot : path === "/api/v1/onboarding/status" ? onboarding : path === "/api/v1/profile/revisions/active" ? active : ({}));
+const onboarding = { profile_exists: false, candidate_context_ready: false, latest_cv_draft: null, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0, journey: { candidate_context_ready: false, job_search_ready: false, intake_exists: false, assessment_status: null, confirmed_guidance_active: false, current_follow_up_available: false, clarification_interpretation_awaiting_confirmation: false, unresolved_profile_enrichment_count: 0, next_enrichment_clarification_id: null, next_enrichment: null, active_profile_draft: false, next_action: "complete_profile", status_category: "setup", confirmed_clarification_count: 0 } } };
+function renderHome(snapshot: unknown = emptySnapshot(), active: unknown = null, sharedStatus: unknown = onboarding) {
+  request.mockImplementation(async (path) => path === "/api/v1/profile/snapshot" ? snapshot : path === "/api/v1/onboarding/status" ? sharedStatus : path === "/api/v1/profile/revisions/active" ? active : ({}));
   return render(<MemoryRouter><ProfileHome /></MemoryRouter>);
 }
 
@@ -50,7 +50,7 @@ it("renders typed CV domains, preferences, eligibility, confirmed Adviser, and a
       professional_positioning: { text: "Reliability-focused engineer.", source_references: [{ source_type: "career_evidence", reference: "e1" }] }, transferable_strengths: [], development_gaps: [], role_hypotheses: [], transition_assessment: { text: "Ready to grow.", source_references: [{ source_type: "intake", reference: "goal" }] }, open_questions: [],
       career_strategy_summary: { text: "Build platform leadership experience.", source_references: [{ source_type: "intake", reference: "goal" }] }, job_search_strategy_summary: { text: "Target remote platform roles.", source_references: [{ source_type: "intake", reference: "prefs" }] },
     },
-  });
+  }, null, { ...onboarding, candidate_context_ready: true, adviser: { ...onboarding.adviser, intake_exists: true, assessment_status: "confirmed", journey: { ...onboarding.adviser.journey, candidate_context_ready: true, intake_exists: true, assessment_status: "confirmed", confirmed_guidance_active: true, next_action: "find_jobs", status_category: "up_to_date" } } });
   expect(await screen.findByText("Alex Example")).toBeInTheDocument();
   expect(screen.getByText("Engineer at Example Co")).toBeInTheDocument();
   expect(screen.getByText("BSc — Example University")).toBeInTheDocument();
@@ -108,14 +108,14 @@ it("shows pending manual Profile changes and a pending CV update together", asyn
 
 it("shows Adviser review and stale states without displaying draft assessment content", async () => {
   const draft = { ...emptySnapshot(), adviser_assessment_status: "review_ready", adviser_assessment: { professional_positioning: { text: "Do not show this draft", source_references: [] } } };
-  const { unmount } = renderHome(draft);
-  expect(await screen.findByText(/draft assessment is not shown as current/)).toBeInTheDocument();
+  const { unmount } = renderHome(draft, null, { ...onboarding, candidate_context_ready: true, adviser: { ...onboarding.adviser, intake_exists: true, assessment_status: "review_ready", journey: { ...onboarding.adviser.journey, candidate_context_ready: true, intake_exists: true, assessment_status: "review_ready", next_action: "review_assessment", status_category: "review" } } });
+  expect(await screen.findByText(/This assessment is ready for your review/)).toBeInTheDocument();
   expect(screen.queryByText("Do not show this draft")).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Review Career Adviser assessment" })).toHaveAttribute("href", "/profile/adviser");
+  expect(screen.getAllByRole("link", { name: "Review career assessment" }).every((link) => link.getAttribute("href") === "/profile/adviser")).toBe(true);
   unmount();
-  renderHome({ ...emptySnapshot(), adviser_assessment_status: "stale" });
-  expect(await screen.findByText(/reassessment needed/i)).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Revisit Career Adviser" })).toHaveAttribute("href", "/profile/adviser");
+  renderHome({ ...emptySnapshot(), adviser_assessment_status: "stale" }, null, { ...onboarding, candidate_context_ready: true, adviser: { ...onboarding.adviser, intake_exists: true, assessment_status: "stale", journey: { ...onboarding.adviser.journey, candidate_context_ready: true, intake_exists: true, assessment_status: "stale", next_action: "update_assessment", status_category: "update" } } });
+  expect(await screen.findByText(/New information is available/i)).toBeInTheDocument();
+  expect(screen.getAllByRole("link", { name: "Update career assessment" }).every((link) => link.getAttribute("href") === "/profile/adviser")).toBe(true);
 });
 
 it("warns with safe materialisation counts when evidence is incomplete", async () => {

@@ -70,6 +70,19 @@ h2 { font-size: 1.2rem; }
 .adviser-page > .card { margin-top: 1rem; }
 .adviser-intake { display: grid; gap: 0.9rem; }
 .adviser-intake > label { display: grid; gap: 0.35rem; }
+.adviser-journey { display: grid; gap: 0.75rem; border-top: 0.25rem solid var(--accent, #285f73); }
+.adviser-intake > section { display: grid; gap: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border, #d8dee3); }
+.adviser-assessment-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }
+.adviser-assessment-summary > section, .adviser-assessment-summary p, .adviser-assessment-details, .clarification-card { min-width: 0; overflow-wrap: anywhere; }
+.adviser-assessment-details { margin-top: 1rem; }
+.adviser-assessment-details > summary { cursor: pointer; font-weight: 650; }
+.adviser-page textarea { min-width: 0; max-width: 100%; }
+.adviser-page button, .adviser-page a { overflow-wrap: anywhere; }
+@media (max-width: 42rem) {
+  .adviser-assessment-summary { grid-template-columns: minmax(0, 1fr); }
+  .adviser-journey > button, .adviser-journey > a, .adviser-page .cv-actions > button { width: 100%; }
+  .adviser-intake > section { padding-inline: 0; }
+}
 .adviser-list { border: 1px solid #d9e0ea; border-radius: 0.45rem; display: grid; gap: 0.45rem; margin: 0; padding: 0.75rem; }
 .inline-control { display: flex; gap: 0.5rem; }
 .inline-control input { min-width: 0; flex: 1; }

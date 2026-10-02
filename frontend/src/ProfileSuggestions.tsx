@@ -31,7 +31,10 @@ type ConfirmedClarification = {
 
 type Props = {
   api: Pick<SessionApi, "request">;
-  confirmedClarification: ConfirmedClarification;
+  confirmedClarification?: ConfirmedClarification;
+  enrichment?: { clarification_id: string; question_text: string; confirmed_context_summary: string; has_profile_evidence: boolean } | null;
+  activeProfileDraft?: boolean;
+  onResolved?: () => void;
 };
 type HistoryState = "idle" | "loading" | "ready" | "unavailable";
 type Mutation = { kind: "generation" | "edit" | "reject" | "transfer" | "reload" | "replace" | "resolve"; id: string } | null;
@@ -177,7 +180,7 @@ function proposalStateText(state: AdviserProfileProposal["state"]): string {
   return "Sent to the Profile workflow. This suggestion does not become current information until the linked Profile revision is confirmed.";
 }
 
-export function ProfileSuggestions({ api, confirmedClarification }: Props) {
+export function ProfileSuggestions({ api, confirmedClarification = null, enrichment = null, activeProfileDraft = false, onResolved }: Props) {
   const [historyState, setHistoryState] = useState<HistoryState>("idle");
   const [proposals, setProposals] = useState<AdviserProfileProposal[]>([]);
   const [historyError, setHistoryError] = useState("");
@@ -191,6 +194,16 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
   const requestGeneration = useRef(0);
   const mutationSequence = useRef(0);
   const mutationLock = useRef(false);
+  const source = enrichment ? {
+    clarification_id: enrichment.clarification_id,
+    question_text: enrichment.question_text,
+    durableEnrichment: true,
+    interpretation: {
+      answer_kind: "career_fact",
+      confirmed_context_summary: enrichment.confirmed_context_summary,
+      proposed_evidence: enrichment.has_profile_evidence ? [{ title: "Confirmed career information", text: enrichment.confirmed_context_summary, skills: [] }] : [],
+    },
+  } : confirmedClarification;
 
   const upsert = (incoming: AdviserProfileProposal[]) => setProposals((current) => mergeProposals(current, incoming));
   const loadHistory = async (): Promise<AdviserProfileProposal[] | null> => {
@@ -234,8 +247,7 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
   };
 
   const generate = async () => {
-    const source = confirmedClarification;
-    if (!source || !source.interpretation || !["career_fact", "mixed"].includes(source.interpretation.answer_kind) || source.interpretation.proposed_evidence.length === 0) return;
+    if (!source || !source.interpretation || !["career_fact", "mixed"].includes(source.interpretation.answer_kind) || (source.interpretation.proposed_evidence.length === 0 && !("durableEnrichment" in source))) return;
     const sequence = beginMutation({ kind: "generation", id: source.clarification_id });
     if (sequence === null) return;
     try {
@@ -263,6 +275,7 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
         ? "Profile suggestions are ready for review. Your current Profile has not changed."
         : "No structured Profile suggestions were produced from this clarification. Your current Profile is unchanged.");
       refreshHistoryAfterMutation();
+      onResolved?.();
     } catch (caught) {
       if (sequence !== mutationSequence.current) return;
       setHistoryState((current) => current === "loading" ? "unavailable" : current);
@@ -420,29 +433,30 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
     finally { finishMutation(sequence); }
   };
 
-  const interpretation = confirmedClarification?.interpretation;
+  const interpretation = source?.interpretation;
   const isCareerFact = Boolean(interpretation && ["career_fact", "mixed"].includes(interpretation.answer_kind));
   const hasEvidence = Boolean(interpretation?.proposed_evidence.length);
-  const sourceHasSuggestions = Boolean(confirmedClarification && proposals.some(
-    (proposal) => proposal.source_clarification_id === confirmedClarification.clarification_id,
+  const sourceHasSuggestions = Boolean(source && proposals.some(
+    (proposal) => proposal.source_clarification_id === source.clarification_id,
   ));
   const actionBusy = Boolean(mutation);
 
   return <section className="card profile-suggestions" aria-labelledby="profile-suggestions-heading">
-    <h2 id="profile-suggestions-heading">Profile suggestions</h2>
+    <h2 id="profile-suggestions-heading" tabIndex={-1}>Profile changes to review</h2>
     <p>Career Adviser can suggest structured career information from facts you explicitly confirmed. Suggestions do not change your current Profile until you send one to the Profile workflow and later confirm that Profile draft.</p>
-    {confirmedClarification && isCareerFact && <div className="suggestion-generation">
-      <h3>Suggestions from your confirmed clarification</h3>
-      <p>{confirmedClarification.question_text}</p>
+    {source && isCareerFact && <div className="suggestion-generation">
+      <h3>This new career information may improve your Profile</h3>
+      <p>{source.question_text}</p>
       {interpretation && <p>{interpretation.confirmed_context_summary}</p>}
       <p className="muted">Suggestions use only the career facts you confirmed above. Generating suggestions does not change your current Profile.</p>
-      {!hasEvidence
-        ? <p className="muted">This clarification did not produce a structured Profile suggestion.</p>
+        {!hasEvidence
+          ? <>{enrichment ? <><p className="muted">No structured Profile update is available from this confirmed information.</p><button className="button-secondary" disabled={actionBusy || historyState === "loading"} onClick={() => void generate()}>{mutation?.kind === "generation" && mutation.id === source?.clarification_id ? "Finishing review…" : "Finish Profile review"}</button></> : <p className="muted">This clarification did not produce a structured Profile suggestion.</p>}</>
         : sourceHasSuggestions
           ? <p role="status">Profile suggestions from this clarification are available below.</p>
-          : <button disabled={actionBusy || historyState === "loading"} onClick={() => void generate()}>
-            {mutation?.kind === "generation" && mutation.id === confirmedClarification.clarification_id ? "Generating profile suggestions…" : "Generate profile suggestions"}
-          </button>}
+          : <><button disabled={actionBusy || historyState === "loading" || activeProfileDraft} onClick={() => void generate()}>
+            {mutation?.kind === "generation" && mutation.id === source.clarification_id ? "Preparing Profile changes…" : "Review for Profile"}
+          </button>{activeProfileDraft && <p className="notice">You already have Profile changes in progress. Finish or discard them before adding this Adviser update. <Link to="/profile">Open your Profile changes</Link>.</p>}{enrichment && <button type="button" className="button-secondary" disabled={actionBusy} onClick={async () => { try { await api.request<void>(`/api/v1/candidate-adviser/clarifications/${encodeURIComponent(enrichment.clarification_id)}/profile-enrichment/defer`, { method: "POST" }); setNotice("You can continue without reviewing this Profile update now."); onResolved?.(); } catch { setActionError("This Profile update could not be deferred. Refresh Career Adviser and try again."); } }}>Do this later</button>}
+          </>}
     </div>}
     {historyState === "idle" && <button className="button-secondary" onClick={() => void loadHistory()}>View profile suggestions</button>}
     {historyState === "ready" && <button className="button-secondary" onClick={() => void loadHistory()}>Refresh profile suggestions</button>}
@@ -477,13 +491,14 @@ export function ProfileSuggestions({ api, confirmedClarification }: Props) {
         {proposal.state === "pending" && proposal.overlap_resolution_stale && <div className="profile-warning" role="alert"><p>Your earlier overlap choice is no longer current because the Profile changed.</p><button type="button" className="button-secondary" disabled={busy} onClick={() => void refreshComparison(proposal)}>Refresh comparison</button></div>}
         {changed ? <div className="suggestion-comparison"><ItemSummary label="Adviser suggestion" update={proposal.original_update} /><ItemSummary label="Your edited version" update={proposal.proposed_update} /></div> : <ItemSummary label="Proposed item" update={proposal.proposed_update} />}
         {isEditing && <ProposalEditor update={editValue} onChange={setEditValue} />}
+        {proposal.state === "pending" && activeProfileDraft && <p className="notice">You already have Profile changes in progress. Finish or discard them before adding this Adviser update. <Link to="/profile">Open your Profile changes</Link>.</p>}
         {proposal.state === "pending" && <div className="suggestion-actions">
           {isEditing ? <>
             <button disabled={busy} onClick={() => void saveEdit(proposal)}>{mutation?.kind === "edit" && mutation.id === proposal.id ? "Saving…" : "Save suggestion"}</button>
             <button className="button-secondary" disabled={busy} onClick={cancelEdit}>Cancel edit</button>
           </> : <>
             <button className="button-secondary" disabled={busy} onClick={() => updateEdit(proposal)}>Edit suggestion</button>
-            <button disabled={busy || Boolean(proposal.overlap_resolution_stale)} onClick={() => void transfer(proposal)}>{mutation?.kind === "transfer" && mutation.id === proposal.id ? "Sending to Profile draft…" : "Use in Profile draft"}</button>
+            <button disabled={busy || activeProfileDraft || Boolean(proposal.overlap_resolution_stale)} onClick={() => void transfer(proposal)}>{mutation?.kind === "transfer" && mutation.id === proposal.id ? "Sending to Profile draft…" : "Use in Profile draft"}</button>
             <button className="button-danger" disabled={busy} onClick={() => void reject(proposal)}>{mutation?.kind === "reject" && mutation.id === proposal.id ? "Rejecting…" : "Reject"}</button>
           </>}
         </div>}
