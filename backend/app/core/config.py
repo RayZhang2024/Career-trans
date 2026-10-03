@@ -7,6 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.schemas.ai_settings import ReasoningEffort
 
+SEMANTIC_CREDENTIAL_POLICIES = {"deployment_only", "user_required", "user_or_deployment"}
+
 
 _DEFAULT_CODEX_EXTERNAL_DISCOVERY_MODEL = "gpt-5.6-luna"
 _DEFAULT_LOCAL_CODEX_SEARCH_MODEL = "gpt-5.6-luna"
@@ -60,6 +62,8 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
     openai_api_key: str | None = None
+    semantic_credential_policy: str = "user_or_deployment"
+    openai_credential_encryption_key: str | None = None
     default_llm_provider: str = "openai"
     llm_base_url: str | None = None
     ollama_base_url: str = "http://localhost:11434"
@@ -135,6 +139,16 @@ class Settings(BaseSettings):
     tavily_credential_encryption_key: str | None = None
     # Paid OpenAI web search is opt-in. Semantic OpenAI operations remain independent.
     agentic_search_provider: str = "disabled"
+
+    @field_validator("semantic_credential_policy", mode="before")
+    @classmethod
+    def _validate_semantic_credential_policy(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            if normalized not in SEMANTIC_CREDENTIAL_POLICIES:
+                raise ValueError("SEMANTIC_CREDENTIAL_POLICY must be deployment_only, user_required, or user_or_deployment.")
+            return normalized
+        return value
 
     @staticmethod
     def configured_tokens(value: str) -> list[str]:

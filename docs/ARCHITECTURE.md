@@ -523,6 +523,38 @@ Unset reasoning effort means provider default and is omitted from OpenAI
 requests. Ollama deployment behavior is retained, but V1A does not expose
 arbitrary local-model selection. Host-side Codex discovery remains separate.
 
+## Semantic credentials and OpenAI BYOK (Issue #269)
+
+Semantic model preferences remain credential-free. Per-user OpenAI credentials
+are stored in a separate user-owned row as AES-GCM ciphertext with
+user-associated authenticated data, a deployment-held 32-byte encryption key,
+and an independent compare-and-swap revision. The API exposes only credential
+presence, policy, and safe source status; it has no read-back endpoint. Settings
+and history reads never decrypt a key or call a provider. A workflow-scoped
+credential resolver is separate from `ResolvedRuntimeSnapshot`, attribution,
+and evaluation fingerprint projections. Its plaintext exists only in that
+request/background execution lifetime and is never serialized, traced, or
+persisted.
+
+The deployment selects `deployment_only`, `user_required`, or
+`user_or_deployment`. In `user_or_deployment`, a saved user key takes priority;
+once selected, provider rejection or decryption failure is terminal and cannot
+fall back to the deployment key. OpenAI semantic key authority is isolated from
+OpenAI web search, which continues to use its own deployment-owned credential.
+
+Semantic execution authority audit:
+
+| Workflow | Credential authority | Provider-free boundary |
+| --- | --- | --- |
+| CV extraction, Adviser generation, proposal generation | Authenticated user's workflow resolver | CV/adviser reads and confirmation metadata do not construct clients |
+| User job analysis, matching, ranking, discovery evaluation | Authenticated user's workflow resolver shared by semantic clients | Search history, saved evaluation reads, and runtime attribution use safe snapshots only |
+| One-off and scheduled discovery | One per launch/execution resolver shared by strategy, extraction, and ranking | Preflight, schedule management, reconciliation/history reads do not resolve credentials |
+| Application preparation | Authenticated user's resolver shared by draft clients and analysis graph | Preparation/tracking reads remain immutable provider-free projections |
+| Demo analysis and shared public-job enrichment | Deployment resolver; no candidate-owned content is supplied | Persisted Inbox and public job reads do not invoke semantic clients |
+
+Browser external discovery and hosted web search remain separately configured
+capabilities. A semantic OpenAI key is never reused as a search credential.
+
 ---
 
 # 10. Application Tracking Model

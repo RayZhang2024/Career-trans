@@ -145,7 +145,7 @@ def test_match_me_uses_each_authenticated_users_matching_snapshot_without_leakag
         def match(self, _job, _candidate_context):
             return RequirementMatchSet(matches=[])
 
-    def build_matching_service(_settings, runtime_snapshot):
+    def build_matching_service(_settings, runtime_snapshot, _credential_resolver=None):
         operation = runtime_snapshot.operation("requirement_matching")
         configurations.append((operation.model, operation.reasoning_effort.value if operation.reasoning_effort else None))
         return FakeMatchingService()

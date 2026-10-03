@@ -36,6 +36,13 @@ export type AiSettings = {
   effective: Record<SemanticOperation, AiEffectiveOperation>;
 };
 export type AiSettingsReplace = AiPreferences & { expected_revision: number };
+export type SemanticCredentialStatus = {
+  policy: "deployment_only" | "user_required" | "user_or_deployment";
+  storage_available: boolean;
+  user_credential_configured: boolean;
+  credential_revision: number;
+  effective_source: "user" | "deployment" | "none";
+};
 export type DiscoveryProvider = "tavily" | "openai" | "local_codex" | "disabled";
 export type EffectiveDiscoveryProvider = DiscoveryProvider | "brave" | "unsupported";
 export type CredentialSource = "user" | "deployment";

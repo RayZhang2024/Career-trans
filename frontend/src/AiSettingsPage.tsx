@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { AiModelCatalog, AiPreferences, AiSettings, AiSettingsReplace, ReasoningEffort, SemanticOperation } from "./api";
+import type { AiModelCatalog, AiPreferences, AiSettings, AiSettingsReplace, ReasoningEffort, SemanticCredentialStatus, SemanticOperation } from "./api";
 import { SEMANTIC_OPERATION_ORDER } from "./api";
 import { ApiError, useAuth } from "./auth";
 import {
@@ -96,6 +96,12 @@ export function AiSettingsPage() {
   const { api, user } = useAuth();
   const ownerId = user?.id ?? null;
   const [view, setView] = useState<View>({ kind: "loading", ownerId });
+  const [credentialStatus, setCredentialStatus] = useState<SemanticCredentialStatus | null>(null);
+  const [credentialOwnerId, setCredentialOwnerId] = useState<string | null>(null);
+  const [credentialKey, setCredentialKey] = useState("");
+  const [credentialBusy, setCredentialBusy] = useState(false);
+  const [credentialNotice, setCredentialNotice] = useState<{ text: string; alert?: boolean } | null>(null);
+  const credentialGeneration = useRef(0);
   const viewRef = useRef(view);
   const generation = useRef(0);
   const alive = useRef(false);
@@ -149,6 +155,81 @@ export function AiSettingsPage() {
     // The session owner and API instance define the authoritative view lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, ownerId]);
+
+  useEffect(() => {
+    const request = ++credentialGeneration.current;
+    setCredentialStatus(null);
+    setCredentialOwnerId(null);
+    setCredentialKey("");
+    setCredentialNotice(null);
+    void api.request<SemanticCredentialStatus>("/api/v1/ai/credentials").then((status) => {
+      if (credentialGeneration.current !== request || ownerRef.current !== ownerId) return;
+      setCredentialStatus(status);
+      setCredentialOwnerId(ownerId);
+    }).catch(() => {
+      if (credentialGeneration.current !== request || ownerRef.current !== ownerId) return;
+      setCredentialNotice({ text: "Credential settings could not be loaded. Reload this page before changing a key.", alert: true });
+      setCredentialOwnerId(ownerId);
+    });
+    return () => { credentialGeneration.current += 1; };
+  }, [api, ownerId]);
+
+  const reloadCredentialStatus = async () => {
+    try {
+      const status = await api.request<SemanticCredentialStatus>("/api/v1/ai/credentials");
+      if (ownerRef.current === ownerId) {
+        setCredentialStatus(status);
+        setCredentialOwnerId(ownerId);
+      }
+    } catch {
+      if (ownerRef.current === ownerId) setCredentialNotice({ text: "The saved credential state could not be confirmed. Reload AI Settings before retrying.", alert: true });
+    }
+  };
+
+  const saveCredential = async () => {
+    const status = credentialStatus;
+    const key = credentialKey;
+    if (!status?.storage_available || !key.trim() || credentialBusy) return;
+    setCredentialBusy(true);
+    setCredentialNotice(null);
+    try {
+      const saved = await api.request<SemanticCredentialStatus>("/api/v1/ai/credentials/openai", {
+        method: "PUT", body: JSON.stringify({ expected_revision: status.credential_revision, api_key: key }),
+      });
+      if (ownerRef.current !== ownerId) return;
+      setCredentialStatus(saved);
+      setCredentialOwnerId(ownerId);
+      setCredentialKey("");
+      setCredentialNotice({ text: "OpenAI key saved securely for future semantic work." });
+    } catch (cause) {
+      if (ownerRef.current !== ownerId) return;
+      setCredentialKey("");
+      setCredentialNotice({ text: cause instanceof ApiError && cause.status === 409 ? "Credential settings changed elsewhere. Reload the saved state before trying again." : "The key could not be saved. Reload credential state before retrying.", alert: true });
+      await reloadCredentialStatus();
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
+  const removeCredential = async () => {
+    const status = credentialStatus;
+    if (!status?.user_credential_configured || credentialBusy) return;
+    setCredentialBusy(true);
+    setCredentialNotice(null);
+    try {
+      const saved = await api.request<SemanticCredentialStatus>(`/api/v1/ai/credentials/openai?expected_revision=${status.credential_revision}`, { method: "DELETE" });
+      if (ownerRef.current !== ownerId) return;
+      setCredentialStatus(saved);
+      setCredentialNotice({ text: "Your saved OpenAI key was removed." });
+    } catch {
+      if (ownerRef.current === ownerId) {
+        setCredentialNotice({ text: "The key removal could not be confirmed. Reload credential state before retrying.", alert: true });
+        await reloadCredentialStatus();
+      }
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
 
   const updateDraft = (transform: (draft: AiPreferences) => AiPreferences) => {
     const current = viewRef.current;
@@ -237,9 +318,31 @@ export function AiSettingsPage() {
     <div className="ai-settings-content">
       <section className="card ai-boundary-copy">
         <h2>About these settings</h2>
-        <p>The semantic provider is controlled by your deployment. Provider credentials are managed by the server and are not shown here.</p>
+        <p>The deployment controls the semantic provider. A user OpenAI key may be used when the deployment policy permits it; saved keys are write-only and never returned by the API.</p>
         <p>These preferences affect future semantic work only. Saved rankings, adviser assessments, preparations, and other historical outputs are not rewritten.</p>
         <p>Host-side Codex external discovery is separate and is not configured here.</p>
+      </section>
+
+      <section className="card ai-credential-section" aria-label="OpenAI credential">
+        <h2>OpenAI API key</h2>
+        <p>Keys are encrypted before storage. The key is never returned, included in model preferences, or used for web search. It applies only to later semantic operations.</p>
+        {!credentialStatus && !credentialNotice && <p role="status">Loading credential policy…</p>}
+        {credentialStatus && <>
+          <p><strong>Credential policy:</strong> {credentialStatus.policy.replaceAll("_", " ")}</p>
+          <p><strong>Current key source:</strong> {credentialStatus.effective_source}</p>
+            {credentialStatus.storage_available && credentialStatus.policy !== "deployment_only"
+              ? <>
+              <label htmlFor="openai-api-key">{credentialStatus.user_credential_configured ? "Replace saved API key" : "Add your API key"}</label>
+              <input id="openai-api-key" type="password" autoComplete="new-password" value={credentialKey} disabled={credentialBusy} onChange={(event) => setCredentialKey(event.target.value)} />
+              <p className="muted">Saving a user key makes it authoritative under this policy. If that key is rejected, the request fails; the server will not retry with its deployment key.</p>
+              <div className="ai-actions">
+                <button type="button" disabled={credentialBusy || !credentialKey.trim()} onClick={() => void saveCredential()}>{credentialBusy ? "Saving key…" : "Save OpenAI key"}</button>
+              </div>
+            </>
+            : <p role="status">{credentialStatus.policy === "deployment_only" ? "The deployment policy does not accept user keys." : "User key storage is unavailable for this provider or encryption is not configured by the deployment."}</p>}
+          {credentialStatus.user_credential_configured && <button type="button" className="button-secondary" disabled={credentialBusy} onClick={() => void removeCredential()}>Remove saved key</button>}
+        </>}
+        {credentialNotice && <p role={credentialNotice.alert ? "alert" : "status"}>{credentialNotice.text}</p>}
       </section>
 
       <section className="card ai-provider-summary" aria-label="AI provider and settings status">

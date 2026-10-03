@@ -183,10 +183,20 @@ def test_safe_protected_configuration_endpoint_and_check(client, monkeypatch) ->
 
 
 def test_configuration_check_reports_missing_key_without_secret(client, monkeypatch) -> None:
-    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(default_llm_provider="openai", openai_api_key=None))
+    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(default_llm_provider="openai", openai_api_key=None, semantic_credential_policy="deployment_only"))
     response = client.get("/api/v1/config/llm/check", headers=_auth(client, "config-missing@example.com"))
     assert response.status_code == 503
     assert "OPENAI_API_KEY" in response.json()["detail"]
+
+
+def test_user_or_deployment_configuration_requires_encryption_when_no_deployment_key(client, monkeypatch) -> None:
+    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(
+        default_llm_provider="openai", openai_api_key=None, semantic_credential_policy="user_or_deployment",
+    ))
+    response = client.get("/api/v1/config/llm/check", headers=_auth(client, "config-encryption@example.com"))
+    assert response.status_code == 503
+    assert "OPENAI_CREDENTIAL_ENCRYPTION_KEY" in response.json()["detail"]
+    assert "api_key" not in response.text.casefold()
 
 
 def test_configuration_check_rejects_empty_semantic_model(client, monkeypatch) -> None:

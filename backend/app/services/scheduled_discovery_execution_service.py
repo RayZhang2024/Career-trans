@@ -51,6 +51,7 @@ class ScheduledDiscoveryExecutionService:
         user_runs: object | None = None,
         user_runs_factory: Callable[[ResolvedRuntimeSnapshot], object] | None = None,
         runtime_snapshot_resolver: Callable[[str], ResolvedRuntimeSnapshot] | None = None,
+        semantic_credentials_resolver_factory: Callable[[str], object] | None = None,
         candidate_reader: CanonicalCandidateReadService | None = None,
         agentic_core: AgenticWebExecutionCore | None = None,
     ) -> None:
@@ -60,6 +61,7 @@ class ScheduledDiscoveryExecutionService:
         self._user_runs = user_runs
         self._user_runs_factory = user_runs_factory
         self._runtime_snapshot_resolver = runtime_snapshot_resolver
+        self._semantic_credentials_resolver_factory = semantic_credentials_resolver_factory
         self._candidate_reader = candidate_reader or CanonicalCandidateReadService(session)
         self._agentic_core = agentic_core or AgenticWebExecutionCore(session)
 
@@ -165,12 +167,17 @@ class ScheduledDiscoveryExecutionService:
             if acquisition.agentic_web.enabled and self._runtime_snapshot_resolver is not None
             else None
         )
+        semantic_credentials = (
+            self._semantic_credentials_resolver_factory(execution.user_id)
+            if runtime_snapshot is not None and self._semantic_credentials_resolver_factory is not None
+            else None
+        )
 
         agentic_service: object | None = None
         agentic_setup_error: Exception | None = None
         if acquisition.agentic_web.enabled:
             try:
-                agentic_service = self._agentic_service(execution.user_id, runtime_snapshot)
+                agentic_service = self._agentic_service(execution.user_id, runtime_snapshot, semantic_credentials)
                 self._record_web_search_metadata(
                     execution, getattr(agentic_service, "provider_metadata", None)
                 )
@@ -299,7 +306,9 @@ class ScheduledDiscoveryExecutionService:
         try:
             if runtime_snapshot is None and self._runtime_snapshot_resolver is not None:
                 runtime_snapshot = self._resolve_runtime(execution.user_id)
-            user_runs = self._user_run_service(runtime_snapshot)
+                if self._semantic_credentials_resolver_factory is not None:
+                    semantic_credentials = self._semantic_credentials_resolver_factory(execution.user_id)
+            user_runs = self._user_run_service(runtime_snapshot, semantic_credentials)
             evaluated = self._agentic_core.evaluate(
                 user_runs=user_runs,
                 user_id=execution.user_id,
@@ -325,9 +334,11 @@ class ScheduledDiscoveryExecutionService:
         return self._runtime_snapshot_resolver(user_id)
 
     def _agentic_service(
-        self, user_id: str, runtime_snapshot: ResolvedRuntimeSnapshot | None
+        self, user_id: str, runtime_snapshot: ResolvedRuntimeSnapshot | None, semantic_credentials: object | None = None
     ) -> object:
         parameters = inspect.signature(self._agentic_web_factory).parameters
+        if len(parameters) >= 3:
+            return self._agentic_web_factory(user_id, runtime_snapshot, semantic_credentials)
         if len(parameters) >= 2:
             return self._agentic_web_factory(user_id, runtime_snapshot)
         if parameters:
@@ -356,8 +367,10 @@ class ScheduledDiscoveryExecutionService:
         # no credential material and remains immutable if settings later change.
         self._session.commit()
 
-    def _user_run_service(self, runtime_snapshot: ResolvedRuntimeSnapshot | None) -> object:
+    def _user_run_service(self, runtime_snapshot: ResolvedRuntimeSnapshot | None, semantic_credentials: object | None = None) -> object:
         if runtime_snapshot is not None and self._user_runs_factory is not None:
+            if len(inspect.signature(self._user_runs_factory).parameters) >= 2:
+                return self._user_runs_factory(runtime_snapshot, semantic_credentials)
             return self._user_runs_factory(runtime_snapshot)
         if self._user_runs is None:
             raise RuntimeError("A user discovery service factory is required for evaluation.")

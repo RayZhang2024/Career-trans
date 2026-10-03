@@ -264,7 +264,7 @@ class LLMProviderFactory:
         if provider == "openai":
             credential = self._credential_resolver.credential_for(provider)
             if not credential:
-                raise LLMProviderConfigurationError("OpenAI semantic LLM requires OPENAI_API_KEY.")
+                raise LLMProviderConfigurationError("OpenAI semantic LLM requires a configured credential (deployment OPENAI_API_KEY or an authorized user key).")
             llm: SemanticLLM = OpenAISemanticLLM(api_key=credential, base_url=config.base_url)
         elif provider == "ollama":
             llm = OllamaSemanticLLM(base_url=config.base_url or "http://localhost:11434")

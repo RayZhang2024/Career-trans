@@ -58,6 +58,12 @@ from app.services.application_tracking_service import ApplicationTrackingService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.services.one_off_discovery_service import OneOffDiscoveryService
 from app.services.ai_settings_service import AiSettingsService
+from app.services.semantic_credential_service import (
+    SemanticCredentialConfigurationError,
+    SemanticCredentialService,
+    UserSemanticCredentialResolver,
+)
+from app.services.openai_credential_encryption import OpenAICredentialEncryption
 from app.services.job_discovery_settings_service import (
     JobDiscoveryProviderNotReady,
     JobDiscoverySettingsError,
@@ -87,6 +93,7 @@ from app.providers.llm import (
     LLMProviderConfigurationError,
     LLMProviderFactory,
     SemanticResponseClient,
+    CredentialResolver,
     SemanticProviderConfigurationError,
     validate_openai_structured_output_model,
 )
@@ -140,6 +147,7 @@ def get_semantic_response_client(
     model: str,
     operation: str,
     runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+    credential_resolver: CredentialResolver | None = None,
 ) -> SemanticResponseClient:
     """Resolve semantic LLMs independently of the configured web-search provider."""
     provider = settings.default_llm_provider.casefold().strip()
@@ -157,7 +165,7 @@ def get_semantic_response_client(
     base_url = settings.effective_llm_base_url
     try:
         llm = LLMProviderFactory(
-            EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
+            credential_resolver or EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
         ).create(
             LLMProviderConfig(
                 provider=provider,
@@ -165,7 +173,7 @@ def get_semantic_response_client(
                 base_url=base_url,
             )
         )
-    except LLMProviderConfigurationError as exc:
+    except (LLMProviderConfigurationError, SemanticCredentialConfigurationError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
@@ -196,15 +204,26 @@ def validate_semantic_configuration(settings: Settings) -> None:
         except RuntimePreferenceError as exc:
             raise SemanticProviderConfigurationError(str(exc)) from exc
     try:
-        LLMProviderFactory(
-            EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
-        ).create(
-            LLMProviderConfig(
-                provider=provider,
-                model=settings.cv_semantic_extraction_model,
-                base_url=settings.effective_llm_base_url,
+        # User-managed policies can legitimately start without a deployment key.
+        if settings.semantic_credential_policy == "deployment_only" and not settings.openai_api_key:
+            raise LLMProviderConfigurationError("Deployment OpenAI credentials are required by semantic credential policy. Configure OPENAI_API_KEY.")
+        if (
+            provider == "openai"
+            and not settings.openai_api_key
+            and settings.semantic_credential_policy != "deployment_only"
+            and not OpenAICredentialEncryption(settings.openai_credential_encryption_key).configured()
+        ):
+            raise LLMProviderConfigurationError("OpenAI user credentials require OPENAI_CREDENTIAL_ENCRYPTION_KEY to be configured.")
+        if settings.openai_api_key:
+            LLMProviderFactory(
+                EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
+            ).create(
+                LLMProviderConfig(
+                    provider=provider,
+                    model=settings.cv_semantic_extraction_model,
+                    base_url=settings.effective_llm_base_url,
+                )
             )
-        )
         if provider == "openai":
             validate_openai_structured_output_model(settings.requirement_matching_model)
             validate_openai_structured_output_model(settings.application_drafting_model)
@@ -220,9 +239,18 @@ def get_user_runtime_snapshot(
     return AiSettingsService(db).snapshot_for_user(current_user.id)
 
 
+def get_user_semantic_credential_resolver(
+    db: DbSession,
+    current_user: CurrentUser,
+) -> UserSemanticCredentialResolver:
+    """Create a request/workflow-scoped resolver; GET paths do not decrypt keys."""
+    return SemanticCredentialService(db).resolver(current_user.id)
+
+
 def _build_cv_ingestion_service(
     db: Session,
     runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+    credential_resolver: CredentialResolver | None = None,
 ) -> CVIngestionService:
     current_settings = get_settings()
     owner_snapshot = runtime_snapshot or resolve_runtime_snapshot(current_settings)
@@ -234,6 +262,7 @@ def _build_cv_ingestion_service(
                 model=current_settings.cv_semantic_extraction_model,
                 operation="cv_evidence_extraction",
                 runtime_snapshot=owner_snapshot,
+                credential_resolver=credential_resolver,
             ),
             owner_snapshot.operation(RUNTIME_OPERATION_TO_SETTING["cv_evidence_extraction"]).model,
         )
@@ -253,8 +282,9 @@ def get_cv_ingestion_service(db: DbSession) -> CVIngestionService:
 def get_user_cv_ingestion_service(
     db: DbSession,
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver, Depends(get_user_semantic_credential_resolver)],
 ) -> CVIngestionService:
-    return _build_cv_ingestion_service(db, runtime_snapshot)
+    return _build_cv_ingestion_service(db, runtime_snapshot, credential_resolver)
 
 
 def get_user_cv_ingestion_read_service(db: DbSession) -> CVIngestionReadService:
@@ -270,6 +300,7 @@ def get_canonical_candidate_read_service(db: DbSession) -> CanonicalCandidateRea
 def _build_candidate_adviser_service(
     db: Session,
     runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
+    credential_resolver: CredentialResolver | None = None,
 ) -> CandidateAdviserService:
     def build_agent() -> SemanticCandidateAdviser:
         current_settings = get_settings()
@@ -279,6 +310,7 @@ def _build_candidate_adviser_service(
                 model=current_settings.candidate_adviser_model,
                 operation="candidate_adviser",
                 runtime_snapshot=runtime_snapshot,
+                credential_resolver=credential_resolver,
             ),
             runtime_snapshot.operation("candidate_adviser").model if runtime_snapshot else current_settings.candidate_adviser_model,
         )
@@ -291,6 +323,7 @@ def _build_candidate_adviser_service(
                 model=current_settings.candidate_adviser_model,
                 operation="candidate_adviser_clarification",
                 runtime_snapshot=runtime_snapshot,
+                credential_resolver=credential_resolver,
             ),
             runtime_snapshot.operation("candidate_adviser").model if runtime_snapshot else current_settings.candidate_adviser_model,
         )
@@ -309,13 +342,15 @@ def get_candidate_adviser_service(db: DbSession) -> CandidateAdviserService:
 def get_user_candidate_adviser_service(
     db: DbSession,
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver, Depends(get_user_semantic_credential_resolver)],
 ) -> CandidateAdviserService:
-    return _build_candidate_adviser_service(db, runtime_snapshot)
+    return _build_candidate_adviser_service(db, runtime_snapshot, credential_resolver)
 
 
 def get_user_candidate_adviser_profile_proposal_generation_service(
     db: DbSession,
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver, Depends(get_user_semantic_credential_resolver)],
 ) -> CandidateAdviserProfileProposalGenerationService:
     # The semantic client is deliberately resolved only inside this closure,
     # after generation has validated the owned confirmed source and evidence.
@@ -327,6 +362,7 @@ def get_user_candidate_adviser_profile_proposal_generation_service(
                 model=current_settings.candidate_adviser_model,
                 operation="candidate_adviser_profile_proposal",
                 runtime_snapshot=runtime_snapshot,
+                credential_resolver=credential_resolver,
             ),
             runtime_snapshot.operation("candidate_adviser").model,
         )
@@ -366,7 +402,7 @@ def get_job_analysis_service() -> JobAnalysisService:
     return _build_job_analysis_service(settings)
 
 
-def _build_job_analysis_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> JobAnalysisService:
+def _build_job_analysis_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None, credential_resolver: CredentialResolver | None = None) -> JobAnalysisService:
     model = runtime_snapshot.operation("job_extraction").model if runtime_snapshot else settings.job_extraction_model
     extractor = OpenAIJobExtractor(
         api_key="",
@@ -376,6 +412,7 @@ def _build_job_analysis_service(settings: Settings, runtime_snapshot: ResolvedRu
             model=model,
             operation="job_extraction",
             runtime_snapshot=runtime_snapshot,
+            credential_resolver=credential_resolver,
         ),
     )
     return JobAnalysisService(extractor=extractor)
@@ -388,12 +425,13 @@ def get_requirement_matching_service() -> RequirementMatchingService:
 
 def get_user_requirement_matching_service(
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver, Depends(get_user_semantic_credential_resolver)],
 ) -> RequirementMatchingService:
     """Build matching with the authenticated user's immutable workflow snapshot."""
-    return _build_requirement_matching_service(get_settings(), runtime_snapshot)
+    return _build_requirement_matching_service(get_settings(), runtime_snapshot, credential_resolver)
 
 
-def _build_requirement_matching_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> RequirementMatchingService:
+def _build_requirement_matching_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None, credential_resolver: CredentialResolver | None = None) -> RequirementMatchingService:
     model = runtime_snapshot.operation("requirement_matching").model if runtime_snapshot else settings.requirement_matching_model
     matcher = OpenAIRequirementMatcher(
         api_key="",
@@ -403,6 +441,7 @@ def _build_requirement_matching_service(settings: Settings, runtime_snapshot: Re
             model=model,
             operation="requirement_matching",
             runtime_snapshot=runtime_snapshot,
+            credential_resolver=credential_resolver,
         ),
     )
     return RequirementMatchingService(matcher=matcher)
@@ -544,6 +583,7 @@ def _build_agentic_job_discovery_service(
     settings: Settings,
     runtime_snapshot: ResolvedRuntimeSnapshot | None = None,
     resolved_search_provider: ResolvedWebSearchProvider | None = None,
+    credential_resolver: CredentialResolver | None = None,
 ) -> AgenticJobDiscoveryService:
     # Resolve the search capability first so disabled mode fails before any in-process
     # semantic components are constructed.
@@ -567,6 +607,7 @@ def _build_agentic_job_discovery_service(
                 model=settings.agentic_discovery_model,
                 operation="search_strategy_generation",
                 runtime_snapshot=runtime_snapshot,
+                credential_resolver=credential_resolver,
             ),
         ),
         search_provider=search_provider,
@@ -579,6 +620,7 @@ def _build_agentic_job_discovery_service(
                 model=settings.agentic_discovery_model,
                 operation="web_vacancy_extraction",
                 runtime_snapshot=runtime_snapshot,
+                credential_resolver=credential_resolver,
             ),
         ),
         state_store=SqlAlchemyDiscoveredJobStateStore(db),
@@ -590,10 +632,11 @@ def get_user_agentic_job_discovery_service(
     db: DbSession,
     current_user: CurrentUser,
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver, Depends(get_user_semantic_credential_resolver)],
 ) -> AgenticJobDiscoveryService:
     try:
         return get_user_agentic_job_discovery_service_for_user(
-            db, current_user.id, runtime_snapshot
+            db, current_user.id, runtime_snapshot, credential_resolver=credential_resolver
         )
     except JobDiscoverySettingsError as exc:
         raise HTTPException(
@@ -609,6 +652,7 @@ def get_user_agentic_job_discovery_service_for_user(
     settings: Settings | None = None,
     scheduled_due_runner: bool = False,
     resolved_search_provider: ResolvedWebSearchProvider | None = None,
+    credential_resolver: CredentialResolver | None = None,
 ) -> AgenticJobDiscoveryService:
     """Shared HTTP/standalone authority for a user's current web-search settings."""
     selected_settings = settings or get_settings()
@@ -621,6 +665,7 @@ def get_user_agentic_job_discovery_service_for_user(
         selected_settings,
         snapshot,
         resolved_search_provider=resolution,
+        credential_resolver=credential_resolver,
     )
 
 
@@ -653,7 +698,7 @@ def get_job_relevance_agent() -> OpenAIJobRelevanceAgent:
     return _build_job_relevance_agent(settings)
 
 
-def _build_job_relevance_agent(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> OpenAIJobRelevanceAgent:
+def _build_job_relevance_agent(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None, credential_resolver: CredentialResolver | None = None) -> OpenAIJobRelevanceAgent:
     model = runtime_snapshot.operation("job_relevance").model if runtime_snapshot else settings.job_relevance_model
     return OpenAIJobRelevanceAgent(
         api_key="",
@@ -663,6 +708,7 @@ def _build_job_relevance_agent(settings: Settings, runtime_snapshot: ResolvedRun
             model=model,
             operation="job_relevance",
             runtime_snapshot=runtime_snapshot,
+            credential_resolver=credential_resolver,
         ),
     )
 
@@ -672,7 +718,7 @@ def get_job_archetype_agent() -> OpenAIJobArchetypeAgent:
     return _build_job_archetype_agent(settings)
 
 
-def _build_job_archetype_agent(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> OpenAIJobArchetypeAgent:
+def _build_job_archetype_agent(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None, credential_resolver: CredentialResolver | None = None) -> OpenAIJobArchetypeAgent:
     model = runtime_snapshot.operation("job_archetype").model if runtime_snapshot else settings.job_archetype_model
     return OpenAIJobArchetypeAgent(
         api_key="",
@@ -682,6 +728,7 @@ def _build_job_archetype_agent(settings: Settings, runtime_snapshot: ResolvedRun
             model=model,
             operation="job_archetype",
             runtime_snapshot=runtime_snapshot,
+            credential_resolver=credential_resolver,
         ),
     )
 
@@ -691,7 +738,7 @@ def get_career_assessment_service() -> CareerAssessmentService:
     return _build_career_assessment_service(settings)
 
 
-def _build_career_assessment_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None) -> CareerAssessmentService:
+def _build_career_assessment_service(settings: Settings, runtime_snapshot: ResolvedRuntimeSnapshot | None = None, credential_resolver: CredentialResolver | None = None) -> CareerAssessmentService:
     model = runtime_snapshot.operation("career_alignment").model if runtime_snapshot else settings.career_alignment_model
     agent = OpenAICareerAlignmentAgent(
         api_key="",
@@ -701,6 +748,7 @@ def _build_career_assessment_service(settings: Settings, runtime_snapshot: Resol
             model=model,
             operation="career_alignment",
             runtime_snapshot=runtime_snapshot,
+            credential_resolver=credential_resolver,
         ),
     )
     return CareerAssessmentService(agent=agent)
@@ -726,21 +774,22 @@ def get_career_analysis_graph(
     )
 
 
-def _build_user_career_analysis_graph(runtime_snapshot: ResolvedRuntimeSnapshot) -> CareerAnalysisGraph:
+def _build_user_career_analysis_graph(runtime_snapshot: ResolvedRuntimeSnapshot, credential_resolver: CredentialResolver | None = None) -> CareerAnalysisGraph:
     settings = get_settings()
     return CareerAnalysisGraph(
-        job_analysis_service=_build_job_analysis_service(settings, runtime_snapshot),
-        requirement_matching_service=_build_requirement_matching_service(settings, runtime_snapshot),
+        job_analysis_service=_build_job_analysis_service(settings, runtime_snapshot, credential_resolver),
+        requirement_matching_service=_build_requirement_matching_service(settings, runtime_snapshot, credential_resolver),
         fit_assessment_service=FitAssessmentService(),
-        career_assessment_service=_build_career_assessment_service(settings, runtime_snapshot),
+        career_assessment_service=_build_career_assessment_service(settings, runtime_snapshot, credential_resolver),
         recommendation_service=RecommendationService(),
     )
 
 
 def get_user_career_analysis_graph(
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver, Depends(get_user_semantic_credential_resolver)],
 ) -> CareerAnalysisGraph:
-    return _build_user_career_analysis_graph(runtime_snapshot)
+    return _build_user_career_analysis_graph(runtime_snapshot, credential_resolver)
 
 
 def get_job_ranking_service(
@@ -753,19 +802,21 @@ def get_job_ranking_service(
 
 def get_user_job_ranking_service(
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver, Depends(get_user_semantic_credential_resolver)],
 ) -> JobRankingService:
     settings = get_settings()
-    return _build_user_job_ranking_service(settings, runtime_snapshot)
+    return _build_user_job_ranking_service(settings, runtime_snapshot, credential_resolver)
 
 
 def _build_user_job_ranking_service(
     settings: Settings,
     runtime_snapshot: ResolvedRuntimeSnapshot,
+    credential_resolver: CredentialResolver | None = None,
 ) -> JobRankingService:
     return JobRankingService(
-        relevance_agent=_build_job_relevance_agent(settings, runtime_snapshot),
-        archetype_agent=_build_job_archetype_agent(settings, runtime_snapshot),
-        career_analysis_graph=_build_user_career_analysis_graph(runtime_snapshot),
+        relevance_agent=_build_job_relevance_agent(settings, runtime_snapshot, credential_resolver),
+        archetype_agent=_build_job_archetype_agent(settings, runtime_snapshot, credential_resolver),
+        career_analysis_graph=_build_user_career_analysis_graph(runtime_snapshot, credential_resolver),
     )
 
 
@@ -808,21 +859,22 @@ def get_user_job_workspace_read_service(db: DbSession) -> UserJobWorkspaceReadSe
 def get_application_preparation_service(
     db: DbSession,
     runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver | None, Depends(get_user_semantic_credential_resolver)] = None,
 ) -> ApplicationPreparationService:
     settings = get_settings()
 
     def build_drafting_agent() -> OpenAIApplicationDraftingAgent:
         return OpenAIApplicationDraftingAgent(
-            cv_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cv_drafting", runtime_snapshot=runtime_snapshot),
-            cover_letter_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cover_letter", runtime_snapshot=runtime_snapshot),
-            answer_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_answer_drafting", runtime_snapshot=runtime_snapshot),
+            cv_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cv_drafting", runtime_snapshot=runtime_snapshot, credential_resolver=credential_resolver),
+            cover_letter_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_cover_letter", runtime_snapshot=runtime_snapshot, credential_resolver=credential_resolver),
+            answer_client=get_semantic_response_client(settings, model=settings.application_drafting_model, operation="application_answer_drafting", runtime_snapshot=runtime_snapshot, credential_resolver=credential_resolver),
             model=runtime_snapshot.operation("application_drafting").model,
         )
 
     return ApplicationPreparationService(
         db,
         user_discovery=UserJobDiscoveryService(db, runtime_snapshot=runtime_snapshot),
-        graph_factory=lambda: _build_user_career_analysis_graph(runtime_snapshot),
+        graph_factory=lambda: _build_user_career_analysis_graph(runtime_snapshot, credential_resolver),
         drafting_agent_factory=build_drafting_agent,
         page_fetcher=PublicHttpPageFetcher(), settings=settings, runtime_snapshot=runtime_snapshot,
     )
@@ -850,31 +902,34 @@ def get_scheduled_discovery_execution_service(
     return ScheduledDiscoveryExecutionService(
         db,
         structured_ats=structured_ats,
-        agentic_web_factory=lambda user_id, snapshot: get_user_agentic_job_discovery_service_for_user(
-            db, user_id, snapshot, settings=get_settings()
+        agentic_web_factory=lambda user_id, snapshot, credentials: get_user_agentic_job_discovery_service_for_user(
+            db, user_id, snapshot, settings=get_settings(), credential_resolver=credentials
         ),
-        user_runs_factory=lambda snapshot: UserJobDiscoveryService(
+        user_runs_factory=lambda snapshot, credentials: UserJobDiscoveryService(
             db,
-            ranking_service=_build_user_job_ranking_service(get_settings(), snapshot),
+            ranking_service=_build_user_job_ranking_service(get_settings(), snapshot, credentials),
             runtime_snapshot=snapshot,
         ),
         runtime_snapshot_resolver=lambda user_id: AiSettingsService(db).snapshot_for_user(user_id),
+        semantic_credentials_resolver_factory=lambda user_id: SemanticCredentialService(db).resolver(user_id),
         agentic_core=AgenticWebExecutionCore(db),
     )
 
 
-def get_one_off_discovery_service(db: DbSession) -> OneOffDiscoveryService:
+def get_one_off_discovery_service(db: DbSession, current_user: CurrentUser) -> OneOffDiscoveryService:
     settings = get_settings()
     settings_service = JobDiscoverySettingsService(db, settings=settings)
+    semantic_credentials = SemanticCredentialService(db, settings=settings).resolver(current_user.id)
     return OneOffDiscoveryService(
         db,
         settings_service=settings_service,
         runtime_snapshot_resolver=lambda user_id: AiSettingsService(db, settings=settings).snapshot_for_user(user_id),
         agentic_factory=lambda user_id, snapshot, provider: get_user_agentic_job_discovery_service_for_user(
             db, user_id, snapshot, settings=settings, resolved_search_provider=provider,
+            credential_resolver=semantic_credentials,
         ),
         user_runs_factory=lambda snapshot: UserJobDiscoveryService(
-            db, ranking_service=_build_user_job_ranking_service(settings, snapshot), runtime_snapshot=snapshot,
+            db, ranking_service=_build_user_job_ranking_service(settings, snapshot, semantic_credentials), runtime_snapshot=snapshot,
         ),
         agentic_core=AgenticWebExecutionCore(db),
     )
