@@ -1,5 +1,6 @@
 import base64
 import sqlite3
+import traceback
 
 import pytest
 
@@ -208,6 +209,41 @@ def test_credential_reads_are_provider_free_and_authenticated_api_never_echoes_k
     assert invalid.status_code == 422 and secret not in invalid.text
     assert client.put("/api/v1/ai/credentials/openai", headers=headers, json={"expected_revision": 0, "api_key": secret}).status_code == 409
     assert client.get("/api/v1/ai/credentials").status_code == 401
+
+
+def test_invalid_secret_bearing_save_validation_does_not_retain_secret_in_response_logs_or_traceback(
+    client, monkeypatch, caplog
+):
+    from fastapi import HTTPException
+
+    from app.api.routes.ai_settings import _parse_credential_write
+
+    settings = _settings(openai_api_key=None)
+    monkeypatch.setattr("app.services.ai_settings_service.get_settings", lambda: settings)
+    monkeypatch.setattr("app.services.semantic_credential_service.get_settings", lambda: settings)
+    login = {"email": "invalid-secret-validation@example.com", "password": "Strong-test-password-92!"}
+    assert client.post("/api/v1/auth/register", json=login).status_code == 201
+    token = client.post("/api/v1/auth/login", json=login).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    sentinel = "synthetic-invalid-secret-must-never-escape-269"
+    oversized_key = sentinel + ("x" * 4096)
+
+    response = client.put(
+        "/api/v1/ai/credentials/openai",
+        headers=headers,
+        json={"expected_revision": 0, "api_key": oversized_key},
+    )
+    assert response.status_code == 422
+    assert sentinel not in response.text
+    assert sentinel not in caplog.text
+
+    with pytest.raises(HTTPException) as caught:
+        _parse_credential_write({"expected_revision": 0, "api_key": oversized_key})
+    raised = caught.value
+    assert raised.__cause__ is None
+    assert raised.__context__ is None
+    assert sentinel not in "".join(traceback.format_exception(raised))
+    assert sentinel not in caplog.text
 
 
 def test_connection_test_uses_only_submitted_user_key_and_returns_bounded_categories(client, db_session, monkeypatch, caplog):

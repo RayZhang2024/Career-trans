@@ -205,24 +205,28 @@ def validate_semantic_configuration(settings: Settings) -> None:
             raise SemanticProviderConfigurationError(str(exc)) from exc
     try:
         if provider == "openai":
+            policy = settings.semantic_credential_policy
             # User-managed policies can legitimately start without a deployment key.
-            if settings.semantic_credential_policy == "deployment_only" and not settings.openai_api_key:
+            if policy == "deployment_only" and not settings.openai_api_key:
                 raise LLMProviderConfigurationError("Deployment OpenAI credentials are required by semantic credential policy. Configure OPENAI_API_KEY.")
             if (
-                not settings.openai_api_key
-                and settings.semantic_credential_policy != "deployment_only"
-                and not SemanticCredentialEncryption(settings.semantic_credential_encryption_key).configured()
-            ):
+                policy == "user_required"
+                or (policy == "user_or_deployment" and not settings.openai_api_key)
+            ) and not SemanticCredentialEncryption(settings.semantic_credential_encryption_key).configured():
                 raise LLMProviderConfigurationError("OpenAI user credentials require SEMANTIC_CREDENTIAL_ENCRYPTION_KEY to be configured.")
-            LLMProviderFactory(
-                EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
-            ).create(
-                LLMProviderConfig(
-                    provider=provider,
-                    model=settings.cv_semantic_extraction_model,
-                    base_url=settings.effective_llm_base_url,
+            # Readiness validates deployment configuration, not a particular
+            # user's credential. Avoid resolving a deployment key when BYOK is
+            # the configured authority and no deployment key exists.
+            if settings.openai_api_key:
+                LLMProviderFactory(
+                    EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
+                ).create(
+                    LLMProviderConfig(
+                        provider=provider,
+                        model=settings.cv_semantic_extraction_model,
+                        base_url=settings.effective_llm_base_url,
+                    )
                 )
-            )
         elif provider == "ollama":
             # Local semantic inference needs neither deployment OpenAI credentials nor
             # OpenAI credential encryption, regardless of the retained BYOK policy.

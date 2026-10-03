@@ -1,3 +1,4 @@
+import base64
 import json
 
 import httpx
@@ -192,6 +193,22 @@ def test_configuration_check_reports_missing_key_without_secret(client, monkeypa
     assert "OPENAI_API_KEY" in response.json()["detail"]
 
 
+def test_deployment_only_openai_configuration_needs_no_encryption_key(client, monkeypatch) -> None:
+    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(
+        default_llm_provider="openai",
+        openai_api_key="synthetic-deployment-key",
+        semantic_credential_policy="deployment_only",
+        semantic_credential_encryption_key=None,
+    ))
+    response = client.get(
+        "/api/v1/config/llm/check",
+        headers=_auth(client, "config-deployment-only-no-encryption@example.com"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+
+
 def test_user_or_deployment_configuration_requires_encryption_when_no_deployment_key(client, monkeypatch) -> None:
     monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(
         default_llm_provider="openai", openai_api_key=None, semantic_credential_policy="user_or_deployment",
@@ -200,6 +217,48 @@ def test_user_or_deployment_configuration_requires_encryption_when_no_deployment
     assert response.status_code == 503
     assert "SEMANTIC_CREDENTIAL_ENCRYPTION_KEY" in response.json()["detail"]
     assert "api_key" not in response.text.casefold()
+
+
+@pytest.mark.parametrize("policy", ["user_required", "user_or_deployment"])
+def test_byok_only_openai_configuration_is_ready_without_deployment_client(client, monkeypatch, policy) -> None:
+    encryption_key = base64.urlsafe_b64encode(b"01234567890123456789012345678901").decode().rstrip("=")
+    settings = Settings(
+        default_llm_provider="openai",
+        semantic_credential_policy=policy,
+        semantic_credential_encryption_key=encryption_key,
+        openai_api_key=None,
+    )
+    monkeypatch.setattr(config_routes, "get_settings", lambda: settings)
+
+    def unexpected_deployment_client(*_args, **_kwargs):
+        pytest.fail("BYOK-only readiness must not construct a deployment OpenAI client")
+
+    monkeypatch.setattr(deps.LLMProviderFactory, "create", unexpected_deployment_client)
+    response = client.get(
+        "/api/v1/config/llm/check",
+        headers=_auth(client, f"byok-readiness-{policy}@example.com"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+
+
+@pytest.mark.parametrize("encryption_key", [None, "not-a-valid-base64-key"])
+def test_user_required_openai_configuration_rejects_missing_or_invalid_encryption(client, monkeypatch, encryption_key) -> None:
+    settings = Settings(
+        default_llm_provider="openai",
+        semantic_credential_policy="user_required",
+        semantic_credential_encryption_key=encryption_key,
+        openai_api_key=None,
+    )
+    monkeypatch.setattr(config_routes, "get_settings", lambda: settings)
+    response = client.get(
+        "/api/v1/config/llm/check",
+        headers=_auth(client, f"byok-encryption-{str(encryption_key)}@example.com"),
+    )
+
+    assert response.status_code == 503
+    assert "SEMANTIC_CREDENTIAL_ENCRYPTION_KEY" in response.json()["detail"]
 
 
 def test_configuration_check_rejects_empty_semantic_model(client, monkeypatch) -> None:

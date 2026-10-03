@@ -31,6 +31,16 @@ def _credential_service(db: DbSession) -> SemanticCredentialService:
     return SemanticCredentialService(db)
 
 
+def _parse_credential_write(payload: object) -> SemanticCredentialWrite:
+    try:
+        return SemanticCredentialWrite.model_validate(payload)
+    except (ValidationError, ValueError, TypeError):
+        # Raise after leaving Pydantic's exception handler so the validation
+        # error (which may contain the submitted key) is not attached as context.
+        pass
+    raise HTTPException(status_code=422, detail="Enter a valid OpenAI credential request.") from None
+
+
 @router.get("/models", response_model=AiModelCatalogRead)
 def list_models(_: CurrentUser, service: AiSettingsService = Depends(_service)) -> AiModelCatalogRead:
     return service.catalog()
@@ -67,9 +77,10 @@ def read_semantic_credential(current_user: CurrentUser, service: SemanticCredent
 async def save_openai_credential(request: Request, current_user: CurrentUser, service: SemanticCredentialService = Depends(_credential_service)) -> SemanticCredentialRead:
     # Parse manually so validation errors can never reflect a submitted key.
     try:
-        payload = SemanticCredentialWrite.model_validate(await request.json())
-    except (ValidationError, ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail="Enter a valid OpenAI credential request.") from exc
+        raw_payload = await request.json()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Enter a valid OpenAI credential request.") from None
+    payload = _parse_credential_write(raw_payload)
     try:
         result = service.save(current_user.id, payload.expected_revision, payload.api_key)
     except SemanticCredentialConflictError as exc:
