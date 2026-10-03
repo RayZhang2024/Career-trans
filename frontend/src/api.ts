@@ -36,6 +36,18 @@ export type AiSettings = {
   effective: Record<SemanticOperation, AiEffectiveOperation>;
 };
 export type AiSettingsReplace = AiPreferences & { expected_revision: number };
+export type SemanticCredentialStatus = {
+  provider: string;
+  policy: "deployment_only" | "user_required" | "user_or_deployment";
+  storage_available: boolean;
+  user_credential_configured: boolean;
+  user_credential_state: "absent" | "usable" | "unavailable" | "inactive";
+  credential_revision: number;
+  effective_source: "user" | "deployment" | "none" | "unavailable";
+  display_identity: string | null;
+  deployment_credential_configured: boolean;
+};
+export type SemanticCredentialConnectionTest = { connected: boolean; category: string; message: string };
 export type DiscoveryProvider = "tavily" | "openai" | "local_codex" | "disabled";
 export type EffectiveDiscoveryProvider = DiscoveryProvider | "brave" | "unsupported";
 export type CredentialSource = "user" | "deployment";

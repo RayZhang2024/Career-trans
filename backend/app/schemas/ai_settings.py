@@ -94,3 +94,30 @@ class AiSettingsRead(StrictModel):
     preference_activity: PreferenceActivity
     preferences: UserAiPreferences
     effective: dict[SemanticOperation, EffectiveOperationRead]
+
+
+class SemanticCredentialWrite(StrictModel):
+    expected_revision: int = Field(ge=0)
+    api_key: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+
+
+class SemanticCredentialRead(StrictModel):
+    provider: str
+    policy: str
+    storage_available: bool
+    user_credential_configured: bool
+    user_credential_state: str
+    credential_revision: int
+    effective_source: str
+    display_identity: str | None
+    deployment_credential_configured: bool
+
+
+class SemanticCredentialTestWrite(StrictModel):
+    api_key: Annotated[str, StringConstraints(min_length=1, max_length=4096)] | None = None
+
+
+class SemanticCredentialTestRead(StrictModel):
+    connected: bool
+    category: str
+    message: str

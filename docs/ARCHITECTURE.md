@@ -523,6 +523,50 @@ Unset reasoning effort means provider default and is omitted from OpenAI
 requests. Ollama deployment behavior is retained, but V1A does not expose
 arbitrary local-model selection. Host-side Codex discovery remains separate.
 
+## Semantic credentials and OpenAI BYOK (Issue #269)
+
+Semantic model preferences remain credential-free. Per-user semantic credentials
+are stored in `user_semantic_credentials`, keyed by `(user_id, provider)`, as
+AES-GCM ciphertext with user/provider/version authenticated data, a
+deployment-held 32-byte `SEMANTIC_CREDENTIAL_ENCRYPTION_KEY`, and an independent
+compare-and-swap revision. The current supported credential provider is OpenAI.
+Only a four-character suffix is retained for the owning user's masked display.
+The API never reads back the full key. Safe status reads decrypt locally to
+distinguish usable from unavailable records but never contact a provider.
+
+The explicit connection test uses only a submitted or saved user key and issues
+one small semantic request; it never probes deployment credentials. A successful
+test does not imply access to every model. Settings states that the test may
+consume provider usage. A workflow-scoped credential resolver is separate from
+`ResolvedRuntimeSnapshot`, attribution, and evaluation fingerprint projections.
+Its plaintext exists only in that request/background execution lifetime and is
+never serialized, traced, or persisted.
+
+The deployment selects `deployment_only`, `user_required`, or
+`user_or_deployment`. In `user_or_deployment`, a saved user key takes priority;
+once selected, provider rejection or decryption failure is terminal and cannot
+fall back to the deployment key. OpenAI semantic key authority is isolated from
+OpenAI web search, which continues to use its own deployment-owned credential.
+When Ollama is the selected semantic provider, OpenAI credential readiness is
+not required and Settings does not show OpenAI credential controls. Retained
+OpenAI rows are inactive and remain removable.
+
+Semantic execution authority audit:
+
+| Workflow | Credential authority | Provider-free boundary |
+| --- | --- | --- |
+| CV interpretation/evidence extraction | Authenticated owner's workflow resolver | CV reads, uploads before interpretation, and persisted-evidence reads do not resolve credentials |
+| Career Adviser assessment, clarification interpretation, Profile-proposal generation | Authenticated owner's resolver shared across the workflow | Adviser reads, proposal previews, confirmation, and history do not construct clients |
+| Job extraction/analysis, requirement matching, career alignment | Authenticated owner's resolver through user analysis/matching dependencies | Job history and persisted assessment reads use stored projections |
+| Relevance and archetype ranking | Authenticated owner's resolver shared with the user ranking funnel | Inbox and opportunity reads do not invoke semantic clients |
+| Search-strategy generation and web-vacancy extraction | Authenticated owner's resolver, shared by one-off launch, saved Run now, HTTP scheduled execution, and standalone due runner | Search-provider readiness, schedule management, and reconciliation/history do not resolve semantic credentials |
+| Application preparation, CV/cover-letter/answer drafting | Authenticated owner's resolver shared by analysis graph and drafting clients | Saved preparation and application-tracking reads remain immutable provider-free projections |
+| Generic/demo analysis, generic job ranking/matching, shared public-job enrichment | Deployment resolver; no authenticated owner's profile is treated as source context | Persisted Inbox and public-job reads do not invoke semantic clients |
+| Ollama deployment semantic operations | Deployment-configured local Ollama; no OpenAI credential is resolved | OpenAI credential storage is inactive and hidden from Settings while Ollama is selected |
+
+Browser external discovery and hosted web search remain separately configured
+capabilities. A semantic OpenAI key is never reused as a search credential.
+
 ---
 
 # 10. Application Tracking Model

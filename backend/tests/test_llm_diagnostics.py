@@ -1,3 +1,4 @@
+import base64
 import json
 
 import httpx
@@ -12,7 +13,10 @@ from app.core.config import Settings
 from app.core.database import get_db
 from app.main import app
 from app.providers.llm import (
+    SemanticCredentialRejectedError,
+    SemanticModelAccessError,
     SemanticOutputError,
+    SemanticProviderRateLimitError,
     SemanticProviderRequestError,
     SemanticProviderUnavailableError,
 )
@@ -183,10 +187,78 @@ def test_safe_protected_configuration_endpoint_and_check(client, monkeypatch) ->
 
 
 def test_configuration_check_reports_missing_key_without_secret(client, monkeypatch) -> None:
-    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(default_llm_provider="openai", openai_api_key=None))
+    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(default_llm_provider="openai", openai_api_key=None, semantic_credential_policy="deployment_only"))
     response = client.get("/api/v1/config/llm/check", headers=_auth(client, "config-missing@example.com"))
     assert response.status_code == 503
     assert "OPENAI_API_KEY" in response.json()["detail"]
+
+
+def test_deployment_only_openai_configuration_needs_no_encryption_key(client, monkeypatch) -> None:
+    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(
+        default_llm_provider="openai",
+        openai_api_key="synthetic-deployment-key",
+        semantic_credential_policy="deployment_only",
+        semantic_credential_encryption_key=None,
+    ))
+    response = client.get(
+        "/api/v1/config/llm/check",
+        headers=_auth(client, "config-deployment-only-no-encryption@example.com"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+
+
+def test_user_or_deployment_configuration_requires_encryption_when_no_deployment_key(client, monkeypatch) -> None:
+    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(
+        default_llm_provider="openai", openai_api_key=None, semantic_credential_policy="user_or_deployment",
+    ))
+    response = client.get("/api/v1/config/llm/check", headers=_auth(client, "config-encryption@example.com"))
+    assert response.status_code == 503
+    assert "SEMANTIC_CREDENTIAL_ENCRYPTION_KEY" in response.json()["detail"]
+    assert "api_key" not in response.text.casefold()
+
+
+@pytest.mark.parametrize("policy", ["user_required", "user_or_deployment"])
+def test_byok_only_openai_configuration_is_ready_without_deployment_client(client, monkeypatch, policy) -> None:
+    encryption_key = base64.urlsafe_b64encode(b"01234567890123456789012345678901").decode().rstrip("=")
+    settings = Settings(
+        default_llm_provider="openai",
+        semantic_credential_policy=policy,
+        semantic_credential_encryption_key=encryption_key,
+        openai_api_key=None,
+    )
+    monkeypatch.setattr(config_routes, "get_settings", lambda: settings)
+
+    def unexpected_deployment_client(*_args, **_kwargs):
+        pytest.fail("BYOK-only readiness must not construct a deployment OpenAI client")
+
+    monkeypatch.setattr(deps.LLMProviderFactory, "create", unexpected_deployment_client)
+    response = client.get(
+        "/api/v1/config/llm/check",
+        headers=_auth(client, f"byok-readiness-{policy}@example.com"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+
+
+@pytest.mark.parametrize("encryption_key", [None, "not-a-valid-base64-key"])
+def test_user_required_openai_configuration_rejects_missing_or_invalid_encryption(client, monkeypatch, encryption_key) -> None:
+    settings = Settings(
+        default_llm_provider="openai",
+        semantic_credential_policy="user_required",
+        semantic_credential_encryption_key=encryption_key,
+        openai_api_key=None,
+    )
+    monkeypatch.setattr(config_routes, "get_settings", lambda: settings)
+    response = client.get(
+        "/api/v1/config/llm/check",
+        headers=_auth(client, f"byok-encryption-{str(encryption_key)}@example.com"),
+    )
+
+    assert response.status_code == 503
+    assert "SEMANTIC_CREDENTIAL_ENCRYPTION_KEY" in response.json()["detail"]
 
 
 def test_configuration_check_rejects_empty_semantic_model(client, monkeypatch) -> None:
@@ -194,6 +266,17 @@ def test_configuration_check_rejects_empty_semantic_model(client, monkeypatch) -
     response = client.get("/api/v1/config/llm/check", headers=_auth(client, "config-empty-model@example.com"))
     assert response.status_code == 503
     assert "JOB_RELEVANCE_MODEL" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("policy", ["deployment_only", "user_required", "user_or_deployment"])
+def test_ollama_configuration_does_not_require_openai_credentials(client, monkeypatch, policy) -> None:
+    monkeypatch.setattr(config_routes, "get_settings", lambda: Settings(
+        default_llm_provider="ollama", semantic_credential_policy=policy,
+        openai_api_key=None, semantic_credential_encryption_key=None,
+    ))
+    response = client.get("/api/v1/config/llm/check", headers=_auth(client, f"ollama-{policy}@example.com"))
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
 
 
 def test_configuration_check_rejects_unknown_openai_structured_output_model(client, monkeypatch) -> None:
@@ -264,7 +347,42 @@ def test_openai_transport_and_model_rejections_are_normalized(monkeypatch) -> No
                 raise APIStatusError("not found", response=httpx.Response(404, request=request), body=None)
 
     monkeypatch.setattr(llm_provider, "create_traced_openai_client", lambda **_kwargs: RejectedClient())
-    with pytest.raises(SemanticProviderRequestError, match="model 'model'") as error:
+    with pytest.raises(SemanticProviderRequestError, match="rejected the semantic request") as error:
         OpenAISemanticLLM(api_key="not-exposed").generate(model="model", system_prompt="private", user_prompt="candidate data", operation="test")
     assert "candidate data" not in str(error.value)
     assert "not-exposed" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_type", "safe_phrase"),
+    [
+        (401, SemanticCredentialRejectedError, "rejected the configured credential"),
+        (403, SemanticModelAccessError, "rejected access"),
+        (429, SemanticProviderRateLimitError, "rate-limited or rejected"),
+        (503, SemanticProviderUnavailableError, "temporarily unavailable"),
+    ],
+)
+def test_openai_status_failures_have_bounded_categories(monkeypatch, status_code, error_type, safe_phrase):
+    import traceback
+
+    from openai import APIStatusError
+    from app.providers import llm as llm_provider
+    from app.providers.llm import OpenAISemanticLLM
+
+    request = httpx.Request("POST", "https://api.example.test/responses")
+    secret = "synthetic-secret-must-never-escape-269"
+    provider_body = {"error": {"message": secret}}
+
+    class RejectedClient:
+        class responses:
+            @staticmethod
+            def create(**_kwargs):
+                raise APIStatusError("private provider body", response=httpx.Response(status_code, request=request, json=provider_body), body=provider_body)
+
+    monkeypatch.setattr(llm_provider, "create_traced_openai_client", lambda **_kwargs: RejectedClient())
+    with pytest.raises(error_type) as error:
+        OpenAISemanticLLM(api_key=secret).generate(model="safe-model", system_prompt="", user_prompt="", operation="test")
+    assert safe_phrase in str(error.value)
+    assert secret not in str(error.value)
+    assert error.value.__context__ is None
+    assert secret not in "".join(traceback.format_exception(error.value))

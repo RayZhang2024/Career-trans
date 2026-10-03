@@ -12,6 +12,7 @@ from app.api import deps
 from app.core.database import SessionLocal
 from app.schemas.discovery_schedule import ExecutionStatus
 from app.services.ai_settings_service import AiSettingsService
+from app.services.semantic_credential_service import SemanticCredentialService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 
@@ -21,18 +22,30 @@ def build_service(
     *,
     candidate_reader: CanonicalCandidateReadService | None = None,
 ) -> ScheduledDiscoveryExecutionService:
-    def build_user_runs(runtime_snapshot):
-        ranking = deps.get_user_job_ranking_service(runtime_snapshot)
+    def semantic_resolver(user_id: str):
+        return SemanticCredentialService(session, settings=deps.get_settings()).resolver(user_id)
+
+    def build_user_runs(runtime_snapshot, semantic_credentials):
+        ranking = deps._build_user_job_ranking_service(
+            deps.get_settings(), runtime_snapshot, semantic_credentials
+        )
         return deps.get_user_job_discovery_service(session, ranking, runtime_snapshot)
+
+    def build_agentic_web(user_id, snapshot, semantic_credentials):
+        options = {"scheduled_due_runner": True}
+        if semantic_credentials is not None:
+            options["credential_resolver"] = semantic_credentials
+        return deps.get_user_agentic_job_discovery_service_for_user(
+            session, user_id, snapshot, **options
+        )
 
     return ScheduledDiscoveryExecutionService(
         session,
         structured_ats=deps.get_structured_ats_discovery_service(session),
-        agentic_web_factory=lambda user_id, snapshot: deps.get_user_agentic_job_discovery_service_for_user(
-            session, user_id, snapshot, scheduled_due_runner=True
-        ),
+        agentic_web_factory=build_agentic_web,
         user_runs_factory=build_user_runs,
         runtime_snapshot_resolver=lambda user_id: AiSettingsService(session).snapshot_for_user(user_id),
+        semantic_credentials_resolver_factory=semantic_resolver,
         candidate_reader=candidate_reader,
     )
 

@@ -25,6 +25,7 @@ from app.services.discovery_schedule_service import DiscoveryScheduleService, mo
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.services.job_discovery_settings_service import JobDiscoveryProviderNotReady
 from app.services.llm_runtime import resolve_runtime_snapshot
+from app.services.semantic_credential_service import SemanticCredentialService
 from app.services.codex_runtime import CodexRuntimeAdapter
 from candidate_read_support import StaticCandidateReader, snapshot_for_context
 
@@ -233,6 +234,57 @@ def test_standalone_due_runner_defers_semantic_stack_until_provider_ready(
     assert json.loads(executions[0].failure_summary_json) == {"agentic_web": 1}
     assert reader.read_user_ids == [user.id]
     assert semantic_calls == []
+
+
+def test_standalone_scheduled_runner_shares_owner_byok_resolver_with_acquisition_and_evaluation(
+    db_session, monkeypatch
+) -> None:
+    import base64
+
+    user = _user(db_session, "standalone-byok-owner@example.com")
+    encryption_key = base64.urlsafe_b64encode(b"synthetic-encryption-key-32-byte").decode().rstrip("=")
+    settings = Settings(
+        _env_file=None,
+        default_llm_provider="openai",
+        semantic_credential_policy="user_required",
+        semantic_credential_encryption_key=encryption_key,
+        openai_api_key="deployment-key-not-used",
+    )
+    monkeypatch.setattr(scheduled_discovery_runner.deps, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        scheduled_discovery_runner.deps, "get_structured_ats_discovery_service",
+        lambda _session: object(),
+    )
+    monkeypatch.setattr(
+        scheduled_discovery_runner.deps, "get_user_agentic_job_discovery_service_for_user",
+        lambda *_args, **kwargs: seen_agentic.append(kwargs["credential_resolver"]) or object(),
+    )
+    seen_agentic: list[object] = []
+    seen_ranking: list[object] = []
+    seen_user_runs: list[object] = []
+    monkeypatch.setattr(
+        scheduled_discovery_runner.deps, "_build_user_job_ranking_service",
+        lambda _settings, _snapshot, resolver: seen_ranking.append(resolver) or object(),
+    )
+    monkeypatch.setattr(
+        scheduled_discovery_runner.deps, "get_user_job_discovery_service",
+        lambda _session, _ranking, _snapshot: seen_user_runs.append(_ranking) or object(),
+    )
+
+    service = scheduled_discovery_runner.build_service(db_session)
+    SemanticCredentialService(db_session, settings=settings).save(user.id, 0, "synthetic-owner-byok-key")
+    # The resolver is workflow-scoped and caches owner authority after resolution.
+    resolver = service._semantic_credentials_resolver_factory(user.id)
+    assert resolver.credential_for("openai") == "synthetic-owner-byok-key"
+    snapshot = resolve_runtime_snapshot(settings, UserAiPreferences())
+
+    service._agentic_service(user.id, snapshot, resolver)
+    service._user_run_service(snapshot, resolver)
+
+    assert seen_agentic == [resolver]
+    assert seen_ranking == [resolver]
+    assert len(seen_user_runs) == 1
+    assert settings.openai_api_key != resolver.credential_for("openai")
 
 
 def test_unavailable_tavily_with_ats_jobs_stops_before_semantic_evaluation(db_session) -> None:

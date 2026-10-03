@@ -41,3 +41,8 @@ class User(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    semantic_credentials = relationship(
+        "UserSemanticCredential",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )

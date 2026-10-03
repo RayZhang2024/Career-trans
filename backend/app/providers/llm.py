@@ -41,6 +41,18 @@ class SemanticProviderRequestError(RuntimeError):
     """The semantic provider rejected a model or request without exposing payloads."""
 
 
+class SemanticCredentialRejectedError(SemanticProviderRequestError):
+    """The provider rejected the configured credential."""
+
+
+class SemanticModelAccessError(SemanticProviderRequestError):
+    """The credential is accepted but provider/model access was rejected."""
+
+
+class SemanticProviderRateLimitError(SemanticProviderRequestError):
+    """The provider rate-limited or rejected the request under quota policy."""
+
+
 class SemanticStructuredOutputModelError(SemanticProviderRequestError):
     """The provider rejected Structured Outputs for the selected model."""
 
@@ -159,26 +171,42 @@ class OpenAISemanticLLM:
                     "schema": output_schema,
                 }
             }
+        failure: tuple[str, int | None, str | None] | None = None
         try:
             response = client.responses.create(**request)
-        except (APIConnectionError, APITimeoutError) as exc:
-            raise SemanticProviderUnavailableError("OpenAI semantic provider is unavailable. Check connectivity and retry.") from exc
+        except (APIConnectionError, APITimeoutError):
+            failure = ("connection", None, None)
         except APIStatusError as exc:
-            if exc.status_code >= 500:
-                raise SemanticProviderUnavailableError("OpenAI semantic provider is temporarily unavailable. Retry later.") from exc
-            if output_schema is not None and exc.status_code == 400:
-                error_kind = _structured_output_bad_request_kind(exc)
-                if error_kind == "model_unsupported":
-                    raise SemanticStructuredOutputModelError(
-                        "OpenAI rejected Structured Outputs for the configured semantic model."
-                    ) from exc
-                if error_kind == "schema_rejected":
-                    raise SemanticStructuredOutputSchemaError(
-                        _structured_output_schema_rejection_message(operation)
-                    ) from exc
+            status_code = exc.status_code
+            structured_kind = (
+                _structured_output_bad_request_kind(exc)
+                if output_schema is not None and status_code == 400
+                else None
+            )
+            # Retain only numeric status and a bounded recognized kind. Do not
+            # attach or chain the provider exception/body to application errors.
+            failure = ("status", status_code, structured_kind)
+        if failure is not None:
+            kind, status_code, structured_kind = failure
+            if kind == "connection" or (status_code is not None and status_code >= 500):
+                raise SemanticProviderUnavailableError("OpenAI semantic provider is temporarily unavailable. Retry later.")
+            if status_code == 401:
+                raise SemanticCredentialRejectedError("OpenAI rejected the configured credential.")
+            if status_code == 403:
+                raise SemanticModelAccessError("OpenAI rejected access to the configured model or operation.")
+            if status_code == 429:
+                raise SemanticProviderRateLimitError("OpenAI rate-limited or rejected this request under its usage limits.")
+            if structured_kind == "model_unsupported":
+                raise SemanticStructuredOutputModelError(
+                    "OpenAI rejected Structured Outputs for the configured semantic model."
+                )
+            if structured_kind == "schema_rejected":
+                raise SemanticStructuredOutputSchemaError(
+                    _structured_output_schema_rejection_message(operation)
+                )
             raise SemanticProviderRequestError(
-                f"OpenAI rejected semantic model '{model}'. Check the configured model and provider access."
-            ) from exc
+                "OpenAI rejected the semantic request. Check model access and operation settings."
+            )
         return response.output_text
 
 
@@ -264,7 +292,7 @@ class LLMProviderFactory:
         if provider == "openai":
             credential = self._credential_resolver.credential_for(provider)
             if not credential:
-                raise LLMProviderConfigurationError("OpenAI semantic LLM requires OPENAI_API_KEY.")
+                raise LLMProviderConfigurationError("OpenAI semantic LLM requires a configured credential (deployment OPENAI_API_KEY or an authorized user key).")
             llm: SemanticLLM = OpenAISemanticLLM(api_key=credential, base_url=config.base_url)
         elif provider == "ollama":
             llm = OllamaSemanticLLM(base_url=config.base_url or "http://localhost:11434")

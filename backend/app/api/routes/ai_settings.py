@@ -1,13 +1,22 @@
-"""Authenticated, credential-free user AI settings and catalog endpoints."""
+"""Authenticated AI preference and write-only semantic credential endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import ValidationError
 
 from app.api.deps import CurrentUser, DbSession
-from app.schemas.ai_settings import AiModelCatalogRead, AiSettingsRead, UserAiSettingsReplace
+from app.schemas.ai_settings import (
+    AiModelCatalogRead, AiSettingsRead, SemanticCredentialRead, SemanticCredentialTestRead,
+    SemanticCredentialTestWrite, SemanticCredentialWrite, UserAiSettingsReplace,
+)
 from app.services.ai_settings_service import (
     AiSettingsConflictError,
     AiSettingsService,
     AiSettingsValidationError,
+)
+from app.services.semantic_credential_service import (
+    SemanticCredentialConfigurationError,
+    SemanticCredentialConflictError,
+    SemanticCredentialService,
 )
 
 
@@ -16,6 +25,20 @@ router = APIRouter(prefix="/ai", tags=["ai-settings"])
 
 def _service(db: DbSession) -> AiSettingsService:
     return AiSettingsService(db)
+
+
+def _credential_service(db: DbSession) -> SemanticCredentialService:
+    return SemanticCredentialService(db)
+
+
+def _parse_credential_write(payload: object) -> SemanticCredentialWrite:
+    try:
+        return SemanticCredentialWrite.model_validate(payload)
+    except (ValidationError, ValueError, TypeError):
+        # Raise after leaving Pydantic's exception handler so the validation
+        # error (which may contain the submitted key) is not attached as context.
+        pass
+    raise HTTPException(status_code=422, detail="Enter a valid OpenAI credential request.") from None
 
 
 @router.get("/models", response_model=AiModelCatalogRead)
@@ -43,3 +66,45 @@ def replace_settings(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except AiSettingsValidationError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/credentials", response_model=SemanticCredentialRead)
+def read_semantic_credential(current_user: CurrentUser, service: SemanticCredentialService = Depends(_credential_service)) -> SemanticCredentialRead:
+    return SemanticCredentialRead.model_validate(service.status(current_user.id).__dict__)
+
+
+@router.put("/credentials/openai", response_model=SemanticCredentialRead)
+async def save_openai_credential(request: Request, current_user: CurrentUser, service: SemanticCredentialService = Depends(_credential_service)) -> SemanticCredentialRead:
+    # Parse manually so validation errors can never reflect a submitted key.
+    try:
+        raw_payload = await request.json()
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Enter a valid OpenAI credential request.") from None
+    payload = _parse_credential_write(raw_payload)
+    try:
+        result = service.save(current_user.id, payload.expected_revision, payload.api_key)
+    except SemanticCredentialConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SemanticCredentialConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return SemanticCredentialRead.model_validate(result.__dict__)
+
+
+@router.delete("/credentials/openai", response_model=SemanticCredentialRead)
+def remove_openai_credential(expected_revision: int, current_user: CurrentUser, service: SemanticCredentialService = Depends(_credential_service)) -> SemanticCredentialRead:
+    try:
+        result = service.remove(current_user.id, expected_revision)
+    except SemanticCredentialConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return SemanticCredentialRead.model_validate(result.__dict__)
+
+
+@router.post("/credentials/openai/test", response_model=SemanticCredentialTestRead)
+async def test_openai_credential(request: Request, current_user: CurrentUser, service: SemanticCredentialService = Depends(_credential_service)) -> SemanticCredentialTestRead:
+    # Like credential writes, parse manually so secret validation details cannot echo.
+    try:
+        payload = SemanticCredentialTestWrite.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Enter a valid OpenAI connection-test request.") from None
+    result = service.test_connection(current_user.id, api_key=payload.api_key)
+    return SemanticCredentialTestRead.model_validate(result.__dict__)
