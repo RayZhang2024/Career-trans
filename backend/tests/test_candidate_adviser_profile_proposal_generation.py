@@ -1,8 +1,9 @@
 import hashlib
 import json
+from typing import Literal, get_args
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -19,6 +20,7 @@ from app.providers.llm import (
     SemanticProviderConfigurationError,
     SemanticProviderRequestError,
     SemanticProviderUnavailableError,
+    SemanticStructuredOutputSchemaError,
 )
 from app.providers.openai_structured_output import strict_schema_from_pydantic_model
 from app.schemas.candidate_adviser import (
@@ -27,13 +29,22 @@ from app.schemas.candidate_adviser import (
     ClarificationProposedEvidence,
 )
 from app.schemas.candidate_adviser_profile_proposal import (
+    AchievementProposalUpdate,
     CandidateAdviserProfileProposalGeneration,
     CandidateAdviserProfileProposalGenerationInput,
+    CandidateAdviserProfileProposalProviderGeneration,
+    CandidateAdviserProfileProposalProviderUpdate,
+    CredentialProposalUpdate,
+    EducationProposalUpdate,
+    EmploymentProposalUpdate,
     ProjectProposalUpdate,
     SkillProposalUpdate,
     StructuredProfileSection,
+    ConfirmedClarificationProposalSource,
+    StructuredProfileProposalTargetCatalogue,
+    _UPDATE_ADAPTER,
 )
-from app.schemas.cv_ingestion import CandidateCVData, Project, Skill
+from app.schemas.cv_ingestion import CandidateCVData, Employment, Project, Skill
 from app.services.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalConflict,
     CandidateAdviserProfileProposalNotFound,
@@ -97,6 +108,62 @@ def _project_update(name="Service tool"):
         section="projects", operation="add", target_fingerprint=None,
         item=Project(name=name, description="A source-supported service tool."),
     )
+
+
+_PROPOSAL_BRANCHES = (
+    EmploymentProposalUpdate,
+    EducationProposalUpdate,
+    CredentialProposalUpdate,
+    SkillProposalUpdate,
+    ProjectProposalUpdate,
+    AchievementProposalUpdate,
+)
+
+
+def _generation_input(*, context="The candidate improved a service process.", evidence=None):
+    return CandidateAdviserProfileProposalGenerationInput(
+        source=ConfirmedClarificationProposalSource(
+            clarification_id="confirmed-source",
+            question_text="What project experience should be recorded?",
+            confirmed_context_summary=context,
+            proposed_evidence=evidence or [
+                ClarificationProposedEvidence(
+                    fact_domain="career",
+                    evidence_type="achievement",
+                    title="Service improvement",
+                    text="Improved a service process.",
+                    skills=["Python"],
+                )
+            ],
+        ),
+        target_catalogue=StructuredProfileProposalTargetCatalogue(
+            employment=[], education=[], credentials=[], skills=[], projects=[],
+            achievements=[], truncated_sections=[],
+        ),
+    )
+
+
+def _response_client(output_text, captured=None):
+    class Responses:
+        def create(self, **kwargs):
+            if captured is not None:
+                captured.update(kwargs)
+            return type("Response", (), {"output_text": output_text})()
+
+    class Client:
+        responses = Responses()
+
+    return Client()
+
+
+def _walk_schema(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_schema(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_schema(child)
 
 
 class FakeGenerator:
@@ -514,25 +581,162 @@ def test_malformed_semantic_output_leaves_no_proposals(db_session):
 
 
 def test_generation_provider_schema_is_recursive_sdk_strict():
-    schema = strict_schema_from_pydantic_model(CandidateAdviserProfileProposalGeneration)
+    schema = strict_schema_from_pydantic_model(CandidateAdviserProfileProposalProviderGeneration)
+    nodes = list(_walk_schema(schema))
 
-    def check(value):
-        if isinstance(value, dict):
-            if value.get("type") == "object":
-                assert value.get("additionalProperties") is False
-                assert set(value.get("required", [])) == set(value.get("properties", {}))
-            assert "default" not in value
-            assert "minLength" not in value
-            assert "maxLength" not in value
-            for child in value.values():
-                check(child)
-        elif isinstance(value, list):
-            for child in value:
-                check(child)
+    assert schema["type"] == "object"
+    assert schema["properties"]["proposals"]["items"].get("anyOf")
+    assert all("oneOf" not in node for node in nodes)
+    assert all("discriminator" not in node for node in nodes)
+    assert any("anyOf" in node for node in nodes)
+    assert any(
+        any(branch.get("type") == "null" for branch in node.get("anyOf", []))
+        for node in nodes
+    )
+    for node in nodes:
+        if node.get("type") == "object":
+            assert node.get("additionalProperties") is False
+            assert set(node.get("required", [])) == set(node.get("properties", {}))
+        assert "default" not in node
+        assert "minLength" not in node
+        assert "maxLength" not in node
 
-    check(schema)
+    # The canonical contract remains a discriminated union internally.
+    canonical_schema = strict_schema_from_pydantic_model(CandidateAdviserProfileProposalGeneration)
+    canonical_nodes = list(_walk_schema(canonical_schema))
+    assert any("oneOf" in node for node in canonical_nodes)
+    assert any("discriminator" in node for node in canonical_nodes)
     with pytest.raises(ValidationError):
         CandidateAdviserProfileProposalGeneration.model_validate({"proposals": [_skill_update().model_dump(), _skill_update().model_dump()] * 4})
+
+
+def test_plain_provider_union_branches_are_unique_by_literal_section():
+    sections = [get_args(branch.model_fields["section"].annotation) for branch in _PROPOSAL_BRANCHES]
+    assert sections == [("employment",), ("education",), ("credentials",), ("skills",), ("projects",), ("achievements",)]
+    assert len({section[0] for section in sections}) == len(_PROPOSAL_BRANCHES)
+
+    project_payload = _project_update().model_dump(mode="json")
+    provider_update = TypeAdapter(CandidateAdviserProfileProposalProviderUpdate).validate_python(project_payload)
+    assert isinstance(provider_update, ProjectProposalUpdate)
+    assert isinstance(_UPDATE_ADAPTER.validate_python(project_payload), ProjectProposalUpdate)
+    for branch in _PROPOSAL_BRANCHES:
+        if branch is ProjectProposalUpdate:
+            continue
+        with pytest.raises(ValidationError):
+            branch.model_validate(project_payload)
+
+    nullable_employment = EmploymentProposalUpdate(
+        section="employment",
+        operation="add",
+        target_fingerprint=None,
+        item=Employment(
+            employer="Example employer",
+            title="Engineer",
+            start_date=None,
+            end_date=None,
+            location=None,
+        ),
+    )
+    wire_generation = CandidateAdviserProfileProposalProviderGeneration.model_validate(
+        {"proposals": [nullable_employment.model_dump(mode="json")]}
+    )
+    assert wire_generation.proposals[0].item.start_date is None
+    assert wire_generation.proposals[0].item.end_date is None
+
+
+def test_mismatched_section_and_item_is_rejected_by_wire_and_canonical_contracts():
+    mismatched = _project_update().model_dump(mode="json")
+    mismatched["section"] = "skills"
+    with pytest.raises(ValidationError):
+        CandidateAdviserProfileProposalProviderGeneration.model_validate({"proposals": [mismatched]})
+    with pytest.raises(ValidationError):
+        _UPDATE_ADAPTER.validate_python(mismatched)
+
+
+def test_wire_output_round_trips_through_canonical_adapter_and_retains_empty_result():
+    output = json.dumps({"proposals": [_project_update("Grounded project").model_dump(mode="json")]})
+    result = SemanticCandidateAdviserProfileProposalGenerator(_response_client(output), "test-model").generate(
+        generation_input=_generation_input()
+    )
+
+    assert isinstance(result, CandidateAdviserProfileProposalGeneration)
+    assert len(result.proposals) == 1
+    assert isinstance(result.proposals[0], ProjectProposalUpdate)
+    assert result.proposals[0] == _UPDATE_ADAPTER.validate_python(result.proposals[0].model_dump(mode="python"))
+
+    empty = SemanticCandidateAdviserProfileProposalGenerator(
+        _response_client('{"proposals":[]}'), "test-model"
+    ).generate(generation_input=_generation_input())
+    assert isinstance(empty, CandidateAdviserProfileProposalGeneration)
+    assert empty.proposals == []
+
+
+def test_observed_affirmative_ai_agent_evidence_generates_only_source_grounded_positive_fact():
+    captured = {}
+    affirmative_evidence = ClarificationProposedEvidence(
+        fact_domain="career",
+        evidence_type="project",
+        title="Independent AI-agent project development",
+        text="Independently developed the AI-agent projects.",
+        skills=["AI-agent development"],
+    )
+    source_context = (
+        "Independently developed the projects. They are not deployed, not used by others, "
+        "not released, and not monitored."
+    )
+    project = ProjectProposalUpdate(
+        section="projects",
+        operation="add",
+        target_fingerprint=None,
+        item=Project(
+            name="Independent AI-agent project development",
+            description="Independently developed the AI-agent projects.",
+            skills=["AI-agent development"],
+        ),
+    )
+    output = json.dumps({"proposals": [project.model_dump(mode="json")]})
+    result = SemanticCandidateAdviserProfileProposalGenerator(
+        _response_client(output, captured), "test-model"
+    ).generate(
+        generation_input=_generation_input(context=source_context, evidence=[affirmative_evidence])
+    )
+
+    user_content = captured["input"][1]["content"]
+    provider_input = json.loads(user_content.split("INPUT:\n", 1)[1])
+    assert provider_input["source"]["proposed_evidence"] == [affirmative_evidence.model_dump(mode="json")]
+    assert "Do not create negative or absence facts." in captured["input"][0]["content"]
+    assert isinstance(result.proposals[0], ProjectProposalUpdate)
+    generated_json = result.model_dump_json().casefold()
+    assert "independently developed the ai-agent projects" in generated_json
+    assert all(term not in generated_json for term in ("not deployed", "not used by others", "not released", "not monitored"))
+
+
+def test_wire_invalid_output_is_bounded_and_canonical_invalid_output_never_persists(db_session, monkeypatch):
+    malformed_branch = {"section": "projects", "operation": "add", "target_fingerprint": None}
+    invalid_wire = SemanticCandidateAdviserProfileProposalGenerator(
+        _response_client(json.dumps({"proposals": [malformed_branch]})), "test-model"
+    )
+    with pytest.raises(SemanticOutputError, match="invalid provider output"):
+        invalid_wire.generate(generation_input=_generation_input())
+
+    import app.agents.candidate_adviser_profile_proposal as generator_module
+
+    class RejectCanonicalAdapter:
+        def validate_python(self, _value):
+            try:
+                TypeAdapter(Literal["canonical-only"]).validate_python("provider-wire")
+            except ValidationError as exc:
+                raise exc
+
+    monkeypatch.setattr(generator_module, "_UPDATE_ADAPTER", RejectCanonicalAdapter())
+    user_id = _user(db_session, "wire-canonical-boundary@example.com")
+    clarification_id = _source(db_session, user_id)
+    generator = SemanticCandidateAdviserProfileProposalGenerator(
+        _response_client(json.dumps({"proposals": [_project_update().model_dump(mode="json")]})), "test-model"
+    )
+    with pytest.raises(SemanticOutputError, match="invalid canonical proposals"):
+        _service(db_session, generator).generate(user_id, clarification_id)
+    assert _rows(db_session, user_id) == []
 
 
 def test_generator_uses_sdk_strict_schema_and_operation_attribution():
@@ -563,7 +767,7 @@ def test_generator_uses_sdk_strict_schema_and_operation_attribution():
     )
     result = SemanticCandidateAdviserProfileProposalGenerator(Client(), "test-model").generate(generation_input=payload)
     assert result.proposals == []
-    assert captured["text"]["format"]["schema"] == strict_schema_from_pydantic_model(CandidateAdviserProfileProposalGeneration)
+    assert captured["text"]["format"]["schema"] == strict_schema_from_pydantic_model(CandidateAdviserProfileProposalProviderGeneration)
     assert RUNTIME_OPERATION_TO_SETTING["candidate_adviser_profile_proposal"] == SemanticOperation.CANDIDATE_ADVISER
 
 
@@ -605,6 +809,11 @@ def test_explicit_generation_endpoint_is_authenticated_and_typed(client, db_sess
         ),
         (
             SemanticProviderRequestError("private provider request detail"),
+            502,
+            "Candidate Adviser proposal generation failed to return valid proposals.",
+        ),
+        (
+            SemanticStructuredOutputSchemaError("private schema rejection details"),
             502,
             "Candidate Adviser proposal generation failed to return valid proposals.",
         ),

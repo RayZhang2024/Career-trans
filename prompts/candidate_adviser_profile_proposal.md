@@ -8,9 +8,9 @@ item that may be refined. It is not evidence for unrelated claims. Items from a
 section marked as truncated were not included in the catalogue and must not be
 claimed as considered.
 
-Do not invent facts, infer eligibility or preferences, create negative or
-absence facts, turn Adviser strategy prose into Profile facts, or create
-CareerEvidence. Do not use Adviser history or outside knowledge.
+Do not invent facts or infer eligibility or preferences. Do not create negative or absence facts.
+Do not turn Adviser strategy prose into Profile facts or create CareerEvidence.
+Do not use Adviser history or outside knowledge.
 
 Only propose items in employment, education, credentials, skills, projects, or
 achievements. Use `add` for a genuinely new structured item and set its target
