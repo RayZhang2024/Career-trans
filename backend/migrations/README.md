@@ -4,11 +4,13 @@
 
 Apply repository migrations in their documented/date order through the
 20261002 migrations, then apply the Issue #269 credential migration below
-before starting the updated app. This additive migration creates `user_openai_credentials`, which contains only
-AES-GCM ciphertext, nonce, format version, and an independent revision. Apply
-it to every existing database before starting the updated application. Back up
-the database and stop app writers first. Then configure a separate 32-byte
-URL-safe base64 `OPENAI_CREDENTIAL_ENCRYPTION_KEY` in backend secret settings;
+before starting the updated app. This additive migration creates
+`user_semantic_credentials`, keyed by `(user_id, provider)`, which contains
+AES-GCM ciphertext, nonce, format version, independent revision, four-character
+display suffix, and timestamps. Apply it to every existing database before
+starting the updated application. Back up the database and stop app writers
+first. Then configure a separate 32-byte URL-safe base64
+`SEMANTIC_CREDENTIAL_ENCRYPTION_KEY` in backend secret settings;
 never reuse or commit the key, and keep a protected backup because saved user
 credentials cannot be decrypted after key loss or rotation without a migration.
 `SEMANTIC_CREDENTIAL_POLICY` accepts `deployment_only`, `user_required`, or
@@ -18,21 +20,24 @@ authoritative and never falls back to deployment credentials.
 SQLite:
 
 ```powershell
-python backend/migrations/20261004_user_openai_credentials_sqlite.py "sqlite:///D:/Career-trans-data/career_agent.db"
+python backend/migrations/20261004_user_semantic_credentials_sqlite.py "sqlite:///D:/Career-trans-data/career_agent.db"
 ```
 
 PostgreSQL:
 
 ```powershell
-psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20261004_user_openai_credentials_postgresql.sql
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20261004_user_semantic_credentials_postgresql.sql
 ```
 
-Verify `user_openai_credentials` exists, its primary key is `user_id`, and its
+Verify `user_semantic_credentials` exists, its composite primary key is
+`(user_id, provider)`, and its
 foreign key references `users(id)` with cascade deletion. The SQLite migration
 is safe to rerun; the PostgreSQL script uses `CREATE TABLE IF NOT EXISTS`.
 Only after migration and encryption-key configuration should the updated app
 start. `GET /api/v1/ai/credentials` reports policy and safe status only; it does
-not decrypt a key or contact OpenAI. Settings key writes and removal use an
+not return plaintext; it may locally verify decryption but never contacts
+OpenAI. `POST /api/v1/ai/credentials/openai/test` tests only the submitted or
+saved user credential with one small provider request. Settings key writes and removal use an
 independent credential revision, separate from model preference revisions.
 
 The updated application expects `discovery_runs.client_request_id` and the

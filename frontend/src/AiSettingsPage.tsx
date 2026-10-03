@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { AiModelCatalog, AiPreferences, AiSettings, AiSettingsReplace, ReasoningEffort, SemanticCredentialStatus, SemanticOperation } from "./api";
+import type { AiModelCatalog, AiPreferences, AiSettings, AiSettingsReplace, ReasoningEffort, SemanticCredentialConnectionTest, SemanticCredentialStatus, SemanticOperation } from "./api";
 import { SEMANTIC_OPERATION_ORDER } from "./api";
 import { ApiError, useAuth } from "./auth";
 import {
@@ -231,6 +231,30 @@ export function AiSettingsPage() {
     }
   };
 
+  const testCredential = async () => {
+    const status = credentialStatus;
+    const key = credentialKey;
+    if (!status || credentialBusy || (!key.trim() && status.user_credential_state !== "usable")) return;
+    setCredentialBusy(true);
+    setCredentialNotice(null);
+    try {
+      const result = await api.request<SemanticCredentialConnectionTest>("/api/v1/ai/credentials/openai/test", {
+        method: "POST",
+        body: JSON.stringify(key.trim() ? { api_key: key } : {}),
+      });
+      if (ownerRef.current !== ownerId) return;
+      setCredentialKey("");
+      setCredentialNotice({ text: result.message, alert: !result.connected });
+    } catch {
+      if (ownerRef.current === ownerId) {
+        setCredentialKey("");
+        setCredentialNotice({ text: "The user credential test could not be completed. It never falls back to deployment credentials.", alert: true });
+      }
+    } finally {
+      setCredentialBusy(false);
+    }
+  };
+
   const updateDraft = (transform: (draft: AiPreferences) => AiPreferences) => {
     const current = viewRef.current;
     if (current.kind !== "ready" || current.pending || !isEditableSettings(current.settings, current.catalog)) return;
@@ -323,27 +347,32 @@ export function AiSettingsPage() {
         <p>Host-side Codex external discovery is separate and is not configured here.</p>
       </section>
 
-      <section className="card ai-credential-section" aria-label="OpenAI credential">
+      {settings.provider.toLowerCase() === "openai" && <section className="card ai-credential-section" aria-label="OpenAI credential">
         <h2>OpenAI API key</h2>
         <p>Keys are encrypted before storage. The key is never returned, included in model preferences, or used for web search. It applies only to later semantic operations.</p>
+        <p className="muted">Testing sends one small request and may consume provider usage. A successful test does not prove access to every model.</p>
         {!credentialStatus && !credentialNotice && <p role="status">Loading credential policy…</p>}
         {credentialStatus && <>
           <p><strong>Credential policy:</strong> {credentialStatus.policy.replaceAll("_", " ")}</p>
           <p><strong>Current key source:</strong> {credentialStatus.effective_source}</p>
+          {credentialStatus.user_credential_configured && <p><strong>Saved key:</strong> {credentialStatus.display_identity ?? "Stored securely"}</p>}
+          {credentialStatus.user_credential_state === "unavailable" && <p role="alert">Your saved OpenAI key is unavailable; replace or remove it.</p>}
+          {credentialStatus.user_credential_state === "inactive" && <p role="status">A retained OpenAI key is inactive under the current provider or deployment policy. You can remove it.</p>}
             {credentialStatus.storage_available && credentialStatus.policy !== "deployment_only"
               ? <>
-              <label htmlFor="openai-api-key">{credentialStatus.user_credential_configured ? "Replace saved API key" : "Add your API key"}</label>
+              <label htmlFor="openai-api-key">{credentialStatus.user_credential_state === "usable" || credentialStatus.user_credential_state === "unavailable" ? "Replace saved API key" : "Add your API key"}</label>
               <input id="openai-api-key" type="password" autoComplete="new-password" value={credentialKey} disabled={credentialBusy} onChange={(event) => setCredentialKey(event.target.value)} />
               <p className="muted">Saving a user key makes it authoritative under this policy. If that key is rejected, the request fails; the server will not retry with its deployment key.</p>
               <div className="ai-actions">
-                <button type="button" disabled={credentialBusy || !credentialKey.trim()} onClick={() => void saveCredential()}>{credentialBusy ? "Saving key…" : "Save OpenAI key"}</button>
+              <button type="button" disabled={credentialBusy || !credentialKey.trim()} onClick={() => void saveCredential()}>{credentialBusy ? "Saving key…" : "Save OpenAI key"}</button>
+              <button type="button" className="button-secondary" disabled={credentialBusy || (!credentialKey.trim() && credentialStatus.user_credential_state !== "usable")} onClick={() => void testCredential()}>{credentialBusy ? "Testing key…" : credentialKey.trim() ? "Test entered key" : "Test saved key"}</button>
               </div>
             </>
-            : <p role="status">{credentialStatus.policy === "deployment_only" ? "The deployment policy does not accept user keys." : "User key storage is unavailable for this provider or encryption is not configured by the deployment."}</p>}
+            : <p role="status">{credentialStatus.policy === "deployment_only" ? "The deployment policy does not accept user keys." : "User key storage is unavailable until semantic credential encryption is configured."}</p>}
           {credentialStatus.user_credential_configured && <button type="button" className="button-secondary" disabled={credentialBusy} onClick={() => void removeCredential()}>Remove saved key</button>}
         </>}
         {credentialNotice && <p role={credentialNotice.alert ? "alert" : "status"}>{credentialNotice.text}</p>}
-      </section>
+      </section>}
 
       <section className="card ai-provider-summary" aria-label="AI provider and settings status">
         <h2>Current AI configuration</h2>

@@ -41,9 +41,8 @@ class User(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
-    openai_credential = relationship(
-        "UserOpenAICredential",
+    semantic_credentials = relationship(
+        "UserSemanticCredential",
         back_populates="user",
-        uselist=False,
         cascade="all, delete-orphan",
     )

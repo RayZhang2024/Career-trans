@@ -63,7 +63,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
     semantic_credential_policy: str = "user_or_deployment"
-    openai_credential_encryption_key: str | None = None
+    semantic_credential_encryption_key: str | None = None
     default_llm_provider: str = "openai"
     llm_base_url: str | None = None
     ollama_base_url: str = "http://localhost:11434"

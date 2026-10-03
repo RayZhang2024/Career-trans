@@ -4,7 +4,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import ValidationError
 
 from app.api.deps import CurrentUser, DbSession
-from app.schemas.ai_settings import AiModelCatalogRead, AiSettingsRead, SemanticCredentialRead, SemanticCredentialWrite, UserAiSettingsReplace
+from app.schemas.ai_settings import (
+    AiModelCatalogRead, AiSettingsRead, SemanticCredentialRead, SemanticCredentialTestRead,
+    SemanticCredentialTestWrite, SemanticCredentialWrite, UserAiSettingsReplace,
+)
 from app.services.ai_settings_service import (
     AiSettingsConflictError,
     AiSettingsService,
@@ -83,3 +86,14 @@ def remove_openai_credential(expected_revision: int, current_user: CurrentUser, 
     except SemanticCredentialConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return SemanticCredentialRead.model_validate(result.__dict__)
+
+
+@router.post("/credentials/openai/test", response_model=SemanticCredentialTestRead)
+async def test_openai_credential(request: Request, current_user: CurrentUser, service: SemanticCredentialService = Depends(_credential_service)) -> SemanticCredentialTestRead:
+    # Like credential writes, parse manually so secret validation details cannot echo.
+    try:
+        payload = SemanticCredentialTestWrite.model_validate(await request.json())
+    except (ValidationError, ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Enter a valid OpenAI connection-test request.") from None
+    result = service.test_connection(current_user.id, api_key=payload.api_key)
+    return SemanticCredentialTestRead.model_validate(result.__dict__)

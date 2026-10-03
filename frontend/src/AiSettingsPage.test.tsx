@@ -46,8 +46,10 @@ const settings = (overrides: Partial<AiSettings> = {}): AiSettings => ({
 });
 
 const credentialStatus = (overrides: Partial<SemanticCredentialStatus> = {}): SemanticCredentialStatus => ({
+  provider: "openai",
   policy: "user_or_deployment", storage_available: true, user_credential_configured: false,
-  credential_revision: 0, effective_source: "deployment", ...overrides,
+  user_credential_state: "absent", credential_revision: 0, effective_source: "deployment",
+  display_identity: null, deployment_credential_configured: true, ...overrides,
 });
 
 function fetcher(
@@ -71,8 +73,9 @@ function fetcher(
     if (url.pathname === "/api/v1/ai/models") return Promise.resolve(json(readCatalog));
     if (url.pathname === "/api/v1/ai/settings" && method === "GET") return Promise.resolve(json(readSettings));
     if (url.pathname === "/api/v1/ai/credentials" && method === "GET") return Promise.resolve(json(credentialStatus()));
-    if (url.pathname === "/api/v1/ai/credentials/openai" && method === "PUT") return Promise.resolve(json(credentialStatus({ user_credential_configured: true, credential_revision: 1, effective_source: "user" })));
-    if (url.pathname === "/api/v1/ai/credentials/openai" && method === "DELETE") return Promise.resolve(json(credentialStatus({ user_credential_configured: false, credential_revision: 0, effective_source: "deployment" })));
+    if (url.pathname === "/api/v1/ai/credentials/openai" && method === "PUT") return Promise.resolve(json(credentialStatus({ user_credential_configured: true, user_credential_state: "usable", credential_revision: 1, effective_source: "user", display_identity: "••••••••key1" })));
+    if (url.pathname === "/api/v1/ai/credentials/openai" && method === "DELETE") return Promise.resolve(json(credentialStatus({ user_credential_configured: false, user_credential_state: "absent", credential_revision: 0, effective_source: "deployment" })));
+    if (url.pathname === "/api/v1/ai/credentials/openai/test" && method === "POST") return Promise.resolve(json({ connected: true, category: "connected", message: "The credential test request succeeded. This does not confirm access to every model." }));
     throw new Error(`Unexpected request: ${method} ${url.pathname}`);
   });
   return { mock, calls };
@@ -135,6 +138,89 @@ describe("Issue #189 Settings → AI Models", () => {
     await waitForSettings();
     expect(await screen.findByText(/deployment policy does not accept user keys/)).toBeInTheDocument();
     expect(screen.queryByLabelText("Add your API key")).not.toBeInTheDocument();
+  });
+  it("tests only the entered user key, clears it, and explains limited model entitlement", async () => {
+    const requests = fetcher();
+    renderSettings(requests.mock);
+    await waitForSettings();
+    fireEvent.change(screen.getByLabelText("Add your API key"), { target: { value: "synthetic-connection-test-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test entered key" }));
+    expect(await screen.findByText(/does not confirm access to every model/)).toBeInTheDocument();
+    const test = requests.calls.find((call) => call.method === "POST" && call.path === "/api/v1/ai/credentials/openai/test");
+    expect(test?.body).toBe(JSON.stringify({ api_key: "synthetic-connection-test-key" }));
+    expect(screen.getByLabelText("Add your API key")).toHaveValue("");
+    expect(document.body.textContent).not.toContain("synthetic-connection-test-key");
+    expect(localStorage.getItem("synthetic-connection-test-key")).toBeNull();
+  });
+  it("can test the saved user key without sending a key value from the browser", async () => {
+    const requests = fetcher({
+      "GET /api/v1/ai/credentials": () => json(credentialStatus({
+        user_credential_configured: true, user_credential_state: "usable",
+        credential_revision: 1, effective_source: "user", display_identity: "••••••••key1",
+      })),
+    });
+    renderSettings(requests.mock);
+    await waitForSettings();
+    fireEvent.click(await screen.findByRole("button", { name: "Test saved key" }));
+    expect(await screen.findByText(/does not confirm access to every model/)).toBeInTheDocument();
+    const test = requests.calls.find((call) => call.method === "POST" && call.path === "/api/v1/ai/credentials/openai/test");
+    expect(test?.body).toBe("{}");
+    expect(screen.getByLabelText("Replace saved API key")).toHaveValue("");
+  });
+  it("shows bounded connection rejection and clears the typed secret", async () => {
+    const requests = fetcher({
+      "POST /api/v1/ai/credentials/openai/test": () => json({
+        connected: false, category: "credential_rejected", message: "OpenAI rejected this credential.",
+      }),
+    });
+    renderSettings(requests.mock);
+    await waitForSettings();
+    fireEvent.change(screen.getByLabelText("Add your API key"), { target: { value: "synthetic-rejected-key-269" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test entered key" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("OpenAI rejected this credential.");
+    expect(screen.getByLabelText("Add your API key")).toHaveValue("");
+    expect(document.body.textContent).not.toContain("synthetic-rejected-key-269");
+  });
+  it("shows an unreadable saved key and keeps replace and remove available", async () => {
+    const requests = fetcher({
+      "GET /api/v1/ai/credentials": () => json(credentialStatus({
+        user_credential_configured: true, user_credential_state: "unavailable",
+        credential_revision: 2, effective_source: "unavailable",
+        display_identity: "••••••••9876", storage_available: true,
+      })),
+    });
+    renderSettings(requests.mock);
+    await waitForSettings();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your saved OpenAI key is unavailable");
+    expect(screen.getByLabelText("Replace saved API key")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove saved key" })).toBeEnabled();
+    expect(screen.getByText("••••••••9876")).toBeInTheDocument();
+  });
+  it("shows retained deployment-only keys as inactive and still removable", async () => {
+    const requests = fetcher({
+      "GET /api/v1/ai/credentials": () => json(credentialStatus({
+        policy: "deployment_only", user_credential_configured: true,
+        user_credential_state: "inactive", credential_revision: 4,
+        effective_source: "deployment", storage_available: false,
+      })),
+    });
+    renderSettings(requests.mock);
+    await waitForSettings();
+    expect(await screen.findByText(/retained OpenAI key is inactive/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/API key/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove saved key" })).toBeEnabled();
+  });
+  it("does not render OpenAI credential controls for an Ollama deployment", async () => {
+    const requests = fetcher(
+      {},
+      catalog("ollama", false),
+      settings({ provider: "ollama", user_overrides_supported: false, preference_activity: "unsupported" }),
+    );
+    renderSettings(requests.mock);
+    await waitForReadOnlySettings();
+    expect(document.body.textContent).toContain("ollama");
+    expect(screen.queryByRole("region", { name: "OpenAI credential" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/API key/)).not.toBeInTheDocument();
   });
   it("navigates through the authenticated Settings link to /settings/ai", async () => {
     const api = fetcher();

@@ -90,6 +90,24 @@ Tavily uses its Basic Search endpoint with result text normalized into the
 existing web-search result contract. “Test connection” makes one Basic Search
 request and does not start a discovery run or update a schedule.
 
+## Semantic OpenAI credentials
+
+Semantic model preferences and semantic credentials use separate authorities.
+For OpenAI deployments, configure `SEMANTIC_CREDENTIAL_POLICY` as
+`deployment_only`, `user_required`, or `user_or_deployment` (the last
+preserves deployment-key behavior when unset). User-key storage uses a separate
+32-byte URL-safe base64 `SEMANTIC_CREDENTIAL_ENCRYPTION_KEY`; do not reuse the
+Tavily encryption key. Configure it in native `backend/.env` for local backend
+processes or the root Compose `.env`/shell environment for Compose deployments.
+Compose does not read `backend/.env`.
+
+Credential state reads verify local decryptability but make no provider call.
+The OpenAI “Test entered key” and “Test saved key” controls each make one small
+request using only that user's key; they never probe deployment billing. The
+request may consume provider usage and does not prove entitlement to every
+model. Ollama deployments need no OpenAI key or semantic credential encryption
+key and do not render OpenAI credential controls.
+
 Local Codex runs under the backend host OS account. Enabling it shares that
 host's Codex session/subscription with eligible Career-trans users, so it is
 intended for trusted/local deployments unless the operator accepts this trust

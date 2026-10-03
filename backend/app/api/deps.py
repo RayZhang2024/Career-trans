@@ -63,7 +63,7 @@ from app.services.semantic_credential_service import (
     SemanticCredentialService,
     UserSemanticCredentialResolver,
 )
-from app.services.openai_credential_encryption import OpenAICredentialEncryption
+from app.services.semantic_credential_encryption import SemanticCredentialEncryption
 from app.services.job_discovery_settings_service import (
     JobDiscoveryProviderNotReady,
     JobDiscoverySettingsError,
@@ -204,20 +204,37 @@ def validate_semantic_configuration(settings: Settings) -> None:
         except RuntimePreferenceError as exc:
             raise SemanticProviderConfigurationError(str(exc)) from exc
     try:
-        # User-managed policies can legitimately start without a deployment key.
-        if settings.semantic_credential_policy == "deployment_only" and not settings.openai_api_key:
-            raise LLMProviderConfigurationError("Deployment OpenAI credentials are required by semantic credential policy. Configure OPENAI_API_KEY.")
-        if (
-            provider == "openai"
-            and not settings.openai_api_key
-            and settings.semantic_credential_policy != "deployment_only"
-            and not OpenAICredentialEncryption(settings.openai_credential_encryption_key).configured()
-        ):
-            raise LLMProviderConfigurationError("OpenAI user credentials require OPENAI_CREDENTIAL_ENCRYPTION_KEY to be configured.")
-        if settings.openai_api_key:
+        if provider == "openai":
+            # User-managed policies can legitimately start without a deployment key.
+            if settings.semantic_credential_policy == "deployment_only" and not settings.openai_api_key:
+                raise LLMProviderConfigurationError("Deployment OpenAI credentials are required by semantic credential policy. Configure OPENAI_API_KEY.")
+            if (
+                not settings.openai_api_key
+                and settings.semantic_credential_policy != "deployment_only"
+                and not SemanticCredentialEncryption(settings.semantic_credential_encryption_key).configured()
+            ):
+                raise LLMProviderConfigurationError("OpenAI user credentials require SEMANTIC_CREDENTIAL_ENCRYPTION_KEY to be configured.")
             LLMProviderFactory(
                 EnvironmentCredentialResolver(openai_api_key=settings.openai_api_key)
             ).create(
+                LLMProviderConfig(
+                    provider=provider,
+                    model=settings.cv_semantic_extraction_model,
+                    base_url=settings.effective_llm_base_url,
+                )
+            )
+        elif provider == "ollama":
+            # Local semantic inference needs neither deployment OpenAI credentials nor
+            # OpenAI credential encryption, regardless of the retained BYOK policy.
+            LLMProviderFactory(EnvironmentCredentialResolver()).create(
+                LLMProviderConfig(
+                    provider="ollama",
+                    model=settings.cv_semantic_extraction_model,
+                    base_url=settings.effective_llm_base_url,
+                )
+            )
+        else:
+            LLMProviderFactory(EnvironmentCredentialResolver()).create(
                 LLMProviderConfig(
                     provider=provider,
                     model=settings.cv_semantic_extraction_model,
