@@ -380,7 +380,7 @@ export function ProfileSuggestions({ api, confirmedClarification = null, enrichm
     } finally { finishMutation(sequence); }
   };
   const transfer = async (proposal: AdviserProfileProposal) => {
-    if (proposal.overlap_resolution_stale) return;
+    if (activeProfileDraft || proposal.overlap_resolution_stale) return;
     const sequence = beginMutation({ kind: "transfer", id: proposal.id });
     if (sequence === null) return;
     try {
@@ -455,7 +455,7 @@ export function ProfileSuggestions({ api, confirmedClarification = null, enrichm
           ? <p role="status">Profile suggestions from this clarification are available below.</p>
           : <><button disabled={actionBusy || historyState === "loading"} onClick={() => void generate()}>
             {mutation?.kind === "generation" && mutation.id === source.clarification_id ? "Preparing Profile changes…" : "Review for Profile"}
-          </button>{activeProfileDraft && <p className="notice">You already have Profile changes in progress. You can review, edit, or reject this Adviser suggestion now, but it cannot be sent to the Profile workflow until you finish or discard the existing draft. <Link to="/profile">Open your Profile changes</Link>.</p>}{enrichment && <button type="button" className="button-secondary" disabled={actionBusy} onClick={async () => { try { await api.request<void>(`/api/v1/candidate-adviser/clarifications/${encodeURIComponent(enrichment.clarification_id)}/profile-enrichment/defer`, { method: "POST" }); setNotice("You can continue without reviewing this Profile update now."); onResolved?.(); } catch { setActionError("This Profile update could not be deferred. Refresh Career Adviser and try again."); } }}>Do this later</button>}
+          </button>{activeProfileDraft && <p className="notice">You already have Profile changes in progress. You can review, edit, or reject this Adviser suggestion now, but it cannot be sent to the Profile workflow until you finish or discard the existing draft.</p>}{enrichment && <button type="button" className="button-secondary" disabled={actionBusy} onClick={async () => { try { await api.request<void>(`/api/v1/candidate-adviser/clarifications/${encodeURIComponent(enrichment.clarification_id)}/profile-enrichment/defer`, { method: "POST" }); setNotice("You can continue without reviewing this Profile update now."); onResolved?.(); } catch { setActionError("This Profile update could not be deferred. Refresh Career Adviser and try again."); } }}>Do this later</button>}
           </>}
     </div>}
     {historyState === "idle" && <button className="button-secondary" onClick={() => void loadHistory()}>View profile suggestions</button>}
@@ -491,14 +491,14 @@ export function ProfileSuggestions({ api, confirmedClarification = null, enrichm
         {proposal.state === "pending" && proposal.overlap_resolution_stale && <div className="profile-warning" role="alert"><p>Your earlier overlap choice is no longer current because the Profile changed.</p><button type="button" className="button-secondary" disabled={busy} onClick={() => void refreshComparison(proposal)}>Refresh comparison</button></div>}
         {changed ? <div className="suggestion-comparison"><ItemSummary label="Adviser suggestion" update={proposal.original_update} /><ItemSummary label="Your edited version" update={proposal.proposed_update} /></div> : <ItemSummary label="Proposed item" update={proposal.proposed_update} />}
         {isEditing && <ProposalEditor update={editValue} onChange={setEditValue} />}
-        {proposal.state === "pending" && activeProfileDraft && <p className="notice">You can review, edit, or reject this Adviser suggestion now, but it cannot be sent to the Profile workflow until you finish or discard the existing Profile draft. <Link to="/profile">Open your Profile changes</Link>.</p>}
+        {proposal.state === "pending" && activeProfileDraft && <p className="notice">You can review, edit, or reject this Adviser suggestion now, but it cannot be sent to the Profile workflow until you finish or discard the existing Profile draft.</p>}
         {proposal.state === "pending" && <div className="suggestion-actions">
           {isEditing ? <>
             <button disabled={busy} onClick={() => void saveEdit(proposal)}>{mutation?.kind === "edit" && mutation.id === proposal.id ? "Saving…" : "Save suggestion"}</button>
             <button className="button-secondary" disabled={busy} onClick={cancelEdit}>Cancel edit</button>
           </> : <>
             <button className="button-secondary" disabled={busy} onClick={() => updateEdit(proposal)}>Edit suggestion</button>
-            <button disabled={busy || activeProfileDraft || Boolean(proposal.overlap_resolution_stale)} onClick={() => void transfer(proposal)}>{mutation?.kind === "transfer" && mutation.id === proposal.id ? "Sending to Profile draft…" : "Use in Profile draft"}</button>
+            {activeProfileDraft ? <Link className="button-link" to="/profile">Open current Profile draft</Link> : <button disabled={busy || Boolean(proposal.overlap_resolution_stale)} onClick={() => void transfer(proposal)}>{mutation?.kind === "transfer" && mutation.id === proposal.id ? "Sending to Profile draft…" : "Use in Profile draft"}</button>}
             <button className="button-danger" disabled={busy} onClick={() => void reject(proposal)}>{mutation?.kind === "reject" && mutation.id === proposal.id ? "Rejecting…" : "Reject"}</button>
           </>}
         </div>}

@@ -452,7 +452,10 @@ it("allows Adviser suggestion generation with an active Profile draft but still 
   expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be sent/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Edit suggestion" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Use in Profile draft" })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Open current Profile draft" })).toHaveAttribute("href", "/profile");
+  expect(screen.getAllByRole("link", { name: /Profile draft/ })).toHaveLength(1);
+  expect(request).not.toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1/transfer", expect.anything());
   rerender(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft={false} /></MemoryRouter>);
   expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeEnabled();
 });
