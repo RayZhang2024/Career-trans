@@ -11,6 +11,8 @@ from app.providers.openai_structured_output import strict_schema_from_pydantic_m
 from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalGeneration,
     CandidateAdviserProfileProposalGenerationInput,
+    CandidateAdviserProfileProposalProviderGeneration,
+    _UPDATE_ADAPTER,
 )
 
 
@@ -35,7 +37,7 @@ class SemanticCandidateAdviserProfileProposalGenerator:
             / "prompts"
             / "candidate_adviser_profile_proposal.md"
         ).read_text(encoding="utf-8")
-        schema = strict_schema_from_pydantic_model(CandidateAdviserProfileProposalGeneration)
+        schema = strict_schema_from_pydantic_model(CandidateAdviserProfileProposalProviderGeneration)
         payload = generation_input.model_dump(mode="json")
         response = self._client.responses.create(
             model=self._model,
@@ -59,10 +61,29 @@ class SemanticCandidateAdviserProfileProposalGenerator:
             },
         )
         try:
-            raw = response.output_text.strip()
+            output_text = response.output_text
+            if not isinstance(output_text, str):
+                raise TypeError
+            raw = output_text.strip()
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            return CandidateAdviserProfileProposalGeneration.model_validate(json.loads(raw))
-        except (json.JSONDecodeError, ValidationError) as exc:
+            decoded = json.loads(raw)
+        except (json.JSONDecodeError, AttributeError, TypeError):
             raise SemanticOutputError(
-                "Candidate Adviser Profile proposal generation returned invalid structured output."
-            ) from exc
+                "Candidate Adviser Profile proposal generation returned malformed JSON output."
+            ) from None
+        try:
+            wire_result = CandidateAdviserProfileProposalProviderGeneration.model_validate(decoded)
+        except ValidationError:
+            raise SemanticOutputError(
+                "Candidate Adviser Profile proposal generation returned invalid provider output."
+            ) from None
+        try:
+            canonical_proposals = [
+                _UPDATE_ADAPTER.validate_python(proposal.model_dump(mode="python"))
+                for proposal in wire_result.proposals
+            ]
+            return CandidateAdviserProfileProposalGeneration(proposals=canonical_proposals)
+        except ValidationError:
+            raise SemanticOutputError(
+                "Candidate Adviser Profile proposal generation returned invalid canonical proposals."
+            ) from None

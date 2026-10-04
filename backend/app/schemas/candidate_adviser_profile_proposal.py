@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from app.schemas.cv_ingestion import Achievement, Credential, Education, Employment, Project, Skill
 from app.schemas.candidate_adviser import ClarificationProposedEvidence
@@ -72,6 +72,20 @@ CandidateAdviserProfileProposalUpdate: TypeAlias = Annotated[
     | AchievementProposalUpdate,
     Field(discriminator="section"),
 ]
+
+# Shared canonical validator for both the semantic generator and the existing
+# generation service. The provider wire model below deliberately does not use
+# this discriminated union in its JSON Schema.
+_UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
+
+CandidateAdviserProfileProposalProviderUpdate: TypeAlias = (
+    EmploymentProposalUpdate
+    | EducationProposalUpdate
+    | CredentialProposalUpdate
+    | SkillProposalUpdate
+    | ProjectProposalUpdate
+    | AchievementProposalUpdate
+)
 
 
 class ConfirmedClarificationProposalSource(BaseModel):
@@ -156,6 +170,14 @@ class CandidateAdviserProfileProposalGeneration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     proposals: list[CandidateAdviserProfileProposalUpdate] = Field(max_length=6)
+
+
+class CandidateAdviserProfileProposalProviderGeneration(BaseModel):
+    """Provider-only output shape; canonical validation remains authoritative."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposals: list[CandidateAdviserProfileProposalProviderUpdate] = Field(max_length=6)
 
 
 class CandidateAdviserProfileProposalState(StrEnum):

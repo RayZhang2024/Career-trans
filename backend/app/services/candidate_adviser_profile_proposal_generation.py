@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Callable
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalGenerationRead,
     CandidateAdviserProfileProposalUpdate,
     StructuredProfileSection,
+    _UPDATE_ADAPTER,
 )
 from app.services.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalConflict,
@@ -28,7 +29,6 @@ from app.services.candidate_adviser_profile_proposal import (
 )
 
 
-_UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 _SECTION_ITEMS = {
     StructuredProfileSection.EMPLOYMENT: "employment",
     StructuredProfileSection.EDUCATION: "education",
