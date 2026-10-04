@@ -222,7 +222,7 @@ export function ProfileRevisionWorkflow({ snapshot, onConfirmed }: Props) {
       const saved = await api.request<ProfileRevision>(`/api/v1/profile/revisions/${revision.id}`, { method: "PATCH", body: JSON.stringify(payload) });
       if (request === generation.current && action === actionGeneration.current) {
         setRevision(saved); hydrate(saved); setMode("edit");
-        setNotice("Draft saved. Your current profile remains in use until you confirm these changes.");
+        setNotice("Draft saved. Review it before confirming.");
       }
     } catch (error) {
       if (request === generation.current && action === actionGeneration.current) {
@@ -327,6 +327,16 @@ export function ProfileRevisionWorkflow({ snapshot, onConfirmed }: Props) {
 
   const affectedLabels = revision?.stale_authorities.map((authority) => authority === "profile" ? "Profile details" : "structured career information").join(" and ");
   const isPending = Boolean(pending);
+  const actionState = stale ? "Stale" : mode === "edit" ? hasUnsavedChanges ? "Editing draft" : revision?.state === "draft" ? "Ready for review" : "Editing draft" : revision?.state === "review_ready" ? "Ready to confirm" : "Reviewing draft";
+  const actionGuidance = hasUnsavedChanges
+    ? "You have unsaved changes. Save them before review."
+    : mode === "review" && revision?.state === "review_ready"
+      ? "Review the proposed changes, then confirm to make them current."
+      : mode === "edit" && revision?.state === "review_ready"
+        ? "Return to review when you are ready to confirm this draft."
+        : mode === "review"
+          ? "Review the saved draft, then edit or prepare it for confirmation."
+          : "Review the saved draft before confirming.";
   return <section className="profile-revision-workflow" aria-label="Profile changes">
     {revisionLoading && revision === undefined && <p className="muted" role="status">Checking for saved profile changes…</p>}
     {revisionError && <div className="revision-error" role="alert"><p>{revisionError}</p><button type="button" className="button-secondary" onClick={() => void loadActiveRevision()}>Retry saved changes</button></div>}
@@ -335,14 +345,11 @@ export function ProfileRevisionWorkflow({ snapshot, onConfirmed }: Props) {
       {stale ? <><h2>Profile draft is out of date</h2><p>Your current information changed after this draft was started. This draft can no longer be confirmed. Discard it and start again from the latest information.</p><p>Affected: {affectedLabels}.</p><div className="revision-actions"><button type="button" className="button-secondary" onClick={() => setMode("review")}>Inspect proposal</button><button type="button" className="button-danger" disabled={isPending} onClick={() => void discardChanges()}>{pending === "discard" ? "Discarding…" : "Discard draft"}</button></div></> : <><p>You have pending profile changes. Your current information remains in use until you confirm them.</p><div className="revision-actions"><button type="button" className="button-secondary" onClick={() => void startEditing()}>{revision.state === "draft" ? "Resume editing" : "Review changes"}</button><button type="button" className="button-danger" disabled={isPending} onClick={() => void discardChanges()}>{pending === "discard" ? "Discarding…" : "Discard draft"}</button></div></>}
     </div>}
     {revision && mode !== "closed" && <section className="card revision-panel">
-      <div className="section-heading"><div><h2>{mode === "edit" ? "Edit proposed profile changes" : "Review profile changes"}</h2><p className="muted">Current confirmed information stays in use until you confirm this revision.</p></div><span className="revision-state">{stale ? "Stale" : revision.state === "review_ready" && mode === "review" ? "Ready to confirm" : "Draft"}</span></div>
+      <div className="section-heading"><div><h2>{mode === "edit" ? "Edit proposed profile changes" : "Review profile changes"}</h2><p className="muted">Current confirmed information stays in use until you confirm this revision.</p></div></div>
       {stale && <div className="profile-warning" role="alert"><h3>Current information changed</h3><p>Your proposal is stale in: {affectedLabels}. Discard it and start again from the latest information.</p></div>}
       {revisionLoading && <p role="status">Refreshing saved draft…</p>}
-      {actionError && <p role="alert">{actionError}</p>}
-      {saveConflict && <button type="button" className="button-secondary" disabled={isPending} onClick={() => void reloadConflict()}>Reload saved draft</button>}
-      {notice && <p role="status">{notice}</p>}
       {mode === "edit" && <>
-        <section className="revision-editor-section"><h3>Profile details</h3><p className="muted">All fields are optional. This section becomes part of the proposal only after you edit a field.</p><div className="profile-fields">{profileFields.map(([key, label]) => <div className={multilineProfileFields.has(key) ? "field field-wide" : "field"} key={key}><label htmlFor={`revision-profile-${key}`}>{label}</label>{multilineProfileFields.has(key) ? <textarea id={`revision-profile-${key}`} value={values[key]} disabled={isPending || stale} onChange={(event) => changeProfile(key, event.target.value)} /> : <input id={`revision-profile-${key}`} type={key === "preferred_email" ? "email" : "text"} value={values[key]} disabled={isPending || stale} onChange={(event) => changeProfile(key, event.target.value)} />}</div>)}</div>{!profileActive && <p className="muted">No Profile details will be included unless you edit one of these fields.</p>}</section>
+        <section className="revision-editor-section"><h3>Profile details</h3><p className="muted">These are the values currently in this draft. Profile details are included as changes only when you edit them.</p><div className="profile-fields">{profileFields.map(([key, label]) => <div className={multilineProfileFields.has(key) ? "field field-wide" : "field"} key={key}><label htmlFor={`revision-profile-${key}`}>{label}</label>{multilineProfileFields.has(key) ? <textarea id={`revision-profile-${key}`} value={values[key]} disabled={isPending || stale} onChange={(event) => changeProfile(key, event.target.value)} /> : <input id={`revision-profile-${key}`} type={key === "preferred_email" ? "email" : "text"} value={values[key]} disabled={isPending || stale} onChange={(event) => changeProfile(key, event.target.value)} />}</div>)}</div>{!profileActive && <p className="muted">No Profile details will be included unless you edit one of these fields.</p>}</section>
         <section className="revision-editor-section"><h3>Career information</h3><p className="muted">Edit career facts here. Career Evidence and source details are read-only and are not part of this editor.</p>{structuredSections.map(({ key, label, singular, fields }) => {
           const rows = structured[key] as unknown as Array<Record<string, unknown>>;
           return <section className="revision-structured-section" key={key} aria-label={label}><div className="section-heading"><h4>{label}</h4><button type="button" className="button-secondary" disabled={isPending || stale} onClick={() => updateStructuredRows(key, [...rows, emptyRecord(key)])}>Add {singular}</button></div>{rows.map((item, index) => <fieldset className="structured-item" key={`${key}-${index}`}><legend>{singular} {index + 1}</legend><div className="profile-fields">{fields.map((field) => <div className={field.multiline || field.commaList ? "field field-wide" : "field"} key={field.key}><label htmlFor={`revision-${key}-${index}-${field.key}`}>{field.label}{field.select ? <select id={`revision-${key}-${index}-${field.key}`} value={String(item[field.key] ?? "certification")} disabled={isPending || stale} onChange={(event) => updateStructuredRows(key, rows.map((row, rowIndex) => rowIndex === index ? { ...row, [field.key]: event.target.value } : row))}>{credentialTypes.map(([value, option]) => <option key={value} value={value}>{option}</option>)}</select> : field.multiline ? <textarea id={`revision-${key}-${index}-${field.key}`} value={String(item[field.key] ?? "")} disabled={isPending || stale} onChange={(event) => updateStructuredRows(key, rows.map((row, rowIndex) => rowIndex === index ? { ...row, [field.key]: event.target.value } : row))} /> : <input id={`revision-${key}-${index}-${field.key}`} value={Array.isArray(item[field.key]) ? (item[field.key] as string[]).join(", ") : String(item[field.key] ?? "")} disabled={isPending || stale} onChange={(event) => {
@@ -350,19 +357,28 @@ export function ProfileRevisionWorkflow({ snapshot, onConfirmed }: Props) {
             updateStructuredRows(key, rows.map((row, rowIndex) => rowIndex === index ? { ...row, [field.key]: value } : row));
           }} />}</label></div>)}</div><button type="button" className="button-danger" disabled={isPending || stale} onClick={() => updateStructuredRows(key, rows.filter((_, rowIndex) => rowIndex !== index))}>Remove {singular.toLowerCase()}</button></fieldset>)}</section>;
         })}{!structuredActive && <p className="muted">No career information will be included unless you add or edit a record.</p>}</section>
-        {hasUnsavedChanges && <p className="notice" role="status">You have unsaved changes. Save them before review.</p>}
       </>}
       {mode === "review" && <CurrentProposedReview revision={revision} snapshot={snapshot} />}
-      <div className="revision-actions">
+      <div className="revision-action-dock">
+        <span className="revision-state">{actionState}</span>
+        <p className="revision-action-guidance">{actionGuidance}</p>
+        <div className="revision-action-feedback">
+          {actionError && <p className="revision-action-status" role="alert">{actionError}</p>}
+          {notice && <p className="revision-action-status notice" role="status">{notice}</p>}
+          {!actionError && !notice && !hasUnsavedChanges && mode === "edit" && revision.state === "draft" && <p className="revision-action-status" role="status">Draft saved</p>}
+          {saveConflict && <button type="button" className="button-secondary" disabled={isPending} onClick={() => void reloadConflict()}>Reload saved draft</button>}
+        </div>
+        <div className="revision-actions">
         {mode === "edit" ? <>
-          <button type="button" disabled={!hasUnsavedChanges || isPending || stale} onClick={() => void saveDraft()}>{pending === "save" ? "Saving draft…" : "Save draft"}</button>
-          {revision.state === "draft" ? <button type="button" className="button-secondary" disabled={hasUnsavedChanges || isPending || stale} onClick={() => void reviewChanges()}>{pending === "review" ? "Preparing review…" : "Review changes"}</button> : <button type="button" className="button-secondary" disabled={hasUnsavedChanges || isPending} onClick={() => setMode("review")}>Back to review</button>}
+          {hasUnsavedChanges && <button type="button" disabled={isPending || stale} onClick={() => void saveDraft()}>{pending === "save" ? "Saving draft…" : "Save draft"}</button>}
+          {revision.state === "draft" ? <button type="button" className={hasUnsavedChanges ? "button-secondary" : undefined} disabled={hasUnsavedChanges || isPending || stale} onClick={() => void reviewChanges()}>{pending === "review" ? "Preparing review…" : "Review changes"}</button> : <button type="button" className="button-secondary" disabled={hasUnsavedChanges || isPending} onClick={() => setMode("review")}>Back to review</button>}
         </> : <>
           <button type="button" className="button-secondary" disabled={isPending || stale || revision.state !== "review_ready"} onClick={() => setMode("edit")}>Edit changes</button>
           {revision.state === "draft" && <button type="button" className="button-secondary" disabled={isPending || stale} onClick={() => void reviewChanges()}>Review changes</button>}
           <button type="button" disabled={isPending || stale || hasUnsavedChanges || revision.state !== "review_ready" || !snapshot} onClick={() => void confirmChanges()}>{pending === "confirm" ? "Confirming…" : "Confirm changes"}</button>
         </>}
         <button type="button" className="button-danger" disabled={isPending} onClick={() => void discardChanges()}>{pending === "discard" ? "Discarding…" : "Discard draft"}</button>
+        </div>
       </div>
     </section>}
     {actionError && !revision && <p role="alert">{actionError}</p>}
