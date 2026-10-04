@@ -30,7 +30,7 @@ ALLOWED_NULLABLE_COLUMNS: dict[str, frozenset[str]] = {
         "portfolio_url",
     }),
     "candidate_cv_ingestion_drafts": frozenset({"runtime_attribution_json"}),
-    "candidate_adviser_profile_proposals": frozenset({"overlap_resolution_json"}),
+    "candidate_adviser_profile_proposals": frozenset({"overlap_resolution_json", "applied_at"}),
 }
 
 
@@ -281,6 +281,7 @@ class CandidateSQLiteSchemaCompatibilityRepairService:
             "overlap_resolution_json",
             "transferred_profile_revision_id",
             "transferred_at",
+            "applied_at",
         }
         if not set(new_column_names).issubset(expected_added):
             raise RuntimeError("Historical proposal reconstruction encountered unrecognized columns.")

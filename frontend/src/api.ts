@@ -163,7 +163,7 @@ export type AdviserProfileProposalUpdate = AdviserProfileProposalUpdateBase & (
   | { section: "projects"; item: CandidateProject }
   | { section: "achievements"; item: CandidateAchievement }
 );
-export type AdviserProfileProposalState = "pending" | "rejected" | "transferred";
+export type AdviserProfileProposalState = "pending" | "rejected" | "transferred" | "applied";
 export type AdviserProfileProposal = {
   id: string;
   state: AdviserProfileProposalState;
@@ -177,6 +177,7 @@ export type AdviserProfileProposal = {
   rejected_at: string | null;
   transferred_at: string | null;
   transferred_profile_revision_id: string | null;
+  applied_at: string | null;
   comparison: StructuredProfileComparisonResult | null;
   comparison_base_fingerprint: string | null;
   overlap_resolution: AdviserProfileProposalOverlapResolution | null;
@@ -244,12 +245,12 @@ export type OnboardingStatus = {
     intake_exists: boolean; assessment_status: "review_ready" | "confirmed" | "stale" | null; confirmed_clarification_count: number;
     journey: {
       candidate_context_ready: boolean; job_search_ready: boolean; intake_exists: boolean;
-      assessment_status: "review_ready" | "confirmed" | "stale" | null; confirmed_guidance_active: boolean;
+      assessment_status: "review_ready" | "confirmed" | "stale" | null; confirmed_guidance_active: boolean; clarification_session_active: boolean;
       current_follow_up_available: boolean; clarification_interpretation_awaiting_confirmation: boolean;
       unresolved_profile_enrichment_count: number; next_enrichment_clarification_id: string | null;
       next_enrichment: { clarification_id: string; question_text: string; confirmed_context_summary: string; has_profile_evidence: boolean } | null;
       active_profile_draft: boolean;
-      next_action: "complete_profile" | "start_intake" | "create_assessment" | "review_assessment" | "confirm_clarification" | "review_profile_enrichment" | "update_assessment" | "find_jobs";
+      next_action: "complete_profile" | "start_intake" | "create_assessment" | "review_assessment" | "confirm_clarification" | "answer_clarification" | "review_profile_enrichment" | "update_assessment" | "find_jobs";
       status_category: "setup" | "review" | "update" | "up_to_date" | "unavailable";
       confirmed_clarification_count: number;
     };

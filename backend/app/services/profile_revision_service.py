@@ -15,6 +15,7 @@ from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
 from app.models.candidate_profile import CandidateProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
+from app.models.user import User
 from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.candidate_adviser_profile_proposal import (
@@ -86,7 +87,8 @@ class CandidateProfileRevisionService:
         return self._read(revision, user_id)
 
     def create_or_resume(self, user_id: str) -> CandidateProfileRevisionRead:
-        existing = self._active_row(user_id)
+        self.lock_user_authority(user_id)
+        existing = self._active_row(user_id, fresh=True, for_update=True)
         if existing is not None:
             return self._read(existing, user_id)
 
@@ -118,6 +120,7 @@ class CandidateProfileRevisionService:
         insert a normal #207 revision together with another record mutation.
         The transform receives the locked, freshly read full structured state.
         """
+        self.lock_user_authority(user_id)
         if self._active_row(user_id, fresh=True, for_update=True) is not None:
             raise ProfileRevisionConflict(
                 "An active Profile draft already exists. Finish or discard it before transferring this proposal."
@@ -130,6 +133,14 @@ class CandidateProfileRevisionService:
         self._session.add(revision)
         self._session.flush()
         return revision
+
+    def lock_user_authority(self, user_id: str) -> None:
+        """Serialize canonical apply and revision creation, including empty Profile rows."""
+        user = self._session.scalar(
+            select(User).where(User.id == user_id).with_for_update()
+        )
+        if user is None:
+            raise ProfileRevisionConflict("The authenticated Profile owner is unavailable.")
 
     def _new_revision_record(
         self,

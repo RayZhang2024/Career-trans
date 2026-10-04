@@ -158,6 +158,7 @@ class CandidateAdviserClarificationRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     confirmed_at: datetime | None = None
+    session_active: bool = False
 
 
 class CandidateAdviserClarificationAnswer(BaseModel):

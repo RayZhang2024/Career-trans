@@ -11,6 +11,7 @@ class AdviserNextAction(StrEnum):
     CREATE_ASSESSMENT = "create_assessment"
     REVIEW_ASSESSMENT = "review_assessment"
     CONFIRM_CLARIFICATION = "confirm_clarification"
+    ANSWER_CLARIFICATION = "answer_clarification"
     REVIEW_PROFILE_ENRICHMENT = "review_profile_enrichment"
     UPDATE_ASSESSMENT = "update_assessment"
     FIND_JOBS = "find_jobs"
@@ -43,6 +44,7 @@ class CandidateAdviserJourneyRead(BaseModel):
     intake_exists: bool
     assessment_status: CandidateAdviserAssessmentStatus | None = None
     confirmed_guidance_active: bool
+    clarification_session_active: bool = False
     current_follow_up_available: bool
     clarification_interpretation_awaiting_confirmation: bool
     unresolved_profile_enrichment_count: int = Field(ge=0)

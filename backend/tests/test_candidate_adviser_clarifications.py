@@ -128,7 +128,9 @@ def test_confirmed_career_clarification_is_the_only_transition_to_active_evidenc
     assert snapshot.readiness.ready_for_candidate_context is True
     assert any(item.title == "Synthetic delivery" for item in snapshot.active_evidence)
     assert service.get_assessment(user_id).status == "stale"
-    assert service.list_clarifications(user_id) == []
+    # The confirmed assessment's materialized session remains authoritative
+    # while optional Profile enrichment is unresolved.
+    assert [item.clarification_id for item in service.list_clarifications(user_id)] == [clarification.clarification_id]
 
 
 def test_unconfirmed_siblings_become_noncurrent_after_one_confirmation(db_session) -> None:
@@ -139,8 +141,61 @@ def test_unconfirmed_siblings_become_noncurrent_after_one_confirmation(db_sessio
     service.answer_clarification(user_id, first.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic."))
     service.confirm_clarification(user_id, first.clarification_id)
 
-    with pytest.raises(ValueError, match="no longer current"):
-        service.answer_clarification(user_id, second.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic."))
+    answered = service.answer_clarification(user_id, second.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic."))
+    assert answered.status == "review_ready"
+    with pytest.raises(ValueError, match="active clarification session"):
+        service.assess(user_id)
+
+
+def test_multi_question_session_survives_confirmation_direct_apply_and_stale_assessment(db_session) -> None:
+    from app.schemas.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalGeneration
+    from app.schemas.candidate_adviser_journey import AdviserNextAction
+    from app.services.candidate_adviser_journey_service import CandidateAdviserJourneyService
+    from app.services.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalService
+    from app.services.candidate_adviser_profile_proposal_generation import CandidateAdviserProfileProposalGenerationService
+    from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
+
+    user_id = _user(db_session, "clarification-multi-session@example.com")
+    _ready_profile(db_session, user_id)
+    service = _confirmed_service(
+        db_session,
+        user_id,
+        _Adviser("What delivery work did you complete?", "What technical method did you use?"),
+        _Interpreter(_career_fact()),
+    )
+    first, second = service.list_clarifications(user_id)
+    service.answer_clarification(user_id, first.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Built service Alpha."))
+    service.confirm_clarification(user_id, first.clarification_id)
+    assert service.get_assessment(user_id).status == "stale"
+    assert [item.clarification_id for item in service.list_clarifications(user_id)] == [first.clarification_id, second.clarification_id]
+    with pytest.raises(ValueError, match="active clarification session"):
+        service.assess(user_id)
+
+    class _Generator:
+        def generate(self, *, generation_input):
+            label = "Service Alpha" if "delivery work" in generation_input.source.question_text else "Applied method"
+            return CandidateAdviserProfileProposalGeneration(proposals=[{
+                "operation": "add", "target_fingerprint": None, "section": "skills",
+                "item": {"name": label},
+            }])
+
+    generation = CandidateAdviserProfileProposalGenerationService(db_session, generator_factory=_Generator)
+    proposals = CandidateAdviserProfileProposalService(db_session)
+    first_proposal = generation.generate(user_id, first.clarification_id).proposals[0]
+    proposals.apply_to_profile(user_id, first_proposal.id, expected_revision=first_proposal.revision)
+    assert service.get_assessment(user_id).status == "stale"
+    assert service.list_clarifications(user_id)[1].clarification_id == second.clarification_id
+    assert CandidateAdviserJourneyService(db_session).read(user_id).next_action is AdviserNextAction.ANSWER_CLARIFICATION
+
+    service.answer_clarification(user_id, second.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Used a synthetic method."))
+    service.confirm_clarification(user_id, second.clarification_id)
+    second_proposal = generation.generate(user_id, second.clarification_id).proposals[0]
+    proposals.apply_to_profile(user_id, second_proposal.id, expected_revision=second_proposal.revision)
+    journey = CandidateAdviserJourneyService(db_session).read(user_id)
+    assert journey.confirmed_guidance_active is False
+    assert journey.next_action is AdviserNextAction.UPDATE_ASSESSMENT
+    assert db_session.scalars(select(CandidateProfileRevisionRecord).where(CandidateProfileRevisionRecord.user_id == user_id)).all() == []
+    assert service.assess(user_id).status == "review_ready"
 
 
 def test_confirmed_clarification_remains_authoritative_after_explicit_reassessment(db_session) -> None:
@@ -153,6 +208,15 @@ def test_confirmed_clarification_remains_authoritative_after_explicit_reassessme
     service.confirm_clarification(user_id, first.clarification_id)
     assert service.get_assessment(user_id).status == "stale"
 
+    with pytest.raises(ValueError, match="active clarification session"):
+        service.assess(user_id)
+    service.answer_clarification(user_id, sibling.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic."))
+    service.confirm_clarification(user_id, sibling.clarification_id)
+    # Explicitly defer the optional enrichment for both confirmed answers.
+    from app.services.candidate_adviser_profile_proposal_generation import CandidateAdviserProfileProposalGenerationService
+    enrichment_service = CandidateAdviserProfileProposalGenerationService(db_session, generator_factory=lambda: None)
+    enrichment_service.defer(user_id, first.clarification_id)
+    enrichment_service.defer(user_id, sibling.clarification_id)
     assessment_b = service.assess(user_id)
     assert assessment_b.status == "review_ready"
     confirmed_b = service.confirm_assessment(user_id)
@@ -166,7 +230,7 @@ def test_confirmed_clarification_remains_authoritative_after_explicit_reassessme
     assert original.status == "confirmed"
     assert original.origin_assessment_fingerprint != confirmed_b.input_fingerprint
     semantic_input = service._semantic_input(user_id)
-    assert [item.clarification_id for item in semantic_input.clarifications] == [first.clarification_id]
+    assert [item.clarification_id for item in semantic_input.clarifications] == [first.clarification_id, sibling.clarification_id]
     assert service.input_fingerprint(user_id) == confirmed_b.input_fingerprint
     active = db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == user_id)).all()
     assert len(active) == 1

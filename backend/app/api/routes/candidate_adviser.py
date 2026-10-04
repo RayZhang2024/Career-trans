@@ -274,3 +274,22 @@ def transfer_profile_proposal(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile proposal not found.") from exc
     except CandidateAdviserProfileProposalConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/profile-proposals/{proposal_id}/apply", response_model=CandidateAdviserProfileProposalRead)
+def apply_profile_proposal(
+    proposal_id: str,
+    payload: CandidateAdviserProfileProposalAction,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> CandidateAdviserProfileProposalRead:
+    try:
+        return CandidateAdviserProfileProposalService(db).apply_to_profile(
+            current_user.id,
+            proposal_id,
+            expected_revision=payload.expected_revision,
+        )
+    except CandidateAdviserProfileProposalNotFound as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile proposal not found.") from exc
+    except CandidateAdviserProfileProposalConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc

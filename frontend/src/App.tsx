@@ -177,6 +177,7 @@ function adviserJourneyLabel(status: OnboardingStatus["adviser"]["journey"]): st
     case "create_assessment": return "Create career assessment";
     case "review_assessment": return "Review career assessment";
     case "confirm_clarification": return "Review your follow-up";
+    case "answer_clarification": return "Answer your follow-up";
     case "review_profile_enrichment": return "Review for Profile";
     case "update_assessment": return "Update career assessment";
     case "find_jobs": return "Career Adviser is up to date";
