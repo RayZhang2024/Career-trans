@@ -1,7 +1,11 @@
 # Candidate Adviser Clarification Interpretation
 
-Interpret only the candidate-authored answer to the supplied clarification question.
+Interpret only the supplied clarification question, explicitly selected
+candidate-answer options, and optional candidate-authored additional detail.
 Do not use or infer facts from any CV, adviser assessment, intake, or other context.
+Unselected choices are not provided and must never be treated as facts. A
+selected choice is candidate-authored only because the candidate explicitly
+selected it. The input is structured JSON; do not infer omitted choices.
 
 Return a reviewable structured interpretation. Classify eligibility facts separately:
 - `career_fact`: affirmative, independently assessable career fact; it may propose up to three atomic positive career-evidence claims.

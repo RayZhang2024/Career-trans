@@ -13,6 +13,7 @@ from app.core.config import Settings
 from app.schemas.candidate_adviser import (
     CandidateAdviserAssessmentContent,
     CandidateAdviserClarificationAnswer,
+    CandidateAdviserClarificationInterpretationInput,
     CandidateAdviserIntake,
     ClarificationAnswerKind,
     ClarificationInterpretation,
@@ -87,13 +88,13 @@ class _Adviser:
             "professional_positioning": insight,
             "transferable_strengths": [], "development_gaps": [], "role_hypotheses": [],
             "transition_assessment": insight,
-            "open_questions": ([{"text": self.question, "source_references": references}] if self.question else []),
+            "open_questions": ([{"text": self.question, "source_references": references, "suggested_answers": ["I led the work", "I contributed to the work", "I supported the work"]}] if self.question else []),
             "career_strategy_summary": insight, "job_search_strategy_summary": insight,
         })
 
 
 class _Interpreter:
-    def interpret(self, *, question_text: str, answer_text: str) -> ClarificationInterpretation:
+    def interpret(self, *, interpretation_input: CandidateAdviserClarificationInterpretationInput) -> ClarificationInterpretation:
         return ClarificationInterpretation(
             answer_kind=ClarificationAnswerKind.CAREER_FACT,
             confirmed_context_summary="Synthetic confirmed factual context.",
@@ -405,7 +406,11 @@ def test_confirmed_clarification_has_exact_normal_read_only_and_onboarding_stale
     assessment = service.assess(user.id)
     service.confirm_assessment(user.id)
     clarification = service.list_clarifications(user.id)[0]
-    service.answer_clarification(user.id, clarification.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic confirmation."))
+    service.answer_clarification(user.id, clarification.clarification_id, CandidateAdviserClarificationAnswer(
+        selected_option_ids=[clarification.suggested_answers[0].option_id],
+        custom_answer_text="Synthetic confirmation.",
+        special_selection=None,
+    ))
     service.confirm_clarification(user.id, clarification.clarification_id)
 
     normal = service.input_fingerprint(user.id)

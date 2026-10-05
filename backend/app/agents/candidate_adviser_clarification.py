@@ -8,13 +8,13 @@ from pydantic import ValidationError
 
 from app.providers.llm import SemanticOutputError
 from app.providers.openai_structured_output import strict_schema_from_pydantic_model
-from app.schemas.candidate_adviser import ClarificationInterpretation
-
-_ANSWER_LENGTH_LIMIT = 4_000
-
+from app.schemas.candidate_adviser import (
+    CandidateAdviserClarificationInterpretationInput,
+    ClarificationInterpretation,
+)
 
 class CandidateAdviserClarificationInterpreter(Protocol):
-    def interpret(self, *, question_text: str, answer_text: str) -> ClarificationInterpretation: ...
+    def interpret(self, *, interpretation_input: CandidateAdviserClarificationInterpretationInput) -> ClarificationInterpretation: ...
 
 
 class SemanticCandidateAdviserClarificationInterpreter:
@@ -24,12 +24,9 @@ class SemanticCandidateAdviserClarificationInterpreter:
         self._client = client
         self._model = model
 
-    def interpret(self, *, question_text: str, answer_text: str) -> ClarificationInterpretation:
+    def interpret(self, *, interpretation_input: CandidateAdviserClarificationInterpretationInput) -> ClarificationInterpretation:
         prompt = (Path(__file__).resolve().parents[3] / "prompts" / "candidate_adviser_clarification.md").read_text(encoding="utf-8")
-        payload = {
-            "question": question_text,
-            "candidate_answer": " ".join(answer_text.split())[:_ANSWER_LENGTH_LIMIT],
-        }
+        payload = interpretation_input.model_dump(mode="json")
         # The canonical Pydantic model remains the application boundary. The
         # provider receives the SDK-derived strict projection so required
         # fields/defaults follow the supported Structured Outputs subset.

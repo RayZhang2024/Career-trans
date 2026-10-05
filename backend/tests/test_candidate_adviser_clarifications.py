@@ -9,10 +9,13 @@ from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, Candi
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
 from app.schemas.candidate_adviser import (
+    AdviserOpenQuestion,
     AdviserInsight,
     CandidateAdviserAssessmentContent,
     CandidateAdviserAssessmentRead,
     CandidateAdviserClarificationAnswer,
+    CandidateAdviserClarificationInterpretationInput,
+    CandidateAdviserStructuredResponse,
     CandidateAdviserIntake,
     ClarificationAnswerKind,
     ClarificationInterpretation,
@@ -56,7 +59,11 @@ def _content(*questions: str) -> CandidateAdviserAssessmentContent:
         professional_positioning=insight,
         transferable_strengths=[], development_gaps=[], role_hypotheses=[],
         transition_assessment=insight,
-        open_questions=[_insight(question) for question in questions],
+        open_questions=[AdviserOpenQuestion(
+            text=question,
+            source_references=[{"source_type": "intake", "reference": "career_direction"}],
+            suggested_answers=["I led the work", "I contributed to the work", "I supported the work"],
+        ) for question in questions],
         career_strategy_summary=insight,
         job_search_strategy_summary=insight,
     )
@@ -78,10 +85,9 @@ class _Interpreter:
         self.interpretation = interpretation
         self.calls = 0
 
-    def interpret(self, *, question_text: str, answer_text: str) -> ClarificationInterpretation:
+    def interpret(self, *, interpretation_input: CandidateAdviserClarificationInterpretationInput) -> ClarificationInterpretation:
         self.calls += 1
-        self.question_text = question_text
-        self.answer_text = answer_text
+        self.interpretation_input = interpretation_input
         return self.interpretation
 
 
@@ -95,11 +101,30 @@ def _career_fact() -> ClarificationInterpretation:
     )
 
 
-def _confirmed_service(session, user_id: str, adviser: _Adviser, interpreter: _Interpreter) -> CandidateAdviserService:
+def _structured(clarification, *, selected=(), custom="", special=None) -> CandidateAdviserClarificationAnswer:
+    return CandidateAdviserClarificationAnswer(
+        selected_option_ids=list(selected),
+        custom_answer_text=custom,
+        special_selection=special,
+    )
+
+
+def _confirmed_service(session, user_id: str, adviser: _Adviser, interpreter: _Interpreter, *, legacy_options: bool = True) -> CandidateAdviserService:
     service = CandidateAdviserService(session, agent=adviser, clarification_interpreter=interpreter)
     service.save_intake(user_id, _intake())
     service.assess(user_id)
     service.confirm_assessment(user_id)
+    if legacy_options:
+        # Keep the established free-text regression cases on the legacy path;
+        # dedicated Issue #276 tests below exercise the immutable options path.
+        for clarification in service.list_clarifications(user_id):
+            row = session.scalar(select(CandidateAdviserClarificationRecord).where(
+                CandidateAdviserClarificationRecord.user_id == user_id,
+                CandidateAdviserClarificationRecord.clarification_id == clarification.clarification_id,
+            ))
+            assert row is not None
+            row.suggested_answers_json = None
+        session.commit()
     return service
 
 
@@ -162,12 +187,15 @@ def test_multi_question_session_survives_confirmation_direct_apply_and_stale_ass
         user_id,
         _Adviser("What delivery work did you complete?", "What technical method did you use?"),
         _Interpreter(_career_fact()),
+        legacy_options=False,
     )
     first, second = service.list_clarifications(user_id)
-    service.answer_clarification(user_id, first.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Built service Alpha."))
+    original_second_options = second.suggested_answers
+    service.answer_clarification(user_id, first.clarification_id, _structured(first, selected=[first.suggested_answers[0].option_id], custom="Built service Alpha."))
     service.confirm_clarification(user_id, first.clarification_id)
     assert service.get_assessment(user_id).status == "stale"
     assert [item.clarification_id for item in service.list_clarifications(user_id)] == [first.clarification_id, second.clarification_id]
+    assert service.list_clarifications(user_id)[1].suggested_answers == original_second_options
     with pytest.raises(ValueError, match="active clarification session"):
         service.assess(user_id)
 
@@ -187,7 +215,7 @@ def test_multi_question_session_survives_confirmation_direct_apply_and_stale_ass
     assert service.list_clarifications(user_id)[1].clarification_id == second.clarification_id
     assert CandidateAdviserJourneyService(db_session).read(user_id).next_action is AdviserNextAction.ANSWER_CLARIFICATION
 
-    service.answer_clarification(user_id, second.clarification_id, CandidateAdviserClarificationAnswer(answer_text="Used a synthetic method."))
+    service.answer_clarification(user_id, second.clarification_id, _structured(second, selected=[second.suggested_answers[1].option_id], custom="Used a synthetic method."))
     service.confirm_clarification(user_id, second.clarification_id)
     second_proposal = generation.generate(user_id, second.clarification_id).proposals[0]
     proposals.apply_to_profile(user_id, second_proposal.id, expected_revision=second_proposal.revision)
@@ -196,6 +224,45 @@ def test_multi_question_session_survives_confirmation_direct_apply_and_stale_ass
     assert journey.next_action is AdviserNextAction.UPDATE_ASSESSMENT
     assert db_session.scalars(select(CandidateProfileRevisionRecord).where(CandidateProfileRevisionRecord.user_id == user_id)).all() == []
     assert service.assess(user_id).status == "review_ready"
+
+
+def test_second_question_choices_survive_first_question_profile_rejection(db_session) -> None:
+    from app.schemas.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalGeneration
+    from app.services.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalService
+    from app.services.candidate_adviser_profile_proposal_generation import CandidateAdviserProfileProposalGenerationService
+
+    user_id = _user(db_session, "clarification-options-reject-continuity@example.com")
+    _ready_profile(db_session, user_id)
+    service = _confirmed_service(
+        db_session,
+        user_id,
+        _Adviser("What delivery work did you complete?", "What method did you use?"),
+        _Interpreter(_career_fact()),
+        legacy_options=False,
+    )
+    first, second = service.list_clarifications(user_id)
+    original_second_options = second.suggested_answers
+    service.answer_clarification(
+        user_id, first.clarification_id,
+        _structured(first, selected=[first.suggested_answers[0].option_id]),
+    )
+    service.confirm_clarification(user_id, first.clarification_id)
+
+    class _Generator:
+        def generate(self, *, generation_input):
+            return CandidateAdviserProfileProposalGeneration(proposals=[{
+                "operation": "add", "target_fingerprint": None, "section": "skills",
+                "item": {"name": "Synthetic skill"},
+            }])
+
+    generated = CandidateAdviserProfileProposalGenerationService(db_session, generator_factory=_Generator)
+    proposal = generated.generate(user_id, first.clarification_id).proposals[0]
+    CandidateAdviserProfileProposalService(db_session).reject_pending(
+        user_id, proposal.id, expected_revision=proposal.revision,
+    )
+    visible = service.list_clarifications(user_id)
+    assert visible[1].clarification_id == second.clarification_id
+    assert visible[1].suggested_answers == original_second_options
 
 
 def test_confirmed_clarification_remains_authoritative_after_explicit_reassessment(db_session) -> None:
@@ -324,10 +391,14 @@ def test_clarification_interpreter_uses_strict_answer_isolated_payload() -> None
             return type("Response", (), {"output_text": result.model_dump_json()})()
 
     interpreter = SemanticCandidateAdviserClarificationInterpreter(type("Client", (), {"responses": _Responses()})(), "test-model")
-    assert interpreter.interpret(question_text="Synthetic question?", answer_text="Synthetic answer.") == result
+    from app.schemas.candidate_adviser import CandidateAdviserClarificationInterpretationInput
+    value = CandidateAdviserClarificationInterpretationInput(question_text="Synthetic question?", selected_answers=[], additional_detail="Synthetic answer.")
+    assert interpreter.interpret(interpretation_input=value) == result
     request = calls[0]
     payload = json.loads(request["input"][1]["content"].split("INPUT:\n", 1)[1])
-    assert set(payload) == {"question", "candidate_answer"}
+    assert set(payload) == {"question_text", "selected_answers", "additional_detail"}
+    assert payload["selected_answers"] == []
+    assert payload["additional_detail"] == "Synthetic answer."
     assert request["text"]["format"]["strict"] is True
     assert request["text"]["format"]["schema"] == strict_schema_from_pydantic_model(ClarificationInterpretation)
     _assert_strict_schema(request["text"]["format"]["schema"])
@@ -343,9 +414,13 @@ def test_clarification_interpreter_bounds_answer_before_provider_call() -> None:
             return type("Response", (), {"output_text": result.model_dump_json()})()
 
     interpreter = SemanticCandidateAdviserClarificationInterpreter(type("Client", (), {"responses": _Responses()})(), "test-model")
-    interpreter.interpret(question_text="Synthetic question?", answer_text="word " * 2_000)
+    from app.schemas.candidate_adviser import CandidateAdviserClarificationInterpretationInput
+    interpreter.interpret(interpretation_input=CandidateAdviserClarificationInterpretationInput(
+        question_text="Synthetic question?", selected_answers=["Label " * 40], additional_detail="word " * 800,
+    ))
     payload = json.loads(calls[0]["input"][1]["content"].split("INPUT:\n", 1)[1])
-    assert len(payload["candidate_answer"]) == 4_000
+    assert len(payload["additional_detail"]) == 4_000
+    assert payload["selected_answers"] == ["Label " * 40]
 
 
 def _assert_strict_schema(value: object) -> None:
@@ -400,6 +475,186 @@ def test_question_id_is_assessment_specific_but_question_key_is_cross_assessment
     second = CandidateAdviserService._clarification_identity("b" * 64, insight)
     assert first[0] != second[0]
     assert first[1] == second[1]
+
+
+def test_new_question_choices_are_domain_validated_and_do_not_change_identity() -> None:
+    question = AdviserOpenQuestion(
+        text="What work did you own?",
+        source_references=[{"source_type": "intake", "reference": "career_direction"}],
+        suggested_answers=["I led the work", "I contributed", "I supported"],
+    )
+    content = _content()
+    content.open_questions = [question]
+    CandidateAdviserService._validate_new_open_questions(content)
+    reordered = question.model_copy(update={"suggested_answers": list(reversed(question.suggested_answers))})
+    assert CandidateAdviserService._clarification_identity("a" * 64, question) == CandidateAdviserService._clarification_identity("a" * 64, reordered)
+    original_ids = {text: CandidateAdviserService._option_id("d" * 64, text) for text in question.suggested_answers}
+    reordered_ids = {text: CandidateAdviserService._option_id("d" * 64, text) for text in reordered.suggested_answers}
+    assert reordered_ids == original_ids
+    for choices in (["one", "two"], ["same", " same ", "three"], ["x" * 241, "two", "three"]):
+        invalid = question.model_copy(update={"suggested_answers": list(choices)})
+        with pytest.raises(ValueError):
+            CandidateAdviserService._validate_new_open_questions(_content_with_questions(invalid))
+
+
+def _content_with_questions(*questions):
+    base = _content()
+    base.open_questions = list(questions)
+    return base
+
+
+def test_materialised_option_ids_are_stable_and_existing_choices_are_immutable(db_session) -> None:
+    user_id = _user(db_session, "clarification-options-immutable@example.com")
+    _ready_profile(db_session, user_id)
+    service = _confirmed_service(db_session, user_id, _Adviser("What work did you own?"), _Interpreter(_career_fact()), legacy_options=False)
+    question = service.list_clarifications(user_id)[0]
+    persisted = json.dumps([item.model_dump(mode="json") for item in question.suggested_answers], sort_keys=True)
+    for item in question.suggested_answers:
+        expected = hashlib.sha256(f"{question.clarification_id}\0{' '.join(item.text.split()).casefold()}".encode()).hexdigest()
+        assert item.option_id == expected
+
+    row = db_session.scalar(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user_id,
+        CandidateAdviserClarificationRecord.clarification_id == question.clarification_id,
+    ))
+    assert row is not None
+    assessment = service.get_assessment(user_id)
+    reordered_question = assessment.content.open_questions[0].model_copy(update={
+        "suggested_answers": list(reversed(assessment.content.open_questions[0].suggested_answers))
+    })
+    replacement = assessment.model_copy(update={
+        "content": assessment.content.model_copy(update={"open_questions": [reordered_question]})
+    })
+    service._materialize_clarifications(user_id, replacement)
+    reloaded = service._read_clarification(row)
+    assert [item.option_id for item in reloaded.suggested_answers] == [item.option_id for item in question.suggested_answers]
+    assert json.dumps([item.model_dump(mode="json") for item in reloaded.suggested_answers], sort_keys=True) == persisted
+
+
+def test_option_backed_answer_sends_only_selected_labels_and_custom_detail(db_session) -> None:
+    user_id = _user(db_session, "clarification-selected-only@example.com")
+    _ready_profile(db_session, user_id)
+    interpreter = _Interpreter(_career_fact())
+    service = _confirmed_service(db_session, user_id, _Adviser("What work did you own?"), interpreter, legacy_options=False)
+    clarification = service.list_clarifications(user_id)[0]
+    chosen = clarification.suggested_answers[0]
+    unselected = {item.text for item in clarification.suggested_answers[1:]}
+    reviewed = service.answer_clarification(
+        user_id, clarification.clarification_id,
+        _structured(clarification, selected=[chosen.option_id], custom="Additional candidate detail."),
+    )
+    assert interpreter.interpretation_input.selected_answers == [chosen.text]
+    assert interpreter.interpretation_input.additional_detail == "Additional candidate detail."
+    assert not (unselected & set(interpreter.interpretation_input.selected_answers))
+    assert reviewed.answer_text == f"{chosen.text}\nAdditional candidate detail."
+    assert reviewed.structured_response == CandidateAdviserStructuredResponse(
+        selected_option_ids=[chosen.option_id], custom_answer_text="Additional candidate detail.", special_selection=None,
+    )
+
+
+def test_custom_only_and_selected_only_structured_answers_are_supported(db_session) -> None:
+    cases = [
+        ([], "Only custom synthetic detail."),
+        ([0], ""),
+    ]
+    for index, (selected_indexes, custom) in enumerate(cases):
+        user_id = _user(db_session, f"clarification-answer-shape-{index}@example.com")
+        _ready_profile(db_session, user_id)
+        interpreter = _Interpreter(_career_fact())
+        service = _confirmed_service(db_session, user_id, _Adviser("What work did you own?"), interpreter, legacy_options=False)
+        clarification = service.list_clarifications(user_id)[0]
+        selected = [clarification.suggested_answers[position].option_id for position in selected_indexes]
+        service.answer_clarification(
+            user_id, clarification.clarification_id,
+            _structured(clarification, selected=selected, custom=custom),
+        )
+        assert interpreter.interpretation_input.selected_answers == [
+            clarification.suggested_answers[position].text for position in selected_indexes
+        ]
+        assert interpreter.interpretation_input.additional_detail == custom
+
+
+def test_interpretation_failure_does_not_persist_response_without_its_review(db_session) -> None:
+    user_id = _user(db_session, "clarification-answer-atomic@example.com")
+    _ready_profile(db_session, user_id)
+
+    class _FailingInterpreter:
+        def interpret(self, *, interpretation_input):
+            raise RuntimeError("synthetic interpretation failure")
+
+    service = _confirmed_service(db_session, user_id, _Adviser("What work did you own?"), _FailingInterpreter(), legacy_options=False)
+    clarification = service.list_clarifications(user_id)[0]
+    with pytest.raises(RuntimeError, match="synthetic interpretation failure"):
+        service.answer_clarification(
+            user_id, clarification.clarification_id,
+            _structured(clarification, selected=[clarification.suggested_answers[0].option_id]),
+        )
+    row = db_session.scalar(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user_id,
+        CandidateAdviserClarificationRecord.clarification_id == clarification.clarification_id,
+    ))
+    assert row is not None
+    assert row.status == "unanswered"
+    assert row.answer_text is None and row.structured_response_json is None and row.interpretation_json is None
+
+
+def test_not_sure_creates_insufficient_review_without_calling_interpreter(db_session) -> None:
+    user_id = _user(db_session, "clarification-not-sure@example.com")
+    _ready_profile(db_session, user_id)
+    interpreter = _Interpreter(_career_fact())
+    service = _confirmed_service(db_session, user_id, _Adviser("What work did you own?"), interpreter, legacy_options=False)
+    clarification = service.list_clarifications(user_id)[0]
+    reviewed = service.answer_clarification(
+        user_id, clarification.clarification_id,
+        _structured(clarification, special="not_sure"),
+    )
+    assert interpreter.calls == 0
+    assert reviewed.status == "review_ready"
+    assert reviewed.interpretation.answer_kind == ClarificationAnswerKind.INSUFFICIENT
+    assert reviewed.interpretation.proposed_evidence == []
+    assert reviewed.structured_response.special_selection == "not_sure"
+    assert reviewed.answer_text == "I'm not sure / I don't have enough information to answer this yet"
+
+
+def test_structured_answer_rejects_duplicate_unknown_mixed_and_not_sure_conflicts(db_session) -> None:
+    user_id = _user(db_session, "clarification-options-invalid@example.com")
+    _ready_profile(db_session, user_id)
+    interpreter = _Interpreter(_career_fact())
+    service = _confirmed_service(db_session, user_id, _Adviser("What work did you own?"), interpreter, legacy_options=False)
+    clarification = service.list_clarifications(user_id)[0]
+    option_id = clarification.suggested_answers[0].option_id
+    for payload in (
+        _structured(clarification, selected=[option_id, option_id]),
+        _structured(clarification, selected=["f" * 64]),
+        _structured(clarification, selected=[option_id], special="not_sure"),
+        CandidateAdviserClarificationAnswer(answer_text="Legacy", selected_option_ids=[], custom_answer_text="", special_selection=None),
+    ):
+        with pytest.raises(ValueError):
+            service.answer_clarification(user_id, clarification.clarification_id, payload)
+    assert interpreter.calls == 0
+
+
+def test_malformed_persisted_option_or_structured_json_fails_closed(db_session) -> None:
+    user_id = _user(db_session, "clarification-options-corrupt@example.com")
+    _ready_profile(db_session, user_id)
+    service = _confirmed_service(db_session, user_id, _Adviser("What work did you own?"), _Interpreter(_career_fact()), legacy_options=False)
+    clarification = service.list_clarifications(user_id)[0]
+    row = db_session.scalar(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user_id,
+        CandidateAdviserClarificationRecord.clarification_id == clarification.clarification_id,
+    ))
+    assert row is not None
+    row.suggested_answers_json = "{malformed"
+    db_session.commit()
+    with pytest.raises(ValueError, match="Persisted clarification answer options are invalid"):
+        service.list_clarifications(user_id)
+    row.suggested_answers_json = json.dumps(
+        [item.model_dump(mode="json") for item in clarification.suggested_answers], sort_keys=True
+    )
+    row.structured_response_json = "{malformed"
+    db_session.commit()
+    with pytest.raises(ValueError, match="Persisted structured clarification response is invalid"):
+        service.list_clarifications(user_id)
 
 
 def test_materialisation_is_idempotent_and_user_scoped(db_session) -> None:

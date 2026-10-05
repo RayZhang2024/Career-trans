@@ -40,6 +40,8 @@ class CandidateAdviserClarificationRecord(Base):
     origin_assessment_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     question_source_references_json: Mapped[str] = mapped_column(Text, nullable=False)
+    suggested_answers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_response_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     priority_index: Mapped[int] = mapped_column(nullable=False)
     answer_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     interpretation_json: Mapped[str | None] = mapped_column(Text, nullable=True)

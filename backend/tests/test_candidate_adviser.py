@@ -11,7 +11,7 @@ from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, Candi
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
 from app.providers.llm import SemanticOutputError, SemanticProviderConfigurationError
-from app.schemas.candidate_adviser import CandidateAdviserAssessmentContent, CandidateAdviserAssessmentStatus, CandidateAdviserClarificationStatus, CandidateAdviserIntake, CandidateAdviserSemanticInput
+from app.schemas.candidate_adviser import AdviserOpenQuestion, CandidateAdviserAssessmentContent, CandidateAdviserAssessmentStatus, CandidateAdviserClarificationStatus, CandidateAdviserIntake, CandidateAdviserSemanticInput, ProviderCandidateAdviserAssessmentContent
 from app.schemas.job import JobProfile, JobRequirement
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
@@ -114,6 +114,63 @@ def test_adviser_assessment_schema_requires_every_object_property_and_allows_emp
     assert empty.development_gaps == []
     assert empty.role_hypotheses == []
     assert empty.open_questions == []
+
+
+def test_legacy_assessment_questions_remain_readable_without_choices_and_wire_model_requires_them() -> None:
+    legacy = _content().model_dump(mode="json")
+    legacy["open_questions"] = [{
+        "text": "Historical question?",
+        "source_references": [{"source_type": "intake", "reference": "career_direction"}],
+    }]
+    parsed = CandidateAdviserAssessmentContent.model_validate(legacy)
+    assert parsed.open_questions[0].suggested_answers == []
+
+    legacy["open_questions"][0]["suggested_answers"] = ["I led the work", "I contributed"]
+    with pytest.raises(ValueError):
+        ProviderCandidateAdviserAssessmentContent.model_validate(legacy)
+
+
+def test_service_rejects_invalid_generated_choices_before_persisting(db_session) -> None:
+    user_id = _user(db_session, "adviser-invalid-generated-options@example.com")
+    _confirmed_cv(db_session, user_id)
+    content = _content()
+    content.open_questions = [AdviserOpenQuestion(
+        text="What work did you own?",
+        source_references=[{"source_type": "intake", "reference": "career_direction"}],
+        suggested_answers=["I led work", " I   led work ", "I supported work"],
+    )]
+
+    class _InvalidAgent:
+        def assess(self, *, semantic_input):
+            return content
+
+    service = CandidateAdviserService(db_session, agent=_InvalidAgent())
+    service.save_intake(user_id, _intake())
+    with pytest.raises(ValueError, match="unique after whitespace normalization"):
+        service.assess(user_id)
+    assert db_session.scalar(select(CandidateAdviserAssessmentRecord).where(
+        CandidateAdviserAssessmentRecord.user_id == user_id
+    )) is None
+
+
+def test_historical_assessment_read_does_not_run_generation_only_choice_validation(db_session) -> None:
+    user_id = _user(db_session, "adviser-historical-options@example.com")
+    _confirmed_cv(db_session, user_id)
+    service = CandidateAdviserService(db_session, agent=_FakeAdviser())
+    service.save_intake(user_id, _intake())
+    old = _content().model_dump(mode="json")
+    old["open_questions"] = [{
+        "text": "Historical question?",
+        "source_references": [{"source_type": "intake", "reference": "career_direction"}],
+    }]
+    fingerprint = service.input_fingerprint(user_id)
+    db_session.add(CandidateAdviserAssessmentRecord(
+        user_id=user_id, input_fingerprint=fingerprint, status="confirmed",
+        assessment_json=json.dumps(old),
+    ))
+    db_session.commit()
+    read = service.get_assessment(user_id)
+    assert read is not None and read.content.open_questions[0].suggested_answers == []
 
 
 class _FakeAdviser:

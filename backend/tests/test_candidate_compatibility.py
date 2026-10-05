@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
+import importlib.util
+from pathlib import Path
 
 from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.orm import Session
 
 from app.core.database import Base
 from app.models import User  # noqa: F401
@@ -34,6 +37,7 @@ from app.models.candidate_adviser import (
 from app.models.user_job_discovery import DiscoveryRun
 from app.models.application_preparation import ApplicationPreparation
 from app.services.candidate_compatibility_inspector import CandidatePhysicalSchemaInspector
+from app.services.candidate_sqlite_schema_repair import CandidateSQLiteSchemaCompatibilityRepairService
 from app.services.candidate_legacy_compatibility_inspector import (
     CandidateCompatibilityDryRunService,
     CandidateLegacyCompatibilityInspector,
@@ -265,6 +269,57 @@ def test_create_all_adds_absent_tables_but_does_not_repair_old_columns():
     assert inspect(engine).has_table("candidate_cv_review_baselines")
     assert inspect(engine).has_table("candidate_adviser_clarifications")
     assert inspect(engine).has_table("candidate_profile_revisions")
+
+
+def test_retained_pre_276_sqlite_repair_adds_option_columns_without_changing_legacy_rows():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        user = User(email="retained-276@example.com", password_hash="unused")
+        session.add(user)
+        session.flush()
+        row = CandidateAdviserClarificationRecord(
+            user_id=user.id,
+            clarification_id="a" * 64,
+            question_key="b" * 64,
+            origin_assessment_fingerprint="c" * 64,
+            question_text="A historical question?",
+            question_source_references_json="[]",
+            priority_index=0,
+            answer_text="Historical free-text answer",
+            status="review_ready",
+        )
+        session.add(row)
+        session.commit()
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE candidate_adviser_clarifications DROP COLUMN suggested_answers_json"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE candidate_adviser_clarifications DROP COLUMN structured_response_json"
+        )
+    result = CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+    assert result.changed
+    assert result.after.status is CandidateSchemaStatus.COMPATIBLE
+    columns = {column["name"] for column in inspect(engine).get_columns("candidate_adviser_clarifications")}
+    assert {"suggested_answers_json", "structured_response_json"}.issubset(columns)
+    with engine.connect() as connection:
+        saved = connection.execute(text(
+            "SELECT question_text, answer_text, status, suggested_answers_json, structured_response_json "
+            "FROM candidate_adviser_clarifications WHERE clarification_id = :id"
+        ), {"id": "a" * 64}).one()
+    assert tuple(saved) == ("A historical question?", "Historical free-text answer", "review_ready", None, None)
+    migration_path = Path(__file__).resolve().parents[1] / "migrations" / "20261005_candidate_adviser_clarification_options_sqlite.py"
+    spec = importlib.util.spec_from_file_location("clarification_options_sqlite", migration_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with engine.raw_connection() as connection:
+        module.upgrade(connection)
+    repeated = CandidateSQLiteSchemaCompatibilityRepairService(engine).repair()
+    assert not repeated.changed
+    assert repeated.after.status is CandidateSchemaStatus.COMPATIBLE
 
 
 def test_missing_ownership_column_is_unsupported_physical_drift():

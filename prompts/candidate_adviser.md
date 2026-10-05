@@ -22,6 +22,15 @@ questions or repeat questions already resolved by supplied confirmed
 clarification context. Make uncertainty explicit rather than filling gaps with
 assumptions.
 
+For every open question, provide 3–6 concise, distinct suggested answers the
+candidate may select independently (multi-select). Each option must be no more
+than 240 characters, normally first-person wording, and represent one coherent
+answer category. Treat choices only as hypotheses, never as candidate facts.
+Do not repeat already-confirmed facts, bundle unrelated claims, encode negative
+or absence claims as positive evidence, provide hiring/strategy advice, or add
+an “I'm not sure” choice; the application supplies that choice. If you cannot
+provide at least three useful distinct choices, omit the open question.
+
 Describe professional positioning, transferable strengths, development gaps,
 role hypotheses, transition considerations, and concise strategy summaries.
 Do not make hiring recommendations, alter factual evidence, or expose reasoning

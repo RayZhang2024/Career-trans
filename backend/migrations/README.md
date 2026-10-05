@@ -165,3 +165,29 @@ safe to rerun. Before starting the updated app, verify that
 `candidate_adviser_profile_proposals.applied_at` exists and its state check
 accepts `pending`, `rejected`, `transferred`, and `applied`; existing transferred
 rows and their linked Profile revisions remain unchanged.
+
+## Selectable Adviser clarification answers (Issue #276)
+
+Apply the Issue #276 clarification-option migration after the Issue #275
+proposal-state migration and before starting the updated app. The migration
+adds two nullable text columns to `candidate_adviser_clarifications`; it does
+not backfill historical options or answers. Stop Adviser writers during the
+upgrade and back up the database first.
+
+SQLite:
+
+```powershell
+python backend/migrations/20261005_candidate_adviser_clarification_options_sqlite.py "sqlite:///D:/Career-trans-data/career_agent.db"
+```
+
+PostgreSQL:
+
+```powershell
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20261005_candidate_adviser_clarification_options_postgresql.sql
+```
+
+Verify both columns exist and are nullable before starting the app. The SQLite
+migration is safe to rerun; the SQLite startup compatibility repair independently
+adds the same nullable columns on retained databases and recognizes an already
+upgraded schema. Existing rows remain unchanged and are served through the
+legacy free-text path when the option column is NULL.

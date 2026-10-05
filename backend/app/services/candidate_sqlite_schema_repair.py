@@ -31,6 +31,7 @@ ALLOWED_NULLABLE_COLUMNS: dict[str, frozenset[str]] = {
     }),
     "candidate_cv_ingestion_drafts": frozenset({"runtime_attribution_json"}),
     "candidate_adviser_profile_proposals": frozenset({"overlap_resolution_json", "applied_at"}),
+    "candidate_adviser_clarifications": frozenset({"suggested_answers_json", "structured_response_json"}),
 }
 
 
