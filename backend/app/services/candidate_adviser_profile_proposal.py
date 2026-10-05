@@ -45,6 +45,9 @@ from app.services.profile_revision_service import (
 )
 from app.services.structured_profile_identity import structured_profile_item_fingerprint
 from app.services.structured_profile_comparison import StructuredProfileComparisonService
+from app.services.structured_profile_mutation import persist_structured_profile, stage_adviser_lineage
+from app.schemas.structured_profile import StructuredItemSourceKind, StructuredProfileItemLineageInput
+from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
@@ -374,6 +377,156 @@ class CandidateAdviserProfileProposalService:
             raise
         return self._read(record)
 
+    def apply_to_profile(
+        self,
+        user_id: str,
+        proposal_id: str,
+        *,
+        expected_revision: int,
+    ) -> CandidateAdviserProfileProposalRead:
+        """Atomically apply an Adviser proposal to canonical structured Profile."""
+        record = self._session.scalar(
+            select(CandidateAdviserProfileProposalRecord)
+            .where(
+                CandidateAdviserProfileProposalRecord.id == proposal_id,
+                CandidateAdviserProfileProposalRecord.user_id == user_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if record is None:
+            raise CandidateAdviserProfileProposalNotFound("Profile proposal not found.")
+        if record.state == CandidateAdviserProfileProposalState.APPLIED:
+            if record.applied_at is None:
+                raise CandidateAdviserProfileProposalConflict("Applied proposal history is incomplete.")
+            return self._read(record)
+        if record.state != CandidateAdviserProfileProposalState.PENDING:
+            raise CandidateAdviserProfileProposalConflict("Only a pending Adviser proposal can be applied.")
+        self._expect_revision(record, expected_revision)
+
+        revision_service = CandidateProfileRevisionService(self._session)
+        revision_service.lock_user_authority(user_id)
+        if revision_service._active_row(user_id, fresh=True, for_update=True) is not None:
+            raise CandidateAdviserProfileProposalConflict(
+                "An active Profile draft exists. Finish or discard it before applying this suggestion."
+            )
+        try:
+            source = self._confirmed_source(user_id, record.source_clarification_id, fresh=True, for_update=True)
+        except CandidateAdviserProfileProposalNotFound as exc:
+            raise CandidateAdviserProfileProposalConflict(
+                "The Adviser proposal's confirmed source clarification is unavailable."
+            ) from exc
+        if source.origin_assessment_fingerprint != record.source_assessment_fingerprint:
+            raise CandidateAdviserProfileProposalConflict(
+                "The Adviser proposal source provenance does not match its clarification."
+            )
+        try:
+            update = _UPDATE_ADAPTER.validate_json(record.proposed_update_json)
+            saved_resolution = (
+                CandidateAdviserProfileProposalOverlapResolution.model_validate_json(record.overlap_resolution_json)
+                if record.overlap_resolution_json is not None else None
+            )
+        except ValidationError as exc:
+            raise CandidateAdviserProfileProposalConflict("The saved Adviser proposal is invalid and cannot be applied.") from exc
+
+        try:
+            structured_row = revision_service._structured(user_id, for_update=True, fresh=True)
+            before = revision_service._full_structured_data(structured_row)
+            editable = self._apply_update_to_current(update, saved_resolution, before)
+            after = CandidateCVData(
+                **editable.model_dump(mode="python"),
+                evidence=before.evidence if before is not None else [],
+            )
+            structured_row = persist_structured_profile(self._session, user_id, structured_row, after)
+            stage_adviser_lineage(
+                self._session,
+                user_id,
+                before,
+                after,
+                StructuredProfileSection(update.section),
+                update.item,
+                source_ref=record.id,
+            )
+            record.state = CandidateAdviserProfileProposalState.APPLIED
+            record.applied_at = datetime.now(timezone.utc)
+            record.revision += 1
+            self._session.commit()
+            self._session.refresh(record)
+        except StaleDataError as exc:
+            self._session.rollback()
+            raise CandidateAdviserProfileProposalConflict("Proposal changed concurrently; refresh and retry apply.") from exc
+        except (IntegrityError, ProfileRevisionConflict) as exc:
+            self._session.rollback()
+            raise CandidateAdviserProfileProposalConflict(
+                "An active Profile draft exists or was created concurrently; finish or discard it before applying."
+            ) from exc
+        except Exception:
+            self._session.rollback()
+            raise
+        return self._read(record)
+
+    @staticmethod
+    def _apply_update_to_current(
+        update: CandidateAdviserProfileProposalUpdate,
+        saved_resolution: CandidateAdviserProfileProposalOverlapResolution | None,
+        current: CandidateCVData | None,
+    ) -> EditableCandidateStructuredData:
+        current = current or CandidateCVData()
+        sections = {
+            StructuredProfileSection.EMPLOYMENT: list(current.employment),
+            StructuredProfileSection.EDUCATION: list(current.education),
+            StructuredProfileSection.CREDENTIALS: list(current.credentials),
+            StructuredProfileSection.SKILLS: list(current.skills),
+            StructuredProfileSection.PROJECTS: list(current.projects),
+            StructuredProfileSection.ACHIEVEMENTS: list(current.achievements),
+        }
+        section = StructuredProfileSection(update.section)
+        if update.operation == "add":
+            comparison = StructuredProfileComparisonService().compare(section, update.item, sections[section])
+            if saved_resolution is not None:
+                base_fingerprint = structured_authority_fingerprint(current)
+                candidate_fingerprints = [match.fingerprint for match in comparison.candidate_matches]
+                if (
+                    saved_resolution.action is not CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW
+                    or saved_resolution.base_structured_fingerprint != base_fingerprint
+                    or saved_resolution.incoming_fingerprint != comparison.incoming_fingerprint
+                    or comparison.relationship is not StructuredItemRelationship.AMBIGUOUS
+                    or saved_resolution.candidate_fingerprints != candidate_fingerprints
+                ):
+                    raise CandidateAdviserProfileProposalConflict(
+                        "The saved Adviser overlap choice is stale. Refresh the proposal comparison before applying."
+                    )
+            if comparison.relationship is StructuredItemRelationship.NEW:
+                sections[section].append(update.item)
+            elif comparison.relationship is StructuredItemRelationship.REINFORCEMENT:
+                pass
+            elif comparison.relationship is StructuredItemRelationship.AMBIGUOUS and saved_resolution is not None:
+                sections[section].append(update.item)
+            else:
+                raise CandidateAdviserProfileProposalConflict(
+                    "This Adviser suggestion overlaps current Profile information. Resolve the comparison before applying."
+                )
+        else:
+            matches = [
+                (target_section, index)
+                for target_section, items in sections.items()
+                for index, item in enumerate(items)
+                if structured_profile_item_fingerprint(target_section, item) == update.target_fingerprint
+            ]
+            if len(matches) != 1 or matches[0][0] != section:
+                raise CandidateAdviserProfileProposalConflict(
+                    "The exact replacement target is missing, duplicated, or in another section."
+                )
+            sections[section][matches[0][1]] = update.item
+        return EditableCandidateStructuredData(
+            employment=sections[StructuredProfileSection.EMPLOYMENT],
+            education=sections[StructuredProfileSection.EDUCATION],
+            credentials=sections[StructuredProfileSection.CREDENTIALS],
+            skills=sections[StructuredProfileSection.SKILLS],
+            projects=sections[StructuredProfileSection.PROJECTS],
+            achievements=sections[StructuredProfileSection.ACHIEVEMENTS],
+        )
+
     def transfer_to_profile_revision(
         self,
         user_id: str,
@@ -400,6 +553,10 @@ class CandidateAdviserProfileProposalService:
         if record.state == CandidateAdviserProfileProposalState.REJECTED:
             raise CandidateAdviserProfileProposalConflict(
                 "A rejected Adviser proposal cannot be transferred."
+            )
+        if record.state == CandidateAdviserProfileProposalState.APPLIED:
+            raise CandidateAdviserProfileProposalConflict(
+                "An applied Adviser proposal cannot be transferred to a Profile draft."
             )
         self._expect_revision(record, expected_revision)
 
@@ -434,74 +591,12 @@ class CandidateAdviserProfileProposalService:
                 "The saved Adviser overlap resolution is invalid and cannot be transferred."
             ) from exc
 
-        def apply_to_current(
-            current: CandidateCVData | None,
-        ) -> EditableCandidateStructuredData:
-            current = current or CandidateCVData()
-            sections = {
-                StructuredProfileSection.EMPLOYMENT: list(current.employment),
-                StructuredProfileSection.EDUCATION: list(current.education),
-                StructuredProfileSection.CREDENTIALS: list(current.credentials),
-                StructuredProfileSection.SKILLS: list(current.skills),
-                StructuredProfileSection.PROJECTS: list(current.projects),
-                StructuredProfileSection.ACHIEVEMENTS: list(current.achievements),
-            }
-            target_section = StructuredProfileSection(update.section)
-            if update.operation == "add":
-                comparison = StructuredProfileComparisonService().compare(
-                    target_section, update.item, sections[target_section]
-                )
-                if saved_resolution is not None:
-                    base_fingerprint = structured_authority_fingerprint(current)
-                    current_candidate_fingerprints = [
-                        match.fingerprint for match in comparison.candidate_matches
-                    ]
-                    if (
-                        saved_resolution.action is not CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW
-                        or saved_resolution.base_structured_fingerprint != base_fingerprint
-                        or saved_resolution.incoming_fingerprint != comparison.incoming_fingerprint
-                        or comparison.relationship is not StructuredItemRelationship.AMBIGUOUS
-                        or saved_resolution.candidate_fingerprints != current_candidate_fingerprints
-                    ):
-                        raise CandidateAdviserProfileProposalConflict(
-                            "The saved Adviser overlap choice is stale. Refresh the comparison before transfer."
-                        )
-                if comparison.relationship is StructuredItemRelationship.NEW:
-                    sections[target_section].append(update.item)
-                elif comparison.relationship is StructuredItemRelationship.REINFORCEMENT:
-                    # Keep current truth as-is; normal #207 review/confirmation
-                    # is still required before Adviser lineage is recorded.
-                    pass
-                elif comparison.relationship is StructuredItemRelationship.AMBIGUOUS and saved_resolution is not None:
-                    sections[target_section].append(update.item)
-                else:
-                    raise CandidateAdviserProfileProposalConflict(
-                        "This Adviser suggestion overlaps current Profile information. Edit it to target the intended item before transfer."
-                    )
-            else:
-                fingerprint = update.target_fingerprint
-                matches: list[tuple[StructuredProfileSection, int]] = []
-                for section, items in sections.items():
-                    for index, item in enumerate(items):
-                        if structured_profile_item_fingerprint(section, item) == fingerprint:
-                            matches.append((section, index))
-                if len(matches) != 1 or matches[0][0] != target_section:
-                    raise CandidateAdviserProfileProposalConflict(
-                        "The exact replacement target is missing, duplicated, or in another section."
-                    )
-                sections[target_section][matches[0][1]] = update.item
-            return EditableCandidateStructuredData(
-                employment=sections[StructuredProfileSection.EMPLOYMENT],
-                education=sections[StructuredProfileSection.EDUCATION],
-                credentials=sections[StructuredProfileSection.CREDENTIALS],
-                skills=sections[StructuredProfileSection.SKILLS],
-                projects=sections[StructuredProfileSection.PROJECTS],
-                achievements=sections[StructuredProfileSection.ACHIEVEMENTS],
-            )
-
         try:
             revision = revision_service.stage_new_revision(
-                user_id, structured_transform=apply_to_current
+                user_id,
+                structured_transform=lambda current: self._apply_update_to_current(
+                    update, saved_resolution, current
+                ),
             )
             record.state = CandidateAdviserProfileProposalState.TRANSFERRED
             record.transferred_profile_revision_id = revision.id
@@ -558,13 +653,15 @@ class CandidateAdviserProfileProposalService:
         )
 
     def _confirmed_source(
-        self, user_id: str, clarification_id: str, *, fresh: bool = False
+        self, user_id: str, clarification_id: str, *, fresh: bool = False, for_update: bool = False
     ) -> CandidateAdviserClarificationRecord:
         statement = select(CandidateAdviserClarificationRecord).where(
             CandidateAdviserClarificationRecord.user_id == user_id,
             CandidateAdviserClarificationRecord.clarification_id == clarification_id,
         )
-        if fresh:
+        if for_update:
+            statement = statement.with_for_update()
+        if fresh or for_update:
             statement = statement.execution_options(populate_existing=True)
         source = self._session.scalar(statement)
         if source is None:
@@ -661,6 +758,7 @@ class CandidateAdviserProfileProposalService:
             rejected_at=record.rejected_at,
             transferred_at=record.transferred_at,
             transferred_profile_revision_id=record.transferred_profile_revision_id,
+            applied_at=record.applied_at,
             comparison=comparison,
             comparison_base_fingerprint=comparison_base_fingerprint,
             overlap_resolution=overlap_resolution,

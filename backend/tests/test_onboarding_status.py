@@ -268,11 +268,14 @@ def test_journey_next_action_prioritizes_enrichment_and_oldest_unresolved_first(
     user = User(email="journey-order@example.com", password_hash="unused")
     db_session.add(user); db_session.commit()
     _assessment_state(db_session, user.id)
+    assessment_record = db_session.scalar(select(CandidateAdviserAssessmentRecord).where(
+        CandidateAdviserAssessmentRecord.user_id == user.id
+    ))
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     for clarification_id, confirmed_at in (("b" * 64, now + timedelta(days=1)), ("a" * 64, now)):
         db_session.add(CandidateAdviserClarificationRecord(
             user_id=user.id, clarification_id=clarification_id,
-            question_key=clarification_id, origin_assessment_fingerprint="a" * 64,
+            question_key=clarification_id, origin_assessment_fingerprint=assessment_record.input_fingerprint,
             question_text="Confirmed career fact", question_source_references_json="[]",
             priority_index=0, answer_text="Synthetic factual answer",
             interpretation_json=json.dumps({

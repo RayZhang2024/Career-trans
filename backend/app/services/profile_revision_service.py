@@ -15,7 +15,7 @@ from app.models.candidate_cv_ingestion import CandidateStructuredProfile
 from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
 from app.models.candidate_profile import CandidateProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
-from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolver
+from app.models.user import User
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalState,
@@ -42,6 +42,7 @@ from app.services.structured_profile_lineage_transitions import (
     StructuredItemLineageTransition,
     StructuredProfileLineageTransitionAnalyzer,
 )
+from app.services.structured_profile_mutation import adviser_lineage_event, persist_structured_profile
 
 _ADVISER_PROPOSAL_UPDATE = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
@@ -86,7 +87,8 @@ class CandidateProfileRevisionService:
         return self._read(revision, user_id)
 
     def create_or_resume(self, user_id: str) -> CandidateProfileRevisionRead:
-        existing = self._active_row(user_id)
+        self.lock_user_authority(user_id)
+        existing = self._active_row(user_id, fresh=True, for_update=True)
         if existing is not None:
             return self._read(existing, user_id)
 
@@ -118,6 +120,7 @@ class CandidateProfileRevisionService:
         insert a normal #207 revision together with another record mutation.
         The transform receives the locked, freshly read full structured state.
         """
+        self.lock_user_authority(user_id)
         if self._active_row(user_id, fresh=True, for_update=True) is not None:
             raise ProfileRevisionConflict(
                 "An active Profile draft already exists. Finish or discard it before transferring this proposal."
@@ -130,6 +133,14 @@ class CandidateProfileRevisionService:
         self._session.add(revision)
         self._session.flush()
         return revision
+
+    def lock_user_authority(self, user_id: str) -> None:
+        """Serialize canonical apply and revision creation, including empty Profile rows."""
+        user = self._session.scalar(
+            select(User).where(User.id == user_id).with_for_update()
+        )
+        if user is None:
+            raise ProfileRevisionConflict("The authenticated Profile owner is unavailable.")
 
     def _new_revision_record(
         self,
@@ -356,64 +367,37 @@ class CandidateProfileRevisionService:
                     **structured_proposal.model_dump(mode="python"),
                     evidence=full_structured.evidence if full_structured is not None else [],
                 )
-                encoded = _canonical_json(final_structured.model_dump(mode="json"))
-                if structured is None:
-                    structured = CandidateStructuredProfile(
-                        user_id=user_id, structured_json=encoded
-                    )
-                    self._session.add(structured)
-                else:
-                    structured.structured_json = encoded
-                ActiveCandidateEvidenceResolver(self._session).resolve(user_id, final_structured)
+                structured = persist_structured_profile(
+                    self._session, user_id, structured, final_structured
+                )
 
             analyzer = StructuredProfileLineageTransitionAnalyzer()
             manual_transitions = (
                 analyzer.analyze_changed_resulting_items(full_structured, final_structured)
                 if "structured" in changed else []
             )
-            adviser_transition: StructuredItemLineageTransition | None = None
-            adviser_fingerprint: str | None = None
+            adviser_event: StructuredProfileItemLineageInput | None = None
             if linked_adviser is not None and final_structured is not None:
                 adviser_record, adviser_update = linked_adviser
-                adviser_section = StructuredProfileSection(adviser_update.section)
-                adviser_fingerprint = structured_profile_item_fingerprint(
-                    adviser_section, adviser_update.item
+                adviser_event = adviser_lineage_event(
+                    full_structured,
+                    final_structured,
+                    StructuredProfileSection(adviser_update.section),
+                    adviser_update.item,
+                    source_ref=adviser_record.id,
                 )
-                final_items = getattr(final_structured, adviser_section.value)
-                exact_survivor = next((
-                    item for item in final_items
-                    if structured_profile_item_fingerprint(adviser_section, item) == adviser_fingerprint
-                ), None)
-                supported_survivors = [
-                    item for item in final_items
-                    if StructuredProfileComparisonService().compare(
-                        adviser_section, adviser_update.item, [item]
-                    ).relationship is StructuredItemRelationship.REINFORCEMENT
-                ]
-                attributable_item = exact_survivor
-                if attributable_item is None and len(supported_survivors) == 1:
-                    # Phase 3 may suppress a normalized-equivalent Adviser add
-                    # from canonical state while retaining its source support.
-                    attributable_item = supported_survivors[0]
-                if attributable_item is not None:
-                    adviser_transition = analyzer.analyze_item(
-                        full_structured, adviser_section, attributable_item
-                    )
 
             events: list[StructuredProfileItemLineageInput] = []
-            if adviser_transition is not None and linked_adviser is not None:
-                adviser_record, _ = linked_adviser
-                events.append(self._lineage_event(
-                    adviser_transition,
-                    source_kind=StructuredItemSourceKind.CANDIDATE_ADVISER,
-                    source_ref=adviser_record.id,
-                ))
+            if adviser_event is not None:
+                events.append(adviser_event)
             for transition in manual_transitions:
-                if adviser_transition is not None and transition.section is adviser_transition.section:
+                if adviser_event is not None and transition.section is adviser_event.section:
                     transition_fingerprint = structured_profile_item_fingerprint(
                         transition.section, transition.item
                     )
-                    if transition_fingerprint == adviser_fingerprint:
+                    if transition_fingerprint == structured_profile_item_fingerprint(
+                        adviser_event.section, adviser_event.item
+                    ):
                         continue
                 events.append(self._lineage_event(
                     transition,

@@ -184,6 +184,7 @@ class CandidateAdviserProfileProposalState(StrEnum):
     PENDING = "pending"
     REJECTED = "rejected"
     TRANSFERRED = "transferred"
+    APPLIED = "applied"
 
 
 class CandidateAdviserProfileProposalOverlapAction(StrEnum):
@@ -223,6 +224,7 @@ class CandidateAdviserProfileProposalRead(BaseModel):
     rejected_at: datetime | None
     transferred_at: datetime | None = None
     transferred_profile_revision_id: str | None = None
+    applied_at: datetime | None = None
     comparison: StructuredProfileComparisonResult | None = None
     comparison_base_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     overlap_resolution: CandidateAdviserProfileProposalOverlapResolution | None = None

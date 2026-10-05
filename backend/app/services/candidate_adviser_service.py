@@ -11,7 +11,7 @@ from app.agents.candidate_adviser import CandidateAdviserAgent
 from app.agents.candidate_adviser_clarification import CandidateAdviserClarificationInterpreter
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord, CandidateAdviserIntakeRecord
 from app.models.candidate_cv_ingestion import CandidateStructuredProfile
-from app.models.candidate_adviser_profile_proposal import CandidateAdviserEnrichmentRecord
+from app.models.candidate_adviser_profile_proposal import CandidateAdviserEnrichmentRecord, CandidateAdviserProfileProposalRecord
 from app.schemas.candidate_adviser import (
     AdviserInsight,
     CandidateAdviserAssessmentContent,
@@ -59,6 +59,8 @@ class CandidateAdviserService:
         return CandidateAdviserIntakeRead(**intake.model_dump(mode="json"), updated_at=record.updated_at)
 
     def assess(self, user_id: str) -> CandidateAdviserAssessmentRead:
+        if self.has_active_clarification_session(user_id):
+            raise ValueError("Finish or defer the active clarification session before updating the assessment.")
         intake = self._intake(user_id)
         if not self._session.scalar(select(CandidateStructuredProfile.id).where(CandidateStructuredProfile.user_id == user_id)):
             raise ValueError("Candidate adviser requires a confirmed CV before assessment.")
@@ -119,18 +121,23 @@ class CandidateAdviserService:
         return assessment if assessment and assessment.status is CandidateAdviserAssessmentStatus.CONFIRMED else None
 
     def list_clarifications(self, user_id: str) -> list[CandidateAdviserClarificationRead]:
-        found = self.get_assessment(user_id)
-        if found is None:
+        assessment_record = self._assessment_record(user_id)
+        if assessment_record is None:
             raise ValueError("A confirmed candidate adviser assessment is required before clarifications.")
-        assessment = found if found.status is CandidateAdviserAssessmentStatus.CONFIRMED else None
-        if assessment is None:
-            # A stale predecessor's siblings are historical, rather than a
-            # new current question set.
+        found = self.get_assessment(user_id)
+        existing = self._session.scalars(select(CandidateAdviserClarificationRecord).where(
+            CandidateAdviserClarificationRecord.user_id == user_id,
+            CandidateAdviserClarificationRecord.origin_assessment_fingerprint == assessment_record.input_fingerprint,
+        )).all()
+        if assessment_record.status == CandidateAdviserAssessmentStatus.CONFIRMED and found is not None and found.status is CandidateAdviserAssessmentStatus.CONFIRMED:
+            self._materialize_clarifications(user_id, found)
+        elif not existing:
             return []
-        self._materialize_clarifications(user_id, assessment)
+        elif not self.has_active_clarification_session(user_id):
+            return []
         records = self._session.scalars(select(CandidateAdviserClarificationRecord).where(
             CandidateAdviserClarificationRecord.user_id == user_id,
-            CandidateAdviserClarificationRecord.origin_assessment_fingerprint == assessment.input_fingerprint,
+            CandidateAdviserClarificationRecord.origin_assessment_fingerprint == assessment_record.input_fingerprint,
         ).order_by(CandidateAdviserClarificationRecord.priority_index, CandidateAdviserClarificationRecord.clarification_id)).all()
         return [self._read_clarification(record) for record in records]
 
@@ -346,12 +353,61 @@ class CandidateAdviserService:
         ))
         if record is None:
             raise LookupError("Clarification not found.")
+        assessment_record = self._assessment_record(user_id)
+        if (
+            assessment_record is None
+            or assessment_record.status != CandidateAdviserAssessmentStatus.CONFIRMED
+            or record.origin_assessment_fingerprint != assessment_record.input_fingerprint
+            or not self.has_active_clarification_session(user_id)
+        ):
+            raise ValueError("Clarification is no longer current.")
         if allow_confirmed and record.status == CandidateAdviserClarificationStatus.CONFIRMED:
             return record
-        assessment = self.current_assessment(user_id)
-        if assessment is None or record.origin_assessment_fingerprint != assessment.input_fingerprint:
-            raise ValueError("Clarification is no longer current.")
         return record
+
+    def active_clarification_session(self, user_id: str) -> tuple[str, list[CandidateAdviserClarificationRecord]] | None:
+        assessment_record = self._assessment_record(user_id)
+        if assessment_record is None or assessment_record.status != CandidateAdviserAssessmentStatus.CONFIRMED:
+            return None
+        rows = list(self._session.scalars(select(CandidateAdviserClarificationRecord).where(
+            CandidateAdviserClarificationRecord.user_id == user_id,
+            CandidateAdviserClarificationRecord.origin_assessment_fingerprint == assessment_record.input_fingerprint,
+        ).order_by(CandidateAdviserClarificationRecord.priority_index, CandidateAdviserClarificationRecord.clarification_id)))
+        if not rows or not self._clarification_session_unresolved(user_id, rows):
+            return None
+        return assessment_record.input_fingerprint, rows
+
+    def has_active_clarification_session(self, user_id: str) -> bool:
+        return self.active_clarification_session(user_id) is not None
+
+    def _clarification_session_unresolved(
+        self, user_id: str, rows: list[CandidateAdviserClarificationRecord]
+    ) -> bool:
+        from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfileProposalRecord
+        for row in rows:
+            if row.status != CandidateAdviserClarificationStatus.CONFIRMED:
+                return True
+            if not row.interpretation_json:
+                continue
+            interpretation = ClarificationInterpretation.model_validate_json(row.interpretation_json)
+            if interpretation.answer_kind not in {ClarificationAnswerKind.CAREER_FACT, ClarificationAnswerKind.MIXED}:
+                continue
+            enrichment = self._session.get(CandidateAdviserEnrichmentRecord, (user_id, row.clarification_id))
+            state = enrichment.state if enrichment is not None else "pending"
+            if state in {"deferred", "reviewed_no_update"}:
+                continue
+            proposals = self._session.scalars(select(CandidateAdviserProfileProposalRecord.state).where(
+                CandidateAdviserProfileProposalRecord.user_id == user_id,
+                CandidateAdviserProfileProposalRecord.source_clarification_id == row.clarification_id,
+            )).all()
+            if not proposals or any(value == "pending" for value in proposals):
+                return True
+        return False
+
+    def _assessment_record(self, user_id: str) -> CandidateAdviserAssessmentRecord | None:
+        return self._session.scalar(select(CandidateAdviserAssessmentRecord).where(
+            CandidateAdviserAssessmentRecord.user_id == user_id
+        ).execution_options(populate_existing=True))
 
     @staticmethod
     def _clarification_identity(origin_fingerprint: str, question: AdviserInsight) -> tuple[str, str, list[dict[str, str]]]:
@@ -423,8 +479,7 @@ class CandidateAdviserService:
         data = CandidateCVData.model_validate(json.loads(structured.structured_json)) if structured else CandidateCVData()
         ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
 
-    @staticmethod
-    def _read_clarification(record: CandidateAdviserClarificationRecord) -> CandidateAdviserClarificationRead:
+    def _read_clarification(self, record: CandidateAdviserClarificationRecord) -> CandidateAdviserClarificationRead:
         return CandidateAdviserClarificationRead(
             clarification_id=record.clarification_id,
             question_text=record.question_text,
@@ -436,4 +491,5 @@ class CandidateAdviserService:
             created_at=record.created_at,
             updated_at=record.updated_at,
             confirmed_at=record.confirmed_at,
+            session_active=self.has_active_clarification_session(record.user_id),
         )

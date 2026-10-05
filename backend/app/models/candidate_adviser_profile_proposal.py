@@ -17,7 +17,7 @@ class CandidateAdviserProfileProposalRecord(Base):
             name="uq_candidate_adviser_profile_proposals_user_key",
         ),
         CheckConstraint(
-            "state IN ('pending', 'rejected', 'transferred')",
+            "state IN ('pending', 'rejected', 'transferred', 'applied')",
             name="ck_candidate_adviser_profile_proposals_state",
         ),
     )
@@ -47,6 +47,7 @@ class CandidateAdviserProfileProposalRecord(Base):
     )
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     transferred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CandidateAdviserEnrichmentRecord(Base):

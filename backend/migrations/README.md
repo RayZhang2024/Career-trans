@@ -142,3 +142,26 @@ Both migrations are safe to rerun. Confirmed career-fact/mixed clarifications
 with existing proposal rows are backfilled as `proposals_created`; eligible
 clarifications without proposal rows are backfilled as `pending`. Missing
 proposal history is never interpreted as a historical successful empty result.
+
+## Direct Adviser proposal application (Issue #275)
+
+Apply the Issue #275 proposal-state migration after `20260926_candidate_adviser_profile_proposals.sql` and `20260929_candidate_adviser_proposal_overlap_resolution.sql` (and after the existing Issue #266 enrichment migration where used), before starting the updated app. It preserves existing pending, rejected, and transferred proposal records, adds nullable `applied_at`, and permits `applied` as a distinct terminal state. Do not start application writers during migration; back up the database first.
+
+SQLite, from the repository root:
+
+```powershell
+python backend/migrations/20261005_candidate_adviser_applied_proposals_sqlite.py "sqlite:///D:/Career-trans-data/career_agent.db"
+```
+
+PostgreSQL:
+
+```powershell
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20261005_candidate_adviser_applied_proposals_postgresql.sql
+```
+
+The SQLite migration rebuilds the proposal table transactionally to replace its
+state check and is safe to rerun. The PostgreSQL migration is transactional and
+safe to rerun. Before starting the updated app, verify that
+`candidate_adviser_profile_proposals.applied_at` exists and its state check
+accepts `pending`, `rejected`, `transferred`, and `applied`; existing transferred
+rows and their linked Profile revisions remain unchanged.

@@ -222,9 +222,10 @@ def test_historical_cv_and_adviser_tables_report_their_actual_missing_columns():
     }
     assert {column.name for column in by_name["candidate_adviser_profile_proposals"].missing_columns} == {
         "overlap_resolution_json",
+        "applied_at",
     }
     assert CandidateCompatibilityAction.ADD_MISSING_SCHEMA_COLUMN in by_name["candidate_cv_ingestion_drafts"].planned_actions
-    assert CandidateCompatibilityAction.ADD_MISSING_SCHEMA_COLUMN in by_name["candidate_adviser_profile_proposals"].planned_actions
+    assert CandidateCompatibilityAction.RECONSTRUCT_HISTORICAL_ADVISER_PROPOSAL_TABLE in by_name["candidate_adviser_profile_proposals"].planned_actions
 
 
 def test_later_whole_candidate_tables_are_reported_individually_when_absent():

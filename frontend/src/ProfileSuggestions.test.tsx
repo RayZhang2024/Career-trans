@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { ApiError } from "./api";
@@ -6,7 +6,6 @@ import { ProfileSuggestions } from "./ProfileSuggestions";
 import type {
   AdviserProfileProposal,
   AdviserProfileProposalGenerationRead,
-  AdviserProfileProposalTransferRead,
   AdviserProfileProposalUpdate,
 } from "./api";
 
@@ -32,8 +31,8 @@ function proposal(overrides: Partial<AdviserProfileProposal> = {}): AdviserProfi
     id: "proposal-1", state: "pending", revision: 1,
     source_clarification_id: "clarification-1", source_assessment_fingerprint: "a".repeat(64),
     original_update: original, proposed_update: original, created_at: createdAt, updated_at: createdAt,
-    rejected_at: null, transferred_at: null, transferred_profile_revision_id: null,
-    comparison: null, comparison_base_fingerprint: null, overlap_resolution: null, overlap_resolution_stale: null,
+    rejected_at: null, transferred_at: null, transferred_profile_revision_id: null, applied_at: null,
+    comparison: comparison("new"), comparison_base_fingerprint: "a".repeat(64), overlap_resolution: null, overlap_resolution_stale: null,
     ...overrides,
   };
 }
@@ -44,14 +43,6 @@ function mount(source: ReturnType<typeof clarification> | null = null) {
   return render(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={source} /></MemoryRouter>);
 }
 function history(rows: AdviserProfileProposal[]) { request.mockResolvedValueOnce(rows); }
-function transferRead(record: AdviserProfileProposal): AdviserProfileProposalTransferRead {
-  return { proposal: record, profile_revision: {
-    id: "revision-1", state: "draft", revision: 1, proposed_profile: null, proposed_structured: null,
-    changed_authorities: ["structured"], stale_authorities: [], created_at: createdAt, updated_at: createdAt,
-    confirmed_at: null, discarded_at: null, structured_comparisons: [],
-  } };
-}
-
 it.each(["career_fact", "mixed"])("shows generation only for affirmative confirmed career clarifications (%s)", async (kind) => {
   mount(clarification(kind));
   expect(await screen.findByRole("button", { name: "Review for Profile" })).toBeEnabled();
@@ -139,7 +130,7 @@ it("keeps transferred and rejected proposal cards read-only", async () => {
   expect(await screen.findByText("Rejected — your Profile was not changed.")).toBeInTheDocument();
   expect(screen.getByText(/Sent to the Profile workflow/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Reject" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Use in Profile draft" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Add to Profile" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Edit suggestion" })).not.toBeInTheDocument();
 });
 
@@ -272,61 +263,75 @@ it("rejects with the expected revision, prevents duplicate clicks, and retains r
   expect(await screen.findByText("Suggestion rejected. Your current Profile was not changed.")).toBeInTheDocument();
   expect(screen.getByText("Rejected — your Profile was not changed.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Edit suggestion" })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Use in Profile draft" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Add to Profile" })).not.toBeInTheDocument();
 });
 
-it("transfers with the expected revision, displays the returned draft state, and links to Profile", async () => {
-  let finishTransfer!: (result: unknown) => void;
-  const record = proposal(); const sent = proposal({ state: "transferred", revision: 2, transferred_at: createdAt, transferred_profile_revision_id: "revision-1" });
-  history([record]); request.mockReturnValueOnce(new Promise((resolve) => { finishTransfer = resolve; })).mockResolvedValueOnce([sent]);
+it("applies with the expected revision and displays applied history", async () => {
+  let finishApply!: (result: unknown) => void;
+  const record = proposal(); const sent = proposal({ state: "applied", revision: 2, applied_at: createdAt });
+  history([record]); request.mockReturnValueOnce(new Promise((resolve) => { finishApply = resolve; })).mockResolvedValueOnce([sent]);
   mount(); fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Use in Profile draft" }));
-  expect(await screen.findByRole("button", { name: "Sending to Profile draft…" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "Sending to Profile draft…" }));
-  expect(request.mock.calls.filter(([path]) => String(path).endsWith("/transfer"))).toHaveLength(1);
-  expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1/transfer", { method: "POST", body: JSON.stringify({ expected_revision: 1 }) });
-  await act(async () => finishTransfer(transferRead(sent)));
-  expect(await screen.findByText("Profile draft created. Your current Profile is still unchanged until you review and confirm it.")).toBeInTheDocument();
-  expect(screen.getByText(/At transfer, the linked Profile revision was created as draft/)).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Review Profile changes" })).toHaveAttribute("href", "/profile");
+  fireEvent.click(await screen.findByRole("button", { name: "Add to Profile" }));
+  expect(await screen.findByRole("button", { name: "Updating Profile…" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Updating Profile…" }));
+  expect(request.mock.calls.filter(([path]) => String(path).endsWith("/apply"))).toHaveLength(1);
+  expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1/apply", { method: "POST", body: JSON.stringify({ expected_revision: 1 }) });
+  await act(async () => finishApply(sent));
+  expect(await screen.findByText("Profile updated with this Adviser suggestion.")).toBeInTheDocument();
+  expect(screen.getByText(/Applied — this information is now part of your current Profile/)).toBeInTheDocument();
   expect(request.mock.calls.some(([path]) => /profile\/revisions\/.*\/(review|confirm)/.test(String(path)))).toBe(false);
 });
 
-it("leaves a pending proposal unchanged on transfer 409 and offers Profile navigation", async () => {
+it("refreshes the authoritative Adviser journey after rejecting a proposal", async () => {
+  const pending = proposal();
+  const otherPending = proposal({ id: "proposal-2", proposed_update: update("projects") });
+  const rejected = proposal({ state: "rejected", revision: 2, rejected_at: createdAt });
+  const onResolved = vi.fn();
+  request.mockResolvedValueOnce([pending, otherPending]);
+  render(<MemoryRouter><ProfileSuggestions api={api} onResolved={onResolved} /></MemoryRouter>);
+  fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
+  expect(await screen.findByRole("article", { name: "Skills" })).toBeInTheDocument();
+  request.mockResolvedValueOnce(rejected).mockResolvedValueOnce([rejected, otherPending]);
+  fireEvent.click(within(screen.getByRole("article", { name: "Skills" })).getByRole("button", { name: "Reject" }));
+  expect(await screen.findByText("Suggestion rejected. Your current Profile was not changed.")).toBeInTheDocument();
+  expect(within(screen.getByRole("article", { name: "Projects" })).getByText("Pending suggestion — this is not part of your current Profile.")).toBeInTheDocument();
+  await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+});
+
+it("leaves a pending proposal unchanged on apply 409", async () => {
   const record = proposal(); history([record]); request.mockRejectedValueOnce(new ApiError(409, "private conflict")).mockResolvedValueOnce([record]);
   mount(); fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Use in Profile draft" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("could not be sent to the Profile workflow");
-  expect(screen.getByRole("link", { name: "Open Profile" })).toHaveAttribute("href", "/profile");
+  fireEvent.click(await screen.findByRole("button", { name: "Add to Profile" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("could not be applied");
   expect(screen.getByText("Pending suggestion — this is not part of your current Profile.")).toBeInTheDocument();
 });
 
-it("refreshes history after transfer 404 without fabricating a transferred state", async () => {
+it("refreshes history after apply 404 without fabricating an applied state", async () => {
   const record = proposal(); history([record]);
   request.mockRejectedValueOnce(new ApiError(404, "private not found")).mockResolvedValueOnce([]);
   mount(); fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Use in Profile draft" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("no longer available in Profile suggestions");
+  fireEvent.click(await screen.findByRole("button", { name: "Add to Profile" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("no longer available");
   await waitFor(() => expect(screen.getByText("No Profile suggestions yet.")).toBeInTheDocument());
-  expect(screen.queryByText("Sent to the Profile workflow")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Applied — this information/)).not.toBeInTheDocument();
 });
 
-it.each(["transfer", "reject"])("does not let a delayed history response resurrect pending after a successful %s", async (action) => {
+it.each(["apply", "reject"])("does not let a delayed history response resurrect pending after a successful %s", async (action) => {
   let finishOldHistory!: (result: unknown) => void;
   const record = proposal();
-  const terminal = action === "transfer"
-    ? proposal({ state: "transferred", revision: 2, transferred_at: createdAt, transferred_profile_revision_id: "revision-1" })
+  const terminal = action === "apply"
+    ? proposal({ state: "applied", revision: 2, applied_at: createdAt })
     : proposal({ state: "rejected", revision: 2, rejected_at: createdAt });
   history([record]); mount();
   fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
   expect(await screen.findByRole("button", { name: "Refresh profile suggestions" })).toBeInTheDocument();
   request.mockReturnValueOnce(new Promise((resolve) => { finishOldHistory = resolve; }));
   fireEvent.click(screen.getByRole("button", { name: "Refresh profile suggestions" }));
-  request.mockResolvedValueOnce(action === "transfer" ? transferRead(terminal) : terminal).mockResolvedValueOnce([terminal]);
-  fireEvent.click(screen.getByRole("button", { name: action === "transfer" ? "Use in Profile draft" : "Reject" }));
-  await waitFor(() => expect(screen.getByText(action === "transfer" ? /Sent to the Profile workflow/ : "Rejected — your Profile was not changed.")).toBeInTheDocument());
+  request.mockResolvedValueOnce(terminal).mockResolvedValueOnce([terminal]);
+  fireEvent.click(screen.getByRole("button", { name: action === "apply" ? "Add to Profile" : "Reject" }));
+  await waitFor(() => expect(screen.getByText(action === "apply" ? /Applied — this information/ : "Rejected — your Profile was not changed.")).toBeInTheDocument());
   await act(async () => finishOldHistory([record]));
-  expect(screen.getByText(action === "transfer" ? /Sent to the Profile workflow/ : "Rejected — your Profile was not changed.")).toBeInTheDocument();
+  expect(screen.getByText(action === "apply" ? /Applied — this information/ : "Rejected — your Profile was not changed.")).toBeInTheDocument();
   expect(screen.queryByText("Pending suggestion — this is not part of your current Profile.")).not.toBeInTheDocument();
 });
 
@@ -369,7 +374,7 @@ const comparison = (relationship: "new" | "reinforcement" | "refinement" | "conf
   current_item: relationship === "refinement" || relationship === "conflict" ? candidates[0].item : null,
 });
 
-it("offers exact replacement for Adviser refinement/conflict and keeps transfer as a separate action", async () => {
+it("offers exact replacement for Adviser refinement/conflict before direct apply", async () => {
   for (const relation of ["refinement", "conflict"] as const) {
     cleanup(); request.mockReset();
     const current = proposal({ comparison: comparison(relation), comparison_base_fingerprint: "a".repeat(64) });
@@ -381,8 +386,9 @@ it("offers exact replacement for Adviser refinement/conflict and keeps transfer 
     request.mockResolvedValueOnce(replaced).mockResolvedValueOnce([replaced]);
     fireEvent.click(screen.getByRole("button", { name: "Replace current item" }));
     await screen.findByText(/Suggestion now targets that exact current item/);
+    expect(screen.getByText("Suggestion now targets that exact current item. Choose Update Profile when ready.")).toBeInTheDocument();
     expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1", expect.objectContaining({ method: "PATCH", body: expect.stringContaining('"operation":"replace_exact"') }));
-    expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Update Profile" })).toBeEnabled();
   }
 });
 
@@ -395,31 +401,32 @@ it("shows every Adviser ambiguous candidate and persists explicit add-as-new wit
   request.mockResolvedValueOnce(resolved).mockResolvedValueOnce([resolved]);
   fireEvent.click(screen.getByRole("button", { name: "Keep as separate new item" }));
   expect((await screen.findAllByText(/You chose to keep this as a separate Profile item/)).length).toBeGreaterThan(0);
+  expect(screen.getByText("You chose to keep this as a separate Profile item. You can now Add to Profile.")).toBeInTheDocument();
   expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1/resolve-overlap", expect.objectContaining({ method: "POST", body: JSON.stringify({ expected_revision: 1, expected_comparison_base_fingerprint: "a".repeat(64), action: "add_as_new" }) }));
   expect(request.mock.calls.some(([path]) => String(path).endsWith("/transfer"))).toBe(false);
 });
 
-it("does not offer non-unique Adviser replacement targets and disables stale-choice transfer", async () => {
+it("does not offer non-unique Adviser replacement targets and disables stale-choice apply", async () => {
   const duplicate = "f".repeat(64);
   const candidates = [1, 2].map((index) => ({ fingerprint: duplicate, item: { name: `Rust ${index}`, category: "language" } }));
   const stale = proposal({ comparison: comparison("ambiguous", candidates), comparison_base_fingerprint: "a".repeat(64), overlap_resolution: { action: "add_as_new", base_structured_fingerprint: "a".repeat(64), incoming_fingerprint: "e".repeat(64), candidate_fingerprints: [duplicate, duplicate], resolved_at: createdAt }, overlap_resolution_stale: true });
   request.mockResolvedValueOnce([stale]); mount(); fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
   await waitFor(() => expect(screen.getAllByText(/cannot be uniquely targeted yet/)).toHaveLength(2));
   expect(screen.queryByRole("button", { name: /Replace this item/ })).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Add to Profile" })).toBeDisabled();
   expect(screen.getByRole("alert")).toHaveTextContent(/earlier overlap choice is no longer current/);
   expect(screen.getByRole("button", { name: "Refresh comparison" })).toBeEnabled();
 });
 
-it.each(["new", "reinforcement"] as const)("allows normal Adviser draft transfer for %s comparisons", async (relation) => {
+it.each(["new", "reinforcement"] as const)("allows direct Adviser apply for %s comparisons", async (relation) => {
   const current = proposal({ comparison: comparison(relation), comparison_base_fingerprint: "a".repeat(64) });
-  const transferred = proposal({ state: "transferred", revision: 2, transferred_at: createdAt, transferred_profile_revision_id: "revision-1", comparison: current.comparison });
+  const applied = proposal({ state: "applied", revision: 2, applied_at: createdAt, comparison: current.comparison });
   request.mockResolvedValueOnce([current]); mount(); fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
   expect(await screen.findByText(relation === "new" ? /no overlapping current Profile item was found/ : /keep one current item/)).toBeInTheDocument();
-  request.mockResolvedValueOnce(transferRead(transferred)).mockResolvedValueOnce([transferred]);
-  fireEvent.click(screen.getByRole("button", { name: "Use in Profile draft" }));
-  expect(await screen.findByText(/Sent to the Profile workflow/)).toBeInTheDocument();
-  expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1/transfer", expect.objectContaining({ method: "POST" }));
+  request.mockResolvedValueOnce(applied).mockResolvedValueOnce([applied]);
+  fireEvent.click(screen.getByRole("button", { name: "Add to Profile" }));
+  expect(await screen.findByText(/Applied — this information/)).toBeInTheDocument();
+  expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1/apply", expect.objectContaining({ method: "POST" }));
 });
 
 it("does not let an old Adviser history GET erase a newer saved add-as-new decision", async () => {
@@ -440,22 +447,22 @@ it("does not let an old Adviser history GET erase a newer saved add-as-new decis
 });
 
 
-it("allows Adviser suggestion generation with an active Profile draft but still blocks transfer", async () => {
+it("allows Adviser suggestion generation with an active Profile draft but still blocks apply", async () => {
   const pending = proposal();
   request.mockResolvedValueOnce([]).mockResolvedValueOnce({ proposals: [pending] }).mockResolvedValueOnce([pending]);
   const { rerender } = render(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft /></MemoryRouter>);
   const review = await screen.findByRole("button", { name: "Review for Profile" });
   expect(review).toBeEnabled();
-  expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be sent/)).toBeInTheDocument();
+  expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be applied/)).toBeInTheDocument();
   fireEvent.click(review);
   expect(await screen.findByText("Pending suggestion — this is not part of your current Profile.")).toBeInTheDocument();
-  expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be sent/)).toBeInTheDocument();
+  expect(screen.getByText(/You can review, edit, or reject this Adviser suggestion now, but it cannot be applied/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Edit suggestion" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
-  expect(screen.queryByRole("button", { name: "Use in Profile draft" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Add to Profile" })).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Open current Profile draft" })).toHaveAttribute("href", "/profile");
   expect(screen.getAllByRole("link", { name: /Profile draft/ })).toHaveLength(1);
   expect(request).not.toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1/transfer", expect.anything());
   rerender(<MemoryRouter><ProfileSuggestions api={api} confirmedClarification={clarification()} activeProfileDraft={false} /></MemoryRouter>);
-  expect(screen.getByRole("button", { name: "Use in Profile draft" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "Add to Profile" })).toBeEnabled();
 });

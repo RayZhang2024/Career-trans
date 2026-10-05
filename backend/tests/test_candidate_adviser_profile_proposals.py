@@ -16,6 +16,7 @@ from app.models.candidate_adviser_profile_proposal import CandidateAdviserProfil
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.candidate_profile_revision import CandidateProfileRevisionRecord
 from app.models.candidate_profile import CandidateProfile
+from app.models.candidate_structured_item_lineage import CandidateStructuredItemLineageRecord
 from app.models.user import User
 from app.schemas.candidate_adviser import (
     CandidateAdviserAssessmentContent,
@@ -978,6 +979,279 @@ def test_materialization_accepts_confirmed_career_or_mixed_clarification(db_sess
     assert created.source_assessment_fingerprint == "a" * 64
 
 
+def test_direct_apply_updates_canonical_profile_and_is_idempotent_with_adviser_lineage(db_session) -> None:
+    user_id = _user(db_session, "proposal-direct-apply@example.com")
+    clarification_id = _source(db_session, user_id)
+    db_session.add(CandidateStructuredProfile(
+        user_id=user_id,
+        structured_json=json.dumps(CandidateCVData(skills=[Skill(name="Rust")]).model_dump(mode="json")),
+    ))
+    db_session.commit()
+    service = CandidateAdviserProfileProposalService(db_session)
+    proposal = service.materialize_from_confirmed_clarification(user_id, clarification_id, _update(name="Python"))
+
+    applied = service.apply_to_profile(user_id, proposal.id, expected_revision=proposal.revision)
+    repeated = service.apply_to_profile(user_id, proposal.id, expected_revision=proposal.revision)
+    assert applied.state is CandidateAdviserProfileProposalState.APPLIED
+    assert applied.applied_at is not None
+    assert repeated == applied
+    current = db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+    assert CandidateCVData.model_validate_json(current.structured_json).skills == [Skill(name="Rust"), Skill(name="Python")]
+    assert db_session.scalars(select(CandidateProfileRevisionRecord).where(CandidateProfileRevisionRecord.user_id == user_id)).all() == []
+    history = CandidateStructuredItemLineageService(db_session).read_history(user_id)
+    assert len(history) == 1
+    assert history[0].source_kind == "candidate_adviser"
+    assert history[0].source_ref == proposal.id
+    assert history[0].relationship == StructuredItemRelationship.NEW
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="Only a pending"):
+        service.edit_pending(user_id, proposal.id, expected_revision=applied.revision, proposed_update=_update(name="No"))
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="Only a pending"):
+        service.resolve_overlap(user_id, proposal.id, CandidateAdviserProfileProposalOverlapResolutionRequest(
+            expected_revision=applied.revision,
+            expected_comparison_base_fingerprint=structured_authority_fingerprint(CandidateCVData(skills=[Skill(name="Rust"), Skill(name="Python")])),
+            action="add_as_new",
+        ))
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="cannot be transferred to a Profile draft"):
+        service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=applied.revision)
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="Only a pending Adviser proposal can be rejected"):
+        service.reject_pending(user_id, proposal.id, expected_revision=applied.revision)
+    unchanged = service.get_for_user(user_id, proposal.id)
+    assert unchanged == applied
+    assert db_session.scalars(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )).all() == []
+    persisted = db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    ))
+    assert CandidateCVData.model_validate_json(persisted.structured_json).skills == [Skill(name="Rust"), Skill(name="Python")]
+    persisted_lineage = CandidateStructuredItemLineageService(db_session).read_history(user_id)
+    assert persisted_lineage == history
+
+
+def test_direct_apply_rolls_back_canonical_evidence_lineage_and_proposal_after_late_failure(
+    db_session, monkeypatch
+) -> None:
+    user_id = _user(db_session, "proposal-direct-apply-rollback@example.com")
+    clarification_id = _source(db_session, user_id)
+    before_data = CandidateCVData(
+        employment=[Employment(employer="Existing Co", title="Engineer", start_date="2020")],
+        skills=[Skill(name="Rust")],
+    )
+    _seed_structured_profile(db_session, user_id, before_data)
+    proposal = CandidateAdviserProfileProposalService(db_session).materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update("employment", name="Architect")
+    )
+    assert proposal.state is CandidateAdviserProfileProposalState.PENDING
+
+    def evidence_snapshot(session):
+        return [
+            (row.id, row.fingerprint, row.evidence_type, row.title, row.text,
+             row.skills_json, row.provenance_json, row.created_at)
+            for row in session.scalars(select(CandidateEvidenceRecord).where(
+                CandidateEvidenceRecord.user_id == user_id
+            ).order_by(CandidateEvidenceRecord.id))
+        ]
+
+    def lineage_snapshot(session):
+        return [
+            (row.id, row.lineage_key, row.section, row.item_fingerprint, row.item_json,
+             row.source_kind, row.source_ref, row.relationship,
+             row.predecessor_fingerprint, row.predecessor_item_json, row.created_at)
+            for row in session.scalars(select(CandidateStructuredItemLineageRecord).where(
+                CandidateStructuredItemLineageRecord.user_id == user_id
+            ).order_by(CandidateStructuredItemLineageRecord.id))
+        ]
+
+    structured_before = db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    )).structured_json
+    evidence_before = evidence_snapshot(db_session)
+    assert evidence_before
+    lineage_before = lineage_snapshot(db_session)
+    proposal_before = db_session.get(CandidateAdviserProfileProposalRecord, proposal.id)
+    proposal_state_before = (
+        proposal_before.state, proposal_before.revision,
+        proposal_before.applied_at, proposal_before.updated_at,
+    )
+    revisions_before = db_session.scalars(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )).all()
+    assert revisions_before == []
+    late_stage_seen = False
+
+    def fail_after_canonical_and_evidence_staging(service, staged_user_id, events):
+        nonlocal late_stage_seen
+        assert staged_user_id == user_id and events
+        assert db_session.scalar(select(CandidateEvidenceRecord.id).where(
+            CandidateEvidenceRecord.user_id == user_id,
+            CandidateEvidenceRecord.title == "Architect at Example",
+        )) is not None
+        late_stage_seen = True
+        raise RuntimeError("forced late direct-apply lineage failure")
+
+    monkeypatch.setattr(CandidateStructuredItemLineageService, "stage_many", fail_after_canonical_and_evidence_staging)
+    with pytest.raises(RuntimeError, match="forced late direct-apply lineage failure"):
+        CandidateAdviserProfileProposalService(db_session).apply_to_profile(
+            user_id, proposal.id, expected_revision=proposal.revision
+        )
+    assert late_stage_seen
+
+    db_session.rollback()
+    db_session.expire_all()
+    with sessionmaker(bind=db_session.get_bind(), expire_on_commit=False)() as fresh:
+        structured_after = fresh.scalar(select(CandidateStructuredProfile).where(
+            CandidateStructuredProfile.user_id == user_id
+        ))
+        assert structured_after.structured_json == structured_before
+        assert evidence_snapshot(fresh) == evidence_before
+        assert lineage_snapshot(fresh) == lineage_before
+        proposal_after = fresh.get(CandidateAdviserProfileProposalRecord, proposal.id)
+        assert (
+            proposal_after.state, proposal_after.revision,
+            proposal_after.applied_at, proposal_after.updated_at,
+        ) == proposal_state_before
+        assert proposal_after.state == CandidateAdviserProfileProposalState.PENDING
+        assert proposal_after.applied_at is None
+        assert fresh.scalars(select(CandidateProfileRevisionRecord).where(
+            CandidateProfileRevisionRecord.user_id == user_id
+        )).all() == []
+
+
+def test_direct_apply_racing_profile_draft_creation_leaves_draft_detectably_stale(tmp_path) -> None:
+    from app.core.database import Base
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'direct-apply-profile-draft-race.sqlite'}")
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    try:
+        with sessions() as seed:
+            user_id = _user(seed, "proposal-direct-apply-race@example.com")
+            clarification_id = _source(seed, user_id)
+            before_data = CandidateCVData(skills=[Skill(name="Rust")])
+            _seed_structured_profile(seed, user_id, before_data)
+            proposal = CandidateAdviserProfileProposalService(seed).materialize_from_confirmed_clarification(
+                user_id, clarification_id, _update(name="Python")
+            )
+            proposal_id = proposal.id
+            proposal_revision = proposal.revision
+            before_fingerprint = structured_authority_fingerprint(before_data)
+
+        with sessions() as apply_session, sessions() as draft_session:
+            created_draft: list[tuple[str, str]] = []
+
+            def create_and_edit_competing_draft(session, flush_context, instances):
+                revisions = CandidateProfileRevisionService(draft_session)
+                draft = revisions.create_or_resume(user_id)
+                draft_record = draft_session.get(CandidateProfileRevisionRecord, draft.id)
+                assert draft_record.base_structured_fingerprint == before_fingerprint
+                proposed = draft.proposed_structured.model_copy(
+                    update={"skills": [*draft.proposed_structured.skills, Skill(name="Go")]}
+                )
+                saved = revisions.save(
+                    user_id,
+                    draft.id,
+                    expected_revision=draft.revision,
+                    patch_fields={"proposed_structured"},
+                    proposed_profile=None,
+                    proposed_structured=proposed,
+                )
+                created_draft.append((saved.id, draft_record.base_structured_fingerprint))
+
+            event.listen(apply_session, "before_flush", create_and_edit_competing_draft, once=True)
+            try:
+                result = CandidateAdviserProfileProposalService(apply_session).apply_to_profile(
+                    user_id, proposal_id, expected_revision=proposal_revision
+                )
+            except CandidateAdviserProfileProposalConflict as conflict:
+                result = None
+                assert "active Profile draft" in str(conflict)
+            assert len(created_draft) == 1
+
+            apply_session.expire_all()
+            draft_row = apply_session.get(CandidateProfileRevisionRecord, created_draft[0][0])
+            assert draft_row is not None and draft_row.state == "draft"
+            canonical_row = apply_session.scalar(select(CandidateStructuredProfile).where(
+                CandidateStructuredProfile.user_id == user_id
+            ))
+            canonical_after = CandidateCVData.model_validate_json(canonical_row.structured_json)
+            stored_proposal = CandidateAdviserProfileProposalService(apply_session).get_for_user(
+                user_id, proposal_id
+            )
+
+            if result is not None:
+                assert result.state is CandidateAdviserProfileProposalState.APPLIED
+                assert [skill.name for skill in canonical_after.skills] == ["Rust", "Python"]
+                assert draft_row.base_structured_fingerprint == before_fingerprint
+                assert structured_authority_fingerprint(canonical_after) != draft_row.base_structured_fingerprint
+                active_draft = CandidateProfileRevisionService(apply_session).active(user_id)
+                assert active_draft is not None and active_draft.id == draft_row.id
+                assert active_draft.stale_authorities == ["structured"]
+                with pytest.raises(ProfileRevisionStale, match="structured"):
+                    CandidateProfileRevisionService(apply_session).review(
+                        user_id, draft_row.id, expected_revision=draft_row.revision
+                    )
+                assert stored_proposal.state is CandidateAdviserProfileProposalState.APPLIED
+                lineage = CandidateStructuredItemLineageService(apply_session).read_history(user_id)
+                assert len([item for item in lineage if item.source_ref == proposal_id]) == 1
+                assert apply_session.scalars(select(CandidateProfileRevisionRecord).where(
+                    CandidateProfileRevisionRecord.user_id == user_id,
+                    CandidateProfileRevisionRecord.active_user_id == user_id,
+                )).all() == [draft_row]
+            else:
+                assert canonical_after == before_data
+                assert draft_row.base_structured_fingerprint == before_fingerprint
+                assert stored_proposal.state is CandidateAdviserProfileProposalState.PENDING
+                assert CandidateProfileRevisionService(apply_session).active(user_id).id == draft_row.id
+                assert CandidateStructuredItemLineageService(apply_session).read_history(user_id) == []
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_direct_apply_reinforcement_keeps_canonical_item_and_records_support(db_session) -> None:
+    user_id = _user(db_session, "proposal-direct-reinforcement@example.com")
+    clarification_id = _source(db_session, user_id)
+    original = Skill(name="Python", category="Language")
+    db_session.add(CandidateStructuredProfile(
+        user_id=user_id,
+        structured_json=json.dumps(CandidateCVData(skills=[original]).model_dump(mode="json")),
+    ))
+    db_session.commit()
+    service = CandidateAdviserProfileProposalService(db_session)
+    proposal = service.materialize_from_confirmed_clarification(
+        user_id, clarification_id, SkillProposalUpdate(
+            operation="add", target_fingerprint=None, section="skills",
+            item=Skill(name=" python ", category="Language"),
+        )
+    )
+    applied = service.apply_to_profile(user_id, proposal.id, expected_revision=proposal.revision)
+
+    assert applied.state is CandidateAdviserProfileProposalState.APPLIED
+    current = db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+    assert CandidateCVData.model_validate_json(current.structured_json).skills == [original]
+    history = CandidateStructuredItemLineageService(db_session).read_history(user_id)
+    assert len(history) == 1 and history[0].source_kind == "candidate_adviser"
+    assert history[0].relationship == StructuredItemRelationship.REINFORCEMENT
+
+
+def test_direct_apply_is_blocked_by_active_profile_draft(db_session) -> None:
+    user_id = _user(db_session, "proposal-direct-draft@example.com")
+    clarification_id = _source(db_session, user_id)
+    db_session.add(CandidateStructuredProfile(
+        user_id=user_id, structured_json=json.dumps(CandidateCVData().model_dump(mode="json")),
+    ))
+    db_session.commit()
+    proposal = CandidateAdviserProfileProposalService(db_session).materialize_from_confirmed_clarification(
+        user_id, clarification_id, _update(name="Python")
+    )
+    CandidateProfileRevisionService(db_session).create_or_resume(user_id)
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="active Profile draft"):
+        CandidateAdviserProfileProposalService(db_session).apply_to_profile(
+            user_id, proposal.id, expected_revision=proposal.revision
+        )
+    assert CandidateAdviserProfileProposalService(db_session).get_for_user(user_id, proposal.id).state is CandidateAdviserProfileProposalState.PENDING
+
+
 @pytest.mark.parametrize("status,interpretation", [("review_ready", True), ("unanswered", False), ("confirmed", False)])
 def test_materialization_requires_confirmed_interpreted_source(db_session, status, interpretation) -> None:
     user_id = _user(db_session, f"proposal-invalid-source-{status}-{interpretation}@example.com")
@@ -1572,3 +1846,50 @@ def test_exact_target_patch_clears_ambiguous_add_as_new_and_remains_transferable
     assert edited.overlap_resolution is None
     transfer = service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=edited.revision)
     assert transfer.profile_revision.proposed_structured.employment[0].title == "Director"
+
+
+def test_direct_apply_requires_fresh_explicit_ambiguous_resolution(db_session):
+    user_id, proposal = _ambiguous_employment_proposal(db_session, "adviser-resolution-direct-apply@example.test")
+    service = CandidateAdviserProfileProposalService(db_session)
+    viewed = service.get_for_user(user_id, proposal.id)
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="overlaps current Profile"):
+        service.apply_to_profile(user_id, proposal.id, expected_revision=viewed.revision)
+    resolved = service.resolve_overlap(
+        user_id, proposal.id,
+        CandidateAdviserProfileProposalOverlapResolutionRequest(
+            expected_revision=viewed.revision,
+            expected_comparison_base_fingerprint=viewed.comparison_base_fingerprint,
+            action=CandidateAdviserProfileProposalOverlapAction.ADD_AS_NEW,
+        ),
+    )
+    row = db_session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+    current = CandidateCVData.model_validate_json(row.structured_json)
+    current.employment.append(Employment(employer="Another", title="Role", start_date="2020"))
+    row.structured_json = json.dumps(current.model_dump(mode="json"))
+    db_session.commit()
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="overlap choice is stale"):
+        service.apply_to_profile(user_id, proposal.id, expected_revision=resolved.revision)
+    assert service.get_for_user(user_id, proposal.id).state is CandidateAdviserProfileProposalState.PENDING
+
+
+def test_direct_apply_accepts_exact_replacement_without_profile_revision(db_session):
+    user_id, proposal = _ambiguous_employment_proposal(db_session, "adviser-resolution-direct-replace@example.test")
+    service = CandidateAdviserProfileProposalService(db_session)
+    viewed = service.get_for_user(user_id, proposal.id)
+    target = viewed.comparison.candidate_matches[0]
+    replacement = EmploymentProposalUpdate(
+        section="employment", operation="replace_exact", target_fingerprint=target.fingerprint,
+        item=Employment(employer="Example", title="Director", start_date="2021"),
+    )
+    edited = service.edit_pending(
+        user_id, proposal.id, expected_revision=viewed.revision, proposed_update=replacement
+    )
+    applied = service.apply_to_profile(user_id, proposal.id, expected_revision=edited.revision)
+    current = CandidateCVData.model_validate_json(db_session.scalar(
+        select(CandidateStructuredProfile.structured_json).where(CandidateStructuredProfile.user_id == user_id)
+    ))
+    assert applied.state is CandidateAdviserProfileProposalState.APPLIED
+    assert [item.title for item in current.employment] == ["Director", "Manager"]
+    assert db_session.scalars(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )).all() == []

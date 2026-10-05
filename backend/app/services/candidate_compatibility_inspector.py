@@ -79,13 +79,14 @@ def _is_historical_adviser_proposal_table(inspector, table_name: str, dialect) -
         return False
     table = Base.metadata.tables[table_name]
     transfer_columns = {"transferred_profile_revision_id", "transferred_at"}
-    optional_overlap_column = "overlap_resolution_json"
+    optional_columns = {"overlap_resolution_json", "applied_at"}
     expected_columns = {
         name for name in table.columns.keys()
-        if name not in transfer_columns | {optional_overlap_column}
+        if name not in transfer_columns | optional_columns
     }
     actual = {column["name"]: column for column in inspector.get_columns(table_name)}
-    if set(actual) not in (expected_columns, expected_columns | {optional_overlap_column}):
+    actual_names = set(actual)
+    if not expected_columns.issubset(actual_names) or not actual_names.issubset(expected_columns | optional_columns | transfer_columns):
         return False
     for name, column in actual.items():
         expected = table.columns[name]
@@ -104,7 +105,11 @@ def _is_historical_adviser_proposal_table(inspector, table_name: str, dialect) -
         if (signature := _constraint_signature(constraint))
         and not (
             signature[0] == "check"
-            or (signature[0] == "foreign_key" and signature[1][0][0] == "transferred_profile_revision_id")
+            or (
+                signature[0] == "foreign_key"
+                and signature[1][0][0] == "transferred_profile_revision_id"
+                and "transferred_profile_revision_id" not in actual_names
+            )
         )
     }
     actual_constraints: set[tuple] = set()
@@ -122,18 +127,18 @@ def _is_historical_adviser_proposal_table(inspector, table_name: str, dialect) -
         for value in inspector.get_foreign_keys(table_name)
     )
     checks = inspector.get_check_constraints(table_name)
+    legacy_states = "stateinpendingrejectedtransferred" if transfer_columns.issubset(actual_names) else "stateinpendingrejected"
     if len(checks) != 1 or (
         checks[0].get("name") != "ck_candidate_adviser_profile_proposals_state"
-        or _normal_sql(checks[0].get("sqltext") or "") != "stateinpendingrejected"
+        or _normal_sql(checks[0].get("sqltext") or "") != legacy_states
     ):
         return False
     actual_constraints.update(
         ("check", value.get("name"), _normal_sql(value.get("sqltext") or ""))
         for value in checks
     )
-    if actual_constraints != expected_constraints | {
-        ("check", "ck_candidate_adviser_profile_proposals_state", "stateinpendingrejected")
-    }:
+    legacy_check = ("check", "ck_candidate_adviser_profile_proposals_state", legacy_states)
+    if actual_constraints != expected_constraints | {legacy_check}:
         return False
 
     expected_indexes = {index.name: index for index in table.indexes if index.name}
@@ -327,7 +332,7 @@ class CandidatePhysicalSchemaInspector:
             unsupported = False
             repairable = True
             diagnostics.append(
-                "Recognized pre-transfer Adviser proposal schema; a transactional row-preserving reconstruction is available."
+                "Recognized historical Adviser proposal schema; a transactional row-preserving reconstruction is available."
             )
 
         if unsupported:

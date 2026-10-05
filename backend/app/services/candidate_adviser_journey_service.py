@@ -50,7 +50,11 @@ class CandidateAdviserJourneyService:
             )
             assessment_status = current.status if current is not None else None
             confirmed = assessment_status is CandidateAdviserAssessmentStatus.CONFIRMED
-            current_fingerprint = current.input_fingerprint if confirmed and current else None
+            adviser_service = CandidateAdviserService(self._session)
+            active_session = adviser_service.active_clarification_session(user_id)
+            current_fingerprint = (
+                active_session[0] if active_session else current.input_fingerprint if confirmed and current else None
+            )
 
             confirmed_records = self._session.scalars(
                 select(CandidateAdviserClarificationRecord)
@@ -65,20 +69,21 @@ class CandidateAdviserJourneyService:
                 )
             ).all()
             confirmed_question_keys = {row.question_key for row in confirmed_records}
-            current_rows = self._session.scalars(
+            current_rows = active_session[1] if active_session else self._session.scalars(
                 select(CandidateAdviserClarificationRecord).where(
                     CandidateAdviserClarificationRecord.user_id == user_id,
                     CandidateAdviserClarificationRecord.origin_assessment_fingerprint == current_fingerprint,
                 )
             ).all() if current_fingerprint else []
             review_pending = any(row.status == "review_ready" for row in current_rows)
+            unanswered_available = any(row.status == "unanswered" for row in current_rows)
 
             follow_up_available = False
-            if confirmed and current is not None:
+            if active_session:
+                follow_up_available = unanswered_available
+            elif confirmed and current is not None:
                 for question in current.content.open_questions:
-                    _, question_key, _ = CandidateAdviserService._clarification_identity(
-                        current.input_fingerprint, question
-                    )
+                    _, question_key, _ = CandidateAdviserService._clarification_identity(current.input_fingerprint, question)
                     if question_key not in confirmed_question_keys:
                         follow_up_available = True
                         break
@@ -91,20 +96,20 @@ class CandidateAdviserJourneyService:
                     )
                 ).all()
             }
-            proposal_sources = set(self._session.scalars(
-                select(CandidateAdviserProfileProposalRecord.source_clarification_id).where(
-                    CandidateAdviserProfileProposalRecord.user_id == user_id
-                ).distinct()
-            ).all())
             pending_enrichments: list[CandidateAdviserClarificationRecord] = []
-            for row in confirmed_records:
+            enrichment_scope = active_session[1] if active_session else current_rows
+            for row in enrichment_scope:
                 if not self._is_enrichment_eligible(row):
                     continue
                 state = enrichment_rows.get(row.clarification_id)
-                resolved_state = state.state if state is not None else (
-                    "proposals_created" if row.clarification_id in proposal_sources else "pending"
-                )
-                if resolved_state == "pending":
+                proposal_states = self._session.scalars(select(CandidateAdviserProfileProposalRecord.state).where(
+                    CandidateAdviserProfileProposalRecord.user_id == user_id,
+                    CandidateAdviserProfileProposalRecord.source_clarification_id == row.clarification_id,
+                )).all()
+                resolved_state = state.state if state is not None else "pending"
+                if resolved_state not in {"deferred", "reviewed_no_update"} and (
+                    resolved_state == "pending" or any(value == "pending" for value in proposal_states)
+                ):
                     pending_enrichments.append(row)
 
             active_profile_draft = CandidateProfileRevisionService(self._session).active(user_id) is not None
@@ -125,13 +130,16 @@ class CandidateAdviserJourneyService:
                 assessment_status=assessment_status,
                 clarification_review_pending=review_pending,
                 pending_enrichment=bool(pending_enrichments),
+                clarification_session_active=active_session is not None,
+                clarification_unanswered=unanswered_available,
             )
             return CandidateAdviserJourneyRead(
                 candidate_context_ready=candidate_context_ready,
                 job_search_ready=job_search_ready,
                 intake_exists=intake_exists,
                 assessment_status=assessment_status,
-                confirmed_guidance_active=confirmed,
+                confirmed_guidance_active=confirmed or active_session is not None,
+                clarification_session_active=active_session is not None,
                 current_follow_up_available=follow_up_available,
                 clarification_interpretation_awaiting_confirmation=review_pending,
                 unresolved_profile_enrichment_count=len(pending_enrichments),
@@ -163,6 +171,8 @@ class CandidateAdviserJourneyService:
         assessment_status: CandidateAdviserAssessmentStatus | None,
         clarification_review_pending: bool,
         pending_enrichment: bool,
+        clarification_session_active: bool = False,
+        clarification_unanswered: bool = False,
     ) -> tuple[AdviserNextAction, AdviserStatusCategory]:
         if not candidate_context_ready:
             return AdviserNextAction.COMPLETE_PROFILE, AdviserStatusCategory.SETUP
@@ -176,6 +186,8 @@ class CandidateAdviserJourneyService:
             return AdviserNextAction.CONFIRM_CLARIFICATION, AdviserStatusCategory.REVIEW
         if pending_enrichment:
             return AdviserNextAction.REVIEW_PROFILE_ENRICHMENT, AdviserStatusCategory.REVIEW
+        if clarification_session_active and clarification_unanswered:
+            return AdviserNextAction.ANSWER_CLARIFICATION, AdviserStatusCategory.REVIEW
         if assessment_status is CandidateAdviserAssessmentStatus.STALE:
             return AdviserNextAction.UPDATE_ASSESSMENT, AdviserStatusCategory.UPDATE
         if assessment_status is CandidateAdviserAssessmentStatus.CONFIRMED:
