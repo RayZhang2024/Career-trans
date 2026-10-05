@@ -205,9 +205,26 @@ in this order, then start the updated app only after step 6:
 5. `20261005_candidate_adviser_clarification_options`.
 6. `20261006_candidate_adviser_bounded_refinement` (this migration).
 
-Use each migration's SQLite or PostgreSQL variant matching the configured
-database. Existing databases already at the Issue #276 schema start with step
-6. Back up the database and stop Adviser/Profile writers before upgrading.
+Steps 1 and 2 are portable `.sql` files. Apply them with SQLite or PostgreSQL
+only if they have not already been applied; they are not idempotent. For
+SQLite, run each from the repository root with Python's standard library:
+
+```powershell
+python -c "import pathlib,sqlite3; c=sqlite3.connect(r'D:\Career-trans-data\career_agent.db'); c.executescript(pathlib.Path('backend/migrations/20260926_candidate_adviser_profile_proposals.sql').read_text(encoding='utf-8')); c.close()"
+python -c "import pathlib,sqlite3; c=sqlite3.connect(r'D:\Career-trans-data\career_agent.db'); c.executescript(pathlib.Path('backend/migrations/20260929_candidate_adviser_proposal_overlap_resolution.sql').read_text(encoding='utf-8')); c.close()"
+```
+
+For PostgreSQL:
+
+```powershell
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20260926_candidate_adviser_profile_proposals.sql
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20260929_candidate_adviser_proposal_overlap_resolution.sql
+```
+
+For steps 3–6, use each migration's matching SQLite or PostgreSQL variant
+shown in its section below. Existing databases already at the Issue #276
+schema start with step 6. Back up the database and stop Adviser/Profile
+writers before upgrading.
 This additive migration adds an explicit assessment contract
 version (existing rows are marked `legacy_questions`), round/parent-area links
 for new clarification rows, and user-scoped durable refinement journey and
