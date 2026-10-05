@@ -732,3 +732,33 @@ it("allows custom detail alone for an option-backed question", async () => {
   const answerCall = request.mock.calls.find(([path]) => String(path).endsWith("/answer"));
   expect(JSON.parse(String((answerCall?.[1] as { body: string }).body))).toEqual(response);
 });
+
+it.each(["Continue with this follow-up", "Answer an optional follow-up"])(
+  "focuses the option-backed answer area after using %s",
+  async (actionLabel) => {
+    const question = optionClarification();
+    request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([question]);
+    render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+    await screen.findByRole("button", { name: "Do this later" });
+    fireEvent.click(screen.getByRole("button", { name: "Do this later" }));
+    expect(screen.getByText("No optional follow-up is available right now.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: actionLabel }));
+    const answerArea = await screen.findByRole("region", { name: "Current optional follow-up" });
+    await vi.waitFor(() => expect(answerArea).toHaveFocus());
+    expect(screen.getByRole("checkbox", { name: "I led the synthetic project" })).toBeEnabled();
+  },
+);
+
+it("keeps a legacy free-text follow-up focusable and actionable from the journey action", async () => {
+  const question = unanswered();
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([question]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("button", { name: "Do this later" });
+  fireEvent.click(screen.getByRole("button", { name: "Continue with this follow-up" }));
+  const answerArea = screen.getByRole("region", { name: "Current optional follow-up" });
+  expect(answerArea).toHaveFocus();
+  const editor = screen.getByRole("textbox", { name: "Your answer" });
+  fireEvent.change(editor, { target: { value: "A legacy synthetic answer." } });
+  expect(screen.getByRole("button", { name: "Review my answer" })).toBeEnabled();
+});

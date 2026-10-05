@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord
+from app.models.candidate_adviser_profile_proposal import CandidateAdviserEnrichmentRecord
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
 from app.schemas.candidate_adviser import (
@@ -137,6 +138,7 @@ def test_confirmed_career_clarification_is_the_only_transition_to_active_evidenc
 
     listed = service.list_clarifications(user_id)
     assert len(listed) == 1 and listed[0].status == "unanswered"
+    assert listed[0].suggested_answers == []
     clarification = service.answer_clarification(user_id, listed[0].clarification_id, CandidateAdviserClarificationAnswer(answer_text="Synthetic answer."))
     assert clarification.status == "review_ready"
     assert interpreter.calls == 1
@@ -156,6 +158,21 @@ def test_confirmed_career_clarification_is_the_only_transition_to_active_evidenc
     # The confirmed assessment's materialized session remains authoritative
     # while optional Profile enrichment is unresolved.
     assert [item.clarification_id for item in service.list_clarifications(user_id)] == [clarification.clarification_id]
+
+
+def test_null_persisted_options_keep_the_legacy_free_text_answer_path(db_session) -> None:
+    user_id = _user(db_session, "clarification-null-options-legacy@example.com")
+    _ready_profile(db_session, user_id)
+    service = _confirmed_service(db_session, user_id, _Adviser("Legacy question?"), _Interpreter(_career_fact()))
+    clarification = service.list_clarifications(user_id)[0]
+    assert clarification.suggested_answers == []
+    reviewed = service.answer_clarification(
+        user_id, clarification.clarification_id,
+        CandidateAdviserClarificationAnswer(answer_text="A legacy free-text answer."),
+    )
+    assert reviewed.status == "review_ready"
+    assert reviewed.structured_response is None
+    assert reviewed.answer_text == "A legacy free-text answer."
 
 
 def test_unconfirmed_siblings_become_noncurrent_after_one_confirmation(db_session) -> None:
@@ -655,6 +672,99 @@ def test_malformed_persisted_option_or_structured_json_fails_closed(db_session) 
     db_session.commit()
     with pytest.raises(ValueError, match="Persisted structured clarification response is invalid"):
         service.list_clarifications(user_id)
+
+
+def test_non_null_persisted_options_must_be_a_valid_three_to_six_option_set(db_session) -> None:
+    user_id = _user(db_session, "clarification-option-set-shape@example.com")
+    _ready_profile(db_session, user_id)
+    service = _confirmed_service(
+        db_session, user_id, _Adviser("What work did you own?"), _Interpreter(_career_fact()), legacy_options=False,
+    )
+    clarification = service.list_clarifications(user_id)[0]
+    row = db_session.scalar(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user_id,
+        CandidateAdviserClarificationRecord.clarification_id == clarification.clarification_id,
+    ))
+    assert row is not None
+    valid = [option.model_dump(mode="json") for option in clarification.suggested_answers]
+
+    def option(text: str) -> dict[str, str]:
+        return {
+            "option_id": CandidateAdviserService._option_id(clarification.clarification_id, text),
+            "text": text,
+        }
+
+    invalid_values = [
+        "[]",
+        json.dumps(valid[:1]),
+        json.dumps(valid[:2]),
+        json.dumps([option(f"Unique option {index}") for index in range(7)]),
+        json.dumps([option("Same normalized text"), option(" same   NORMALIZED text "), option("Other")]),
+        json.dumps([valid[0], valid[0], valid[2]]),
+        "{malformed",
+        json.dumps({"options": valid}),
+        json.dumps([{"option_id": valid[0]["option_id"]}]),
+    ]
+    for raw_value in invalid_values:
+        row.suggested_answers_json = raw_value
+        db_session.commit()
+        with pytest.raises(ValueError, match="Persisted clarification answer options are invalid"):
+            service.list_clarifications(user_id)
+
+
+@pytest.mark.parametrize("corrupt_response", ["missing", "malformed", "unknown_option"])
+def test_corrupt_option_review_state_cannot_be_confirmed_or_mutate_anything(db_session, corrupt_response: str) -> None:
+    user_id = _user(db_session, f"clarification-corrupt-confirm-{corrupt_response}@example.com")
+    _ready_profile(db_session, user_id)
+    service = _confirmed_service(
+        db_session, user_id, _Adviser("What work did you own?"), _Interpreter(_career_fact()), legacy_options=False,
+    )
+    clarification = service.list_clarifications(user_id)[0]
+    reviewed = service.answer_clarification(
+        user_id, clarification.clarification_id,
+        _structured(clarification, selected=[clarification.suggested_answers[0].option_id]),
+    )
+    assert reviewed.status == "review_ready"
+    row = db_session.scalar(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user_id,
+        CandidateAdviserClarificationRecord.clarification_id == clarification.clarification_id,
+    ))
+    assert row is not None
+    if corrupt_response == "missing":
+        row.structured_response_json = None
+    elif corrupt_response == "malformed":
+        row.structured_response_json = "{malformed"
+    else:
+        row.structured_response_json = json.dumps({
+            "selected_option_ids": ["f" * 64],
+            "custom_answer_text": "",
+            "special_selection": None,
+        })
+    db_session.commit()
+    evidence_before = db_session.scalars(select(CandidateEvidenceRecord).where(
+        CandidateEvidenceRecord.user_id == user_id,
+    )).all()
+    enrichment_before = db_session.get(CandidateAdviserEnrichmentRecord, (user_id, clarification.clarification_id))
+    assert enrichment_before is None
+
+    with pytest.raises(ValueError, match="Persisted structured clarification"):
+        service.confirm_clarification(user_id, clarification.clarification_id)
+
+    db_session.expire_all()
+    persisted = db_session.scalar(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user_id,
+        CandidateAdviserClarificationRecord.clarification_id == clarification.clarification_id,
+    ))
+    assert persisted is not None
+    assert persisted.status == "review_ready"
+    assert persisted.confirmed_at is None
+    assert persisted.structured_response_json == row.structured_response_json
+    assert persisted.interpretation_json is not None
+    evidence_after = db_session.scalars(select(CandidateEvidenceRecord).where(
+        CandidateEvidenceRecord.user_id == user_id,
+    )).all()
+    assert [item.id for item in evidence_after] == [item.id for item in evidence_before]
+    assert db_session.get(CandidateAdviserEnrichmentRecord, (user_id, clarification.clarification_id)) is None
 
 
 def test_materialisation_is_idempotent_and_user_scoped(db_session) -> None:

@@ -3,10 +3,10 @@ import json
 import re
 from collections.abc import Callable, Iterable
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from pydantic import ValidationError
 
 from app.agents.candidate_adviser import CandidateAdviserAgent
 from app.agents.candidate_adviser_clarification import CandidateAdviserClarificationInterpreter
@@ -233,11 +233,10 @@ class CandidateAdviserService:
 
     def confirm_clarification(self, user_id: str, clarification_id: str) -> CandidateAdviserClarificationRead:
         record = self._current_clarification(user_id, clarification_id, allow_confirmed=True)
-        self._suggested_answers(record)
-        self._structured_response(record)
+        _, _, interpretation = self._validated_review_state(record)
         if record.status == CandidateAdviserClarificationStatus.CONFIRMED:
             return self._read_clarification(record)
-        if record.status != CandidateAdviserClarificationStatus.REVIEW_READY or not record.interpretation_json:
+        if record.status != CandidateAdviserClarificationStatus.REVIEW_READY or interpretation is None:
             raise ValueError("Clarification is not ready for confirmation.")
         from datetime import datetime, timezone
         # Confirmation and active-evidence reconciliation are one atomic
@@ -247,7 +246,6 @@ class CandidateAdviserService:
             record.status = CandidateAdviserClarificationStatus.CONFIRMED
             record.confirmed_at = datetime.now(timezone.utc)
             self._session.flush()
-            interpretation = ClarificationInterpretation.model_validate_json(record.interpretation_json)
             if interpretation.answer_kind in {ClarificationAnswerKind.CAREER_FACT, ClarificationAnswerKind.MIXED}:
                 enrichment = self._session.get(
                     CandidateAdviserEnrichmentRecord, (user_id, clarification_id)
@@ -602,24 +600,7 @@ class CandidateAdviserService:
         ActiveCandidateEvidenceResolver(self._session).resolve(user_id, data)
 
     def _read_clarification(self, record: CandidateAdviserClarificationRecord) -> CandidateAdviserClarificationRead:
-        options = self._suggested_answers(record)
-        response = self._structured_response(record)
-        if options and record.status != CandidateAdviserClarificationStatus.UNANSWERED and (
-            response is None or not record.interpretation_json
-        ):
-            raise ValueError("Persisted structured clarification review is incomplete.")
-        if response is not None and (
-            record.status == CandidateAdviserClarificationStatus.UNANSWERED
-            or not record.interpretation_json
-        ):
-            raise ValueError("Persisted structured clarification review is invalid.")
-        if response is not None:
-            try:
-                if not options:
-                    raise ValueError
-                self._validate_structured_response(options, response)
-            except ValueError as exc:
-                raise ValueError("Persisted structured clarification response is invalid.") from exc
+        options, response, interpretation = self._validated_review_state(record)
         return CandidateAdviserClarificationRead(
             clarification_id=record.clarification_id,
             question_text=record.question_text,
@@ -629,12 +610,60 @@ class CandidateAdviserService:
             priority_index=record.priority_index,
             status=CandidateAdviserClarificationStatus(record.status),
             answer_text=record.answer_text,
-            interpretation=(ClarificationInterpretation.model_validate(json.loads(record.interpretation_json)) if record.interpretation_json else None),
+            interpretation=interpretation,
             created_at=record.created_at,
             updated_at=record.updated_at,
             confirmed_at=record.confirmed_at,
             session_active=self.has_active_clarification_session(record.user_id),
         )
+
+    @classmethod
+    def _validated_review_state(
+        cls,
+        record: CandidateAdviserClarificationRecord,
+    ) -> tuple[
+        list[CandidateAdviserSuggestedAnswer],
+        CandidateAdviserStructuredResponse | None,
+        ClarificationInterpretation | None,
+    ]:
+        """Decode one clarification's persisted answer state and enforce its invariants."""
+        options = cls._suggested_answers(record)
+        response = cls._structured_response(record)
+        try:
+            status = CandidateAdviserClarificationStatus(record.status)
+        except ValueError as exc:
+            raise ValueError("Persisted clarification status is invalid.") from exc
+
+        interpretation: ClarificationInterpretation | None = None
+        if record.interpretation_json is not None:
+            try:
+                interpretation = ClarificationInterpretation.model_validate_json(record.interpretation_json)
+            except (TypeError, json.JSONDecodeError, ValidationError, ValueError) as exc:
+                raise ValueError("Persisted clarification interpretation is invalid.") from exc
+
+        if response is not None:
+            if not options or status == CandidateAdviserClarificationStatus.UNANSWERED:
+                raise ValueError("Persisted structured clarification review is invalid.")
+            try:
+                cls._validate_structured_response(options, response)
+            except ValueError as exc:
+                raise ValueError("Persisted structured clarification response is invalid.") from exc
+
+        has_review = status in {
+            CandidateAdviserClarificationStatus.REVIEW_READY,
+            CandidateAdviserClarificationStatus.CONFIRMED,
+        }
+        if options and has_review and (response is None or interpretation is None):
+            raise ValueError("Persisted structured clarification review is incomplete.")
+        if not options and response is not None:
+            raise ValueError("Persisted structured clarification response is invalid.")
+        if not options and has_review and (
+            not record.answer_text or not record.answer_text.strip() or interpretation is None
+        ):
+            raise ValueError("Persisted legacy clarification review is incomplete.")
+        if status == CandidateAdviserClarificationStatus.UNANSWERED and interpretation is not None:
+            raise ValueError("Persisted unanswered clarification contains review state.")
+        return options, response, interpretation
 
     @staticmethod
     def _suggested_answers(
@@ -647,7 +676,7 @@ class CandidateAdviserService:
             if not isinstance(values, list):
                 raise ValueError
             parsed = [CandidateAdviserSuggestedAnswer.model_validate(value) for value in values]
-            if parsed and not 3 <= len(parsed) <= 6:
+            if not 3 <= len(parsed) <= 6:
                 raise ValueError
             if len({item.option_id for item in parsed}) != len(parsed):
                 raise ValueError
