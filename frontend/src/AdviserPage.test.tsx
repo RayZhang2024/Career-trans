@@ -24,6 +24,8 @@ const optionClarification = (statusValue: "unanswered" | "review_ready" = "unans
   structured_response,
   interpretation: statusValue === "review_ready" ? { answer_kind: "career_fact" as const, confirmed_context_summary: "Reviewed selected synthetic work.", proposed_evidence: [] } : null,
 });
+const confirmedQuestion = (id: string, priority_index: number) => ({ ...unanswered(id, priority_index), status: "confirmed" as const, answer_text: `Saved ${id}`, interpretation: { answer_kind: "career_fact" as const, confirmed_context_summary: `Confirmed ${id}`, proposed_evidence: [] } });
+const reviewReadyQuestion = (id: string, priority_index: number) => ({ ...unanswered(id, priority_index), status: "review_ready" as const, answer_text: `Saved ${id}`, interpretation: { answer_kind: "career_fact" as const, confirmed_context_summary: `Reviewed ${id}`, proposed_evidence: [] } });
 
 it("gates direct Adviser access before confirmed candidate context without Adviser calls", async () => {
   request.mockResolvedValueOnce(status(false)); render(<MemoryRouter><AdviserPage /></MemoryRouter>);
@@ -761,4 +763,161 @@ it("keeps a legacy free-text follow-up focusable and actionable from the journey
   const editor = screen.getByRole("textbox", { name: "Your answer" });
   fireEvent.change(editor, { target: { value: "A legacy synthetic answer." } });
   expect(screen.getByRole("button", { name: "Review my answer" })).toBeEnabled();
+});
+
+it("shows the first follow-up position using the ordered clarification collection", async () => {
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([
+    unanswered("c", 0), unanswered("b", 0), unanswered("a", 0),
+  ]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findByText("Follow-up 1 of 3 · 2 questions remaining")).toBeInTheDocument();
+  expect(screen.getByText("Question a")).toBeInTheDocument();
+});
+
+it("positions a persisted review-ready question by its real record index", async () => {
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([
+    unanswered("c", 2), reviewReadyQuestion("b", 1), confirmedQuestion("a", 0),
+  ]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findByText("Follow-up 2 of 3 · 1 question remaining")).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Your answer" })).toHaveValue("Saved b");
+  expect(screen.getByText("Reviewed b")).toBeInTheDocument();
+  // The onboarding fixture reports two confirmed clarifications. Progress is
+  // still the record's second position, not confirmedCount + 1.
+  expect(screen.getByText("Follow-up 2 of 3 · 1 question remaining")).toBeInTheDocument();
+});
+
+it("labels the last unresolved question as the final follow-up", async () => {
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([
+    confirmedQuestion("a", 0), confirmedQuestion("b", 1), unanswered("c", 2),
+  ]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findByText("Follow-up 3 of 3 · Final follow-up")).toBeInTheDocument();
+});
+
+it("hides follow-up progress while deferred and restores the same position when reopened", async () => {
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([
+    unanswered("a", 0), unanswered("b", 1),
+  ]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findByText("Follow-up 1 of 2 · 1 question remaining")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Do this later" }));
+  expect(screen.queryByText("Follow-up 1 of 2 · 1 question remaining")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Answer an optional follow-up" }));
+  expect(await screen.findByText("Follow-up 1 of 2 · 1 question remaining")).toBeInTheDocument();
+  expect(screen.getByText("Question a")).toBeInTheDocument();
+});
+
+it.each(["legacy free-text", "selectable-answer"])("shows follow-up progress for %s questions", async (kind) => {
+  const question = kind === "selectable-answer" ? { ...optionClarification(), clarification_id: "selectable", priority_index: 0 } : unanswered("legacy", 0);
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([question]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findByText("Follow-up 1 of 1 · Final follow-up")).toBeInTheDocument();
+  expect(screen.getByText(question.question_text)).toBeInTheDocument();
+});
+
+it("does not show question progress for confirmed history when only Profile enrichment remains", async () => {
+  const profileReview = status(true, "stale", true);
+  profileReview.adviser.journey.current_follow_up_available = false;
+  profileReview.adviser.journey.unresolved_profile_enrichment_count = 1;
+  profileReview.adviser.journey.next_action = "review_profile_enrichment";
+  profileReview.adviser.journey.next_enrichment_clarification_id = "history";
+  profileReview.adviser.journey.next_enrichment = { clarification_id: "history", question_text: "Confirmed history", confirmed_context_summary: "Saved context", has_profile_evidence: true };
+  request.mockResolvedValueOnce(profileReview).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("stale")).mockResolvedValueOnce([confirmedQuestion("history", 0)]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findAllByRole("button", { name: "Review for Profile" })).toHaveLength(2);
+  expect(screen.getByText("No optional follow-up is available right now.")).toBeInTheDocument();
+  expect(screen.queryByText(/Follow-up \d+ of \d+/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("region", { name: "Current optional follow-up" })).not.toBeInTheDocument();
+});
+
+it.each([
+  ["create", "Create my career assessment", "Preparing your career assessment…", "Create my career assessment"],
+  ["update", "Update my assessment", "Updating your career assessment…", "Update my assessment"],
+  ["regenerate", "Create a different assessment", "Preparing a different assessment…", "Create a different assessment"],
+] as const)("shows and restores the %s assessment action label", async (kind, actionLabel, workingLabel, restoredLabel) => {
+  const ApiError = (await import("./auth")).ApiError;
+  const initialStatus = kind === "create" ? status() : kind === "update" ? status(true, "stale") : status(true, "review_ready");
+  request.mockResolvedValueOnce(initialStatus).mockResolvedValueOnce(intake);
+  if (kind === "create") request.mockRejectedValueOnce(new ApiError(404, ""));
+  else request.mockResolvedValueOnce(assessment(kind === "update" ? "stale" : "review_ready"));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const initiatingButton = await screen.findByRole("button", { name: actionLabel });
+  let rejectRequest!: (error: Error) => void;
+  request.mockReturnValueOnce(new Promise<unknown>((_resolve, reject) => { rejectRequest = reject; }));
+  fireEvent.click(initiatingButton);
+  const pendingButton = await screen.findByRole("button", { name: workingLabel });
+  expect(pendingButton).toBeDisabled();
+  expect(screen.getByText(workingLabel, { selector: "p[role=status]" })).toBeInTheDocument();
+  rejectRequest(new ApiError(503, ""));
+  expect(await screen.findByRole("button", { name: restoredLabel })).toBeEnabled();
+  expect(screen.getByRole("alert")).toHaveTextContent("Assessment generation is temporarily unavailable.");
+});
+
+it.each(["create", "update"] as const)("keeps %s action identity through 409 recovery", async (kind) => {
+  const ApiError = (await import("./auth")).ApiError;
+  const initialStatus = kind === "create" ? status() : status(true, "stale");
+  request.mockResolvedValueOnce(initialStatus).mockResolvedValueOnce(intake);
+  if (kind === "create") request.mockRejectedValueOnce(new ApiError(404, ""));
+  else request.mockResolvedValueOnce(assessment("stale"));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const originalLabel = kind === "create" ? "Create my career assessment" : "Update my assessment";
+  const workingLabel = kind === "create" ? "Preparing your career assessment…" : "Updating your career assessment…";
+  const initiatingButton = await screen.findByRole("button", { name: originalLabel });
+  let resolveStatus!: (value: unknown) => void;
+  const refreshedStatus = new Promise<unknown>((resolve) => { resolveStatus = resolve; });
+  let resolveAssessment!: (value: unknown) => void;
+  let rejectAssessment!: (error: Error) => void;
+  const refreshedAssessment = new Promise<unknown>((resolve, reject) => { resolveAssessment = resolve; rejectAssessment = reject; });
+  request.mockRejectedValueOnce(new ApiError(409, "")).mockReturnValueOnce(refreshedStatus).mockReturnValueOnce(refreshedAssessment);
+  fireEvent.click(initiatingButton);
+  expect(await screen.findByRole("button", { name: workingLabel })).toBeDisabled();
+  await act(async () => {
+    resolveStatus(kind === "create" ? status() : status(true, "stale"));
+    if (kind === "create") rejectAssessment(new ApiError(404, ""));
+    else resolveAssessment(assessment("stale"));
+  });
+  expect(await screen.findByRole("button", { name: originalLabel })).toBeEnabled();
+  expect(screen.getByText("Adviser state changed. The current state has been refreshed.")).toBeInTheDocument();
+});
+
+it("shows assessment confirmation progress on the initiating control and restores it after failure", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  request.mockResolvedValueOnce(status(true, "review_ready")).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("review_ready"));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const confirm = await screen.findByRole("button", { name: "Looks right — use this" });
+  let rejectRequest!: (error: Error) => void;
+  request.mockReturnValueOnce(new Promise<unknown>((_resolve, reject) => { rejectRequest = reject; }));
+  fireEvent.click(confirm);
+  expect(await screen.findByRole("button", { name: "Saving your assessment…" })).toBeDisabled();
+  rejectRequest(new ApiError(503, ""));
+  expect(await screen.findByRole("button", { name: "Looks right — use this" })).toBeEnabled();
+});
+
+it("shows answer review progress on the initiating control and restores it after failure", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  request.mockResolvedValueOnce(status(true, "confirmed")).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([unanswered()]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const editor = await screen.findByRole("textbox", { name: "Your answer" });
+  fireEvent.change(editor, { target: { value: "Synthetic answer" } });
+  let rejectRequest!: (error: Error) => void;
+  request.mockReturnValueOnce(new Promise<unknown>((_resolve, reject) => { rejectRequest = reject; }));
+  fireEvent.click(screen.getByRole("button", { name: "Review my answer" }));
+  expect(await screen.findByRole("button", { name: "Reviewing your answer…" })).toBeDisabled();
+  rejectRequest(new ApiError(503, ""));
+  expect(await screen.findByRole("button", { name: "Review my answer" })).toBeEnabled();
+});
+
+it("shows clarification confirmation progress on the initiating control and restores it after failure", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  const reviewing = reviewReadyQuestion("confirm", 0);
+  request.mockResolvedValueOnce(status(true, "confirmed")).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([reviewing]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const confirm = await screen.findByRole("button", { name: "Yes, that’s right" });
+  let rejectRequest!: (error: Error) => void;
+  request.mockReturnValueOnce(new Promise<unknown>((_resolve, reject) => { rejectRequest = reject; }));
+  fireEvent.click(confirm);
+  expect(await screen.findByRole("button", { name: "Saving your confirmation…" })).toBeDisabled();
+  rejectRequest(new ApiError(503, ""));
+  expect(await screen.findByRole("button", { name: "Yes, that’s right" })).toBeEnabled();
 });
