@@ -369,6 +369,7 @@ export function ProfileSuggestions({ api, confirmedClarification = null, enrichm
       setNotice("Suggestion rejected. Your current Profile was not changed.");
       if (editingId === proposal.id) cancelEdit();
       refreshHistoryAfterMutation();
+      onResolved?.();
     } catch (caught) {
       if (sequence !== mutationSequence.current) return;
       setActionError(caught instanceof ApiError && caught.status === 404
@@ -409,7 +410,7 @@ export function ProfileSuggestions({ api, confirmedClarification = null, enrichm
     try {
       const saved = await api.request<AdviserProfileProposal>(`/api/v1/candidate-adviser/profile-proposals/${encodeURIComponent(proposal.id)}`, { method: "PATCH", body: JSON.stringify({ expected_revision: proposal.revision, proposed_update: update }) });
       if (sequence !== mutationSequence.current) return;
-      upsert([saved]); setNotice("Suggestion now targets that exact current item. Choose Use in Profile draft when you are ready."); refreshHistoryAfterMutation();
+      upsert([saved]); setNotice("Suggestion now targets that exact current item. Choose Update Profile when ready."); refreshHistoryAfterMutation();
     } catch (caught) { if (sequence === mutationSequence.current) { setActionError(caught instanceof ApiError && caught.status === 409 ? "This suggestion or current Profile changed. Refresh Profile suggestions and compare again." : "The replacement choice could not be saved. Refresh Profile suggestions and try again."); refreshHistoryAfterMutation(); } }
     finally { finishMutation(sequence); }
   };
@@ -420,7 +421,7 @@ export function ProfileSuggestions({ api, confirmedClarification = null, enrichm
     try {
       const saved = await api.request<AdviserProfileProposal>(`/api/v1/candidate-adviser/profile-proposals/${encodeURIComponent(proposal.id)}/resolve-overlap`, { method: "POST", body: JSON.stringify(body) });
       if (sequence !== mutationSequence.current) return;
-      upsert([saved]); setNotice("You chose to keep this as a separate Profile item. Review the Profile draft after sending it."); refreshHistoryAfterMutation();
+      upsert([saved]); setNotice("You chose to keep this as a separate Profile item. You can now Add to Profile."); refreshHistoryAfterMutation();
     } catch (caught) { if (sequence === mutationSequence.current) { setActionError(caught instanceof ApiError && caught.status === 409 ? "Your Profile changed after this comparison. Refresh Profile suggestions before choosing again." : "This overlap choice could not be saved. Refresh Profile suggestions and try again."); refreshHistoryAfterMutation(); } }
     finally { finishMutation(sequence); }
   };

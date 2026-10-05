@@ -1010,6 +1010,21 @@ def test_direct_apply_updates_canonical_profile_and_is_idempotent_with_adviser_l
             expected_comparison_base_fingerprint=structured_authority_fingerprint(CandidateCVData(skills=[Skill(name="Rust"), Skill(name="Python")])),
             action="add_as_new",
         ))
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="cannot be transferred to a Profile draft"):
+        service.transfer_to_profile_revision(user_id, proposal.id, expected_revision=applied.revision)
+    with pytest.raises(CandidateAdviserProfileProposalConflict, match="Only a pending Adviser proposal can be rejected"):
+        service.reject_pending(user_id, proposal.id, expected_revision=applied.revision)
+    unchanged = service.get_for_user(user_id, proposal.id)
+    assert unchanged == applied
+    assert db_session.scalars(select(CandidateProfileRevisionRecord).where(
+        CandidateProfileRevisionRecord.user_id == user_id
+    )).all() == []
+    persisted = db_session.scalar(select(CandidateStructuredProfile).where(
+        CandidateStructuredProfile.user_id == user_id
+    ))
+    assert CandidateCVData.model_validate_json(persisted.structured_json).skills == [Skill(name="Rust"), Skill(name="Python")]
+    persisted_lineage = CandidateStructuredItemLineageService(db_session).read_history(user_id)
+    assert persisted_lineage == history
 
 
 def test_direct_apply_reinforcement_keeps_canonical_item_and_records_support(db_session) -> None:

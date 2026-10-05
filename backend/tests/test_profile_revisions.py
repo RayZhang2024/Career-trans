@@ -946,7 +946,7 @@ def test_confirmation_resolver_failure_rolls_back_all_authorities_evidence_and_r
         raise RuntimeError("forced manual evidence reconciliation failure")
 
     monkeypatch.setattr(
-        "app.services.profile_revision_service.ActiveCandidateEvidenceResolver.resolve",
+        "app.services.structured_profile_mutation.ActiveCandidateEvidenceResolver.resolve",
         fail_resolution,
     )
     with pytest.raises(RuntimeError, match="forced manual evidence"):

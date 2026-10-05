@@ -554,6 +554,10 @@ class CandidateAdviserProfileProposalService:
             raise CandidateAdviserProfileProposalConflict(
                 "A rejected Adviser proposal cannot be transferred."
             )
+        if record.state == CandidateAdviserProfileProposalState.APPLIED:
+            raise CandidateAdviserProfileProposalConflict(
+                "An applied Adviser proposal cannot be transferred to a Profile draft."
+            )
         self._expect_revision(record, expected_revision)
 
         try:

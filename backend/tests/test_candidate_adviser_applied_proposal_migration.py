@@ -43,6 +43,7 @@ def test_sqlite_upgrade_preserves_transferred_history_and_accepts_applied(tmp_pa
         """)
 
         upgrade = runpy.run_path(str(MIGRATION))["upgrade"]
+        connection.commit()
         upgrade(connection)
         upgrade(connection)
         preserved = connection.execute(
@@ -58,3 +59,57 @@ def test_sqlite_upgrade_preserves_transferred_history_and_accepts_applied(tmp_pa
             "SELECT state, applied_at FROM candidate_adviser_profile_proposals WHERE id='proposal-b'"
         ).fetchone() == ("applied", "applied")
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_sqlite_upgrade_rolls_back_rebuild_when_foreign_key_check_fails(tmp_path: Path) -> None:
+    database = tmp_path / "candidate-adviser-proposals-invalid.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.executescript("""
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE users (id VARCHAR(36) PRIMARY KEY);
+            CREATE TABLE candidate_profile_revisions (id VARCHAR(36) PRIMARY KEY);
+            CREATE TABLE candidate_adviser_profile_proposals (
+                id VARCHAR(36) PRIMARY KEY,
+                user_id VARCHAR(36) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                proposal_key VARCHAR(64) NOT NULL,
+                state VARCHAR(16) NOT NULL CHECK (state IN ('pending', 'rejected', 'transferred')),
+                revision INTEGER NOT NULL,
+                source_clarification_id VARCHAR(64) NOT NULL,
+                source_assessment_fingerprint VARCHAR(64) NOT NULL,
+                original_update_json TEXT NOT NULL,
+                proposed_update_json TEXT NOT NULL,
+                overlap_resolution_json TEXT,
+                transferred_profile_revision_id VARCHAR(36) REFERENCES candidate_profile_revisions(id),
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                rejected_at DATETIME,
+                transferred_at DATETIME,
+                CONSTRAINT uq_candidate_adviser_profile_proposals_user_key UNIQUE (user_id, proposal_key)
+            );
+            PRAGMA foreign_keys = OFF;
+            INSERT INTO candidate_adviser_profile_proposals VALUES (
+              'orphan-proposal', 'missing-user', 'key-a', 'pending', 1, 'clarification-a', 'f',
+              '{}', '{}', NULL, NULL, 'created', 'updated', NULL, NULL
+            );
+        """)
+        connection.commit()
+        connection.execute("PRAGMA foreign_keys = ON")
+        upgrade = runpy.run_path(str(MIGRATION))["upgrade"]
+        try:
+            upgrade(connection)
+        except RuntimeError as error:
+            assert "Foreign-key violations" in str(error)
+        else:
+            raise AssertionError("migration should reject the orphaned existing row")
+        assert connection.execute("PRAGMA foreign_keys").fetchone() == (1,)
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='candidate_adviser_profile_proposals'"
+        ).fetchone()[0]
+        assert "'applied'" not in schema
+        assert "applied_at" not in {row[1] for row in connection.execute("PRAGMA table_info(candidate_adviser_profile_proposals)")}
+        assert connection.execute("SELECT id, user_id FROM candidate_adviser_profile_proposals").fetchall() == [
+            ("orphan-proposal", "missing-user")
+        ]
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='candidate_adviser_profile_proposals_issue275'"
+        ).fetchone() is None

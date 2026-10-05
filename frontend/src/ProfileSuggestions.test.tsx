@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { ApiError } from "./api";
@@ -282,6 +282,22 @@ it("applies with the expected revision and displays applied history", async () =
   expect(request.mock.calls.some(([path]) => /profile\/revisions\/.*\/(review|confirm)/.test(String(path)))).toBe(false);
 });
 
+it("refreshes the authoritative Adviser journey after rejecting a proposal", async () => {
+  const pending = proposal();
+  const otherPending = proposal({ id: "proposal-2", proposed_update: update("projects") });
+  const rejected = proposal({ state: "rejected", revision: 2, rejected_at: createdAt });
+  const onResolved = vi.fn();
+  request.mockResolvedValueOnce([pending, otherPending]);
+  render(<MemoryRouter><ProfileSuggestions api={api} onResolved={onResolved} /></MemoryRouter>);
+  fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
+  expect(await screen.findByRole("article", { name: "Skills" })).toBeInTheDocument();
+  request.mockResolvedValueOnce(rejected).mockResolvedValueOnce([rejected, otherPending]);
+  fireEvent.click(within(screen.getByRole("article", { name: "Skills" })).getByRole("button", { name: "Reject" }));
+  expect(await screen.findByText("Suggestion rejected. Your current Profile was not changed.")).toBeInTheDocument();
+  expect(within(screen.getByRole("article", { name: "Projects" })).getByText("Pending suggestion — this is not part of your current Profile.")).toBeInTheDocument();
+  await waitFor(() => expect(onResolved).toHaveBeenCalledTimes(1));
+});
+
 it("leaves a pending proposal unchanged on apply 409", async () => {
   const record = proposal(); history([record]); request.mockRejectedValueOnce(new ApiError(409, "private conflict")).mockResolvedValueOnce([record]);
   mount(); fireEvent.click(screen.getByRole("button", { name: "View profile suggestions" }));
@@ -370,6 +386,7 @@ it("offers exact replacement for Adviser refinement/conflict before direct apply
     request.mockResolvedValueOnce(replaced).mockResolvedValueOnce([replaced]);
     fireEvent.click(screen.getByRole("button", { name: "Replace current item" }));
     await screen.findByText(/Suggestion now targets that exact current item/);
+    expect(screen.getByText("Suggestion now targets that exact current item. Choose Update Profile when ready.")).toBeInTheDocument();
     expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1", expect.objectContaining({ method: "PATCH", body: expect.stringContaining('"operation":"replace_exact"') }));
     expect(screen.getByRole("button", { name: "Update Profile" })).toBeEnabled();
   }
@@ -384,6 +401,7 @@ it("shows every Adviser ambiguous candidate and persists explicit add-as-new wit
   request.mockResolvedValueOnce(resolved).mockResolvedValueOnce([resolved]);
   fireEvent.click(screen.getByRole("button", { name: "Keep as separate new item" }));
   expect((await screen.findAllByText(/You chose to keep this as a separate Profile item/)).length).toBeGreaterThan(0);
+  expect(screen.getByText("You chose to keep this as a separate Profile item. You can now Add to Profile.")).toBeInTheDocument();
   expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/profile-proposals/proposal-1/resolve-overlap", expect.objectContaining({ method: "POST", body: JSON.stringify({ expected_revision: 1, expected_comparison_base_fingerprint: "a".repeat(64), action: "add_as_new" }) }));
   expect(request.mock.calls.some(([path]) => String(path).endsWith("/transfer"))).toBe(false);
 });
