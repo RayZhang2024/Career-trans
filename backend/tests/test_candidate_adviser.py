@@ -8,10 +8,12 @@ from app.agents.candidate_adviser import SemanticCandidateAdviser
 from app.api.deps import get_user_candidate_adviser_service
 from app.main import app
 from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord
+from app.models.candidate_adviser import CandidateAdviserRefinementJourneyRecord, CandidateAdviserClarificationAreaRecord
 from app.models.candidate_cv_ingestion import CandidateEvidenceRecord, CandidateStructuredProfile
 from app.models.user import User
 from app.providers.llm import SemanticOutputError, SemanticProviderConfigurationError
 from app.schemas.candidate_adviser import AdviserOpenQuestion, CandidateAdviserAssessmentContent, CandidateAdviserAssessmentStatus, CandidateAdviserClarificationStatus, CandidateAdviserIntake, CandidateAdviserSemanticInput, ProviderCandidateAdviserAssessmentContent
+from app.schemas.candidate_adviser import AdviserClarificationArea, CandidateAdviserAreaSelectionRequest, ProviderRoundQuestionSet
 from app.schemas.job import JobProfile, JobRequirement
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_compaction import compact_candidate_adviser_input
@@ -90,9 +92,9 @@ def test_adviser_assessment_schema_requires_every_object_property_and_allows_emp
     required = set(schema["required"])
     properties = schema["properties"]
 
-    # OpenAI strict Structured Outputs requires every object property to be
-    # required, while arrays can still be represented by an explicit empty list.
-    assert required == set(properties)
+    # The canonical decoder keeps new area fields optional so historical JSON
+    # without those fields remains readable; the provider DTO requires them.
+    assert required == set(properties) - {"clarification_areas", "assessment_limitations"}
     for field in (
         "transferable_strengths",
         "development_gaps",
@@ -101,6 +103,8 @@ def test_adviser_assessment_schema_requires_every_object_property_and_allows_emp
     ):
         assert properties[field].get("maxItems") == 12
         assert "default" not in properties[field]
+    assert properties["clarification_areas"].get("maxItems") == 6
+    assert properties["assessment_limitations"].get("maxItems") == 12
 
     empty = _content().model_copy(
         update={
@@ -130,7 +134,7 @@ def test_legacy_assessment_questions_remain_readable_without_choices_and_wire_mo
         ProviderCandidateAdviserAssessmentContent.model_validate(legacy)
 
 
-def test_service_rejects_invalid_generated_choices_before_persisting(db_session) -> None:
+def test_service_rejects_immediate_questions_from_new_area_assessment(db_session) -> None:
     user_id = _user(db_session, "adviser-invalid-generated-options@example.com")
     _confirmed_cv(db_session, user_id)
     content = _content()
@@ -146,11 +150,145 @@ def test_service_rejects_invalid_generated_choices_before_persisting(db_session)
 
     service = CandidateAdviserService(db_session, agent=_InvalidAgent())
     service.save_intake(user_id, _intake())
-    with pytest.raises(ValueError, match="unique after whitespace normalization"):
+    with pytest.raises(ValueError, match="must not generate immediate clarification questions"):
         service.assess(user_id)
     assert db_session.scalar(select(CandidateAdviserAssessmentRecord).where(
         CandidateAdviserAssessmentRecord.user_id == user_id
     )) is None
+
+
+def test_bounded_refinement_commits_area_subset_and_reuses_generated_questions(db_session) -> None:
+    from app.services.candidate_adviser_journey_service import CandidateAdviserJourneyService
+
+    user_id = _user(db_session, "adviser-bounded-refinement@example.com")
+    _confirmed_cv(db_session, user_id)
+    content = _content().model_copy(update={
+        "clarification_areas": [
+            AdviserClarificationArea(area_key="delivery", title="Delivery ownership", rationale="Clarify the candidate's delivery role.", source_references=[{"source_type": "intake", "reference": "career_direction"}]),
+            AdviserClarificationArea(area_key="technical", title="Technical decisions", rationale="Understand the decisions made.", source_references=[{"source_type": "intake", "reference": "career_direction"}]),
+        ],
+        "open_questions": [],
+    })
+
+    class _Agent:
+        def assess(self, *, semantic_input):
+            self.semantic_input = semantic_input
+            return content
+
+    class _Questions:
+        calls = 0
+
+        def generate(self, *, generation_input):
+            self.calls += 1
+            assert [area.area_key for area in generation_input.selected_areas] == ["delivery"]
+            return ProviderRoundQuestionSet.model_validate({"area_groups": [{
+                "area_key": "delivery",
+                "questions": [{
+                    "question_key": "delivery-ownership",
+                    "text": "What delivery work did you own?",
+                    "source_references": [{"source_type": "intake", "reference": "career_direction"}],
+                    "suggested_answers": ["I led delivery", "I contributed", "I supported the work"],
+                }],
+            }]})
+
+    agent = _Agent()
+    questions = _Questions()
+    service = CandidateAdviserService(db_session, agent=agent, question_generator=questions)
+    service.save_intake(user_id, _intake())
+    draft = service.assess(user_id)
+    assert draft.contract_version.value == "clarification_areas_v1"
+    assert draft.content.open_questions == []
+    assert [area.area_key for area in draft.content.clarification_areas] == ["delivery", "technical"]
+    assert agent.semantic_input.refinement_control.round_number == 1
+    service.confirm_assessment(user_id)
+    selected = service.select_refinement_areas(user_id, CandidateAdviserAreaSelectionRequest(selected_area_keys=["delivery"]))
+    assert [(area.area_key, area.selection_state) for area in selected] == [("delivery", "selected"), ("technical", "skipped")]
+    journey = CandidateAdviserJourneyService(db_session).read(user_id)
+    assert journey.refinement_state == "questions_pending"
+    assert journey.next_action.value == "generate_round_questions"
+
+    generated = service.generate_round_questions(user_id)
+    retried = service.generate_round_questions(user_id)
+    assert questions.calls == 1
+    assert [row.clarification_id for row in generated] == [row.clarification_id for row in retried]
+    assert generated[0].parent_area_key == "delivery"
+    assert generated[0].round_number == 1
+    journey = CandidateAdviserJourneyService(db_session).read(user_id)
+    assert journey.refinement_state == "questions_active"
+    assert journey.round_question_count == 1
+    assert db_session.scalar(select(CandidateAdviserClarificationAreaRecord).where(
+        CandidateAdviserClarificationAreaRecord.user_id == user_id,
+        CandidateAdviserClarificationAreaRecord.area_key == "technical",
+    )).selection_state == "skipped"
+
+
+def test_bounded_refinement_caps_at_two_rounds_and_allows_terminal_empty_areas(db_session) -> None:
+    user_id = _user(db_session, "adviser-bounded-refinement-cap@example.com")
+    _confirmed_cv(db_session, user_id)
+    service = CandidateAdviserService(db_session, agent=object())
+    service.save_intake(user_id, _intake())
+    journey = CandidateAdviserRefinementJourneyRecord(
+        id="journey-cap", user_id=user_id, journey_key="journey-cap", round_number=2,
+        rounds_completed=2, state="assessment_update", origin_context_fingerprint="old",
+    )
+    db_session.add(journey)
+    db_session.commit()
+    content = _content().model_copy(update={"open_questions": [], "clarification_areas": []})
+
+    class _Agent:
+        def assess(self, *, semantic_input):
+            assert semantic_input.refinement_control.round_number == 2
+            assert semantic_input.refinement_control.rounds_completed == 2
+            assert semantic_input.refinement_control.areas_allowed is False
+            return content
+
+    service = CandidateAdviserService(db_session, agent=_Agent())
+    # There must be an assessment row for a legitimate update; seed a confirmed
+    # legacy record, then the resulting draft upgrades to the area contract.
+    fingerprint = service.input_fingerprint(user_id)
+    db_session.add(CandidateAdviserAssessmentRecord(
+        user_id=user_id, input_fingerprint=fingerprint, contract_version="legacy_questions",
+        status="confirmed", assessment_json=json.dumps(content.model_dump(mode="json"), sort_keys=True),
+    ))
+    db_session.commit()
+    draft = service.assess(user_id)
+    assert draft.content.clarification_areas == []
+    assert service.confirm_assessment(user_id).status is CandidateAdviserAssessmentStatus.CONFIRMED
+    stored = db_session.scalar(select(CandidateAdviserRefinementJourneyRecord).where(
+        CandidateAdviserRefinementJourneyRecord.user_id == user_id,
+    ))
+    assert stored.state == "complete"
+    assert stored.rounds_completed == 2
+
+
+def test_material_intake_change_restarts_an_incomplete_area_selection_journey(db_session) -> None:
+    user_id = _user(db_session, "adviser-bounded-refinement-refresh@example.com")
+    _confirmed_cv(db_session, user_id)
+    content = _content().model_copy(update={"open_questions": [], "clarification_areas": [AdviserClarificationArea(
+        area_key="delivery", title="Delivery ownership", rationale="Clarify delivery work.",
+        source_references=[{"source_type": "intake", "reference": "career_direction"}],
+    )]})
+
+    class _Agent:
+        def assess(self, *, semantic_input):
+            return content
+
+    service = CandidateAdviserService(db_session, agent=_Agent())
+    service.save_intake(user_id, _intake())
+    service.assess(user_id)
+    service.confirm_assessment(user_id)
+    first = service._current_refinement_journey(user_id)
+    assert first.state == "area_selection"
+    service.save_intake(user_id, _intake().model_copy(update={"career_direction": "Explore synthetic platform leadership."}))
+    refreshed = service.assess(user_id)
+    second = service._current_refinement_journey(user_id)
+    assert refreshed.status is CandidateAdviserAssessmentStatus.REVIEW_READY
+    assert second.journey_key != first.journey_key
+    assert second.state == "initial_assessment_review"
+    assert first.state == "superseded"
+    assert len(db_session.scalars(select(CandidateAdviserRefinementJourneyRecord).where(
+        CandidateAdviserRefinementJourneyRecord.user_id == user_id,
+    )).all()) == 2
 
 
 def test_historical_assessment_read_does_not_run_generation_only_choice_validation(db_session) -> None:
@@ -217,9 +355,9 @@ def test_adviser_assessment_is_grounded_stale_and_user_scoped(db_session) -> Non
     service.save_intake(user_a, _intake())
     assert service.get_assessment(user_a).status == "confirmed"
 
-    assert service.assess(user_a).status == "review_ready"
-    assert service.confirm_assessment(user_a).status == "confirmed"
-    assert service.confirm_assessment(user_a).status == "confirmed"
+    with pytest.raises(ValueError, match="material candidate-context change"):
+        service.assess(user_a)
+    assert service.get_assessment(user_a).status == "confirmed"
     # Active evidence is rebuilt from the confirmed profile rather than trusting
     # mutable historical rows. A factual structured-profile change is what makes
     # the adviser assessment stale.

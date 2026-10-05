@@ -43,6 +43,7 @@ from app.services.structured_profile_lineage_transitions import (
     StructuredProfileLineageTransitionAnalyzer,
 )
 from app.services.structured_profile_mutation import adviser_lineage_event, persist_structured_profile
+from app.services.candidate_adviser_service import refresh_refinement_origin_for_clarification
 
 _ADVISER_PROPOSAL_UPDATE = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
@@ -410,6 +411,10 @@ class CandidateProfileRevisionService:
             revision.active_user_id = None
             revision.confirmed_at = datetime.now(timezone.utc)
             revision.revision += 1
+            if linked_adviser is not None:
+                refresh_refinement_origin_for_clarification(
+                    self._session, user_id, linked_adviser[0].source_clarification_id
+                )
             self._session.commit()
             self._session.refresh(revision)
         except StaleDataError as exc:

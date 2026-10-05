@@ -49,6 +49,26 @@ class CandidateAdviserClarificationInput(BaseModel):
     answer_kind: str = Field(pattern="^(career_fact|eligibility_fact|preference_intent|mixed|insufficient)$")
 
 
+class RefinementControlArea(BaseModel):
+    """Non-evidentiary workflow metadata for bounded area convergence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    area_key: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=160)
+    selection_state: Literal["selected", "skipped"]
+
+
+class RefinementControlInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    journey_id: str = Field(min_length=1, max_length=36)
+    round_number: Literal[1, 2]
+    rounds_completed: int = Field(ge=0, le=2)
+    areas_allowed: bool
+    prior_areas: list[RefinementControlArea] = Field(default_factory=list, max_length=12)
+
+
 class CandidateAdviserSemanticInput(BaseModel):
     """The complete bounded input used for adviser synthesis and fingerprints."""
 
@@ -58,6 +78,7 @@ class CandidateAdviserSemanticInput(BaseModel):
     structured_cv: CandidateCVData
     career_evidence: list[CandidateAdviserEvidenceInput] = Field(default_factory=list)
     clarifications: list[CandidateAdviserClarificationInput] = Field(default_factory=list)
+    refinement_control: RefinementControlInput | None = None
 
 
 class AdviserSourceReference(BaseModel):
@@ -84,6 +105,19 @@ class AdviserOpenQuestion(BaseModel):
     suggested_answers: list[str] = Field(default_factory=list, max_length=6)
 
 
+class AdviserClarificationArea(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    area_key: str = Field(min_length=1, max_length=80, pattern="^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+    title: str = Field(min_length=1, max_length=160)
+    rationale: str = Field(min_length=1, max_length=500)
+    source_references: list[AdviserSourceReference] = Field(min_length=1, max_length=8)
+
+
+class ProviderAdviserClarificationArea(AdviserClarificationArea):
+    pass
+
+
 class ProviderAdviserOpenQuestion(BaseModel):
     """Strict new-generation provider contract, intentionally not persisted."""
 
@@ -108,6 +142,8 @@ class CandidateAdviserAssessmentContent(BaseModel):
     role_hypotheses: list[AdviserInsight] = Field(max_length=12)
     transition_assessment: AdviserInsight
     open_questions: list[AdviserOpenQuestion] = Field(max_length=12)
+    clarification_areas: list[AdviserClarificationArea] = Field(default_factory=list, max_length=6)
+    assessment_limitations: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(default_factory=list, max_length=12)
     career_strategy_summary: AdviserInsight
     job_search_strategy_summary: AdviserInsight
 
@@ -116,6 +152,41 @@ class ProviderCandidateAdviserAssessmentContent(CandidateAdviserAssessmentConten
     """Provider-only DTO requiring choices for each newly generated question."""
 
     open_questions: list[ProviderAdviserOpenQuestion] = Field(max_length=12)
+    clarification_areas: list[ProviderAdviserClarificationArea] = Field(max_length=6)
+
+
+class ProviderAreaQuestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_key: str = Field(min_length=1, max_length=80, pattern="^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+    text: str = Field(min_length=1, max_length=1_200)
+    source_references: list[AdviserSourceReference] = Field(min_length=1, max_length=8)
+    suggested_answers: list[Annotated[str, Field(min_length=1, max_length=240)]] = Field(min_length=3, max_length=6)
+
+
+class ProviderAreaQuestionGroup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    area_key: str = Field(min_length=1, max_length=80)
+    questions: list[ProviderAreaQuestion] = Field(min_length=1, max_length=5)
+
+
+class ProviderRoundQuestionSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    area_groups: list[ProviderAreaQuestionGroup] = Field(min_length=1, max_length=6)
+
+
+class CandidateAdviserQuestionGenerationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    journey_id: str = Field(min_length=1, max_length=36)
+    round_number: Literal[1, 2]
+    selected_areas: list[AdviserClarificationArea] = Field(min_length=1, max_length=6)
+    intake: CandidateAdviserIntake
+    structured_cv: CandidateCVData
+    career_evidence: list[CandidateAdviserEvidenceInput] = Field(default_factory=list, max_length=24)
+    clarifications: list[CandidateAdviserClarificationInput] = Field(default_factory=list, max_length=12)
 
 
 class CandidateAdviserAssessmentStatus(StrEnum):
@@ -124,14 +195,26 @@ class CandidateAdviserAssessmentStatus(StrEnum):
     STALE = "stale"
 
 
+class CandidateAdviserAssessmentContractVersion(StrEnum):
+    LEGACY_QUESTIONS = "legacy_questions"
+    CLARIFICATION_AREAS_V1 = "clarification_areas_v1"
+
+
 class CandidateAdviserAssessmentRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     input_fingerprint: str = Field(min_length=64, max_length=64)
+    contract_version: CandidateAdviserAssessmentContractVersion = CandidateAdviserAssessmentContractVersion.LEGACY_QUESTIONS
     status: CandidateAdviserAssessmentStatus
     content: CandidateAdviserAssessmentContent
     created_at: datetime
     updated_at: datetime
+
+
+class CandidateAdviserAreaSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selected_area_keys: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(max_length=6)
 
 
 class ClarificationAnswerKind(StrEnum):
@@ -180,6 +263,9 @@ class CandidateAdviserClarificationRead(BaseModel):
     suggested_answers: list["CandidateAdviserSuggestedAnswer"] = Field(default_factory=list)
     structured_response: "CandidateAdviserStructuredResponse | None" = None
     priority_index: int = Field(ge=0)
+    parent_area_key: str | None = None
+    parent_area_title: str | None = None
+    round_number: int | None = Field(default=None, ge=1, le=2)
     status: CandidateAdviserClarificationStatus
     answer_text: str | None = None
     interpretation: ClarificationInterpretation | None = None

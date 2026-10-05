@@ -113,7 +113,18 @@ def _structured(clarification, *, selected=(), custom="", special=None) -> Candi
 def _confirmed_service(session, user_id: str, adviser: _Adviser, interpreter: _Interpreter, *, legacy_options: bool = True) -> CandidateAdviserService:
     service = CandidateAdviserService(session, agent=adviser, clarification_interpreter=interpreter)
     service.save_intake(user_id, _intake())
-    service.assess(user_id)
+    # These long-standing clarification lifecycle cases deliberately exercise
+    # a historical assessment contract, not new area-based synthesis.
+    semantic_input = service._semantic_input(user_id)
+    fingerprint = service.input_fingerprint(user_id, semantic_input=semantic_input)
+    session.add(CandidateAdviserAssessmentRecord(
+        user_id=user_id,
+        input_fingerprint=fingerprint,
+        contract_version="legacy_questions",
+        status="review_ready",
+        assessment_json=json.dumps(adviser.content.model_dump(mode="json"), sort_keys=True),
+    ))
+    session.commit()
     service.confirm_assessment(user_id)
     if legacy_options:
         # Keep the established free-text regression cases on the legacy path;
@@ -240,6 +251,7 @@ def test_multi_question_session_survives_confirmation_direct_apply_and_stale_ass
     assert journey.confirmed_guidance_active is False
     assert journey.next_action is AdviserNextAction.UPDATE_ASSESSMENT
     assert db_session.scalars(select(CandidateProfileRevisionRecord).where(CandidateProfileRevisionRecord.user_id == user_id)).all() == []
+    service._agent.content.open_questions = []
     assert service.assess(user_id).status == "review_ready"
 
 
@@ -301,6 +313,7 @@ def test_confirmed_clarification_remains_authoritative_after_explicit_reassessme
     enrichment_service = CandidateAdviserProfileProposalGenerationService(db_session, generator_factory=lambda: None)
     enrichment_service.defer(user_id, first.clarification_id)
     enrichment_service.defer(user_id, sibling.clarification_id)
+    service._agent.content.open_questions = []
     assessment_b = service.assess(user_id)
     assert assessment_b.status == "review_ready"
     confirmed_b = service.confirm_assessment(user_id)
@@ -865,6 +878,7 @@ def test_legacy_fingerprint_remains_current_without_confirmed_clarifications(db_
     semantic_input = service._semantic_input(user_id)
     legacy_payload = semantic_input.model_dump(mode="json")
     legacy_payload.pop("clarifications")
+    legacy_payload.pop("refinement_control", None)
     fingerprint = hashlib.sha256(json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     db_session.add(CandidateAdviserAssessmentRecord(user_id=user_id, input_fingerprint=fingerprint, status="confirmed", assessment_json=json.dumps(_content().model_dump(mode="json"))))
     db_session.commit()

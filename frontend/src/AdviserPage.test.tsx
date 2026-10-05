@@ -921,3 +921,54 @@ it("shows clarification confirmation progress on the initiating control and rest
   rejectRequest(new ApiError(503, ""));
   expect(await screen.findByRole("button", { name: "Yes, that’s right" })).toBeEnabled();
 });
+
+it("commits only the selected refinement areas and shows persisted grouped question progress", async () => {
+  const areaStatus = (state: "area_selection" | "questions_active") => {
+    const value = status(true, "confirmed");
+    value.adviser.journey.next_action = state === "area_selection" ? "select_clarification_areas" : "answer_clarification";
+    value.adviser.journey.confirmed_guidance_active = true;
+    value.adviser.journey.refinement_state = state;
+    value.adviser.journey.refinement_round_number = 1;
+    value.adviser.journey.refinement_rounds_completed = 0;
+    value.adviser.journey.refinement_complete = false;
+    value.adviser.journey.refinement_areas = [
+      { area_key: "delivery", title: "Delivery ownership", rationale: "Clarify delivery work.", priority_index: 0, selection_state: state === "area_selection" ? "proposed" : "selected", round_number: 1 },
+      { area_key: "technical", title: "Technical decisions", rationale: "Clarify technical work.", priority_index: 1, selection_state: state === "area_selection" ? "proposed" : "skipped", round_number: 1 },
+    ];
+    value.adviser.journey.round_question_count = state === "questions_active" ? 2 : 0;
+    value.adviser.journey.round_questions_resolved = 0;
+    return value;
+  };
+  const question = (id: string, priority: number) => ({
+    ...unanswered(id, priority), parent_area_key: "delivery", parent_area_title: "Delivery ownership", round_number: 1 as const,
+    suggested_answers: optionClarification().suggested_answers,
+  });
+  let generated = false;
+  let committedKeys: string[] = [];
+  request.mockImplementation(async (url: string, options?: { method?: string; body?: string }) => {
+    if (url === "/api/v1/onboarding/status") return areaStatus(generated ? "questions_active" : "area_selection");
+    if (url === "/api/v1/candidate-adviser/intake") return intake;
+    if (url === "/api/v1/candidate-adviser/assessment") return assessment("confirmed");
+    if (url === "/api/v1/candidate-adviser/clarifications") return generated ? [question("q1", 0), question("q2", 1)] : [];
+    if (url === "/api/v1/candidate-adviser/refinement/areas" && options?.method === "PUT") {
+      committedKeys = JSON.parse(options.body ?? "{}").selected_area_keys;
+      return [];
+    }
+    if (url === "/api/v1/candidate-adviser/refinement/questions/generate" && options?.method === "POST") {
+      generated = true;
+      return [question("q1", 0), question("q2", 1)];
+    }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findByRole("heading", { name: "Which areas would you like to clarify?" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+  const technical = screen.getByRole("checkbox", { name: /Technical decisions/ });
+  expect(technical).toBeChecked();
+  fireEvent.click(technical);
+  fireEvent.click(screen.getByRole("button", { name: "Clarify selected areas" }));
+  expect(await screen.findByRole("textbox", { name: "Add details (optional)" })).toBeInTheDocument();
+  expect(committedKeys).toEqual(["delivery"]);
+  expect(await screen.findByText("Area 1 of 1 · Question 1 of 2 in Delivery ownership")).toBeInTheDocument();
+  expect(screen.getByText("Round 1 · 0 of 2 questions complete")).toBeInTheDocument();
+});

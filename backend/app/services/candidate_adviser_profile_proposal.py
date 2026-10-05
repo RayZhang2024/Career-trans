@@ -48,6 +48,7 @@ from app.services.structured_profile_comparison import StructuredProfileComparis
 from app.services.structured_profile_mutation import persist_structured_profile, stage_adviser_lineage
 from app.schemas.structured_profile import StructuredItemSourceKind, StructuredProfileItemLineageInput
 from app.services.candidate_structured_item_lineage import CandidateStructuredItemLineageService
+from app.services.candidate_adviser_service import refresh_refinement_origin_for_clarification
 
 _UPDATE_ADAPTER = TypeAdapter(CandidateAdviserProfileProposalUpdate)
 
@@ -450,6 +451,7 @@ class CandidateAdviserProfileProposalService:
             record.state = CandidateAdviserProfileProposalState.APPLIED
             record.applied_at = datetime.now(timezone.utc)
             record.revision += 1
+            refresh_refinement_origin_for_clarification(self._session, user_id, record.source_clarification_id)
             self._session.commit()
             self._session.refresh(record)
         except StaleDataError as exc:

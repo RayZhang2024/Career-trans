@@ -17,7 +17,9 @@ from app.schemas.candidate_adviser import (
     CandidateAdviserClarificationRead,
     CandidateAdviserIntake,
     CandidateAdviserIntakeRead,
+    CandidateAdviserAreaSelectionRequest,
 )
+from app.schemas.candidate_adviser_journey import CandidateAdviserAreaRead, CandidateAdviserJourneyRead
 from app.schemas.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalAction,
     CandidateAdviserProfileProposalPatch,
@@ -33,8 +35,61 @@ from app.services.candidate_adviser_profile_proposal import (
     CandidateAdviserProfileProposalService,
 )
 from app.services.candidate_adviser_profile_proposal_generation import CandidateAdviserProfileProposalGenerationService
+from app.services.candidate_adviser_journey_service import CandidateAdviserJourneyService
 
 router = APIRouter(prefix="/candidate-adviser", tags=["candidate-adviser"])
+
+
+@router.get("/refinement", response_model=CandidateAdviserJourneyRead)
+def read_refinement(current_user: CurrentUser, db: DbSession) -> CandidateAdviserJourneyRead:
+    return CandidateAdviserJourneyService(db).read(current_user.id)
+
+
+@router.put("/refinement/areas", response_model=list[CandidateAdviserAreaRead])
+def select_refinement_areas(
+    payload: CandidateAdviserAreaSelectionRequest,
+    current_user: CurrentUser,
+    service: CandidateAdviserService = Depends(get_user_candidate_adviser_service),
+) -> list[CandidateAdviserAreaRead]:
+    try:
+        return [CandidateAdviserAreaRead(
+            area_key=area.area_key,
+            title=area.title,
+            rationale=area.rationale,
+            priority_index=area.priority_index,
+            selection_state=area.selection_state,
+            round_number=area.round_number,
+        ) for area in service.select_refinement_areas(current_user.id, payload)]
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/refinement/questions", response_model=list[CandidateAdviserClarificationRead])
+def read_refinement_questions(
+    current_user: CurrentUser,
+    service: CandidateAdviserService = Depends(get_user_candidate_adviser_service),
+) -> list[CandidateAdviserClarificationRead]:
+    try:
+        return service.list_clarifications(current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/refinement/questions/generate", response_model=list[CandidateAdviserClarificationRead])
+def generate_refinement_questions(
+    current_user: CurrentUser,
+    service: CandidateAdviserService = Depends(get_user_candidate_adviser_service),
+) -> list[CandidateAdviserClarificationRead]:
+    try:
+        return service.generate_round_questions(current_user.id)
+    except SemanticProviderConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except SemanticProviderUnavailableError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except (SemanticProviderRequestError, SemanticOutputError) as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 @router.get("/intake", response_model=CandidateAdviserIntakeRead)
@@ -59,9 +114,9 @@ def read_assessment(current_user: CurrentUser, service: CandidateAdviserService 
 
 
 @router.post("/assessment", response_model=CandidateAdviserAssessmentRead)
-def generate_assessment(current_user: CurrentUser, service: CandidateAdviserService = Depends(get_user_candidate_adviser_service)) -> CandidateAdviserAssessmentRead:
+def generate_assessment(current_user: CurrentUser, service: CandidateAdviserService = Depends(get_user_candidate_adviser_service), replace_review_draft: bool = Query(default=False)) -> CandidateAdviserAssessmentRead:
     try:
-        return service.assess(current_user.id)
+        return service.assess(current_user.id, regenerate=replace_review_draft)
     except SemanticProviderConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except SemanticProviderUnavailableError as exc:

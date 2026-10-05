@@ -1,7 +1,10 @@
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Iterable
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -10,14 +13,17 @@ from sqlalchemy.orm import Session
 
 from app.agents.candidate_adviser import CandidateAdviserAgent
 from app.agents.candidate_adviser_clarification import CandidateAdviserClarificationInterpreter
-from app.models.candidate_adviser import CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord, CandidateAdviserIntakeRecord
+from app.agents.candidate_adviser_question import CandidateAdviserQuestionGenerator
+from app.models.candidate_adviser import (CandidateAdviserAssessmentRecord, CandidateAdviserClarificationRecord, CandidateAdviserIntakeRecord, CandidateAdviserRefinementJourneyRecord, CandidateAdviserClarificationAreaRecord)
 from app.models.candidate_cv_ingestion import CandidateStructuredProfile
+from app.models.candidate_profile import CandidateProfile
 from app.models.candidate_adviser_profile_proposal import CandidateAdviserEnrichmentRecord, CandidateAdviserProfileProposalRecord
 from app.schemas.candidate_adviser import (
     AdviserOpenQuestion,
     AdviserInsight,
     CandidateAdviserAssessmentContent,
     CandidateAdviserAssessmentRead,
+    CandidateAdviserAssessmentContractVersion,
     CandidateAdviserAssessmentStatus,
     CandidateAdviserClarificationAnswer,
     CandidateAdviserClarificationInterpretationInput,
@@ -25,6 +31,9 @@ from app.schemas.candidate_adviser import (
     CandidateAdviserSuggestedAnswer,
     CandidateAdviserStructuredResponse,
     CandidateAdviserClarificationStatus,
+    AdviserClarificationArea,
+    CandidateAdviserQuestionGenerationInput,
+    CandidateAdviserAreaSelectionRequest,
     CandidateAdviserIntake,
     CandidateAdviserIntakeRead,
     CandidateAdviserSemanticInput,
@@ -38,12 +47,14 @@ from app.services.active_candidate_evidence import ActiveCandidateEvidenceResolv
 
 
 class CandidateAdviserService:
-    def __init__(self, session: Session, *, agent: CandidateAdviserAgent | None = None, clarification_interpreter: CandidateAdviserClarificationInterpreter | None = None, agent_factory: Callable[[], CandidateAdviserAgent] | None = None, clarification_interpreter_factory: Callable[[], CandidateAdviserClarificationInterpreter] | None = None) -> None:
+    def __init__(self, session: Session, *, agent: CandidateAdviserAgent | None = None, clarification_interpreter: CandidateAdviserClarificationInterpreter | None = None, question_generator: CandidateAdviserQuestionGenerator | None = None, agent_factory: Callable[[], CandidateAdviserAgent] | None = None, clarification_interpreter_factory: Callable[[], CandidateAdviserClarificationInterpreter] | None = None, question_generator_factory: Callable[[], CandidateAdviserQuestionGenerator] | None = None) -> None:
         self._session = session
         self._agent = agent
         self._clarification_interpreter = clarification_interpreter
+        self._question_generator = question_generator
         self._agent_factory = agent_factory
         self._clarification_interpreter_factory = clarification_interpreter_factory
+        self._question_generator_factory = question_generator_factory
 
     def get_intake(self, user_id: str) -> CandidateAdviserIntakeRead | None:
         record = self._session.scalar(select(CandidateAdviserIntakeRecord).where(CandidateAdviserIntakeRecord.user_id == user_id))
@@ -63,26 +74,97 @@ class CandidateAdviserService:
         self._session.refresh(record)
         return CandidateAdviserIntakeRead(**intake.model_dump(mode="json"), updated_at=record.updated_at)
 
-    def assess(self, user_id: str) -> CandidateAdviserAssessmentRead:
-        if self.has_active_clarification_session(user_id):
+    def assess(self, user_id: str, *, regenerate: bool = False) -> CandidateAdviserAssessmentRead:
+        journey = self._current_refinement_journey(user_id)
+        active_session = self.has_active_clarification_session(user_id)
+        if journey is not None and journey.state == "questions_active" and not active_session:
+            journey.rounds_completed = max(journey.rounds_completed, journey.round_number)
+            journey.state = "assessment_update"
+            self._session.commit()
+        if active_session:
             raise ValueError("Finish or defer the active clarification session before updating the assessment.")
         intake = self._intake(user_id)
         if not self._session.scalar(select(CandidateStructuredProfile.id).where(CandidateStructuredProfile.user_id == user_id)):
             raise ValueError("Candidate adviser requires a confirmed CV before assessment.")
+        assessment_record = self._assessment_record(user_id)
+        current_origin_fingerprint = self._origin_context_fingerprint(user_id)
+        if (
+            journey is not None
+            and journey.state not in {"initial_assessment_review", "assessment_update", "complete"}
+            and journey.origin_context_fingerprint != current_origin_fingerprint
+        ):
+            # A user-authored intake/Profile/CV change can make an in-flight
+            # assessment stale before its current clarification loop ends.
+            # Start a fresh durable journey while keeping prior rounds as
+            # history; otherwise the stale area-selection state could never
+            # be repaired through the normal Update action.
+            journey.state = "superseded"
+            self._session.flush()
+            journey = None
+        if journey is not None and journey.state == "complete":
+            if journey.origin_context_fingerprint == current_origin_fingerprint:
+                raise ValueError("A new refinement journey requires a material candidate-context change outside the completed journey.")
+            journey.state = "superseded"
+            self._session.flush()
+            journey = None
+        elif journey is not None and journey.state not in {"initial_assessment_review", "assessment_update"}:
+            raise ValueError("The refinement journey is not ready for assessment generation.")
+        if journey is not None and journey.state == "initial_assessment_review" and assessment_record is not None and not regenerate:
+            current = self._read_assessment(assessment_record, self.input_fingerprint(user_id))
+            if current.status is CandidateAdviserAssessmentStatus.REVIEW_READY:
+                return current
+        if journey is None or journey.state != "assessment_update":
+            journey_key = str(uuid4())
+            round_number = 1
+            rounds_completed = 0
+            prior_areas: list[CandidateAdviserClarificationAreaRecord] = []
+            state_after_generation = "initial_assessment_review"
+        else:
+            journey_key = journey.journey_key
+            rounds_completed = journey.rounds_completed
+            prior_areas = self._journey_areas(user_id, journey.journey_key)
+            round_number = 2 if rounds_completed > 0 else journey.round_number
+            state_after_generation = "round1_assessment_review" if rounds_completed == 1 else "round2_assessment_review"
+        if regenerate and journey is not None and journey.state == "initial_assessment_review":
+            for draft_area in self._journey_areas(user_id, journey.journey_key):
+                if draft_area.round_number == round_number and draft_area.selection_state == "proposed":
+                    self._session.delete(draft_area)
         semantic_input = self._semantic_input(user_id, intake=intake)
+        semantic_input.refinement_control = self._refinement_control(
+            journey_key=journey_key,
+            round_number=round_number,
+            rounds_completed=rounds_completed,
+            areas_allowed=rounds_completed < 2,
+            prior_areas=prior_areas,
+        )
         content = self._semantic_agent().assess(semantic_input=semantic_input)
-        self._validate_new_open_questions(content)
+        self._validate_new_area_assessment(content, areas_allowed=rounds_completed < 2)
         self._validate_sources(content, semantic_input)
         fingerprint = self.input_fingerprint(user_id, semantic_input=semantic_input)
         record = self._session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user_id))
         encoded = json.dumps(content.model_dump(mode="json"), sort_keys=True)
         if record is None:
-            record = CandidateAdviserAssessmentRecord(user_id=user_id, input_fingerprint=fingerprint, status=CandidateAdviserAssessmentStatus.REVIEW_READY, assessment_json=encoded)
+            record = CandidateAdviserAssessmentRecord(user_id=user_id, input_fingerprint=fingerprint, contract_version="clarification_areas_v1", status=CandidateAdviserAssessmentStatus.REVIEW_READY, assessment_json=encoded)
             self._session.add(record)
         else:
             record.input_fingerprint = fingerprint
+            record.contract_version = "clarification_areas_v1"
             record.status = CandidateAdviserAssessmentStatus.REVIEW_READY
             record.assessment_json = encoded
+        if journey is None or journey.state != "assessment_update":
+            journey = CandidateAdviserRefinementJourneyRecord(
+                id=journey_key,
+                user_id=user_id,
+                journey_key=journey_key,
+                round_number=1,
+                rounds_completed=0,
+                state=state_after_generation,
+                origin_context_fingerprint=self._origin_context_fingerprint(user_id),
+            )
+            self._session.add(journey)
+        else:
+            journey.state = state_after_generation
+        self._persist_proposed_areas(user_id, journey_key, round_number, fingerprint, content.clarification_areas)
         self._session.commit()
         self._session.refresh(record)
         return self._read_assessment(record, fingerprint)
@@ -100,6 +182,21 @@ class CandidateAdviserService:
         if assessment.status is not CandidateAdviserAssessmentStatus.REVIEW_READY:
             raise ValueError("Candidate adviser assessment is not ready for confirmation.")
         record.status = CandidateAdviserAssessmentStatus.CONFIRMED
+        if (record.contract_version or "legacy_questions") == "clarification_areas_v1":
+            journey = self._current_refinement_journey(user_id)
+            if journey is not None:
+                content = self._read_assessment(record, fingerprint).content
+                if journey.state == "initial_assessment_review":
+                    journey.state = "area_selection" if content.clarification_areas else "complete"
+                elif journey.state == "round1_assessment_review":
+                    journey.rounds_completed = 1
+                    journey.state = "area_selection" if content.clarification_areas else "complete"
+                    if journey.state == "area_selection":
+                        journey.round_number = 2
+                elif journey.state == "round2_assessment_review":
+                    journey.rounds_completed = 2
+                    journey.state = "complete"
+                journey.origin_context_fingerprint = self._origin_context_fingerprint(user_id)
         self._session.commit()
         self._session.refresh(record)
         return self._read_assessment(record, fingerprint)
@@ -130,6 +227,12 @@ class CandidateAdviserService:
         assessment_record = self._assessment_record(user_id)
         if assessment_record is None:
             raise ValueError("A confirmed candidate adviser assessment is required before clarifications.")
+        journey = self._current_refinement_journey(user_id)
+        if journey is not None and journey.state in {"questions_pending", "questions_active", "assessment_update", "round1_assessment_review", "round2_assessment_review"}:
+            records = self._round_question_records(user_id, journey.journey_key, journey.round_number if journey.round_number <= 2 else 2)
+            return [self._read_clarification(record) for record in records]
+        if (assessment_record.contract_version or "legacy_questions") == "clarification_areas_v1":
+            return []
         found = self.get_assessment(user_id)
         existing = self._session.scalars(select(CandidateAdviserClarificationRecord).where(
             CandidateAdviserClarificationRecord.user_id == user_id,
@@ -231,6 +334,237 @@ class CandidateAdviserService:
             self._clarification_interpreter = self._clarification_interpreter_factory()
         return self._clarification_interpreter
 
+    def _question_agent(self) -> CandidateAdviserQuestionGenerator:
+        if self._question_generator is None:
+            if self._question_generator_factory is None:
+                raise ValueError("No grouped clarification question generator is configured.")
+            self._question_generator = self._question_generator_factory()
+        return self._question_generator
+
+    def _current_refinement_journey(self, user_id: str) -> CandidateAdviserRefinementJourneyRecord | None:
+        return self._session.scalar(
+            select(CandidateAdviserRefinementJourneyRecord)
+            .where(CandidateAdviserRefinementJourneyRecord.user_id == user_id)
+            .where(CandidateAdviserRefinementJourneyRecord.state != "superseded")
+            .order_by(CandidateAdviserRefinementJourneyRecord.updated_at.desc(), CandidateAdviserRefinementJourneyRecord.id.desc())
+        )
+
+    def _journey_areas(self, user_id: str, journey_key: str) -> list[CandidateAdviserClarificationAreaRecord]:
+        return list(self._session.scalars(
+            select(CandidateAdviserClarificationAreaRecord)
+            .where(
+                CandidateAdviserClarificationAreaRecord.user_id == user_id,
+                CandidateAdviserClarificationAreaRecord.journey_key == journey_key,
+            )
+            .order_by(CandidateAdviserClarificationAreaRecord.round_number, CandidateAdviserClarificationAreaRecord.priority_index, CandidateAdviserClarificationAreaRecord.area_key)
+        ))
+
+    @staticmethod
+    def _canonical_area_key(value: str) -> str:
+        return unicodedata.normalize("NFKC", value).strip().casefold()
+
+    def _refinement_control(
+        self,
+        *,
+        journey_key: str,
+        round_number: int,
+        rounds_completed: int,
+        areas_allowed: bool,
+        prior_areas: list[CandidateAdviserClarificationAreaRecord],
+    ):
+        from app.schemas.candidate_adviser import RefinementControlInput, RefinementControlArea
+
+        return RefinementControlInput(
+            journey_id=journey_key,
+            round_number=round_number,
+            rounds_completed=rounds_completed,
+            areas_allowed=areas_allowed,
+            prior_areas=[
+                RefinementControlArea(
+                    area_key=area.area_key,
+                    title=area.title,
+                    selection_state="selected" if area.selection_state == "selected" else "skipped",
+                )
+                for area in prior_areas
+                if area.selection_state in {"selected", "skipped"}
+            ],
+        )
+
+    def _persist_proposed_areas(
+        self,
+        user_id: str,
+        journey_key: str,
+        round_number: int,
+        fingerprint: str,
+        areas: list[AdviserClarificationArea],
+    ) -> None:
+        prior = self._journey_areas(user_id, journey_key)
+        prior_keys = {self._canonical_area_key(item.area_key) for item in prior}
+        canonical_keys = [self._canonical_area_key(item.area_key) for item in areas]
+        if len(set(canonical_keys)) != len(canonical_keys):
+            raise ValueError("Clarification area keys must be unique after canonicalization.")
+        if any(key in prior_keys for key in canonical_keys):
+            raise ValueError("A clarification area key cannot be reused within one refinement journey.")
+        for priority, area in enumerate(areas):
+            self._session.add(CandidateAdviserClarificationAreaRecord(
+                user_id=user_id,
+                journey_key=journey_key,
+                round_number=round_number,
+                area_key=self._canonical_area_key(area.area_key),
+                title=area.title,
+                rationale=area.rationale,
+                priority_index=priority,
+                source_references_json=json.dumps([item.model_dump(mode="json") for item in area.source_references], sort_keys=True),
+                selection_state="proposed",
+                origin_assessment_fingerprint=fingerprint,
+            ))
+
+    def _origin_context_fingerprint(self, user_id: str) -> str:
+        intake = self._session.scalar(select(CandidateAdviserIntakeRecord).where(CandidateAdviserIntakeRecord.user_id == user_id))
+        structured = self._session.scalar(select(CandidateStructuredProfile).where(CandidateStructuredProfile.user_id == user_id))
+        profile = self._session.scalar(select(CandidateProfile).where(CandidateProfile.user_id == user_id))
+        payload = {
+            "intake": json.loads(intake.intake_json) if intake is not None else None,
+            "structured_cv": json.loads(structured.structured_json) if structured is not None else None,
+            "profile": {
+                field: getattr(profile, field)
+                for field in ("headline", "summary", "current_role", "location", "career_goal", "job_search_criteria")
+            } if profile is not None else None,
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def select_refinement_areas(self, user_id: str, payload: CandidateAdviserAreaSelectionRequest) -> list[CandidateAdviserClarificationAreaRecord]:
+        journey = self._current_refinement_journey(user_id)
+        assessment = self._assessment_record(user_id)
+        if journey is None or journey.state != "area_selection" or assessment is None or assessment.status != CandidateAdviserAssessmentStatus.CONFIRMED or (assessment.contract_version or "legacy_questions") != "clarification_areas_v1":
+            raise ValueError("Clarification area selection is not currently available.")
+        if self.get_assessment(user_id) is None or self.get_assessment(user_id).status is not CandidateAdviserAssessmentStatus.CONFIRMED:
+            raise ValueError("Clarification area selection requires the current confirmed assessment.")
+        areas = [area for area in self._journey_areas(user_id, journey.journey_key) if area.round_number == journey.round_number]
+        if not areas:
+            raise ValueError("There are no clarification areas to select.")
+        canonical_selected = [self._canonical_area_key(key) for key in payload.selected_area_keys]
+        if len(set(canonical_selected)) != len(canonical_selected):
+            raise ValueError("Selected clarification areas must be unique.")
+        by_key = {area.area_key: area for area in areas}
+        if any(key not in by_key for key in canonical_selected):
+            raise ValueError("A selected clarification area is no longer available.")
+        if not canonical_selected:
+            for area in areas:
+                area.selection_state = "skipped"
+            journey.state = "complete"
+        else:
+            selected_set = set(canonical_selected)
+            for area in areas:
+                area.selection_state = "selected" if area.area_key in selected_set else "skipped"
+            journey.state = "questions_pending"
+        self._session.commit()
+        return areas
+
+    def generate_round_questions(self, user_id: str) -> list[CandidateAdviserClarificationRead]:
+        journey = self._current_refinement_journey(user_id)
+        assessment = self._assessment_record(user_id)
+        if journey is None or journey.state not in {"questions_pending", "questions_active"} or assessment is None:
+            raise ValueError("A committed clarification-area selection is required before question generation.")
+        if self.get_assessment(user_id) is None or self.get_assessment(user_id).status is not CandidateAdviserAssessmentStatus.CONFIRMED:
+            raise ValueError("Question generation requires the current confirmed assessment.")
+        existing = self._round_question_records(user_id, journey.journey_key, journey.round_number)
+        if existing:
+            return [self._read_clarification(row) for row in existing]
+        if journey.state != "questions_pending":
+            raise ValueError("Round questions are not available for generation.")
+        areas = [area for area in self._journey_areas(user_id, journey.journey_key) if area.round_number == journey.round_number and area.selection_state == "selected"]
+        if not areas:
+            raise ValueError("At least one committed area must be selected.")
+        semantic_input = self._semantic_input(user_id)
+        question_input = CandidateAdviserQuestionGenerationInput(
+            journey_id=journey.journey_key,
+            round_number=journey.round_number,
+            selected_areas=[AdviserClarificationArea(
+                area_key=area.area_key,
+                title=area.title,
+                rationale=area.rationale,
+                source_references=json.loads(area.source_references_json),
+            ) for area in areas],
+            intake=semantic_input.intake,
+            structured_cv=semantic_input.structured_cv,
+            career_evidence=semantic_input.career_evidence,
+            clarifications=semantic_input.clarifications,
+        )
+        output = self._question_agent().generate(generation_input=question_input)
+        by_area = {self._canonical_area_key(group.area_key): group for group in output.area_groups}
+        selected_keys = [area.area_key for area in areas]
+        if len(by_area) != len(output.area_groups) or set(by_area) != set(selected_keys):
+            raise ValueError("Generated questions must include every selected area exactly once and no other area.")
+        catalog = candidate_adviser_reference_catalog(semantic_input)
+        all_question_keys: set[str] = set()
+        all_canonical_text: set[str] = set()
+        new_records: list[CandidateAdviserClarificationRecord] = []
+        for area in areas:
+            group = by_area[area.area_key]
+            if not 1 <= len(group.questions) <= 5:
+                raise ValueError("Each selected area must receive between one and five questions.")
+            for within_area, question in enumerate(group.questions):
+                qkey = self._canonical_area_key(question.question_key)
+                canonical_text = " ".join(question.text.split()).casefold()
+                if qkey in all_question_keys or canonical_text in all_canonical_text:
+                    raise ValueError("Generated question identities must be non-empty and unique.")
+                all_question_keys.add(qkey)
+                all_canonical_text.add(canonical_text)
+                if not question.text.strip():
+                    raise ValueError("Generated questions must be non-empty.")
+                for reference in question.source_references:
+                    if not candidate_adviser_reference_is_allowed(source_type=reference.source_type, reference=reference.reference, catalog=catalog):
+                        raise ValueError("Generated question referenced a source that was not supplied.")
+                options = [self._normalize_choice(value) for value in question.suggested_answers]
+                if not 3 <= len(options) <= 6 or any(not value or len(value) > 240 for value in options) or len({value.casefold() for value in options}) != len(options):
+                    raise ValueError("Generated question choices must be 3–6 distinct non-empty options.")
+                # Stable area/slot identities make concurrent/retried provider
+                # responses converge on one complete persisted question set.
+                clarification_id = hashlib.sha256(f"{journey.journey_key}\0{journey.round_number}\0{area.area_key}\0{within_area}".encode("utf-8")).hexdigest()
+                source_refs = [item.model_dump(mode="json") for item in question.source_references]
+                new_records.append(CandidateAdviserClarificationRecord(
+                    user_id=user_id,
+                    clarification_id=clarification_id,
+                    question_key=hashlib.sha256(canonical_text.encode("utf-8")).hexdigest(),
+                    origin_assessment_fingerprint=assessment.input_fingerprint,
+                    parent_area_id=area.id,
+                    round_number=journey.round_number,
+                    question_text=question.text,
+                    question_source_references_json=json.dumps(source_refs, sort_keys=True),
+                    suggested_answers_json=json.dumps([{"option_id": self._option_id(clarification_id, value), "text": value} for value in options], ensure_ascii=False, sort_keys=True),
+                    priority_index=area.priority_index * 10 + within_area,
+                    status=CandidateAdviserClarificationStatus.UNANSWERED,
+                ))
+        try:
+            with self._session.begin_nested():
+                self._session.add_all(new_records)
+                self._session.flush()
+                journey.state = "questions_active"
+            self._session.commit()
+        except IntegrityError as exc:
+            self._session.rollback()
+            reconciled = self._round_question_records(user_id, journey.journey_key, journey.round_number)
+            if reconciled:
+                return [self._read_clarification(row) for row in reconciled]
+            raise ValueError("Round questions could not be committed atomically; retry to reconcile persisted state.") from exc
+        return [self._read_clarification(row) for row in self._round_question_records(user_id, journey.journey_key, journey.round_number)]
+
+    def _round_question_records(self, user_id: str, journey_key: str, round_number: int) -> list[CandidateAdviserClarificationRecord]:
+        area_ids = select(CandidateAdviserClarificationAreaRecord.id).where(
+            CandidateAdviserClarificationAreaRecord.user_id == user_id,
+            CandidateAdviserClarificationAreaRecord.journey_key == journey_key,
+            CandidateAdviserClarificationAreaRecord.round_number == round_number,
+            CandidateAdviserClarificationAreaRecord.selection_state == "selected",
+        )
+        return list(self._session.scalars(
+            select(CandidateAdviserClarificationRecord).where(
+                CandidateAdviserClarificationRecord.user_id == user_id,
+                CandidateAdviserClarificationRecord.parent_area_id.in_(area_ids),
+                CandidateAdviserClarificationRecord.round_number == round_number,
+            ).order_by(CandidateAdviserClarificationRecord.priority_index, CandidateAdviserClarificationRecord.clarification_id)
+        ))
+
     def confirm_clarification(self, user_id: str, clarification_id: str) -> CandidateAdviserClarificationRead:
         record = self._current_clarification(user_id, clarification_id, allow_confirmed=True)
         _, _, interpretation = self._validated_review_state(record)
@@ -259,6 +593,9 @@ class CandidateAdviserService:
                     ))
             # The resolver remains the only active-evidence authority.
             self._resolve_active_evidence(user_id)
+            journey = self._current_refinement_journey(user_id)
+            if journey is not None and record.parent_area_id is not None:
+                journey.origin_context_fingerprint = self._origin_context_fingerprint(user_id)
         self._session.commit()
         self._session.refresh(record)
         return self._read_clarification(record)
@@ -271,6 +608,7 @@ class CandidateAdviserService:
         read_only: bool = False,
     ) -> str:
         payload = (semantic_input or self._semantic_input(user_id, read_only=read_only)).model_dump(mode="json")
+        payload.pop("refinement_control", None)
         # Preserve pre-#152 fingerprints when the user has no confirmation
         # state at all; bounded projection does not replace authoritative state.
         if not payload.get("clarifications"):
@@ -350,6 +688,7 @@ class CandidateAdviserService:
         yield from content.role_hypotheses
         yield content.transition_assessment
         yield from content.open_questions
+        yield from content.clarification_areas
         yield content.career_strategy_summary
         yield content.job_search_strategy_summary
 
@@ -358,6 +697,7 @@ class CandidateAdviserService:
         status = CandidateAdviserAssessmentStatus(record.status) if record.input_fingerprint == fingerprint else CandidateAdviserAssessmentStatus.STALE
         return CandidateAdviserAssessmentRead(
             input_fingerprint=record.input_fingerprint,
+            contract_version=record.contract_version or CandidateAdviserAssessmentContractVersion.LEGACY_QUESTIONS,
             status=status,
             content=CandidateAdviserAssessmentContent.model_validate(json.loads(record.assessment_json)),
             created_at=record.created_at,
@@ -509,6 +849,20 @@ class CandidateAdviserService:
             if len(set(identities)) != len(identities):
                 raise ValueError("New open-question choices must be unique after whitespace normalization.")
 
+    @classmethod
+    def _validate_new_area_assessment(cls, content: CandidateAdviserAssessmentContent, *, areas_allowed: bool) -> None:
+        if content.open_questions:
+            raise ValueError("New area-contract assessments must not generate immediate clarification questions.")
+        if len(content.clarification_areas) > 6:
+            raise ValueError("A clarification round may propose at most six areas.")
+        if not areas_allowed and content.clarification_areas:
+            raise ValueError("Clarification areas are disabled after Round 2.")
+        keys = [cls._canonical_area_key(area.area_key) for area in content.clarification_areas]
+        if any(not key for key in keys) or len(set(keys)) != len(keys):
+            raise ValueError("Clarification area keys must be non-empty and unique after canonicalization.")
+        if any(area.rationale != area.rationale.strip() or not area.rationale.strip() for area in content.clarification_areas):
+            raise ValueError("Clarification areas require a concise rationale.")
+
     @staticmethod
     def _validate_structured_response(
         options: list[CandidateAdviserSuggestedAnswer],
@@ -601,6 +955,10 @@ class CandidateAdviserService:
 
     def _read_clarification(self, record: CandidateAdviserClarificationRecord) -> CandidateAdviserClarificationRead:
         options, response, interpretation = self._validated_review_state(record)
+        parent_area = self._session.scalar(select(CandidateAdviserClarificationAreaRecord).where(
+            CandidateAdviserClarificationAreaRecord.id == record.parent_area_id,
+            CandidateAdviserClarificationAreaRecord.user_id == record.user_id,
+        )) if record.parent_area_id else None
         return CandidateAdviserClarificationRead(
             clarification_id=record.clarification_id,
             question_text=record.question_text,
@@ -608,6 +966,9 @@ class CandidateAdviserService:
             suggested_answers=options,
             structured_response=response,
             priority_index=record.priority_index,
+            parent_area_key=parent_area.area_key if parent_area else None,
+            parent_area_title=parent_area.title if parent_area else None,
+            round_number=record.round_number,
             status=CandidateAdviserClarificationStatus(record.status),
             answer_text=record.answer_text,
             interpretation=interpretation,
@@ -700,3 +1061,25 @@ class CandidateAdviserService:
             )
         except (TypeError, json.JSONDecodeError, ValidationError, ValueError) as exc:
             raise ValueError("Persisted structured clarification response is invalid.") from exc
+
+
+def refresh_refinement_origin_for_clarification(session: Session, user_id: str, clarification_id: str) -> None:
+    """Keep an in-journey Adviser Profile apply from looking like external context."""
+    clarification = session.scalar(select(CandidateAdviserClarificationRecord).where(
+        CandidateAdviserClarificationRecord.user_id == user_id,
+        CandidateAdviserClarificationRecord.clarification_id == clarification_id,
+    ))
+    if clarification is None or clarification.parent_area_id is None:
+        return
+    area = session.scalar(select(CandidateAdviserClarificationAreaRecord).where(
+        CandidateAdviserClarificationAreaRecord.id == clarification.parent_area_id,
+        CandidateAdviserClarificationAreaRecord.user_id == user_id,
+    ))
+    if area is None:
+        return
+    journey = session.scalar(select(CandidateAdviserRefinementJourneyRecord).where(
+        CandidateAdviserRefinementJourneyRecord.user_id == user_id,
+        CandidateAdviserRefinementJourneyRecord.journey_key == area.journey_key,
+    ))
+    if journey is not None:
+        journey.origin_context_fingerprint = CandidateAdviserService(session)._origin_context_fingerprint(user_id)
