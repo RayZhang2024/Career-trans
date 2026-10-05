@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -74,6 +74,26 @@ class AdviserInsight(BaseModel):
     source_references: list[AdviserSourceReference] = Field(min_length=1, max_length=8)
 
 
+class AdviserOpenQuestion(BaseModel):
+    """Canonical open question; empty choices keep historical assessments readable."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=1200)
+    source_references: list[AdviserSourceReference] = Field(min_length=1, max_length=8)
+    suggested_answers: list[str] = Field(default_factory=list, max_length=6)
+
+
+class ProviderAdviserOpenQuestion(BaseModel):
+    """Strict new-generation provider contract, intentionally not persisted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=1200)
+    source_references: list[AdviserSourceReference] = Field(min_length=1, max_length=8)
+    suggested_answers: list[Annotated[str, Field(min_length=1, max_length=240)]] = Field(min_length=3, max_length=6)
+
+
 class CandidateAdviserAssessmentContent(BaseModel):
     """Reviewable semantic interpretation with explicit supporting references."""
 
@@ -87,9 +107,15 @@ class CandidateAdviserAssessmentContent(BaseModel):
     development_gaps: list[AdviserInsight] = Field(max_length=12)
     role_hypotheses: list[AdviserInsight] = Field(max_length=12)
     transition_assessment: AdviserInsight
-    open_questions: list[AdviserInsight] = Field(max_length=12)
+    open_questions: list[AdviserOpenQuestion] = Field(max_length=12)
     career_strategy_summary: AdviserInsight
     job_search_strategy_summary: AdviserInsight
+
+
+class ProviderCandidateAdviserAssessmentContent(CandidateAdviserAssessmentContent):
+    """Provider-only DTO requiring choices for each newly generated question."""
+
+    open_questions: list[ProviderAdviserOpenQuestion] = Field(max_length=12)
 
 
 class CandidateAdviserAssessmentStatus(StrEnum):
@@ -151,6 +177,8 @@ class CandidateAdviserClarificationRead(BaseModel):
     clarification_id: str = Field(min_length=64, max_length=64)
     question_text: str = Field(min_length=1, max_length=1_200)
     question_source_references: list[AdviserSourceReference] = Field(default_factory=list)
+    suggested_answers: list["CandidateAdviserSuggestedAnswer"] = Field(default_factory=list)
+    structured_response: "CandidateAdviserStructuredResponse | None" = None
     priority_index: int = Field(ge=0)
     status: CandidateAdviserClarificationStatus
     answer_text: str | None = None
@@ -161,7 +189,33 @@ class CandidateAdviserClarificationRead(BaseModel):
     session_active: bool = False
 
 
-class CandidateAdviserClarificationAnswer(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+class CandidateAdviserSuggestedAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    answer_text: str = Field(min_length=1, max_length=4_000)
+    option_id: str = Field(min_length=64, max_length=64, pattern="^[a-f0-9]{64}$")
+    text: str = Field(min_length=1, max_length=240)
+
+
+class CandidateAdviserStructuredResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    selected_option_ids: list[Annotated[str, Field(min_length=64, max_length=64, pattern="^[a-f0-9]{64}$")]] = Field(default_factory=list, max_length=6)
+    custom_answer_text: str = Field(default="", max_length=4_000)
+    special_selection: Literal["not_sure"] | None = None
+
+
+class CandidateAdviserClarificationInterpretationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    question_text: str = Field(min_length=1, max_length=1200)
+    selected_answers: list[Annotated[str, Field(min_length=1, max_length=240)]] = Field(default_factory=list, max_length=6)
+    additional_detail: str = Field(default="", max_length=4_000)
+
+
+class CandidateAdviserClarificationAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer_text: str | None = Field(default=None, min_length=1, max_length=4_000)
+    selected_option_ids: list[Annotated[str, Field(min_length=64, max_length=64, pattern="^[a-f0-9]{64}$")]] | None = Field(default=None, max_length=6)
+    custom_answer_text: str | None = Field(default=None, max_length=4_000)
+    special_selection: Literal["not_sure"] | None = None

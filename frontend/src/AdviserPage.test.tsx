@@ -12,6 +12,18 @@ const intake = { career_direction: "Direction", work_preferences: [], constraint
 const content = { professional_positioning: { text: "Position", source_references: [{ source_type: "intake", reference: "career_direction" }] }, transferable_strengths: [{ text: "Strength", source_references: [{ source_type: "career_evidence", reference: "safe" }] }], development_gaps: [{ text: "Gap", source_references: [] }], role_hypotheses: [{ text: "Role", source_references: [] }], transition_assessment: { text: "Transition", source_references: [] }, open_questions: [{ text: "Question", source_references: [{ source_type: "clarification", reference: "safe" }] }], career_strategy_summary: { text: "Strategy", source_references: [] }, job_search_strategy_summary: { text: "Search", source_references: [] } };
 const assessment = (state: "review_ready" | "confirmed" | "stale") => ({ status: state, content });
 const unanswered = (id = "question", priority_index = 0) => ({ clarification_id: id, question_text: `Question ${id}`, priority_index, status: "unanswered" as const, answer_text: null, session_active: true, interpretation: null });
+const optionClarification = (statusValue: "unanswered" | "review_ready" = "unanswered", structured_response: { selected_option_ids: string[]; custom_answer_text: string; special_selection: "not_sure" | null } | null = null) => ({
+  ...unanswered(),
+  status: statusValue,
+  answer_text: structured_response?.special_selection === "not_sure" ? "I'm not sure / I don't have enough information to answer this yet" : null,
+  suggested_answers: [
+    { option_id: "a".repeat(64), text: "I led the synthetic project" },
+    { option_id: "b".repeat(64), text: "I contributed to implementation" },
+    { option_id: "c".repeat(64), text: "I supported testing and release" },
+  ],
+  structured_response,
+  interpretation: statusValue === "review_ready" ? { answer_kind: "career_fact" as const, confirmed_context_summary: "Reviewed selected synthetic work.", proposed_evidence: [] } : null,
+});
 
 it("gates direct Adviser access before confirmed candidate context without Adviser calls", async () => {
   request.mockResolvedValueOnce(status(false)); render(<MemoryRouter><AdviserPage /></MemoryRouter>);
@@ -233,6 +245,8 @@ it("adopts normalized interpretation answers, re-interprets edited answers, and 
   const editor = await screen.findByRole("textbox", { name: "Your answer" });
   fireEvent.change(editor, { target: { value: "  raw answer  " } });
   request.mockResolvedValueOnce(first); fireEvent.click(screen.getByRole("button", { name: "Review my answer" }));
+  const legacyAnswerCall = request.mock.calls.find(([path]) => String(path).endsWith("/answer"));
+  expect(JSON.parse(String((legacyAnswerCall?.[1] as { body: string }).body))).toEqual({ answer_text: "  raw answer  " });
   await vi.waitFor(() => expect(editor).toHaveValue("Normalized answer"));
   expect(screen.getByText("Fact context")).toBeInTheDocument();
   expect(screen.queryByText("Returned evidence")).not.toBeInTheDocument();
@@ -653,4 +667,98 @@ it("keeps clarification confirmation beside the reviewed interpretation", async 
   expect(request.mock.calls.filter((call) => String(call[0]).endsWith("/confirm"))).toHaveLength(0);
   expect(screen.getByRole("heading", { name: "Here’s what I understood" }).closest("article")).toHaveFocus();
   expect(screen.getByRole("button", { name: "Yes, that’s right" })).toBeEnabled();
+});
+
+it("supports multi-select plus custom detail and posts the structured response without flattening it", async () => {
+  const question = optionClarification();
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([question]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const first = await screen.findByRole("checkbox", { name: "I led the synthetic project" });
+  const second = screen.getByRole("checkbox", { name: "I contributed to implementation" });
+  fireEvent.click(first); fireEvent.click(second);
+  const details = screen.getByRole("textbox", { name: "Add details (optional)" });
+  fireEvent.change(details, { target: { value: "A little extra synthetic detail." } });
+  expect(screen.getByRole("button", { name: "Review my answer" })).toBeEnabled();
+  const response = { selected_option_ids: ["a".repeat(64), "b".repeat(64)], custom_answer_text: "A little extra synthetic detail.", special_selection: null };
+  const reviewed = { ...question, status: "review_ready", answer_text: "projection", structured_response: response, interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Reviewed selections.", proposed_evidence: [] } };
+  request.mockResolvedValueOnce(reviewed);
+  fireEvent.click(screen.getByRole("button", { name: "Review my answer" }));
+  await screen.findByText("Reviewed selections.");
+  const answerCall = request.mock.calls.find(([path]) => String(path).endsWith("/answer"));
+  expect(JSON.parse(String((answerCall?.[1] as { body: string }).body))).toEqual(response);
+  expect(screen.getByRole("button", { name: "Yes, that’s right" })).toBeEnabled();
+  expect(screen.getByText("I supported testing and release")).toBeInTheDocument();
+
+  fireEvent.click(second);
+  expect(screen.getByText("You changed your answer. Review it again before confirming.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Yes, that’s right" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Review my answer" })).toBeEnabled();
+});
+
+it("restores structured selections after reload and enforces not-sure exclusivity", async () => {
+  const structured = { selected_option_ids: ["b".repeat(64)], custom_answer_text: "Saved synthetic detail", special_selection: null };
+  const question = optionClarification("review_ready", structured);
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([question]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  expect(await screen.findByRole("checkbox", { name: "I contributed to implementation" })).toBeChecked();
+  expect(screen.getByRole("textbox", { name: "Add details (optional)" })).toHaveValue("Saved synthetic detail");
+  expect(screen.getByRole("button", { name: "Yes, that’s right" })).toBeEnabled();
+  const notSure = screen.getByRole("checkbox", { name: "I’m not sure / I don’t have enough information to answer this yet" });
+  fireEvent.click(notSure);
+  expect(notSure).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "I contributed to implementation" })).not.toBeChecked();
+  expect(screen.getByRole("textbox", { name: "Add details (optional)" })).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Add details (optional)" })).toHaveValue("");
+  expect(screen.getByRole("button", { name: "Review my answer" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("checkbox", { name: "I led the synthetic project" }));
+  expect(notSure).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "I led the synthetic project" })).toBeChecked();
+  expect(screen.getByRole("textbox", { name: "Add details (optional)" })).toBeEnabled();
+  expect(screen.getByRole("group", { name: "Choose any that apply" })).toHaveClass("adviser-answer-options");
+});
+
+it("allows custom detail alone for an option-backed question", async () => {
+  const question = optionClarification();
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([question]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const detail = await screen.findByRole("textbox", { name: "Add details (optional)" });
+  expect(screen.getByRole("button", { name: "Review my answer" })).toBeDisabled();
+  fireEvent.change(detail, { target: { value: "A custom-only synthetic answer." } });
+  expect(screen.getByRole("button", { name: "Review my answer" })).toBeEnabled();
+  const response = { selected_option_ids: [], custom_answer_text: "A custom-only synthetic answer.", special_selection: null };
+  request.mockResolvedValueOnce({ ...question, status: "review_ready", answer_text: "display projection", structured_response: response, interpretation: { answer_kind: "career_fact", confirmed_context_summary: "Custom answer reviewed.", proposed_evidence: [] } });
+  fireEvent.click(screen.getByRole("button", { name: "Review my answer" }));
+  await screen.findByText("Custom answer reviewed.");
+  const answerCall = request.mock.calls.find(([path]) => String(path).endsWith("/answer"));
+  expect(JSON.parse(String((answerCall?.[1] as { body: string }).body))).toEqual(response);
+});
+
+it.each(["Continue with this follow-up", "Answer an optional follow-up"])(
+  "focuses the option-backed answer area after using %s",
+  async (actionLabel) => {
+    const question = optionClarification();
+    request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([question]);
+    render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+    await screen.findByRole("button", { name: "Do this later" });
+    fireEvent.click(screen.getByRole("button", { name: "Do this later" }));
+    expect(screen.getByText("No optional follow-up is available right now.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: actionLabel }));
+    const answerArea = await screen.findByRole("region", { name: "Current optional follow-up" });
+    await vi.waitFor(() => expect(answerArea).toHaveFocus());
+    expect(screen.getByRole("checkbox", { name: "I led the synthetic project" })).toBeEnabled();
+  },
+);
+
+it("keeps a legacy free-text follow-up focusable and actionable from the journey action", async () => {
+  const question = unanswered();
+  request.mockResolvedValueOnce(status(true, "confirmed", true)).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("confirmed")).mockResolvedValueOnce([question]);
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("button", { name: "Do this later" });
+  fireEvent.click(screen.getByRole("button", { name: "Continue with this follow-up" }));
+  const answerArea = screen.getByRole("region", { name: "Current optional follow-up" });
+  expect(answerArea).toHaveFocus();
+  const editor = screen.getByRole("textbox", { name: "Your answer" });
+  fireEvent.change(editor, { target: { value: "A legacy synthetic answer." } });
+  expect(screen.getByRole("button", { name: "Review my answer" })).toBeEnabled();
 });

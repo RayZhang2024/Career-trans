@@ -87,6 +87,13 @@ h2 { font-size: 1.2rem; }
 .inline-control { display: flex; gap: 0.5rem; }
 .inline-control input { min-width: 0; flex: 1; }
 .clarification-card { border-bottom: 1px solid #d9e0ea; padding: 0.75rem 0; }
+.adviser-answer-options { border: 0; display: grid; gap: 0.55rem; margin: 0.5rem 0 0.9rem; min-width: 0; padding: 0; }
+.adviser-answer-options legend { font-weight: 650; margin-bottom: 0.25rem; }
+.adviser-answer-option { align-items: flex-start; border: 1px solid #cbd5e1; border-radius: 0.55rem; cursor: pointer; display: flex; gap: 0.65rem; min-height: 2.75rem; min-width: 0; overflow-wrap: anywhere; padding: 0.7rem; }
+.adviser-answer-option:has(input:checked) { border-color: #285f73; box-shadow: inset 0 0 0 1px #285f73; }
+.adviser-answer-option input { flex: 0 0 auto; height: 1.15rem; margin: 0.1rem 0 0; width: 1.15rem; }
+.adviser-answer-option span { min-width: 0; overflow-wrap: anywhere; }
+.adviser-not-sure { margin-top: 0.2rem; }
 .profile-suggestions, .suggestion-generation, .suggestion-list, .suggestion-card, .proposal-editor, .proposal-editor-fields, .suggestion-item-summary { display: grid; gap: 0.8rem; min-width: 0; }
 .profile-suggestions { overflow-wrap: anywhere; }
 .suggestion-generation, .suggestion-card { background: #fbfcff; border: 1px solid #d9e0ea; border-radius: 0.6rem; min-width: 0; padding: 1rem; }
