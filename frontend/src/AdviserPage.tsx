@@ -8,7 +8,7 @@ type Intake = { career_direction: string; work_preferences: string[]; constraint
 type Insight = { text: string; source_references: Array<{ source_type: string; reference: string }> };
 type SuggestedAnswer = { option_id: string; text: string };
 type StructuredResponse = { selected_option_ids: string[]; custom_answer_text: string; special_selection: "not_sure" | null };
-type Assessment = { input_fingerprint: string; status: "review_ready" | "confirmed" | "stale"; contract_version?: "legacy_questions" | "clarification_areas_v1"; content: { professional_positioning: Insight; transferable_strengths: Insight[]; development_gaps: Insight[]; role_hypotheses: Insight[]; transition_assessment: Insight; open_questions: Array<Insight & { suggested_answers?: string[] }>; clarification_areas?: Array<{ area_key: string; title: string; rationale: string; source_references: Insight["source_references"] }>; assessment_limitations?: string[]; career_strategy_summary: Insight; job_search_strategy_summary: Insight } };
+type Assessment = { input_fingerprint: string; assessment_authority_token: string; status: "review_ready" | "confirmed" | "stale"; contract_version?: "legacy_questions" | "clarification_areas_v1"; content: { professional_positioning: Insight; transferable_strengths: Insight[]; development_gaps: Insight[]; role_hypotheses: Insight[]; transition_assessment: Insight; open_questions: Array<Insight & { suggested_answers?: string[] }>; clarification_areas?: Array<{ area_key: string; title: string; rationale: string; source_references: Insight["source_references"] }>; assessment_limitations?: string[]; career_strategy_summary: Insight; job_search_strategy_summary: Insight } };
 type Clarification = { clarification_id: string; question_text: string; priority_index: number; parent_area_key?: string | null; parent_area_title?: string | null; round_number?: 1 | 2 | null; status: "unanswered" | "review_ready" | "confirmed"; answer_text: string | null; suggested_answers?: SuggestedAnswer[]; structured_response?: StructuredResponse | null; session_active?: boolean; interpretation: { answer_kind: "career_fact" | "mixed" | "eligibility_fact" | "preference_intent" | "insufficient"; confirmed_context_summary: string; proposed_evidence: Array<{ title: string; text: string; skills: string[] }> } | null };
 type AssessmentMutation = "create" | "update" | "regenerate";
 type IntakeRead = Intake & { updated_at?: string };
@@ -73,7 +73,7 @@ export function AdviserPage() {
   const generateCommittedQuestions = async (commitSelection: boolean) => {
     if (locked || pending || !onboarding) return;
     const journey = onboarding.adviser.journey;
-    if (!journey.refinement_journey_id || !journey.refinement_round_number || !assessment?.input_fingerprint) {
+    if (!journey.refinement_journey_id || !journey.refinement_round_number || !assessment?.input_fingerprint || !assessment.assessment_authority_token) {
       setError(friendly());
       setNotice("Adviser state changed. The current state is being refreshed.");
       await refreshDependentAuthority();
@@ -83,6 +83,7 @@ export function AdviserPage() {
       expected_refinement_journey_id: journey.refinement_journey_id,
       expected_round_number: journey.refinement_round_number,
       expected_assessment_fingerprint: assessment.input_fingerprint,
+      expected_assessment_authority_token: assessment.assessment_authority_token,
     };
     setPending("generate-questions"); setError(""); setNotice(""); setFocusClarificationWhenReady(true);
     try {
@@ -99,7 +100,7 @@ export function AdviserPage() {
   const continueWithoutClarification = async () => {
     if (locked || pending) return;
     const journey = onboarding?.adviser.journey;
-    if (!journey?.refinement_journey_id || !journey.refinement_round_number || !assessment?.input_fingerprint) {
+    if (!journey?.refinement_journey_id || !journey.refinement_round_number || !assessment?.input_fingerprint || !assessment.assessment_authority_token) {
       setError(friendly());
       setNotice("Adviser state changed. The current state is being refreshed.");
       await refreshDependentAuthority();
@@ -107,7 +108,7 @@ export function AdviserPage() {
     }
     setPending("select-areas"); setError(""); setNotice("");
     try {
-      await api.request("/api/v1/candidate-adviser/refinement/areas", { method: "PUT", body: JSON.stringify({ expected_refinement_journey_id: journey.refinement_journey_id, expected_round_number: journey.refinement_round_number, expected_assessment_fingerprint: assessment.input_fingerprint, selected_area_keys: [] }) });
+      await api.request("/api/v1/candidate-adviser/refinement/areas", { method: "PUT", body: JSON.stringify({ expected_refinement_journey_id: journey.refinement_journey_id, expected_round_number: journey.refinement_round_number, expected_assessment_fingerprint: assessment.input_fingerprint, expected_assessment_authority_token: assessment.assessment_authority_token, selected_area_keys: [] }) });
       await refreshDependentAuthority();
     } catch (caught) { const message = friendly(); await refreshDependentAuthority(); setError(message); }
     finally { setPending(""); }
@@ -144,6 +145,7 @@ export function AdviserPage() {
   const clarificationSessionActive = journey.clarification_session_active || clarifications.some((item) => item.session_active);
   const canConfirm = current?.status === "review_ready" && (hasOptions ? structuredUnchanged : answer === interpretedAnswer);
   const journeyAreas = journey.refinement_areas ?? [];
+  const previewAreas = assessment?.content.clarification_areas ?? [];
   const selectedJourneyAreas = journeyAreas.filter((area) => area.selection_state === "selected");
   const areaSelectionAvailable = journey.refinement_state === "area_selection" && journeyAreas.length > 0;
   const currentAreaQuestions = current?.parent_area_key ? clarifications.filter((item) => item.parent_area_key === current.parent_area_key) : [];
@@ -210,7 +212,7 @@ export function AdviserPage() {
       </section>
       {assessment === undefined && <section className="card"><p className="muted" role="status">Loading your career assessment…</p><button className="button-secondary" onClick={() => void load()}>Retry</button></section>}
       {assessment && <AssessmentView assessment={assessment} />}
-      {assessment?.status === "review_ready" && assessment.contract_version === "clarification_areas_v1" && Boolean(journeyAreas.length) && <section className="card adviser-area-preview" aria-labelledby="area-preview-heading"><h2 id="area-preview-heading">Possible clarification areas</h2><p className="muted">These are previews only. Confirm the assessment before choosing which areas to explore.</p><ul>{journeyAreas.map((area) => <li key={area.area_key}><label><input type="checkbox" checked={false} disabled aria-label={`${area.title} (preview only)`} /><strong>{area.title}</strong></label><p>{area.rationale}</p></li>)}</ul></section>}
+      {assessment?.status === "review_ready" && assessment.contract_version === "clarification_areas_v1" && Boolean(previewAreas.length) && <section className="card adviser-area-preview" aria-labelledby="area-preview-heading"><h2 id="area-preview-heading">Possible clarification areas</h2><p className="muted">These are previews only. Confirm the assessment before choosing which areas to explore.</p><ul>{previewAreas.map((area) => <li key={area.area_key}><label><input type="checkbox" checked={false} disabled aria-label={`${area.title} (preview only)`} /><strong>{area.title}</strong></label><p>{area.rationale}</p></li>)}</ul></section>}
       {(assessment?.status === "review_ready" || (pending === "assessment" && assessmentMutation === "regenerate")) && <section className="card" id="assessment-review" tabIndex={-1}><h2>Review your assessment</h2><p>This is a draft. Confirm it before Career-trans uses its role directions and search strategy to add context to opportunity evaluation.</p><div className="cv-actions"><button type="button" disabled={locked} onClick={() => void confirmAssessment()}>{pending === "confirm-assessment" ? "Saving your assessment…" : "Looks right — use this"}</button><button type="button" className="button-secondary" disabled={locked} onClick={() => void mutateAssessment("regenerate")}>{pending === "assessment" && assessmentMutation === "regenerate" ? assessmentPendingMessage : "Create a different assessment"}</button></div></section>}
       {areaSelectionAvailable && <section ref={areaSelectionRef} className="card adviser-area-selection" aria-labelledby="area-selection-heading" tabIndex={-1}><p className="eyebrow">{journey.refinement_round_number === 2 ? "Optional round 2" : "Choose what to explore"}</p><h2 id="area-selection-heading">Which areas would you like to clarify?</h2><p className="muted">Choose any number of areas, including all of them. You can also continue without clarification.</p><button type="button" className="button-secondary" disabled={Boolean(pending)} onClick={() => setSelectedAreaKeys(journeyAreas.map((area) => area.area_key))}>Select all</button><fieldset><legend>Clarification areas</legend>{journeyAreas.map((area) => <label className="adviser-area-option" key={area.area_key}><input type="checkbox" checked={selectedAreaKeys.includes(area.area_key)} disabled={Boolean(pending)} onChange={(event) => setSelectedAreaKeys((keys) => event.target.checked ? [...keys, area.area_key] : keys.filter((key) => key !== area.area_key))} /><span><strong>{area.title}</strong><span>{area.rationale}</span></span></label>)}</fieldset><div className="cv-actions"><button type="button" disabled={Boolean(pending) || selectedAreaKeys.length === 0} onClick={() => void generateCommittedQuestions(true)}>{pending === "generate-questions" ? "Preparing questions…" : "Clarify selected areas"}</button><button type="button" className="button-secondary" disabled={Boolean(pending)} onClick={() => void continueWithoutClarification()}>{pending === "select-areas" ? "Saving your choice…" : "Continue without clarification"}</button></div></section>}
       {journey.refinement_state === "questions_pending" && <section className="card" aria-labelledby="generate-questions-heading"><h2 id="generate-questions-heading">Your selected areas are saved</h2><p>Prepare the questions for this round. Your area selection is committed and will be reused if generation needs a retry.</p><ul>{selectedJourneyAreas.map((area) => <li key={area.area_key}>{area.title}</li>)}</ul><button type="button" disabled={Boolean(pending)} onClick={() => void generateCommittedQuestions(false)}>{pending === "generate-questions" ? "Preparing questions…" : "Prepare questions"}</button></section>}

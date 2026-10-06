@@ -474,6 +474,7 @@ class CandidateAdviserService:
             or assessment.status is not CandidateAdviserAssessmentStatus.CONFIRMED
             or (assessment_record.contract_version or "legacy_questions") != "clarification_areas_v1"
             or assessment.input_fingerprint != payload.expected_assessment_fingerprint
+            or assessment.assessment_authority_token != payload.expected_assessment_authority_token
         ):
             raise ValueError("Refinement authority changed. Refresh Career Adviser before continuing.")
         areas = [area for area in self._journey_areas(user_id, journey.journey_key) if area.round_number == journey.round_number]
@@ -730,11 +731,20 @@ class CandidateAdviserService:
     @staticmethod
     def _read_assessment(record: CandidateAdviserAssessmentRecord, fingerprint: str) -> CandidateAdviserAssessmentRead:
         status = CandidateAdviserAssessmentStatus(record.status) if record.input_fingerprint == fingerprint else CandidateAdviserAssessmentStatus.STALE
+        contract_version = record.contract_version or CandidateAdviserAssessmentContractVersion.LEGACY_QUESTIONS
+        content = CandidateAdviserAssessmentContent.model_validate(json.loads(record.assessment_json))
+        canonical_authority = json.dumps({
+            "assessment_content": content.model_dump(mode="json"),
+            "contract_version": contract_version.value if isinstance(contract_version, CandidateAdviserAssessmentContractVersion) else contract_version,
+            "input_fingerprint": record.input_fingerprint,
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        authority_token = hashlib.sha256(canonical_authority.encode("utf-8")).hexdigest()
         return CandidateAdviserAssessmentRead(
             input_fingerprint=record.input_fingerprint,
-            contract_version=record.contract_version or CandidateAdviserAssessmentContractVersion.LEGACY_QUESTIONS,
+            assessment_authority_token=authority_token,
+            contract_version=contract_version,
             status=status,
-            content=CandidateAdviserAssessmentContent.model_validate(json.loads(record.assessment_json)),
+            content=content,
             created_at=record.created_at,
             updated_at=record.updated_at,
         )

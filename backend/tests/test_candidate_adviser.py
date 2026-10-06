@@ -197,6 +197,8 @@ def test_bounded_refinement_commits_area_subset_and_reuses_generated_questions(d
     service.save_intake(user_id, _intake())
     draft = service.assess(user_id)
     assert draft.contract_version.value == "clarification_areas_v1"
+    assert len(draft.assessment_authority_token) == 64
+    assert all(character in "0123456789abcdef" for character in draft.assessment_authority_token)
     assert draft.content.open_questions == []
     assert [area.area_key for area in draft.content.clarification_areas] == ["delivery", "technical"]
     assert agent.semantic_input.refinement_control.round_number == 1
@@ -206,6 +208,7 @@ def test_bounded_refinement_commits_area_subset_and_reuses_generated_questions(d
         "expected_refinement_journey_id": current.journey_key,
         "expected_round_number": 1,
         "expected_assessment_fingerprint": draft.input_fingerprint,
+        "expected_assessment_authority_token": draft.assessment_authority_token,
     }
     selected = service.select_refinement_areas(user_id, CandidateAdviserAreaSelectionRequest(**authority, selected_area_keys=["delivery"]))
     assert [(area.area_key, area.selection_state) for area in selected] == [("delivery", "selected"), ("technical", "skipped")]
@@ -766,16 +769,26 @@ def test_regenerating_assessment_drafts_preserves_one_journey_and_prior_round_hi
     service = CandidateAdviserService(db_session, agent=_Agent(), question_generator=_Questions())
     service.save_intake(user_id, _intake())
     first = service.assess(user_id)
+    assert len(first.assessment_authority_token) == 64
     journey_id = service._current_refinement_journey(user_id).journey_key
-    for _ in range(2):
-        regenerated = service.assess(user_id, regenerate=True)
-        assert regenerated.status is CandidateAdviserAssessmentStatus.REVIEW_READY
-        assert service._current_refinement_journey(user_id).journey_key == journey_id
-        assert len(db_session.scalars(select(CandidateAdviserRefinementJourneyRecord).where(
-            CandidateAdviserRefinementJourneyRecord.user_id == user_id,
-            CandidateAdviserRefinementJourneyRecord.state != "superseded",
-        )).all()) == 1
+    stale_regeneration = service.assess(user_id, regenerate=True)
+    stale_authority = {
+        "expected_refinement_journey_id": journey_id,
+        "expected_round_number": 1,
+        "expected_assessment_fingerprint": stale_regeneration.input_fingerprint,
+        "expected_assessment_authority_token": stale_regeneration.assessment_authority_token,
+    }
+    assert stale_regeneration.input_fingerprint == first.input_fingerprint
+    assert stale_regeneration.assessment_authority_token != first.assessment_authority_token
+    regenerated = service.assess(user_id, regenerate=True)
+    assert regenerated.status is CandidateAdviserAssessmentStatus.REVIEW_READY
+    assert service._current_refinement_journey(user_id).journey_key == journey_id
+    assert len(db_session.scalars(select(CandidateAdviserRefinementJourneyRecord).where(
+        CandidateAdviserRefinementJourneyRecord.user_id == user_id,
+        CandidateAdviserRefinementJourneyRecord.state != "superseded",
+    )).all()) == 1
     assert first.input_fingerprint == regenerated.input_fingerprint
+    assert stale_regeneration.assessment_authority_token != regenerated.assessment_authority_token
     round1_areas = [area for area in service._journey_areas(user_id, journey_id) if area.round_number == 1]
     assert [(area.area_key, area.selection_state) for area in round1_areas] == [("r1-final-a", "proposed"), ("r1-final-b", "proposed")]
 
@@ -784,8 +797,15 @@ def test_regenerating_assessment_drafts_preserves_one_journey_and_prior_round_hi
         "expected_refinement_journey_id": journey_id,
         "expected_round_number": 1,
         "expected_assessment_fingerprint": regenerated.input_fingerprint,
+        "expected_assessment_authority_token": regenerated.assessment_authority_token,
     }
+    for selected_keys in ([], ["r1-final-a"]):
+        with pytest.raises(ValueError, match="authority changed"):
+            service.select_refinement_areas(user_id, CandidateAdviserAreaSelectionRequest(**stale_authority, selected_area_keys=selected_keys))
+    assert service._current_refinement_journey(user_id).state == "area_selection"
     service.select_refinement_areas(user_id, CandidateAdviserAreaSelectionRequest(**first_authority, selected_area_keys=["r1-final-a"]))
+    with pytest.raises(ValueError, match="authority changed"):
+        service.generate_round_questions(user_id, CandidateAdviserQuestionGenerationRequest(**stale_authority))
     service.generate_round_questions(user_id, CandidateAdviserQuestionGenerationRequest(**first_authority))
     first_question = service._round_question_records(user_id, journey_id, 1)[0]
     first_question.status = "confirmed"
@@ -797,7 +817,11 @@ def test_regenerating_assessment_drafts_preserves_one_journey_and_prior_round_hi
     service.assess(user_id)
     assert service._current_refinement_journey(user_id).state == "round1_assessment_review"
     assert [area.area_key for area in service._journey_areas(user_id, journey_id) if area.round_number == 2] == ["r2-old-a", "r2-old-b"]
+    round1_review = service.get_assessment(user_id)
     round1_regenerated = service.assess(user_id, regenerate=True)
+    assert round1_review is not None
+    assert round1_regenerated.input_fingerprint == round1_review.input_fingerprint
+    assert round1_regenerated.assessment_authority_token != round1_review.assessment_authority_token
     assert service._current_refinement_journey(user_id).journey_key == journey_id
     assert service._current_refinement_journey(user_id).rounds_completed == 1
     assert [area.area_key for area in service._journey_areas(user_id, journey_id) if area.round_number == 2] == ["r2-next-a", "r2-next-b"]
@@ -810,6 +834,7 @@ def test_regenerating_assessment_drafts_preserves_one_journey_and_prior_round_hi
         "expected_refinement_journey_id": journey_id,
         "expected_round_number": 2,
         "expected_assessment_fingerprint": round1_regenerated.input_fingerprint,
+        "expected_assessment_authority_token": round1_regenerated.assessment_authority_token,
     }
     service.select_refinement_areas(user_id, CandidateAdviserAreaSelectionRequest(**second_authority, selected_area_keys=["r2-next-a"]))
     service.generate_round_questions(user_id, CandidateAdviserQuestionGenerationRequest(**second_authority))
@@ -829,6 +854,7 @@ def test_regenerating_assessment_drafts_preserves_one_journey_and_prior_round_hi
     assert service._current_refinement_journey(user_id).journey_key == journey_id
     final_regenerated = service.assess(user_id, regenerate=True)
     assert final_regenerated.content.clarification_areas == []
+    assert final_regenerated.assessment_authority_token == final_review.assessment_authority_token
     assert service._current_refinement_journey(user_id).journey_key == journey_id
     assert service._current_refinement_journey(user_id).rounds_completed == 2
     assert assessment_calls == 8
@@ -881,11 +907,13 @@ def test_refinement_mutations_reject_stale_journey_round_and_assessment_authorit
         "expected_refinement_journey_id": second_journey_id,
         "expected_round_number": 1,
         "expected_assessment_fingerprint": second.input_fingerprint,
+        "expected_assessment_authority_token": second.assessment_authority_token,
     }
     for stale in (
         {**current_authority, "expected_refinement_journey_id": first_journey_id},
         {**current_authority, "expected_round_number": 2},
         {**current_authority, "expected_assessment_fingerprint": "f" * 64},
+        {**current_authority, "expected_assessment_authority_token": "f" * 64},
     ):
         with pytest.raises(ValueError, match="authority changed"):
             service.select_refinement_areas(user_id, CandidateAdviserAreaSelectionRequest(**stale, selected_area_keys=[]))
@@ -957,6 +985,7 @@ def test_full_thirty_answer_round_survives_reassessment_and_round_two_question_g
         "expected_refinement_journey_id": journey_id,
         "expected_round_number": 1,
         "expected_assessment_fingerprint": first_draft.input_fingerprint,
+        "expected_assessment_authority_token": first_draft.assessment_authority_token,
     }
     service.confirm_assessment(user_id)
     service.select_refinement_areas(user_id, CandidateAdviserAreaSelectionRequest(**first_authority, selected_area_keys=round1_keys))
@@ -985,6 +1014,7 @@ def test_full_thirty_answer_round_survives_reassessment_and_round_two_question_g
         "expected_refinement_journey_id": journey_id,
         "expected_round_number": 2,
         "expected_assessment_fingerprint": round1_reassessment.input_fingerprint,
+        "expected_assessment_authority_token": round1_reassessment.assessment_authority_token,
     }
     service.select_refinement_areas(user_id, CandidateAdviserAreaSelectionRequest(**round2_authority, selected_area_keys=[round2_key]))
     service.generate_round_questions(user_id, CandidateAdviserQuestionGenerationRequest(**round2_authority))

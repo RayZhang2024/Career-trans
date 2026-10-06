@@ -204,6 +204,7 @@ class CandidateAdviserAssessmentRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     input_fingerprint: str = Field(min_length=64, max_length=64)
+    assessment_authority_token: str = Field(pattern="^[0-9a-f]{64}$")
     contract_version: CandidateAdviserAssessmentContractVersion = CandidateAdviserAssessmentContractVersion.LEGACY_QUESTIONS
     status: CandidateAdviserAssessmentStatus
     content: CandidateAdviserAssessmentContent
@@ -217,6 +218,7 @@ class CandidateAdviserAreaSelectionRequest(BaseModel):
     expected_refinement_journey_id: str = Field(min_length=1, max_length=36)
     expected_round_number: Literal[1, 2]
     expected_assessment_fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
+    expected_assessment_authority_token: str = Field(pattern="^[0-9a-f]{64}$")
     selected_area_keys: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(max_length=6)
 
 
@@ -226,6 +228,7 @@ class CandidateAdviserQuestionGenerationRequest(BaseModel):
     expected_refinement_journey_id: str = Field(min_length=1, max_length=36)
     expected_round_number: Literal[1, 2]
     expected_assessment_fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
+    expected_assessment_authority_token: str = Field(pattern="^[0-9a-f]{64}$")
 
 
 class ClarificationAnswerKind(StrEnum):

@@ -811,6 +811,7 @@ def test_current_assessment_duplicate_questions_materialize_once(db_session) -> 
     content.open_questions = [first, second]
     assessment = CandidateAdviserAssessmentRead(
         input_fingerprint="b" * 64,
+        assessment_authority_token="c" * 64,
         status="confirmed",
         content=content,
         created_at=now,
