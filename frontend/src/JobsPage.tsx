@@ -1009,12 +1009,13 @@ const funnelLabels: Record<string, string> = {
   search_results_raw: "Search results",
   search_results_unique: "Unique results",
   duplicate_search_results_removed: "Duplicate results removed",
-  deterministic_filtered_count: "Non-vacancy results filtered",
+  deterministic_filtered_count: "Search results filtered",
   pages_selected: "Pages selected",
   pages_opened: "Pages opened",
   page_fetch_failures: "Page fetch failures",
   extraction_successes: "Extractions succeeded",
   extraction_failures: "Extraction failures",
+  submitted: "Submitted",
   deduplicated_jobs: "Deduplicated jobs",
   duplicate_jobs_removed: "Duplicate jobs removed",
   unique_employers: "Unique employers",
@@ -1023,13 +1024,30 @@ const funnelLabels: Record<string, string> = {
   geography_incompatible: "Geography incompatible",
   geography_unknown: "Geography unknown",
   remote_policy_filtered: "Remote policy filtered",
+  fresh_selected: "Fresh selected",
+  reused: "Reused",
   relevance_screened: "Relevance screened",
+  full_analysis_attempts: "Full-analysis attempts",
   analysed: "Analysed",
 };
 
 function FunnelMetrics({ values }: { values: Record<string, number> }) {
-  const entries = Object.entries(funnelLabels).filter(([key]) => values[key] !== undefined);
-  return <dl className="metric-grid" aria-label="Discovery funnel">{entries.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{values[key]}</dd></div>)}</dl>;
+  const knownKeys = new Set(Object.keys(funnelLabels));
+  const entries = [
+    ...Object.entries(funnelLabels)
+      .filter(([key]) => Number.isSafeInteger(values[key]))
+      .map(([key, label]) => [key, label, values[key]] as const),
+    ...Object.entries(values)
+      .filter(([key, value]) => !knownKeys.has(key) && Number.isSafeInteger(value))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => [key, funnelFallbackLabel(key), value] as const),
+  ];
+  return <dl className="metric-grid" aria-label="Discovery funnel">{entries.map(([key, label, value]) => <div key={key}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>;
+}
+
+function funnelFallbackLabel(key: string): string {
+  const words = key.replace(/_count$/, "").split(/[_\s-]+/).filter(Boolean);
+  return words.map((word) => `${word[0].toUpperCase()}${word.slice(1)}`).join(" ") || "Other metric";
 }
 
 function RunSnapshot({ run }: { run: DiscoveryRunSummary }) {

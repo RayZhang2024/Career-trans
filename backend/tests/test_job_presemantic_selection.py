@@ -1,4 +1,5 @@
 from app.schemas.discovery import JobListing, JobSearchQuery
+from app.services.job_geography import geography_status, result_location_affinity
 from app.services.job_presemantic_selection_service import JobPresemanticSelectionService
 
 
@@ -124,6 +125,25 @@ def test_geography_matching_uses_complete_location_tokens_and_phrases() -> None:
     assert selector.select_for_hunt([london_uk], query=_query(locations=["United Kingdom"]), limit=1).selected == [london_uk]
     assert selector.select_for_hunt([london_uk], query=_query(locations=["London"]), limit=1).selected == [london_uk]
     assert selector.select_for_hunt([remote_uk], query=_query(locations=["London"]), limit=1).selected == []
+
+
+def test_uk_country_umbrella_does_not_broaden_specific_city_requests() -> None:
+    assert geography_status("Manchester", ["UK"]) == "compatible"
+    assert geography_status("Cambridge", ["United Kingdom"]) == "compatible"
+    assert geography_status("Manchester", ["London, United Kingdom"]) == "incompatible"
+    assert geography_status("London", ["London, United Kingdom"]) == "compatible"
+    assert geography_status("Cambridge", ["Oxford, UK"]) == "incompatible"
+    assert geography_status("Oxford", ["Oxford, UK"]) == "compatible"
+
+
+def test_result_geography_ranking_ignores_ambiguous_prose_and_uses_explicit_countries() -> None:
+    uk_search = ["United Kingdom"]
+
+    assert result_location_affinity("AI Engineer — Join us to build the future", uk_search) == 0
+    assert result_location_affinity("Recommended reading for AI engineers", uk_search) == 0
+    assert result_location_affinity("AI Engineer — Cambridge, UK", uk_search) > 0
+    assert result_location_affinity("AI Engineer — United States", uk_search) < 0
+    assert result_location_affinity("AI Engineer — Bengaluru, India", uk_search) < 0
 
 
 def test_reviewed_uk_geography_mapping_and_unknown_remote_only() -> None:

@@ -255,6 +255,43 @@ describe("Issue #171 Jobs workspace", () => {
     expect(closeButton).toHaveTextContent("Close run");
   });
 
+  it("renders all safe integer funnel counters with readable labels and omits non-integer values", async () => {
+    const legacyAndCurrentFunnel = {
+      submitted: 8,
+      fresh_selected: 4,
+      reused: 2,
+      full_analysis_attempts: 3,
+      search_results_raw: 20,
+      deterministic_filtered_count: 5,
+      geography_eligible: 6,
+      geography_incompatible: 2,
+      geography_unknown: 1,
+      remote_policy_filtered: 1,
+      future_stage_count: 7,
+      fractional_stage: 7.5,
+      unsafe_integer_stage: Number.MAX_SAFE_INTEGER + 1,
+      non_integer_stage: "private text must not render",
+    } as unknown as Record<string, number>;
+    const historyRun = { ...run("funnel-run"), funnel: legacyAndCurrentFunnel };
+    const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([historyRun])) });
+    renderJobs(fetch);
+    await loaded();
+    fireEvent.click(screen.getByRole("link", { name: "Search history" }));
+    await screen.findByRole("heading", { name: "Search history" });
+
+    const funnel = screen.getByLabelText("Discovery funnel");
+    for (const label of [
+      "Submitted", "Fresh selected", "Reused", "Full-analysis attempts", "Search results",
+      "Search results filtered", "Geography eligible", "Geography incompatible", "Geography unknown",
+      "Remote policy filtered", "Future Stage",
+    ]) expect(within(funnel).getByText(label)).toBeInTheDocument();
+    expect(within(funnel).queryByText("Non-vacancy results filtered")).not.toBeInTheDocument();
+    expect(within(funnel).getByText("7")).toBeInTheDocument();
+    expect(within(funnel).queryByText("7.5")).not.toBeInTheDocument();
+    expect(within(funnel).queryByText(String(Number.MAX_SAFE_INTEGER + 1))).not.toBeInTheDocument();
+    expect(within(funnel).queryByText("private text must not render")).not.toBeInTheDocument();
+  });
+
   it("prepares from the canonical discovered job ID, cleans questions, and does not gate on SKIP", async () => {
     let body: unknown;
     const alpha = { ...op("alpha", "Alpha", 99), recommendation: "apply" as const };
