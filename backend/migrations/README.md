@@ -252,5 +252,10 @@ has `contract_version`, `candidate_adviser_clarifications` has nullable
 `parent_area_id` and `round_number`, and both
 `candidate_adviser_refinement_journeys` and
 `candidate_adviser_clarification_areas` exist. The SQLite script is safe to
-rerun; the PostgreSQL script uses additive/idempotent DDL. No legacy areas or
-questions are backfilled.
+rerun. It creates `contract_version` as nullable `VARCHAR(32)` and
+`parent_area_id` as nullable `VARCHAR(36)`, matching the ORM. If a database
+already ran the earlier #280 SQLite script, rerun this same migration before
+starting the updated app: it transactionally rebuilds only the affected tables,
+copies every row value, and restores their explicit indexes and triggers. It
+does not require a database reset. No legacy areas or questions are backfilled.
+The PostgreSQL script is unchanged and uses additive/idempotent DDL.
