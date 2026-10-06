@@ -24,7 +24,9 @@ _EVIDENCE_TITLE_LIMIT = 240
 _EVIDENCE_TEXT_LIMIT = 1_200
 _EVIDENCE_SKILL_LIMIT = 16
 _SKILL_ITEM_LIMIT = 120
-_CLARIFICATION_LIMIT = 12
+# Two rounds can each confirm up to 6 areas × 5 questions. Keep the complete
+# current journey (60 answers) and at most 12 older confirmations in context.
+_CLARIFICATION_LIMIT = 72
 _CLARIFICATION_QUESTION_LIMIT = 600
 _CLARIFICATION_SUMMARY_LIMIT = 1_200
 

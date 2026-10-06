@@ -387,6 +387,7 @@ def test_confirmed_cv_change_has_exact_normal_read_only_and_onboarding_stale_par
     assert normal_b == read_only_b
     assert service.get_assessment(user.id).status == "stale"
     assert client.get("/api/v1/onboarding/status", headers=auth_header(token)).json()["adviser"]["assessment_status"] == "stale"
+
     record = db_session.scalar(select(CandidateAdviserAssessmentRecord).where(CandidateAdviserAssessmentRecord.user_id == user.id))
     assert record is not None and record.status == "confirmed"
 
@@ -397,13 +398,47 @@ def test_confirmed_cv_change_has_exact_normal_read_only_and_onboarding_stale_par
     assert client.get("/api/v1/onboarding/status", headers=auth_header(token)).json()["adviser"]["assessment_status"] == "confirmed"
 
 
+def test_stale_bounded_assessment_routes_to_update_unless_clarification_session_is_active() -> None:
+    from app.schemas.candidate_adviser import CandidateAdviserAssessmentStatus
+    from app.schemas.candidate_adviser_journey import AdviserNextAction
+
+    common = dict(
+        candidate_context_ready=True,
+        intake_exists=True,
+        assessment_status=CandidateAdviserAssessmentStatus.STALE,
+        clarification_review_pending=False,
+        pending_enrichment=False,
+        bounded_contract=True,
+        refinement_state="area_selection",
+    )
+    action, _ = CandidateAdviserJourneyService._next_action(
+        **common, clarification_session_active=False, clarification_unanswered=False,
+    )
+    assert action is AdviserNextAction.UPDATE_ASSESSMENT
+    action, _ = CandidateAdviserJourneyService._next_action(
+        **{**common, "refinement_state": "questions_active"},
+        clarification_session_active=True, clarification_unanswered=True,
+    )
+    assert action is AdviserNextAction.ANSWER_CLARIFICATION
+
+
 def test_confirmed_clarification_has_exact_normal_read_only_and_onboarding_stale_parity(client, db_session):
     token = register_and_login(client, "onboarding-clarification-parity@example.com")
     user = db_session.query(User).filter_by(email="onboarding-clarification-parity@example.com").one()
     _confirm_cv(db_session, user.id, "Delivered the initial synthetic system.")
     service = CandidateAdviserService(db_session, agent=_Adviser(question="What delivery fact should be confirmed?"), clarification_interpreter=_Interpreter())
     service.save_intake(user.id, CandidateAdviserIntake(career_direction="Applied AI delivery"))
-    assessment = service.assess(user.id)
+    legacy_content = service._semantic_agent().assess(semantic_input=service._semantic_input(user.id))
+    assessment_record = CandidateAdviserAssessmentRecord(
+        user_id=user.id,
+        input_fingerprint=service.input_fingerprint(user.id),
+        contract_version="legacy_questions",
+        status="review_ready",
+        assessment_json=json.dumps(legacy_content.model_dump(mode="json"), sort_keys=True),
+    )
+    db_session.add(assessment_record)
+    db_session.commit()
+    assessment = service.get_assessment(user.id)
     service.confirm_assessment(user.id)
     clarification = service.list_clarifications(user.id)[0]
     service.answer_clarification(user.id, clarification.clarification_id, CandidateAdviserClarificationAnswer(

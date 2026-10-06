@@ -21,6 +21,7 @@ from app.schemas.candidate_adviser_journey import (
     AdviserStatusCategory,
     CandidateAdviserEnrichmentRead,
     CandidateAdviserJourneyRead,
+    CandidateAdviserAreaRead,
 )
 from app.services.canonical_candidate_read_service import CanonicalCandidateReadService
 from app.services.candidate_adviser_service import CandidateAdviserService
@@ -51,6 +52,12 @@ class CandidateAdviserJourneyService:
             assessment_status = current.status if current is not None else None
             confirmed = assessment_status is CandidateAdviserAssessmentStatus.CONFIRMED
             adviser_service = CandidateAdviserService(self._session)
+            refinement = adviser_service._current_refinement_journey(user_id)
+            bounded_contract = bool(current and current.contract_version == "clarification_areas_v1")
+            refinement_areas = adviser_service._journey_areas(user_id, refinement.journey_key) if refinement else []
+            displayed_area_round = 2 if refinement and refinement.state == "round1_assessment_review" else refinement.round_number if refinement else 1
+            current_round_areas = [area for area in refinement_areas if area.round_number == displayed_area_round]
+            round_records = adviser_service._round_question_records(user_id, refinement.journey_key, refinement.round_number) if refinement else []
             active_session = adviser_service.active_clarification_session(user_id)
             current_fingerprint = (
                 active_session[0] if active_session else current.input_fingerprint if confirmed and current else None
@@ -132,6 +139,8 @@ class CandidateAdviserJourneyService:
                 pending_enrichment=bool(pending_enrichments),
                 clarification_session_active=active_session is not None,
                 clarification_unanswered=unanswered_available,
+                bounded_contract=bounded_contract,
+                refinement_state=refinement.state if refinement else None,
             )
             return CandidateAdviserJourneyRead(
                 candidate_context_ready=candidate_context_ready,
@@ -149,6 +158,22 @@ class CandidateAdviserJourneyService:
                 next_action=next_action,
                 status_category=category,
                 confirmed_clarification_count=len(confirmed_records),
+                assessment_contract_version=current.contract_version.value if current else "legacy_questions",
+                refinement_journey_id=refinement.journey_key if refinement else None,
+                refinement_round_number=refinement.round_number if refinement else None,
+                refinement_rounds_completed=refinement.rounds_completed if refinement else 0,
+                refinement_state=refinement.state if refinement else None,
+                refinement_areas=[CandidateAdviserAreaRead(
+                    area_key=area.area_key,
+                    title=area.title,
+                    rationale=area.rationale,
+                    priority_index=area.priority_index,
+                    selection_state=area.selection_state,
+                    round_number=area.round_number,
+                ) for area in current_round_areas],
+                round_question_count=len(round_records),
+                round_questions_resolved=sum(1 for row in round_records if row.status == "confirmed"),
+                refinement_complete=bool(refinement and refinement.state == "complete"),
             )
 
     @staticmethod
@@ -173,6 +198,8 @@ class CandidateAdviserJourneyService:
         pending_enrichment: bool,
         clarification_session_active: bool = False,
         clarification_unanswered: bool = False,
+        bounded_contract: bool = False,
+        refinement_state: str | None = None,
     ) -> tuple[AdviserNextAction, AdviserStatusCategory]:
         if not candidate_context_ready:
             return AdviserNextAction.COMPLETE_PROFILE, AdviserStatusCategory.SETUP
@@ -182,8 +209,22 @@ class CandidateAdviserJourneyService:
             return AdviserNextAction.REVIEW_ASSESSMENT, AdviserStatusCategory.REVIEW
         if assessment_status is None:
             return AdviserNextAction.CREATE_ASSESSMENT, AdviserStatusCategory.SETUP
+        if assessment_status is CandidateAdviserAssessmentStatus.STALE and not clarification_session_active:
+            return AdviserNextAction.UPDATE_ASSESSMENT, AdviserStatusCategory.UPDATE
+        if bounded_contract and refinement_state == "area_selection":
+            return AdviserNextAction.SELECT_CLARIFICATION_AREAS, AdviserStatusCategory.REVIEW
+        if bounded_contract and refinement_state == "questions_pending":
+            return AdviserNextAction.GENERATE_ROUND_QUESTIONS, AdviserStatusCategory.REVIEW
         if clarification_review_pending:
             return AdviserNextAction.CONFIRM_CLARIFICATION, AdviserStatusCategory.REVIEW
+        if bounded_contract and refinement_state in {"questions_active", "assessment_update"}:
+            if clarification_session_active and clarification_unanswered:
+                return AdviserNextAction.ANSWER_CLARIFICATION, AdviserStatusCategory.REVIEW
+            if pending_enrichment:
+                return AdviserNextAction.REVIEW_PROFILE_ENRICHMENT, AdviserStatusCategory.REVIEW
+            return AdviserNextAction.UPDATE_ASSESSMENT, AdviserStatusCategory.UPDATE
+        if bounded_contract and refinement_state == "complete":
+            return AdviserNextAction.REFINEMENT_COMPLETE, AdviserStatusCategory.UP_TO_DATE
         if pending_enrichment:
             return AdviserNextAction.REVIEW_PROFILE_ENRICHMENT, AdviserStatusCategory.REVIEW
         if clarification_session_active and clarification_unanswered:

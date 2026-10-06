@@ -10,11 +10,14 @@ class AdviserNextAction(StrEnum):
     START_INTAKE = "start_intake"
     CREATE_ASSESSMENT = "create_assessment"
     REVIEW_ASSESSMENT = "review_assessment"
+    SELECT_CLARIFICATION_AREAS = "select_clarification_areas"
+    GENERATE_ROUND_QUESTIONS = "generate_round_questions"
     CONFIRM_CLARIFICATION = "confirm_clarification"
     ANSWER_CLARIFICATION = "answer_clarification"
     REVIEW_PROFILE_ENRICHMENT = "review_profile_enrichment"
     UPDATE_ASSESSMENT = "update_assessment"
     FIND_JOBS = "find_jobs"
+    REFINEMENT_COMPLETE = "refinement_complete"
 
 
 class AdviserStatusCategory(StrEnum):
@@ -32,6 +35,17 @@ class CandidateAdviserEnrichmentRead(BaseModel):
     question_text: str
     confirmed_context_summary: str
     has_profile_evidence: bool
+
+
+class CandidateAdviserAreaRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    area_key: str
+    title: str
+    rationale: str
+    priority_index: int = Field(ge=0)
+    selection_state: str
+    round_number: int = Field(ge=1, le=2)
 
 
 class CandidateAdviserJourneyRead(BaseModel):
@@ -54,3 +68,12 @@ class CandidateAdviserJourneyRead(BaseModel):
     next_action: AdviserNextAction
     status_category: AdviserStatusCategory
     confirmed_clarification_count: int = Field(ge=0)
+    assessment_contract_version: str = "legacy_questions"
+    refinement_journey_id: str | None = None
+    refinement_round_number: int | None = Field(default=None, ge=1, le=2)
+    refinement_rounds_completed: int = Field(default=0, ge=0, le=2)
+    refinement_state: str | None = None
+    refinement_areas: list[CandidateAdviserAreaRead] = Field(default_factory=list)
+    round_question_count: int = Field(default=0, ge=0)
+    round_questions_resolved: int = Field(default=0, ge=0)
+    refinement_complete: bool = False

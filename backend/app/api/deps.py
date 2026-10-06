@@ -9,6 +9,7 @@ from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.candidate_adviser import SemanticCandidateAdviser
 from app.agents.application_drafting import OpenAIApplicationDraftingAgent
 from app.agents.candidate_adviser_clarification import SemanticCandidateAdviserClarificationInterpreter
+from app.agents.candidate_adviser_question import SemanticCandidateAdviserQuestionGenerator
 from app.agents.candidate_adviser_profile_proposal import SemanticCandidateAdviserProfileProposalGenerator
 from app.agents.job_archetype import OpenAIJobArchetypeAgent
 from app.agents.job_extraction import OpenAIJobExtractor
@@ -349,10 +350,24 @@ def _build_candidate_adviser_service(
             runtime_snapshot.operation("candidate_adviser").model if runtime_snapshot else current_settings.candidate_adviser_model,
         )
 
+    def build_question_generator() -> SemanticCandidateAdviserQuestionGenerator:
+        current_settings = get_settings()
+        return SemanticCandidateAdviserQuestionGenerator(
+            get_semantic_response_client(
+                current_settings,
+                model=current_settings.candidate_adviser_model,
+                operation="candidate_adviser_clarification",
+                runtime_snapshot=runtime_snapshot,
+                credential_resolver=credential_resolver,
+            ),
+            runtime_snapshot.operation("candidate_adviser").model if runtime_snapshot else current_settings.candidate_adviser_model,
+        )
+
     return CandidateAdviserService(
         db,
         agent_factory=build_agent,
         clarification_interpreter_factory=build_interpreter,
+        question_generator_factory=build_question_generator,
     )
 
 

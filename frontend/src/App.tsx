@@ -176,11 +176,14 @@ function adviserJourneyLabel(status: OnboardingStatus["adviser"]["journey"]): st
     case "start_intake": return "Set up Career Adviser";
     case "create_assessment": return "Create career assessment";
     case "review_assessment": return "Review career assessment";
+    case "select_clarification_areas": return "Choose areas to clarify";
+    case "generate_round_questions": return "Prepare selected questions";
     case "confirm_clarification": return "Review your follow-up";
     case "answer_clarification": return "Answer your follow-up";
     case "review_profile_enrichment": return "Review for Profile";
     case "update_assessment": return "Update career assessment";
     case "find_jobs": return "Career Adviser is up to date";
+    case "refinement_complete": return "Career Adviser is complete";
   }
 }
 

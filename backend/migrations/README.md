@@ -191,3 +191,66 @@ migration is safe to rerun; the SQLite startup compatibility repair independentl
 adds the same nullable columns on retained databases and recognizes an already
 upgraded schema. Existing rows remain unchanged and are served through the
 legacy free-text path when the option column is NULL.
+
+## Bounded Career Adviser refinement (Issue #280)
+
+For an existing database that has not yet applied the Adviser/Profile
+refinement migrations, stop the app and apply the existing Adviser migrations
+in this order, then start the updated app only after step 6:
+
+1. `20260926_candidate_adviser_profile_proposals` (where not already applied).
+2. `20260929_candidate_adviser_proposal_overlap_resolution`.
+3. `20261002_candidate_adviser_enrichments`.
+4. `20261005_candidate_adviser_applied_proposals`.
+5. `20261005_candidate_adviser_clarification_options`.
+6. `20261006_candidate_adviser_bounded_refinement` (this migration).
+
+Steps 1 and 2 are portable `.sql` files. Apply them with SQLite or PostgreSQL
+only if they have not already been applied; they are not idempotent. For
+SQLite, run each from the repository root with Python's standard library:
+
+```powershell
+python -c "import pathlib,sqlite3; c=sqlite3.connect(r'D:\Career-trans-data\career_agent.db'); c.executescript(pathlib.Path('backend/migrations/20260926_candidate_adviser_profile_proposals.sql').read_text(encoding='utf-8')); c.close()"
+python -c "import pathlib,sqlite3; c=sqlite3.connect(r'D:\Career-trans-data\career_agent.db'); c.executescript(pathlib.Path('backend/migrations/20260929_candidate_adviser_proposal_overlap_resolution.sql').read_text(encoding='utf-8')); c.close()"
+```
+
+For PostgreSQL:
+
+```powershell
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20260926_candidate_adviser_profile_proposals.sql
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20260929_candidate_adviser_proposal_overlap_resolution.sql
+```
+
+For steps 3–6, use each migration's matching SQLite or PostgreSQL variant
+shown in its section below. Existing databases already at the Issue #276
+schema start with step 6. Back up the database and stop Adviser/Profile
+writers before upgrading.
+This additive migration adds an explicit assessment contract
+version (existing rows are marked `legacy_questions`), round/parent-area links
+for new clarification rows, and user-scoped durable refinement journey and
+clarification-area tables. It does not rewrite historical assessment JSON,
+infer areas from `open_questions`, or regroup existing clarification records.
+Newly generated assessments store `clarification_areas_v1`; legacy rows remain
+readable and their active clarification sessions continue under the existing
+question contract. Back up the database and stop Adviser writers before the
+upgrade.
+
+SQLite:
+
+```powershell
+python backend/migrations/20261006_candidate_adviser_bounded_refinement_sqlite.py "sqlite:///D:/Career-trans-data/career_agent.db"
+```
+
+PostgreSQL:
+
+```powershell
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20261006_candidate_adviser_bounded_refinement_postgresql.sql
+```
+
+Before starting the updated app, verify that `candidate_adviser_assessments`
+has `contract_version`, `candidate_adviser_clarifications` has nullable
+`parent_area_id` and `round_number`, and both
+`candidate_adviser_refinement_journeys` and
+`candidate_adviser_clarification_areas` exist. The SQLite script is safe to
+rerun; the PostgreSQL script uses additive/idempotent DDL. No legacy areas or
+questions are backfilled.

@@ -15,21 +15,21 @@ Use a `clarification` reference only for a supplied clarification ID. Its
 confirmed context summary, not the adviser-generated question wording, is the
 only factual support supplied by that source.
 Structured CV context may help interpretation, but it is not a valid citation
-source by itself. Open questions should be high-value unresolved uncertainties
-that a candidate can answer directly and materially affect positioning, role
-hypotheses, evidence coverage, or strategy. Do not ask generic coaching
-questions or repeat questions already resolved by supplied confirmed
-clarification context. Make uncertainty explicit rather than filling gaps with
-assumptions.
+source by itself. New assessments use the area-based contract: return
+`open_questions` as an empty array. Individual questions are generated only
+after the user commits an area selection in a separate workflow step. Propose
+at most six concise, material clarification areas, each with a stable lower-case
+`area_key`, a short title, a concrete rationale, and exact source references
+from the supplied catalogue. Return zero areas when no material uncertainty
+remains.
 
-For every open question, provide 3–6 concise, distinct suggested answers the
-candidate may select independently (multi-select). Each option must be no more
-than 240 characters, normally first-person wording, and represent one coherent
-answer category. Treat choices only as hypotheses, never as candidate facts.
-Do not repeat already-confirmed facts, bundle unrelated claims, encode negative
-or absence claims as positive evidence, provide hiring/strategy advice, or add
-an “I'm not sure” choice; the application supplies that choice. If you cannot
-provide at least three useful distinct choices, omit the open question.
+The input may include `refinement_control`, which is workflow metadata and not
+candidate evidence. Respect `areas_allowed=false` by returning zero areas. Do
+not reuse any prior canonical area key in the current journey. Do not rephrase a
+previously skipped area under a different key merely to reintroduce it. Prior
+area metadata is not citeable and must not appear in insight references. Put
+unresolved but non-actionable uncertainty in the structured
+`assessment_limitations` field; limitations are not clarification requests.
 
 Describe professional positioning, transferable strengths, development gaps,
 role hypotheses, transition considerations, and concise strategy summaries.

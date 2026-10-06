@@ -204,6 +204,8 @@ export type CandidateAdviserAssessment = {
   role_hypotheses: AdviserInsight[];
   transition_assessment: AdviserInsight;
   open_questions: AdviserInsight[];
+  clarification_areas?: Array<{ area_key: string; title: string; rationale: string; source_references: AdviserInsight["source_references"] }>;
+  assessment_limitations?: string[];
   career_strategy_summary: AdviserInsight;
   job_search_strategy_summary: AdviserInsight;
 };
@@ -250,9 +252,18 @@ export type OnboardingStatus = {
       unresolved_profile_enrichment_count: number; next_enrichment_clarification_id: string | null;
       next_enrichment: { clarification_id: string; question_text: string; confirmed_context_summary: string; has_profile_evidence: boolean } | null;
       active_profile_draft: boolean;
-      next_action: "complete_profile" | "start_intake" | "create_assessment" | "review_assessment" | "confirm_clarification" | "answer_clarification" | "review_profile_enrichment" | "update_assessment" | "find_jobs";
+      next_action: "complete_profile" | "start_intake" | "create_assessment" | "review_assessment" | "select_clarification_areas" | "generate_round_questions" | "confirm_clarification" | "answer_clarification" | "review_profile_enrichment" | "update_assessment" | "find_jobs" | "refinement_complete";
       status_category: "setup" | "review" | "update" | "up_to_date" | "unavailable";
       confirmed_clarification_count: number;
+      assessment_contract_version?: "legacy_questions" | "clarification_areas_v1";
+      refinement_journey_id?: string | null;
+      refinement_round_number?: 1 | 2 | null;
+      refinement_rounds_completed?: number;
+      refinement_state?: string | null;
+      refinement_areas?: Array<{ area_key: string; title: string; rationale: string; priority_index: number; selection_state: "proposed" | "selected" | "skipped"; round_number: 1 | 2 }>;
+      round_question_count?: number;
+      round_questions_resolved?: number;
+      refinement_complete?: boolean;
     };
   };
 };
