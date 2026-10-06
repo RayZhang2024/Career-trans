@@ -19,6 +19,20 @@ class SearchStrategy(BaseModel):
     priority: int = Field(default=0, ge=0, le=100)
 
 
+class SearchIntentContext(BaseModel):
+    """Provider-safe user search controls, kept separate from candidate evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keywords: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+    remote_ok: bool | None = None
+    companies: list[str] = Field(default_factory=list)
+    excluded_companies: list[str] = Field(default_factory=list)
+    excluded_title_terms: list[str] = Field(default_factory=list)
+    employment_types: list[str] = Field(default_factory=list)
+
+
 class SearchResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -63,7 +77,7 @@ class AgenticDiscoveryOptions(BaseModel):
     country: str = Field(default="gb", min_length=2, max_length=2)
     max_search_queries: int = Field(default=6, ge=1, le=100)
     max_search_results_per_query: int = Field(default=10, ge=1, le=50)
-    max_pages_to_open: int = Field(default=12, ge=1, le=100)
+    max_pages_to_open: int = Field(default=20, ge=1, le=100)
     max_discovered_jobs: int = Field(default=20, ge=1, le=100)
 
 
@@ -85,6 +99,7 @@ class AgenticDiscoveryDiagnostics(BaseModel):
     search_results_raw: int = 0
     local_codex_search_failed: bool = False
     search_results_unique: int = 0
+    duplicate_search_results_removed: int = 0
     deterministic_filtered_count: int = 0
     pages_selected: int = 0
     pages_opened: int = 0

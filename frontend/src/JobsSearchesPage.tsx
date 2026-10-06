@@ -52,7 +52,7 @@ function blankDraft(): Draft {
     name: "", enabled: false, cadence: "daily", timezone: browserTimezone(), localTime: "09:00:00", weekdays: [],
     searchIntent: emptySearchIntent(),
     atsEnabled: false, atsScopeMode: "unfiltered", atsCompanies: "", atsProviders: [], atsMaxSources: "20", atsMaxResults: "100",
-    agenticEnabled: false, agenticMaxQueries: "6", agenticResultsPerQuery: "10", agenticMaxPages: "12", agenticMaxJobs: "20",
+    agenticEnabled: false, agenticMaxQueries: "6", agenticResultsPerQuery: "10", agenticMaxPages: "20", agenticMaxJobs: "20",
     maxSemanticCandidates: "10", maxFullAnalyses: "5", minRelevanceScore: "0.5",
   };
 }

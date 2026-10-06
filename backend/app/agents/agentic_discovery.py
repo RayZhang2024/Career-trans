@@ -6,7 +6,7 @@ from openai import OpenAI
 from pydantic import ValidationError
 
 from app.agents.openai_client import create_traced_openai_client
-from app.schemas.agentic_discovery import ExtractedVacancy, PageContent, SearchStrategy
+from app.schemas.agentic_discovery import ExtractedVacancy, PageContent, SearchIntentContext, SearchStrategy
 from app.schemas.candidate import CandidateCareerProfile, CandidateSearchProfile
 
 
@@ -15,6 +15,7 @@ class SearchStrategyGenerator(Protocol):
         self,
         search_profile: CandidateSearchProfile,
         career_profile: CandidateCareerProfile,
+        search_intent: SearchIntentContext,
         limit: int,
     ) -> list[SearchStrategy]: ...
 
@@ -28,10 +29,11 @@ class OpenAISearchStrategyGenerator:
         self._client = client or create_traced_openai_client(api_key=api_key, trace_name="search_strategy_generation")
         self._model = model
 
-    def generate(self, search_profile: CandidateSearchProfile, career_profile: CandidateCareerProfile, limit: int) -> list[SearchStrategy]:
+    def generate(self, search_profile: CandidateSearchProfile, career_profile: CandidateCareerProfile, search_intent: SearchIntentContext, limit: int) -> list[SearchStrategy]:
         payload = {
             "search_profile": search_profile.model_dump(mode="json"),
             "career_profile": career_profile.model_dump(mode="json"),
+            "search_intent": search_intent.model_dump(mode="json"),
             "max_strategies": limit,
         }
         response = self._client.responses.create(

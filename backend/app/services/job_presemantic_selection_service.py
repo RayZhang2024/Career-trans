@@ -4,9 +4,7 @@ import re
 from dataclasses import dataclass
 
 from app.schemas.discovery import JobListing, JobSearchQuery
-
-
-_WORLDWIDE_LOCATION_MARKERS = ("worldwide", "global", "anywhere")
+from app.services.job_geography import geography_status
 
 
 @dataclass(frozen=True)
@@ -17,6 +15,7 @@ class PresemanticSelectionResult:
     selected: list[JobListing]
     geography_filtered: list[JobListing]
     unknown_geography: list[JobListing]
+    incompatible_geography: list[JobListing]
     work_arrangement_filtered: list[JobListing]
 
     @property
@@ -44,15 +43,17 @@ class JobPresemanticSelectionService:
         eligible: list[JobListing] = []
         geography_filtered: list[JobListing] = []
         unknown_geography: list[JobListing] = []
+        incompatible_geography: list[JobListing] = []
         work_arrangement_filtered: list[JobListing] = []
         for listing in listings:
-            geography = self._geography_status(listing, query.locations)
+            geography = geography_status(listing.location, query.locations)
             if geography == "unknown":
                 geography_filtered.append(listing)
                 unknown_geography.append(listing)
                 continue
             if geography == "incompatible":
                 geography_filtered.append(listing)
+                incompatible_geography.append(listing)
                 continue
             if not self._matches_remote_policy(listing, query.remote_ok):
                 work_arrangement_filtered.append(listing)
@@ -63,6 +64,7 @@ class JobPresemanticSelectionService:
             selected=self.prioritize(eligible, keywords=query.keywords, limit=limit),
             geography_filtered=geography_filtered,
             unknown_geography=unknown_geography,
+            incompatible_geography=incompatible_geography,
             work_arrangement_filtered=work_arrangement_filtered,
         )
 
@@ -124,26 +126,6 @@ class JobPresemanticSelectionService:
         return best
 
     @staticmethod
-    def _geography_status(listing: JobListing, requested_locations: list[str]) -> str:
-        if not requested_locations:
-            return "eligible"
-        location_tokens = _tokens(listing.location or "")
-        if not location_tokens:
-            return "unknown"
-        if any(_contains_phrase(location_tokens, _tokens(marker)) for marker in _WORLDWIDE_LOCATION_MARKERS):
-            return "eligible"
-        for requested in requested_locations:
-            request = _normalise_location(requested)
-            if not request:
-                continue
-            if any(
-                _contains_phrase(location_tokens, _tokens(alias))
-                for alias in _location_aliases(request)
-            ):
-                return "eligible"
-        return "incompatible"
-
-    @staticmethod
     def _matches_remote_policy(listing: JobListing, remote_ok: bool | None) -> bool:
         if remote_ok is not False:
             return True
@@ -178,22 +160,8 @@ def _normalise_location(value: str) -> str:
 
 
 def _contains_phrase(tokens: list[str], phrase: list[str]) -> bool:
-    """Match complete normalized location words, never arbitrary substrings."""
-
-    if not phrase or len(phrase) > len(tokens):
-        return False
-    return any(tokens[index : index + len(phrase)] == phrase for index in range(len(tokens) - len(phrase) + 1))
-
-
-def _location_aliases(location: str) -> tuple[str, ...]:
-    """Small country-name spelling aliases; no city/country inference is made."""
-
-    aliases = {
-        "united kingdom": ("united kingdom", "uk", "great britain"),
-        "uk": ("united kingdom", "uk", "great britain"),
-        "great britain": ("united kingdom", "uk", "great britain"),
-        "united states": ("united states", "usa", "us"),
-        "usa": ("united states", "usa", "us"),
-        "us": ("united states", "usa", "us"),
-    }
-    return aliases.get(location, (location,))
+    """Match complete normalized words, never arbitrary substrings."""
+    return bool(phrase) and any(
+        tokens[index:index + len(phrase)] == phrase
+        for index in range(max(0, len(tokens) - len(phrase) + 1))
+    )

@@ -257,13 +257,17 @@ class UserJobDiscoveryService:
             [self._listing(record) for _, record in actionable], query=request.query, limit=len(actionable)
         )
         eligible_keys = {self._listing_key(item) for item in all_selection.eligible}
+        incompatible_keys = {self._listing_key(item) for item in all_selection.incompatible_geography}
+        unknown_geography_keys = {self._listing_key(item) for item in all_selection.unknown_geography}
         eligible: list[tuple[str, DiscoveredJob]] = []
         for job_id in unique_ids:
             record = by_id[job_id]
             if not self._is_actionable(record):
                 run_rows[job_id] = self._add_relation(run, job_id, DiscoveryRunJobOutcome.NOT_ACTIONABLE)
             elif self._listing_key(self._listing(record)) not in eligible_keys:
-                run_rows[job_id] = self._add_relation(run, job_id, DiscoveryRunJobOutcome.PRESEMANTIC_FILTERED)
+                key = self._listing_key(self._listing(record))
+                outcome = DiscoveryRunJobOutcome.GEOGRAPHY_UNKNOWN if key in unknown_geography_keys else DiscoveryRunJobOutcome.GEOGRAPHY_INCOMPATIBLE if key in incompatible_keys else DiscoveryRunJobOutcome.PRESEMANTIC_FILTERED
+                run_rows[job_id] = self._add_relation(run, job_id, outcome)
             else:
                 eligible.append((job_id, record))
         fresh: list[tuple[str, JobListing]] = []
@@ -313,7 +317,7 @@ class UserJobDiscoveryService:
                 self._session.commit()
                 raise DiscoveryRunExecutionFailure(run.id, DiscoveryRunStatus(run.status)) from None
         self._persist_ranking(run, run_rows, fresh_by_identity, response, user_id, candidate_fingerprint, contract_fingerprint, request.min_relevance_score)
-        self._finish_run(run, request, selection, response, reused)
+        self._finish_run(run, request, selection, response, reused, all_selection)
         self._session.commit()
         return self.get_run(user_id, run.id)
 
@@ -556,7 +560,7 @@ class UserJobDiscoveryService:
             elif diagnostic.failure_stage:
                 row.outcome = DiscoveryRunJobOutcome.ANALYSIS_FAILED.value; row.failure_stage = diagnostic.failure_stage; row.failure_kind = _safe_failure_kind(diagnostic.error)
 
-    def _finish_run(self, run, request, selection, response, reused) -> None:
+    def _finish_run(self, run, request, selection, response, reused, all_selection) -> None:
         relations = self._session.scalars(select(DiscoveryRunJob).where(DiscoveryRunJob.discovery_run_id == run.id)).all()
         failures = Counter(row.failure_stage for row in relations if row.failure_stage)
         # A terminal analysis_failed is itself failure even when a provider
@@ -565,7 +569,7 @@ class UserJobDiscoveryService:
             failures["analysis_failed"] += 1
         successful = sum(row.outcome in {DiscoveryRunJobOutcome.NEWLY_EVALUATED.value, DiscoveryRunJobOutcome.REUSED_EVALUATION.value} for row in relations)
         run.status = (DiscoveryRunStatus.PARTIAL_FAILED.value if failures and successful else DiscoveryRunStatus.FAILED.value if failures else DiscoveryRunStatus.COMPLETED.value)
-        run.funnel_json = _canonical_json({"submitted": len(request.discovered_job_ids), "fresh_selected": len(selection.selected), "reused": reused, "relevance_screened": response.relevance_screened_count, "full_analysis_attempts": response.finalist_count, "analysed": response.analysed_count})
+        run.funnel_json = _canonical_json({"submitted": len(request.discovered_job_ids), "fresh_selected": len(selection.selected), "reused": reused, "geography_eligible": len(all_selection.eligible), "geography_incompatible": len(all_selection.incompatible_geography), "geography_unknown": len(all_selection.unknown_geography), "remote_policy_filtered": len(all_selection.work_arrangement_filtered), "relevance_screened": response.relevance_screened_count, "full_analysis_attempts": response.finalist_count, "analysed": response.analysed_count})
         run.failure_summary_json = _canonical_json(dict(failures)); run.completed_at = datetime.now(timezone.utc)
 
     def _read_run(self, run: DiscoveryRun) -> DiscoveryRunRead:

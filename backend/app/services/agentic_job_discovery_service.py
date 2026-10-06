@@ -15,6 +15,7 @@ from app.schemas.agentic_discovery import (
     ExtractedVacancy,
     PageContent,
     SearchResult,
+    SearchIntentContext,
     SearchStrategy,
 )
 from app.schemas.discovery import DiscoveredJobState, JobListing
@@ -23,6 +24,7 @@ from app.services.candidate_profile_compaction import candidate_career_profile, 
 from app.services.discovered_job_state_store import DiscoveredJobStateStore
 from app.services.job_deduplication_service import JobDeduplicationService
 from app.services.job_screening_service import JobScreeningService
+from app.services.job_geography import result_location_affinity
 
 
 class AgenticJobDiscoveryService:
@@ -61,7 +63,7 @@ class AgenticJobDiscoveryService:
         screened = [
             listing
             for listing in listings
-            if self._screening.matches_hard_constraints(listing, request.query)
+            if self._screening.matches_acquisition_constraints(listing, request.query)
         ]
         deduplicated, removed = self._deduplicator.deduplicate(screened)
         final_listings = deduplicated[: request.max_discovered_jobs]
@@ -91,6 +93,15 @@ class AgenticJobDiscoveryService:
             generated = self._strategy_generator.generate(
                 candidate_search_profile(request.candidate_context),
                 candidate_career_profile(request.candidate_context),
+                SearchIntentContext(
+                    keywords=request.query.keywords,
+                    locations=request.query.locations,
+                    remote_ok=request.query.remote_ok,
+                    companies=request.query.companies,
+                    excluded_companies=request.query.excluded_companies,
+                    excluded_title_terms=request.query.excluded_title_terms,
+                    employment_types=request.query.employment_types,
+                ),
                 request.max_search_queries,
             )
         except Exception as exc:
@@ -134,9 +145,10 @@ class AgenticJobDiscoveryService:
             seen.add(canonical)
             unique.append(result.model_copy(update={"url": canonical}))
         diagnostics.search_results_unique = len(unique)
+        diagnostics.duplicate_search_results_removed = len(results) - len(unique)
         filtered = [result for result in unique if self._is_promising_result(result, request)]
         diagnostics.deterministic_filtered_count = len(unique) - len(filtered)
-        ordered = sorted(filtered, key=lambda result: (-self._result_score(result, request), result.rank, result.url))
+        ordered = sorted(filtered, key=lambda result: (-self._result_score(result, request), -self._result_geography_affinity(result, request), result.rank, result.url))
         selected = ordered[: request.max_pages_to_open]
         diagnostics.pages_selected = len(selected)
         diagnostics.domain_counts = dict(Counter(result.domain for result in selected))
@@ -237,6 +249,12 @@ class AgenticJobDiscoveryService:
         if any(term in text for term in ("/jobs", "/job/", "/careers", "/positions", "/vacancies")):
             score += 2
         return score
+
+    @staticmethod
+    def _result_geography_affinity(result: SearchResult, request: AgenticDiscoveryRequest) -> int:
+        """Rank incomplete search snippets only; extracted vacancy location remains authoritative."""
+        text = f"{result.title} {result.snippet} {result.url}"
+        return result_location_affinity(text, request.query.locations)
 
     @staticmethod
     def _canonical_url(url: str) -> str:

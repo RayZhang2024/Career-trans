@@ -6,7 +6,7 @@ const schedule = (patch: Partial<DiscoveryScheduleRead> = {}): DiscoverySchedule
   id: "s-1", name: "AI roles", enabled: false,
   schedule: { cadence: "daily", timezone: "UTC", local_time: "09:00:00", weekdays: [] },
   query: { keywords: ["AI"], locations: [], remote_ok: true, companies: ["Compatibility Co"], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 73 },
-  acquisition: { structured_ats: { enabled: true, companies: [], providers: [], all_resolved_sources: true, max_sources: 20, max_results: 100 }, agentic_web: { enabled: false, country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 12, max_discovered_jobs: 20 } },
+  acquisition: { structured_ats: { enabled: true, companies: [], providers: [], all_resolved_sources: true, max_sources: 20, max_results: 100 }, agentic_web: { enabled: false, country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 20, max_discovered_jobs: 20 } },
   evaluation: { max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 }, next_run_at: null, last_execution_at: null, ...patch,
 });
 const execution: ScheduledExecutionRead = { id: "e-1", trigger_kind: "manual", scheduled_for: null, status: "completed", config_snapshot: { schedule: schedule().schedule, query: schedule().query, acquisition: schedule().acquisition, evaluation: schedule().evaluation }, discovery_run_id: "run-1", acquisition_summary: {}, failure_summary: {}, started_at: "2026-09-01T09:00:00Z", completed_at: "2026-09-01T09:01:00Z" };

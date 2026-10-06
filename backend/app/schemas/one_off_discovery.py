@@ -24,11 +24,11 @@ class OneOffStatus(StrEnum):
 
 class OneOffPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    version: str = "v1"
+    version: str = "v2"
     country: str = "gb"
     max_search_queries: int = Field(default=6, ge=1, le=6)
     max_search_results_per_query: int = Field(default=10, ge=1, le=10)
-    max_pages_to_open: int = Field(default=12, ge=1, le=12)
+    max_pages_to_open: int = Field(default=20, ge=1, le=20)
     max_discovered_jobs: int = Field(default=20, ge=1, le=20)
     max_semantic_candidates: int = Field(default=10, ge=1, le=10)
     max_full_analyses: int = Field(default=5, ge=1, le=5)

@@ -14,7 +14,7 @@ from app.schemas.candidate import CandidateContext
 from app.schemas.discovery import JobSearchQuery
 from app.schemas.discovery import JobListing
 from app.schemas.job_discovery_settings import EffectiveJobDiscoveryProvider
-from app.schemas.one_off_discovery import OneOffLaunchRequest
+from app.schemas.one_off_discovery import OneOffLaunchRequest, OneOffPolicy
 from app.schemas.user_job_discovery import DiscoveryRunStatus
 from app.services.job_discovery_settings_service import ResolvedWebSearchProvider
 from app.services.agentic_web_execution_core import AgenticWebExecutionCore
@@ -85,6 +85,52 @@ def test_one_off_launch_is_durable_before_provider_and_clean_zero_is_completed(d
     assert result.discovery_run_id is None
     assert db_session.query(OneOffDiscoveryExecution).count() == 1
     assert db_session.query(DiscoverySchedule).count() == 0
+
+
+def test_one_off_v2_policy_is_consistent_and_legacy_v1_snapshots_remain_readable():
+    current = OneOffPolicy()
+    legacy = OneOffPolicy.model_validate({"version": "v1", "max_pages_to_open": 12})
+
+    assert current.model_dump() == {
+        "version": "v2", "country": "gb", "max_search_queries": 6,
+        "max_search_results_per_query": 10, "max_pages_to_open": 20,
+        "max_discovered_jobs": 20, "max_semantic_candidates": 10,
+        "max_full_analyses": 5, "min_relevance_score": 0.5,
+    }
+    assert legacy.version == "v1" and legacy.max_pages_to_open == 12
+
+
+def test_one_off_execution_persists_safe_acquisition_funnel_counters(db_session):
+    user = User(email="one-off-funnel@example.test", password_hash="unused")
+    db_session.add(user); db_session.commit()
+    diagnostics = AgenticDiscoveryDiagnostics(
+        search_strategies_generated=6, search_queries_executed=6,
+        search_results_raw=32, search_results_unique=24,
+        deterministic_filtered_count=4, pages_selected=20, pages_opened=18,
+        page_fetch_failures=2, extraction_successes=12, extraction_failures=6,
+    )
+    service, _ = _service(
+        db_session, calls=[],
+        discover=lambda _request: AgenticDiscoveryResponse(diagnostics=diagnostics),
+    )
+    preflight = service.preflight(user.id)
+    result = service.launch(user.id, OneOffLaunchRequest(
+        client_request_id=uuid4(), expected_launch_fingerprint=preflight.launch_fingerprint,
+        query=JobSearchQuery(keywords=["AI"]),
+    ))
+
+    assert result.policy.version == "v2" and result.policy.max_pages_to_open == 20
+    assert {key: result.acquisition_summary[key] for key in (
+        "search_strategies_generated", "search_queries_executed", "search_results_raw",
+        "search_results_unique", "deterministic_filtered_count", "pages_selected",
+        "pages_opened", "page_fetch_failures", "extraction_successes", "extraction_failures",
+    )} == {
+        "search_strategies_generated": 6, "search_queries_executed": 6,
+        "search_results_raw": 32, "search_results_unique": 24,
+        "deterministic_filtered_count": 4, "pages_selected": 20,
+        "pages_opened": 18, "page_fetch_failures": 2,
+        "extraction_successes": 12, "extraction_failures": 6,
+    }
 
 
 def test_one_off_idempotency_reconciles_and_rejects_changed_search_intent(db_session):

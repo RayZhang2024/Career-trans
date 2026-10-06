@@ -273,6 +273,8 @@ class OneOffDiscoveryService:
             self._session.commit()
 
     def _finish(self, row, status, summary, failures, completed_at):
+        for key in ("geography_eligible", "geography_incompatible", "geography_unknown", "remote_policy_filtered", "relevance_screened", "analysed"):
+            summary.setdefault(key, 0)
         row.status = status.value
         row.completed_at = completed_at
         row.acquisition_summary_json = _json(summary)
