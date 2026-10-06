@@ -130,20 +130,34 @@ def test_geography_matching_uses_complete_location_tokens_and_phrases() -> None:
 def test_uk_country_umbrella_does_not_broaden_specific_city_requests() -> None:
     assert geography_status("Manchester", ["UK"]) == "compatible"
     assert geography_status("Cambridge", ["United Kingdom"]) == "compatible"
+    assert geography_status("Cambridge, United Kingdom", ["UK"]) == "compatible"
+    assert geography_status("Cambridge, United States", ["UK"]) == "incompatible"
+    assert geography_status("Manchester, India", ["United Kingdom"]) == "incompatible"
+    assert geography_status("London, United States", ["London, United Kingdom"]) == "incompatible"
+    assert geography_status("Oxford, United States", ["Oxford, UK"]) == "incompatible"
+    assert geography_status("London, United Kingdom, United States", ["London, United Kingdom"]) == "incompatible"
     assert geography_status("Manchester", ["London, United Kingdom"]) == "incompatible"
     assert geography_status("London", ["London, United Kingdom"]) == "compatible"
     assert geography_status("Cambridge", ["Oxford, UK"]) == "incompatible"
     assert geography_status("Oxford", ["Oxford, UK"]) == "compatible"
+    assert geography_status("Manchester, UK", ["London, United Kingdom"]) != "compatible"
 
 
 def test_result_geography_ranking_ignores_ambiguous_prose_and_uses_explicit_countries() -> None:
     uk_search = ["United Kingdom"]
+    london_search = ["London, United Kingdom"]
 
     assert result_location_affinity("AI Engineer — Join us to build the future", uk_search) == 0
     assert result_location_affinity("Recommended reading for AI engineers", uk_search) == 0
     assert result_location_affinity("AI Engineer — Cambridge, UK", uk_search) > 0
     assert result_location_affinity("AI Engineer — United States", uk_search) < 0
     assert result_location_affinity("AI Engineer — Bengaluru, India", uk_search) < 0
+    assert result_location_affinity("AI Engineer — Manchester, UK", ["UK"]) > 0
+    assert result_location_affinity("AI Engineer — London, UK", london_search) > 0
+    assert result_location_affinity("AI Engineer — Manchester, UK", london_search) <= 0
+    assert result_location_affinity("AI Engineer — Cambridge, UK", ["Oxford, UK"]) <= 0
+    assert result_location_affinity("AI Engineer — United States", ["UK"]) < 0
+    assert result_location_affinity("AI Engineer — location unavailable", london_search) == 0
 
 
 def test_reviewed_uk_geography_mapping_and_unknown_remote_only() -> None:
