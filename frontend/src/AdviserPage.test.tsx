@@ -10,7 +10,7 @@ afterEach(() => { cleanup(); request.mockReset(); });
 const status = (ready = true, assessmentStatus: "review_ready" | "confirmed" | "stale" | null = null, sessionActive = false): OnboardingStatus => ({ profile_exists: true, candidate_context_ready: ready, latest_cv_draft: null, adviser: { intake_exists: true, assessment_status: assessmentStatus, confirmed_clarification_count: 2, journey: { candidate_context_ready: ready, job_search_ready: ready, intake_exists: true, assessment_status: assessmentStatus, confirmed_guidance_active: assessmentStatus === "confirmed" || sessionActive, clarification_session_active: sessionActive, current_follow_up_available: sessionActive, clarification_interpretation_awaiting_confirmation: sessionActive && assessmentStatus === "review_ready", unresolved_profile_enrichment_count: 0, next_enrichment_clarification_id: null, next_enrichment: null, active_profile_draft: false, next_action: !ready ? "complete_profile" : assessmentStatus === "review_ready" ? "review_assessment" : sessionActive ? "answer_clarification" : assessmentStatus === "confirmed" ? "find_jobs" : assessmentStatus === "stale" ? "update_assessment" : "create_assessment", status_category: !ready ? "setup" : assessmentStatus === "review_ready" || (assessmentStatus === "stale" && sessionActive) ? "review" : assessmentStatus === "stale" ? "update" : assessmentStatus === "confirmed" ? "up_to_date" : "setup", confirmed_clarification_count: 2 } } });
 const intake = { career_direction: "Direction", work_preferences: [], constraints: [], self_assessment: [], motivations: [], tradeoffs: [], eligibility: { work_authorisation: [], security_clearances: [], locations: [] }, updated_at: "2026-01-01" };
 const content = { professional_positioning: { text: "Position", source_references: [{ source_type: "intake", reference: "career_direction" }] }, transferable_strengths: [{ text: "Strength", source_references: [{ source_type: "career_evidence", reference: "safe" }] }], development_gaps: [{ text: "Gap", source_references: [] }], role_hypotheses: [{ text: "Role", source_references: [] }], transition_assessment: { text: "Transition", source_references: [] }, open_questions: [{ text: "Question", source_references: [{ source_type: "clarification", reference: "safe" }] }], career_strategy_summary: { text: "Strategy", source_references: [] }, job_search_strategy_summary: { text: "Search", source_references: [] } };
-const assessment = (state: "review_ready" | "confirmed" | "stale") => ({ status: state, content });
+const assessment = (state: "review_ready" | "confirmed" | "stale") => ({ input_fingerprint: "a".repeat(64), status: state, content });
 const unanswered = (id = "question", priority_index = 0) => ({ clarification_id: id, question_text: `Question ${id}`, priority_index, status: "unanswered" as const, answer_text: null, session_active: true, interpretation: null });
 const optionClarification = (statusValue: "unanswered" | "review_ready" = "unanswered", structured_response: { selected_option_ids: string[]; custom_answer_text: string; special_selection: "not_sure" | null } | null = null) => ({
   ...unanswered(),
@@ -928,6 +928,7 @@ it("commits only the selected refinement areas and shows persisted grouped quest
     value.adviser.journey.next_action = state === "area_selection" ? "select_clarification_areas" : "answer_clarification";
     value.adviser.journey.confirmed_guidance_active = true;
     value.adviser.journey.refinement_state = state;
+    value.adviser.journey.refinement_journey_id = "journey-1";
     value.adviser.journey.refinement_round_number = 1;
     value.adviser.journey.refinement_rounds_completed = 0;
     value.adviser.journey.refinement_complete = false;
@@ -951,10 +952,13 @@ it("commits only the selected refinement areas and shows persisted grouped quest
     if (url === "/api/v1/candidate-adviser/assessment") return assessment("confirmed");
     if (url === "/api/v1/candidate-adviser/clarifications") return generated ? [question("q1", 0), question("q2", 1)] : [];
     if (url === "/api/v1/candidate-adviser/refinement/areas" && options?.method === "PUT") {
-      committedKeys = JSON.parse(options.body ?? "{}").selected_area_keys;
+      const payload = JSON.parse(options.body ?? "{}");
+      expect(payload).toMatchObject({ expected_refinement_journey_id: "journey-1", expected_round_number: 1, expected_assessment_fingerprint: "a".repeat(64) });
+      committedKeys = payload.selected_area_keys;
       return [];
     }
     if (url === "/api/v1/candidate-adviser/refinement/questions/generate" && options?.method === "POST") {
+      expect(JSON.parse(options.body ?? "{}")).toEqual({ expected_refinement_journey_id: "journey-1", expected_round_number: 1, expected_assessment_fingerprint: "a".repeat(64) });
       generated = true;
       return [question("q1", 0), question("q2", 1)];
     }
@@ -971,4 +975,58 @@ it("commits only the selected refinement areas and shows persisted grouped quest
   expect(committedKeys).toEqual(["delivery"]);
   expect(await screen.findByText("Area 1 of 1 · Question 1 of 2 in Delivery ownership")).toBeInTheDocument();
   expect(screen.getByText("Round 1 · 0 of 2 questions complete")).toBeInTheDocument();
+});
+
+it.each([
+  ["initial_assessment_review", 1, 0],
+  ["round1_assessment_review", 2, 1],
+  ["round2_assessment_review", 2, 2],
+] as const)("regenerates a review draft in place for %s", async (refinementState, roundNumber, roundsCompleted) => {
+  const current = status(true, "review_ready");
+  current.adviser.journey.refinement_state = refinementState;
+  current.adviser.journey.refinement_journey_id = "same-journey";
+  current.adviser.journey.refinement_round_number = roundNumber;
+  current.adviser.journey.refinement_rounds_completed = roundsCompleted;
+  request.mockResolvedValueOnce(current).mockResolvedValueOnce(intake).mockResolvedValueOnce(assessment("review_ready"));
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  const regenerate = await screen.findByRole("button", { name: "Create a different assessment" });
+  request.mockResolvedValueOnce(assessment("review_ready"));
+  fireEvent.click(regenerate);
+  await vi.waitFor(() => expect(request).toHaveBeenCalledWith("/api/v1/candidate-adviser/assessment?replace_review_draft=true", expect.objectContaining({ method: "POST" })));
+  expect(await screen.findByRole("heading", { name: "Review your assessment" })).toBeInTheDocument();
+});
+
+it("refreshes to the server's newer journey after stale area selection conflicts", async () => {
+  const ApiError = (await import("./auth")).ApiError;
+  const oldStatus = status(true, "confirmed");
+  oldStatus.adviser.journey.next_action = "select_clarification_areas";
+  oldStatus.adviser.journey.refinement_state = "area_selection";
+  oldStatus.adviser.journey.refinement_journey_id = "journey-old";
+  oldStatus.adviser.journey.refinement_round_number = 1;
+  oldStatus.adviser.journey.refinement_areas = [{ area_key: "delivery", title: "Old delivery area", rationale: "Old rationale", priority_index: 0, selection_state: "proposed", round_number: 1 }];
+  const newStatus = structuredClone(oldStatus);
+  newStatus.adviser.journey.refinement_journey_id = "journey-new";
+  newStatus.adviser.journey.refinement_areas = [{ area_key: "delivery", title: "New delivery area", rationale: "New rationale", priority_index: 0, selection_state: "proposed", round_number: 1 }];
+  let statusCalls = 0;
+  request.mockImplementation(async (url: string) => {
+    if (url === "/api/v1/onboarding/status") return ++statusCalls === 1 ? oldStatus : newStatus;
+    if (url === "/api/v1/candidate-adviser/intake") return intake;
+    if (url === "/api/v1/candidate-adviser/assessment") return assessment("confirmed");
+    if (url === "/api/v1/candidate-adviser/clarifications") return [];
+    throw new Error(`Unexpected request ${url}`);
+  });
+  render(<MemoryRouter><AdviserPage /></MemoryRouter>);
+  await screen.findByRole("heading", { name: "Which areas would you like to clarify?" });
+  fireEvent.click(screen.getByRole("checkbox", { name: /Old delivery area/ }));
+  request.mockRejectedValueOnce(new ApiError(409, ""));
+  fireEvent.click(screen.getByRole("button", { name: "Clarify selected areas" }));
+  expect(await screen.findByText("New delivery area")).toBeInTheDocument();
+  expect(screen.getByText("Adviser state changed. The current state has been refreshed.")).toBeInTheDocument();
+  const areaCall = request.mock.calls.find(([url]) => url === "/api/v1/candidate-adviser/refinement/areas");
+  expect(JSON.parse(String((areaCall?.[1] as { body: string }).body))).toEqual({
+    expected_refinement_journey_id: "journey-old",
+    expected_round_number: 1,
+    expected_assessment_fingerprint: "a".repeat(64),
+    selected_area_keys: ["delivery"],
+  });
 });

@@ -8,7 +8,7 @@ type Intake = { career_direction: string; work_preferences: string[]; constraint
 type Insight = { text: string; source_references: Array<{ source_type: string; reference: string }> };
 type SuggestedAnswer = { option_id: string; text: string };
 type StructuredResponse = { selected_option_ids: string[]; custom_answer_text: string; special_selection: "not_sure" | null };
-type Assessment = { status: "review_ready" | "confirmed" | "stale"; contract_version?: "legacy_questions" | "clarification_areas_v1"; content: { professional_positioning: Insight; transferable_strengths: Insight[]; development_gaps: Insight[]; role_hypotheses: Insight[]; transition_assessment: Insight; open_questions: Array<Insight & { suggested_answers?: string[] }>; clarification_areas?: Array<{ area_key: string; title: string; rationale: string; source_references: Insight["source_references"] }>; assessment_limitations?: string[]; career_strategy_summary: Insight; job_search_strategy_summary: Insight } };
+type Assessment = { input_fingerprint: string; status: "review_ready" | "confirmed" | "stale"; contract_version?: "legacy_questions" | "clarification_areas_v1"; content: { professional_positioning: Insight; transferable_strengths: Insight[]; development_gaps: Insight[]; role_hypotheses: Insight[]; transition_assessment: Insight; open_questions: Array<Insight & { suggested_answers?: string[] }>; clarification_areas?: Array<{ area_key: string; title: string; rationale: string; source_references: Insight["source_references"] }>; assessment_limitations?: string[]; career_strategy_summary: Insight; job_search_strategy_summary: Insight } };
 type Clarification = { clarification_id: string; question_text: string; priority_index: number; parent_area_key?: string | null; parent_area_title?: string | null; round_number?: 1 | 2 | null; status: "unanswered" | "review_ready" | "confirmed"; answer_text: string | null; suggested_answers?: SuggestedAnswer[]; structured_response?: StructuredResponse | null; session_active?: boolean; interpretation: { answer_kind: "career_fact" | "mixed" | "eligibility_fact" | "preference_intent" | "insufficient"; confirmed_context_summary: string; proposed_evidence: Array<{ title: string; text: string; skills: string[] }> } | null };
 type AssessmentMutation = "create" | "update" | "regenerate";
 type IntakeRead = Intake & { updated_at?: string };
@@ -72,10 +72,22 @@ export function AdviserPage() {
   const confirmAssessment = async () => { if (locked || pending) return; setPending("confirm-assessment"); setError(""); setNotice(""); setFocusAreaSelectorWhenReady(true); try { await api.request<Assessment>("/api/v1/candidate-adviser/assessment/confirm", { method: "POST" }); await refreshDependentAuthority(); } catch (caught) { setError(caught instanceof ApiError && (caught.status === 502 || caught.status === 503) ? "Assessment confirmation is temporarily unavailable." : friendly()); if (caught instanceof ApiError && caught.status === 409) { setNotice("Adviser state changed. The current state has been refreshed."); await refreshDependentAuthority(); } } finally { setPending(""); } };
   const generateCommittedQuestions = async (commitSelection: boolean) => {
     if (locked || pending || !onboarding) return;
+    const journey = onboarding.adviser.journey;
+    if (!journey.refinement_journey_id || !journey.refinement_round_number || !assessment?.input_fingerprint) {
+      setError(friendly());
+      setNotice("Adviser state changed. The current state is being refreshed.");
+      await refreshDependentAuthority();
+      return;
+    }
+    const authority = {
+      expected_refinement_journey_id: journey.refinement_journey_id,
+      expected_round_number: journey.refinement_round_number,
+      expected_assessment_fingerprint: assessment.input_fingerprint,
+    };
     setPending("generate-questions"); setError(""); setNotice(""); setFocusClarificationWhenReady(true);
     try {
-      if (commitSelection) await api.request("/api/v1/candidate-adviser/refinement/areas", { method: "PUT", body: JSON.stringify({ selected_area_keys: selectedAreaKeys }) });
-      await api.request<Clarification[]>("/api/v1/candidate-adviser/refinement/questions/generate", { method: "POST" });
+      if (commitSelection) await api.request("/api/v1/candidate-adviser/refinement/areas", { method: "PUT", body: JSON.stringify({ ...authority, selected_area_keys: selectedAreaKeys }) });
+      await api.request<Clarification[]>("/api/v1/candidate-adviser/refinement/questions/generate", { method: "POST", body: JSON.stringify(authority) });
       await refreshDependentAuthority();
     } catch (caught) {
       const message = caught instanceof ApiError && (caught.status === 502 || caught.status === 503) ? "Career Adviser could not prepare those questions yet. Your area selection is saved; retry when ready." : friendly();
@@ -86,9 +98,16 @@ export function AdviserPage() {
   };
   const continueWithoutClarification = async () => {
     if (locked || pending) return;
+    const journey = onboarding?.adviser.journey;
+    if (!journey?.refinement_journey_id || !journey.refinement_round_number || !assessment?.input_fingerprint) {
+      setError(friendly());
+      setNotice("Adviser state changed. The current state is being refreshed.");
+      await refreshDependentAuthority();
+      return;
+    }
     setPending("select-areas"); setError(""); setNotice("");
     try {
-      await api.request("/api/v1/candidate-adviser/refinement/areas", { method: "PUT", body: JSON.stringify({ selected_area_keys: [] }) });
+      await api.request("/api/v1/candidate-adviser/refinement/areas", { method: "PUT", body: JSON.stringify({ expected_refinement_journey_id: journey.refinement_journey_id, expected_round_number: journey.refinement_round_number, expected_assessment_fingerprint: assessment.input_fingerprint, selected_area_keys: [] }) });
       await refreshDependentAuthority();
     } catch (caught) { const message = friendly(); await refreshDependentAuthority(); setError(message); }
     finally { setPending(""); }

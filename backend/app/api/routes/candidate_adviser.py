@@ -18,6 +18,7 @@ from app.schemas.candidate_adviser import (
     CandidateAdviserIntake,
     CandidateAdviserIntakeRead,
     CandidateAdviserAreaSelectionRequest,
+    CandidateAdviserQuestionGenerationRequest,
 )
 from app.schemas.candidate_adviser_journey import CandidateAdviserAreaRead, CandidateAdviserJourneyRead
 from app.schemas.candidate_adviser_profile_proposal import (
@@ -77,11 +78,12 @@ def read_refinement_questions(
 
 @router.post("/refinement/questions/generate", response_model=list[CandidateAdviserClarificationRead])
 def generate_refinement_questions(
+    payload: CandidateAdviserQuestionGenerationRequest,
     current_user: CurrentUser,
     service: CandidateAdviserService = Depends(get_user_candidate_adviser_service),
 ) -> list[CandidateAdviserClarificationRead]:
     try:
-        return service.generate_round_questions(current_user.id)
+        return service.generate_round_questions(current_user.id, payload)
     except SemanticProviderConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except SemanticProviderUnavailableError as exc:

@@ -77,7 +77,7 @@ class CandidateAdviserSemanticInput(BaseModel):
     intake: CandidateAdviserIntake
     structured_cv: CandidateCVData
     career_evidence: list[CandidateAdviserEvidenceInput] = Field(default_factory=list)
-    clarifications: list[CandidateAdviserClarificationInput] = Field(default_factory=list)
+    clarifications: list[CandidateAdviserClarificationInput] = Field(default_factory=list, max_length=72)
     refinement_control: RefinementControlInput | None = None
 
 
@@ -186,7 +186,7 @@ class CandidateAdviserQuestionGenerationInput(BaseModel):
     intake: CandidateAdviserIntake
     structured_cv: CandidateCVData
     career_evidence: list[CandidateAdviserEvidenceInput] = Field(default_factory=list, max_length=24)
-    clarifications: list[CandidateAdviserClarificationInput] = Field(default_factory=list, max_length=12)
+    clarifications: list[CandidateAdviserClarificationInput] = Field(default_factory=list, max_length=72)
 
 
 class CandidateAdviserAssessmentStatus(StrEnum):
@@ -214,7 +214,18 @@ class CandidateAdviserAssessmentRead(BaseModel):
 class CandidateAdviserAreaSelectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_refinement_journey_id: str = Field(min_length=1, max_length=36)
+    expected_round_number: Literal[1, 2]
+    expected_assessment_fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
     selected_area_keys: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(max_length=6)
+
+
+class CandidateAdviserQuestionGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_refinement_journey_id: str = Field(min_length=1, max_length=36)
+    expected_round_number: Literal[1, 2]
+    expected_assessment_fingerprint: str = Field(pattern="^[0-9a-f]{64}$")
 
 
 class ClarificationAnswerKind(StrEnum):
