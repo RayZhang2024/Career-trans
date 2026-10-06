@@ -73,6 +73,14 @@ beforeEach(() => { sessionStorage.clear(); vi.restoreAllMocks(); });
 afterEach(cleanup);
 
 describe("Issue #175 saved discovery configurations", () => {
+  it("starts a new saved discovery with the twenty-page web frontier", async () => {
+    renderPage("/jobs/searches", {}, []);
+    await screen.findByText("No saved discovery configurations yet.");
+    fireEvent.click(screen.getByRole("button", { name: "New saved discovery" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Profile-driven bounded server-side web discovery/ }));
+    expect(screen.getByLabelText("Maximum pages to open (1–100)")).toHaveValue(20);
+  });
+
   it("canonicalizes the legacy saved-search route while preserving SearchIntent handoff state", async () => {
     sessionStorage.setItem(TOKEN, "test-token");
     const mocked = fakeFetch();
@@ -312,8 +320,10 @@ describe("Issue #175 saved discovery configurations", () => {
   });
 
   it("uses authoritative GET for edit baseline, keeps exact local-time precision, and name-only PATCH is top-level only", async () => {
-    const { requests } = renderPage("/jobs/searches", { "GET /api/v1/jobs/discovery-schedules/s-1": () => response(schedule({ name: "Fresh server name", schedule: { cadence: "weekly", timezone: "Europe/London", local_time: "09:30:15.125000", weekdays: [0, 2] } })) }); await loaded();
+    const persistedTwelvePageSchedule = schedule({ name: "Fresh server name", schedule: { cadence: "weekly", timezone: "Europe/London", local_time: "09:30:15.125000", weekdays: [0, 2] }, acquisition: { ...schedule().acquisition, agentic_web: { ...schedule().acquisition.agentic_web, enabled: true, max_pages_to_open: 12 } } });
+    const { requests } = renderPage("/jobs/searches", { "GET /api/v1/jobs/discovery-schedules/s-1": () => response(persistedTwelvePageSchedule) }); await loaded();
     fireEvent.click(screen.getByRole("button", { name: "Edit" })); await screen.findByDisplayValue("Fresh server name");
+    expect(screen.getByLabelText("Maximum pages to open (1–100)")).toHaveValue(12);
     expect(getCalls(requests, "GET", "/api/v1/jobs/discovery-schedules/s-1")).toHaveLength(1);
     expect(screen.getByLabelText("Configured local time")).toHaveValue("09:30:15.125000");
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed" } }); fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));

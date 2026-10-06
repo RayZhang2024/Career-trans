@@ -23,6 +23,8 @@ class DiscoveryRunJobOutcome(StrEnum):
     REUSED_EVALUATION = "reused_evaluation"
     NOT_ACTIONABLE = "not_actionable"
     PRESEMANTIC_FILTERED = "presemantic_filtered"
+    GEOGRAPHY_INCOMPATIBLE = "geography_incompatible"
+    GEOGRAPHY_UNKNOWN = "geography_unknown"
     OUTSIDE_SEMANTIC_BUDGET = "outside_semantic_budget"
     SEMANTIC_REJECTED = "semantic_rejected"
     OUTSIDE_DEEP_ANALYSIS_BUDGET = "outside_deep_analysis_budget"

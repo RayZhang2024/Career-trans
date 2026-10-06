@@ -75,7 +75,7 @@ class AgenticWebScheduleConfig(BaseModel):
     country: str = Field(default="gb", min_length=2, max_length=2)
     max_search_queries: int = Field(default=6, ge=1, le=100)
     max_search_results_per_query: int = Field(default=10, ge=1, le=50)
-    max_pages_to_open: int = Field(default=12, ge=1, le=100)
+    max_pages_to_open: int = Field(default=20, ge=1, le=100)
     max_discovered_jobs: int = Field(default=20, ge=1, le=100)
 
 

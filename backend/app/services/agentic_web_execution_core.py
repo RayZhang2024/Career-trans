@@ -82,11 +82,21 @@ class AgenticWebExecutionCore:
         )
         ids = self.canonical_ids(response.listings[:max_discovered_jobs])
         counters = {
+            "search_strategies_generated": diagnostics.search_strategies_generated,
             "search_queries_executed": diagnostics.search_queries_executed,
+            "search_results_raw": diagnostics.search_results_raw,
+            "search_results_unique": diagnostics.search_results_unique,
+            "duplicate_search_results_removed": diagnostics.duplicate_search_results_removed,
+            "deterministic_filtered_count": diagnostics.deterministic_filtered_count,
+            "pages_selected": diagnostics.pages_selected,
             "pages_opened": diagnostics.pages_opened,
             "page_fetch_failures": diagnostics.page_fetch_failures,
             "extraction_successes": diagnostics.extraction_successes,
             "extraction_failures": diagnostics.extraction_failures,
+            "normalized_jobs": diagnostics.normalized_jobs,
+            "deduplicated_jobs": diagnostics.deduplicated_jobs,
+            "duplicate_jobs_removed": diagnostics.duplicate_jobs_removed,
+            "unique_employers": diagnostics.unique_employers,
         }
         local_search_failed = (
             isinstance(provider_metadata, dict)
@@ -145,9 +155,7 @@ class AgenticWebExecutionCore:
         return EvaluationOutcome(
             discovery_run_id=run.id,
             status=run.status.value,
-            funnel={key: run.funnel.get(key, 0) for key in (
-                "reused", "relevance_screened", "analysed"
-            )},
+            funnel={key: value for key, value in run.funnel.items() if isinstance(value, int)},
             failed=run.status.value == DiscoveryRunStatus.FAILED.value,
         )
 

@@ -31,6 +31,15 @@ class JobScreeningService:
             and self._matches_employment_type(listing, query.employment_types)
         )
 
+    def matches_acquisition_constraints(self, listing: JobListing, query: JobSearchQuery) -> bool:
+        """Apply non-geographic SearchIntent filters; geography is recorded on the run."""
+        return (
+            self._matches_company(listing, query.companies)
+            and self._does_not_match_excluded_company(listing, query.excluded_companies)
+            and self._does_not_match_excluded_title(listing, query.excluded_title_terms)
+            and self._matches_employment_type(listing, query.employment_types)
+        )
+
     @staticmethod
     def _matches_company(listing: JobListing, companies: list[str]) -> bool:
         if not companies or not listing.company:

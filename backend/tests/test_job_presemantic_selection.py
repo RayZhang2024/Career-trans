@@ -126,6 +126,18 @@ def test_geography_matching_uses_complete_location_tokens_and_phrases() -> None:
     assert selector.select_for_hunt([remote_uk], query=_query(locations=["London"]), limit=1).selected == []
 
 
+def test_reviewed_uk_geography_mapping_and_unknown_remote_only() -> None:
+    selector = JobPresemanticSelectionService()
+    locations = ["London", "Oxford", "Cambridge", "Bristol", "Manchester", "Reading", "England", "Scotland", "Wales", "Northern Ireland"]
+    listings = [_job(title="AI Engineer", company=value, url=f"https://jobs.example.test/{i}", location=value) for i, value in enumerate(locations)]
+
+    result = selector.select_for_hunt(listings, query=_query(locations=["UK"]), limit=20)
+
+    assert {job.url for job in result.selected} == {job.url for job in listings}
+    assert selector.select_for_hunt([_job(title="AI", company="Remote", url="https://jobs.test/remote", location="Remote")], query=_query(locations=["UK"]), limit=1).unknown_geography
+    assert selector.select_for_hunt([_job(title="AI", company="India", url="https://jobs.test/india", location="Bengaluru, India")], query=_query(locations=["UK"]), limit=1).incompatible_geography
+
+
 def test_remote_policy_never_bypasses_geography_and_unknown_location_is_diagnostic() -> None:
     us_remote = _job(
         title="Applied AI Engineer",

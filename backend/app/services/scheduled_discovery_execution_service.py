@@ -394,6 +394,8 @@ class ScheduledDiscoveryExecutionService:
         return self._finish(execution, status, now, summary, failures)
 
     def _finish(self, execution: ScheduledDiscoveryExecution, status: ExecutionStatus, now: datetime, summary: dict[str, int], failures: dict[str, int]) -> ScheduledDiscoveryExecution:
+        for key in ("geography_eligible", "geography_incompatible", "geography_unknown", "remote_policy_filtered", "relevance_screened", "analysed"):
+            summary.setdefault(key, 0)
         execution.status = status.value
         execution.completed_at = now
         execution.acquisition_summary_json = json.dumps(summary, sort_keys=True)

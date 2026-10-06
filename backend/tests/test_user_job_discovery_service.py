@@ -264,8 +264,22 @@ def test_incompatible_current_geography_does_not_reuse_historical_evaluation(db_
     service.start("user-a", _request(job.id, location="London"))
     incompatible = service.start("user-a", _request(job.id, location="New York"))
     assert ranking.calls == 1
-    assert incompatible.jobs[0].outcome == "presemantic_filtered"
+    assert incompatible.jobs[0].outcome == "geography_incompatible"
     assert incompatible.jobs[0].evaluation_id is None
+    assert incompatible.funnel["geography_incompatible"] == 1
+
+
+def test_unknown_geography_has_distinct_outcome_and_is_excluded_before_semantic_work(db_session, monkeypatch) -> None:
+    job = _job(); job.location = None; db_session.add_all([_user("user-a"), job]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    ranking = _Ranking(); service = UserJobDiscoveryService(db_session, ranking_service=ranking)
+
+    result = service.start("user-a", _request(job.id, location="UK"))
+
+    assert ranking.calls == 0
+    assert result.jobs[0].outcome == "geography_unknown"
+    assert result.funnel["geography_unknown"] == 1
+    assert result.funnel["relevance_screened"] == 0
 
 
 def test_reused_evaluation_respects_new_relevance_threshold_without_reranking(db_session, monkeypatch) -> None:

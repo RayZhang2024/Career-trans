@@ -22,12 +22,12 @@ const ranked = (title: string): RankedJobOpportunity => ({
   job_profile: { title, company: "Example Co", location: "London", work_arrangement: "Hybrid", seniority: "Senior", salary: null, employment_type: "Full-time", application_deadline: null, responsibilities: ["Build systems"], requirements: [{ text: "Canonical requirement", importance: "essential", category: "technical" }], technical_skills: ["Python"], domain_knowledge: ["AI"], security_requirements: [], work_authorization_requirements: [] },
   requirement_matches: [{ requirement_index: 0, requirement: { text: "Canonical requirement", importance: "essential", category: "technical" }, match_type: "demonstrated", score: 0.8, evidence_ids: ["private-evidence-id-must-not-render"], reasoning: "Match reasoning." }, { requirement_index: 7, requirement: { text: "invented text", importance: "essential", category: "technical" }, match_type: "missing", score: 0, evidence_ids: [], reasoning: "Bad index." }],
 });
-const run = (id = "run-1", status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunSummary => ({ id, status, run_input: { query: { keywords: ["AI Engineer"], locations: ["London"], remote_ok: false } }, funnel: { submitted: 3, reused: 1, relevance_screened: 2, full_analysis_attempts: 1, analysed: 1 }, failure_summary: { provider_failure: 1 }, started_at: "2026-02-01T12:00:00Z", completed_at: status === "running" ? null : "2026-02-01T12:05:00Z" });
+const run = (id = "run-1", status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunSummary => ({ id, status, run_input: { query: { keywords: ["AI Engineer"], locations: ["London"], remote_ok: false } }, funnel: { submitted: 3, geography_eligible: 2, geography_incompatible: 1, geography_unknown: 1, remote_policy_filtered: 0, reused: 1, relevance_screened: 2, full_analysis_attempts: 1, analysed: 1 }, failure_summary: { provider_failure: 1 }, started_at: "2026-02-01T12:00:00Z", completed_at: status === "running" ? null : "2026-02-01T12:05:00Z" });
 const savedSchedule = (patch: Partial<DiscoveryScheduleRead> = {}): DiscoveryScheduleRead => ({
   id: "s-1", name: "AI roles", enabled: false,
   schedule: { cadence: "daily", timezone: "UTC", local_time: "09:00:00", weekdays: [] },
   query: { keywords: ["AI"], locations: ["London"], remote_ok: false, companies: ["Compatibility Co"], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 73 },
-  acquisition: { structured_ats: { enabled: true, companies: [], providers: [], all_resolved_sources: true, max_sources: 20, max_results: 100 }, agentic_web: { enabled: false, country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 12, max_discovered_jobs: 20 } },
+  acquisition: { structured_ats: { enabled: true, companies: [], providers: [], all_resolved_sources: true, max_sources: 20, max_results: 100 }, agentic_web: { enabled: false, country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 20, max_discovered_jobs: 20 } },
   evaluation: { max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 }, next_run_at: null, last_execution_at: null, ...patch,
 });
 const savedExecution = (status: ScheduledExecutionRead["status"] = "completed"): ScheduledExecutionRead => ({
@@ -35,9 +35,9 @@ const savedExecution = (status: ScheduledExecutionRead["status"] = "completed"):
   config_snapshot: { schedule: savedSchedule().schedule, query: savedSchedule().query, acquisition: savedSchedule().acquisition, evaluation: savedSchedule().evaluation },
   discovery_run_id: status === "running" ? null : "run-1", acquisition_summary: {}, failure_summary: {}, started_at: "2026-02-01T12:00:00Z", completed_at: status === "running" ? null : "2026-02-01T12:05:00Z",
 });
-const oneOffPreflight = (patch: Partial<OneOffPreflight> = {}): OneOffPreflight => ({ effective_provider: "tavily", readiness: "configured_for_launch", available: true, reason: null, policy: { version: "v1", country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 12, max_discovered_jobs: 20, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 }, provider_settings_revision: 2, launch_fingerprint: "a".repeat(64), ...patch });
+const oneOffPreflight = (patch: Partial<OneOffPreflight> = {}): OneOffPreflight => ({ effective_provider: "tavily", readiness: "configured_for_launch", available: true, reason: null, policy: { version: "v2", country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 20, max_discovered_jobs: 20, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 }, provider_settings_revision: 2, launch_fingerprint: "a".repeat(64), ...patch });
 const oneOffExecution = (patch: Partial<OneOffExecution> = {}): OneOffExecution => ({ id: "one-off-1", client_request_id: "request-1", query: { keywords: ["AI"], locations: [], remote_ok: null, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 }, policy: oneOffPreflight().policy, provider: { provider: "tavily", credential_source: "user", search_depth: "basic" }, status: "completed", started_at: "2026-10-01T00:00:00Z", completed_at: "2026-10-01T00:01:00Z", acquisition_summary: { canonical_jobs: 0, relevance_screened: 0, analysed: 0 }, failure_summary: {}, discovery_run_id: null, ...patch });
-const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
+const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "geography_incompatible", "geography_unknown", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
 const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1, decision: decision(id) });
 const workspaceJob = (patch: Record<string, unknown> = {}) => ({ id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z", ...patch });
 const workspacePayload = (workspaceDecision = decision("actionable"), patch: Record<string, unknown> = {}) => ({ job: workspaceJob(), decision: workspaceDecision, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false }, applications: { items: [], limit: 20, truncated: false }, ...patch });
@@ -242,6 +242,8 @@ describe("Issue #171 Jobs workspace", () => {
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.click(screen.getByRole("link", { name: "Search history" }));
     await screen.findByRole("heading", { name: "Search history" });
+    expect(await screen.findAllByText("Geography incompatible")).toHaveLength(2);
+    expect(screen.getAllByText("Geography unknown")).toHaveLength(2);
     const viewButtons = screen.getAllByRole("button", { name: /^View run/ });
     expect(viewButtons).toHaveLength(2);
     expect(new Set(viewButtons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
@@ -595,9 +597,11 @@ describe("Issue #171 Jobs workspace", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^View run/ }));
     expect(screen.queryByRole("button", { name: /^Prepare application/ })).not.toBeInTheDocument();
     for (const label of ["Newly evaluated", "Reused evaluation", "Not actionable", "Presemantic filtered", "Outside semantic budget", "Semantic rejected", "Outside deep-analysis budget", "Analysis failed"]) expect(await screen.findByText(label)).toBeInTheDocument();
+    expect(screen.getAllByText("Geography incompatible")).toHaveLength(2);
+    expect(screen.getAllByText("Geography unknown")).toHaveLength(2);
     const historicalActions = screen.getAllByRole("button", { name: /Historical detail for historical result/ });
-    expect(historicalActions).toHaveLength(8);
-    expect(new Set(historicalActions.map((button) => button.getAttribute("aria-label"))).size).toBe(8);
+    expect(historicalActions).toHaveLength(10);
+    expect(new Set(historicalActions.map((button) => button.getAttribute("aria-label"))).size).toBe(10);
     expect(historicalActions.every((button) => !button.getAttribute("aria-label")?.includes("job-"))).toBe(true);
     fireEvent.click(screen.getAllByRole("button", { name: /Historical detail for/ })[0]);
     expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
@@ -1214,6 +1218,29 @@ describe("Issue #261 transient one-off discovery", () => {
     fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
     fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
     expect(await screen.findByRole("heading", { name: `One-off discovery ${label}` })).toBeInTheDocument();
+  });
+
+  it("explains one-off acquisition and post-canonical geography losses in Find jobs", async () => {
+    const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => json(oneOffExecution({
+      status: "partial_failed",
+      acquisition_summary: {
+        search_strategies_generated: 6, search_queries_executed: 6, search_results_raw: 18,
+        search_results_unique: 14, duplicate_search_results_removed: 4, deterministic_filtered_count: 2,
+        pages_selected: 12, pages_opened: 10, page_fetch_failures: 2,
+        extraction_successes: 5, extraction_failures: 5, canonical_jobs: 4,
+        geography_eligible: 1, geography_incompatible: 1, geography_unknown: 2,
+        remote_policy_filtered: 0, relevance_screened: 1, analysed: 1,
+      },
+      failure_summary: { agentic_web: 1 },
+    })) });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+
+    expect(await screen.findByText("Searches run")).toBeInTheDocument();
+    expect(screen.getByText("Geography incompatible")).toBeInTheDocument();
+    expect(screen.getByText("Geography unknown")).toBeInTheDocument();
+    expect(screen.getByText(/Failures: Agentic Web 1/)).toBeInTheDocument();
   });
 
   it("refreshes stale preflight without automatically relaunching", async () => {

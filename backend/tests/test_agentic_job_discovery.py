@@ -25,8 +25,8 @@ class FakeStrategies:
         self.strategies = strategies
         self.received = None
 
-    def generate(self, search_profile, career_profile, limit: int) -> list[SearchStrategy]:
-        self.received = (search_profile, career_profile, limit)
+    def generate(self, search_profile, career_profile, search_intent, limit: int) -> list[SearchStrategy]:
+        self.received = (search_profile, career_profile, search_intent, limit)
         return self.strategies
 
 
@@ -130,13 +130,106 @@ def test_profile_generates_bounded_diverse_unique_strategies(db_session) -> None
         pages={}, extracted={},
     )
 
-    response = discovery.discover(request(max_search_queries=2))
+    response = discovery.discover(request(
+        max_search_queries=2,
+        query={
+            "keywords": ["AI Engineer"], "locations": ["London", "UK"], "remote_ok": False,
+            "companies": ["Example Co"], "excluded_companies": ["Avoid Co"],
+            "excluded_title_terms": ["Intern"], "employment_types": ["Full-time"], "max_results": 73,
+        },
+    ))
 
     assert [item.intent for item in response.strategies] == ["exact", "adjacent"]
     assert generator.received is not None
     assert generator.received[0].skills == ["Python", "machine learning"]
+    assert generator.received[2].model_dump() == {
+        "keywords": ["AI Engineer"], "locations": ["London", "UK"], "remote_ok": False,
+        "companies": ["Example Co"], "excluded_companies": ["Avoid Co"],
+        "excluded_title_terms": ["Intern"], "employment_types": ["Full-time"],
+    }
+    assert generator.received[3] == 2
+    assert not hasattr(generator.received[2], "max_results")
     assert len(search.calls) == 2
     assert response.diagnostics.search_strategies_generated == 2
+
+
+def test_result_frontier_ranks_requested_geography_before_incompatible_results(db_session) -> None:
+    uk_url = "https://jobs.example.test/jobs/uk"
+    us_url = "https://jobs.example.test/jobs/us"
+    unknown_url = "https://jobs.example.test/jobs/unknown"
+    results = [
+        result("AI Engineer", us_url, rank=1, snippet="AI role in United States"),
+        result("AI Engineer", unknown_url, rank=2, snippet="AI role, location unavailable"),
+        result("AI Engineer", uk_url, rank=3, snippet="AI role in Cambridge, UK"),
+    ]
+    discovery, _, _, pages, _ = service(
+        db_session,
+        strategies=[strategy("AI Engineer UK")],
+        results={"AI Engineer UK": results},
+        pages={url: page(url) for url in (uk_url, us_url, unknown_url)},
+        extracted={url: ExtractedVacancy(title="AI Engineer", location="London") for url in (uk_url, us_url, unknown_url)},
+    )
+
+    discovery.discover(request(max_pages_to_open=2, query={"keywords": ["AI Engineer"], "locations": ["UK"]}))
+
+    assert pages.calls == [uk_url, unknown_url]
+
+
+def test_synthetic_uat_acquisition_funnel_handles_duplicates_vacancies_and_page_failures(db_session) -> None:
+    urls = {
+        "uk": "https://jobs.example.test/jobs/uk",
+        "us": "https://jobs.example.test/jobs/us",
+        "india": "https://jobs.example.test/jobs/india",
+        "remote": "https://jobs.example.test/jobs/remote",
+        "generic": "https://careers.example.test/careers",
+        "fetch": "https://jobs.example.test/jobs/fetch-fails",
+        "extract": "https://jobs.example.test/jobs/extract-fails",
+    }
+    strategies = [strategy("AI Engineer UK"), strategy("Agentic AI UK", priority=0)]
+    results = [
+        result("AI Engineer", urls[key], rank=index + 1, snippet=snippet)
+        for index, (key, snippet) in enumerate([
+            ("uk", "Cambridge UK role"), ("us", "United States vacancy"),
+            ("india", "Bengaluru India role"), ("remote", "Remote role, location not stated"),
+            ("generic", "Company careers overview"), ("fetch", "Oxford role"),
+            ("extract", "London role"),
+        ])
+    ]
+    discovery, _, _, pages, _ = service(
+        db_session,
+        strategies=strategies,
+        results={"AI Engineer UK": results, "Agentic AI UK": [result("Duplicate AI Engineer", urls["uk"], rank=1)]},
+        pages={
+            urls["uk"]: page(urls["uk"]), urls["us"]: page(urls["us"]),
+            urls["india"]: page(urls["india"]), urls["remote"]: page(urls["remote"]),
+            urls["generic"]: page(urls["generic"]), urls["fetch"]: RuntimeError("offline"),
+            urls["extract"]: page(urls["extract"]),
+        },
+        extracted={
+            urls["uk"]: ExtractedVacancy(title="AI Engineer", location="Cambridge"),
+            urls["us"]: ExtractedVacancy(title="AI Engineer", location="United States"),
+            urls["india"]: ExtractedVacancy(title="AI Engineer", location="Bengaluru, India"),
+            urls["remote"]: ExtractedVacancy(title="AI Engineer", location="Remote"),
+            urls["generic"]: None,
+            urls["extract"]: RuntimeError("unreadable page"),
+        },
+    )
+
+    response = discovery.discover(request(
+        query={"keywords": ["AI Engineer", "Agentic AI"], "locations": ["London", "UK", "Oxford"]},
+        max_pages_to_open=20,
+    ))
+
+    assert len(response.listings) == 4
+    assert response.diagnostics.search_results_raw == 8
+    assert response.diagnostics.search_results_unique == 7
+    assert response.diagnostics.duplicate_search_results_removed == 1
+    assert response.diagnostics.pages_selected == 7
+    assert response.diagnostics.pages_opened == 6
+    assert response.diagnostics.page_fetch_failures == 1
+    assert response.diagnostics.extraction_successes == 4
+    assert response.diagnostics.extraction_failures == 2
+    assert len(pages.calls) == 7
 
 
 def test_brave_provider_preserves_structured_result_provenance_without_exposing_key() -> None:
@@ -301,8 +394,10 @@ def test_agentic_hard_constraints_block_exclusions_location_and_incompatible_emp
         )
     )
 
-    assert [listing.url for listing in response.listings] == [urls[4]]
-    assert response.lifecycle_counts.new == 1
+    # Geography and remote eligibility are classified after canonicalization so
+    # Search History can distinguish incompatible and unknown extracted facts.
+    assert {listing.url for listing in response.listings} == {urls[2], urls[4]}
+    assert response.lifecycle_counts.new == 2
 
 
 def test_agentic_deduplicates_caps_and_synchronizes_only_returned_jobs(db_session) -> None:
@@ -342,7 +437,7 @@ def test_agentic_deduplicates_caps_and_synchronizes_only_returned_jobs(db_sessio
     assert set(response.job_states) == {SqlAlchemyDiscoveredJobStateStore.identity_key(response.listings[0])}
 
 
-def test_agentic_search_result_without_location_metadata_is_opened_then_known_mismatch_is_rejected(db_session) -> None:
+def test_agentic_search_result_without_location_metadata_is_opened_and_extracted_location_is_retained_for_run_classification(db_session) -> None:
     url = "https://jobs.example.test/jobs/rgb"
     discovery, _, _, pages, _ = service(
         db_session,
@@ -355,7 +450,8 @@ def test_agentic_search_result_without_location_metadata_is_opened_then_known_mi
     response = discovery.discover(request(query={"keywords": ["Engineer"], "locations": ["London"]}, country="gb"))
 
     assert pages.calls == [url]
-    assert response.listings == []
+    assert len(response.listings) == 1
+    assert response.listings[0].location == "Paris"
 
 
 def test_structured_discovery_allows_an_adjacent_title_to_reach_semantic_screening() -> None:

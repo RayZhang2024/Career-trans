@@ -59,10 +59,16 @@ def _ats_response(listings=(), diagnostics=()):
     return StructuredAtsDiscoveryResponse(listings=list(listings), source_diagnostics=list(diagnostics), raw_count=len(listings), deduplicated_count=0, rejected_count=0, lifecycle_counts=DiscoveryLifecycleCounts())
 
 
-def _agentic_response(listings=(), *, errors=False, page_fetch_failures=0, extraction_failures=0):
+def _agentic_response(listings=(), *, errors=False, page_fetch_failures=0, extraction_failures=0, search_strategies_generated=0, search_queries_executed=0, search_results_raw=0, search_results_unique=0, deterministic_filtered_count=0, pages_selected=0):
     return AgenticDiscoveryResponse(
         listings=list(listings),
         diagnostics=AgenticDiscoveryDiagnostics(
+            search_strategies_generated=search_strategies_generated,
+            search_queries_executed=search_queries_executed,
+            search_results_raw=search_results_raw,
+            search_results_unique=search_results_unique,
+            deterministic_filtered_count=deterministic_filtered_count,
+            pages_selected=pages_selected,
             search_errors={"safe": "failure"} if errors else {},
             page_fetch_failures=page_fetch_failures,
             extraction_failures=extraction_failures,
@@ -620,10 +626,12 @@ def test_agentic_clean_zero_extraction_failure_and_partial_listing_statuses(db_s
     assert runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC)).status == "completed"
 
     # A bounded extraction failure with no recovered listing is a failed channel.
-    runner, claimed = _claimed_runner(db_session, monkeypatch, payload=payload, ats=object(), agentic=SimpleNamespace(discover=lambda _: _agentic_response(extraction_failures=2)), user_runs=object())
+    runner, claimed = _claimed_runner(db_session, monkeypatch, payload=payload, ats=object(), agentic=SimpleNamespace(discover=lambda _: _agentic_response(extraction_failures=2, search_strategies_generated=6, search_queries_executed=6, search_results_raw=18, search_results_unique=12, deterministic_filtered_count=2, pages_selected=10)), user_runs=object())
     failed = runner.execute_claimed(claimed.id, datetime(2026, 9, 14, 8, tzinfo=UTC))
     assert failed.status == "failed"
     assert '"agentic_web_extraction_failures": 2' in failed.acquisition_summary_json
+    for key, value in {"search_strategies_generated": 6, "search_queries_executed": 6, "search_results_raw": 18, "search_results_unique": 12, "deterministic_filtered_count": 2, "pages_selected": 10}.items():
+        assert f'"agentic_web_{key}": {value}' in failed.acquisition_summary_json
 
     listing = _listing()
     SqlAlchemyDiscoveredJobStateStore(db_session).persist([listing])
