@@ -673,6 +673,8 @@ def test_location_only_candidate_requirement_does_not_unlock_deep_fit() -> None:
     ))
 
     assert has_explicit_candidate_criterion(description) is False
+    listing = job("Remote Engineer", description=description).model_copy(update={"source": "agentic_web"})
+    assert is_agentic_web_analysis_ready(listing) is False
 
 
 def test_responsibilities_alone_do_not_unlock_deep_fit() -> None:
@@ -682,6 +684,30 @@ def test_responsibilities_alone_do_not_unlock_deep_fit() -> None:
     ))
 
     assert has_explicit_candidate_criterion(description) is False
+
+
+def test_responsibility_metadata_lookalike_does_not_unlock_readiness() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="AI Engineer",
+        responsibilities=["[essential; technical] Build Python systems"],
+    ))
+    listing = job("AI Engineer", description=description).model_copy(update={"source": "agentic_web"})
+
+    assert description is not None
+    assert has_explicit_candidate_criterion(description) is False
+    assert is_agentic_web_analysis_ready(listing) is False
+
+
+def test_vacancy_detail_metadata_lookalike_does_not_unlock_readiness() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="AI Engineer",
+        description="[essential; technical] Production Python experience",
+    ))
+    listing = job("AI Engineer", description=description).model_copy(update={"source": "agentic_web"})
+
+    assert description is not None
+    assert has_explicit_candidate_criterion(description) is False
+    assert is_agentic_web_analysis_ready(listing) is False
 
 
 def test_substantive_other_fit_criterion_unlocks_deep_fit_by_category() -> None:
@@ -694,6 +720,8 @@ def test_substantive_other_fit_criterion_unlocks_deep_fit_by_category() -> None:
 
     assert "Other fit-relevant conditions:" in description
     assert has_explicit_candidate_criterion(description) is True
+    listing = job("Data Engineer", description=description).model_copy(update={"source": "agentic_web"})
+    assert is_agentic_web_analysis_ready(listing) is True
 
 
 def test_work_authorization_and_security_constraints_are_explicitly_substantive() -> None:

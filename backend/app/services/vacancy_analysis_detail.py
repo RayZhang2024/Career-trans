@@ -18,6 +18,11 @@ SUBSTANTIVE_CANDIDATE_CATEGORIES = frozenset({
     RequirementCategory.WORK_AUTHORIZATION.value,
     RequirementCategory.SECURITY.value,
 })
+CRITERION_SECTIONS = frozenset({
+    "Candidate requirements",
+    "Preferred qualifications",
+    "Other fit-relevant conditions",
+})
 QUALIFICATION_SECTIONS = frozenset({"Candidate requirements", "Preferred qualifications"})
 
 
@@ -73,13 +78,16 @@ def has_explicit_candidate_criterion(description: str | None) -> bool:
     authorization and security/clearance are explicit candidate constraints and
     do count. ``other`` is intentionally conservative because it has no stable
     meaning: it counts only when the persisted section itself declares a
-    required or preferred qualification. Responsibilities have no category
-    metadata and can never establish readiness.
+    required or preferred qualification. Only application-owned criterion
+    sections are parsed; raw responsibility and vacancy-detail text can never
+    establish readiness, even if it resembles the metadata syntax.
     """
     if not description or not description.startswith(STRUCTURED_DETAIL_MARKER):
         return False
     for section in description[len(STRUCTURED_DETAIL_MARKER):].lstrip("\n").split("\n\n"):
         heading, _, lines = section.partition(":\n")
+        if heading not in CRITERION_SECTIONS:
+            continue
         for line in lines.splitlines():
             if not line.startswith("- "):
                 continue
