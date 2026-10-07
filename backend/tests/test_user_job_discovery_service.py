@@ -307,7 +307,14 @@ def test_insufficient_agentic_vacancy_is_a_durable_nonfailure_run_outcome(db_ses
 
     job = _job()
     job.source = "agentic_web"
-    job.description = "Metadata-only detail with no labeled candidate criteria."
+    job.description = render_analysis_description(ExtractedVacancy(
+        title=job.title,
+        responsibilities=["Build AI products"],
+        other_fit_relevant_conditions=[
+            JobRequirement(text="Role is based in London", category="location"),
+            JobRequirement(text="Hybrid attendance three days per week", category="location"),
+        ],
+    ))
     db_session.add_all([_user("user-a"), job]); db_session.commit()
     patch_candidate_context(monkeypatch, _context())
 

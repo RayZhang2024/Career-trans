@@ -52,21 +52,14 @@ def render_analysis_description(extracted: ExtractedVacancy) -> str | None:
 
 
 def has_explicit_candidate_criterion(description: str | None) -> bool:
-    """Readiness is based on a persisted labeled criterion, never body length."""
+    """Readiness requires a persisted candidate qualification, never body length."""
     if not description or not description.startswith(STRUCTURED_DETAIL_MARKER):
         return False
-    structured_sections = description[len(STRUCTURED_DETAIL_MARKER):].split("\n\nVacancy detail:", 1)[0]
-    for heading in (
-        "Candidate requirements:",
-        "Preferred qualifications:",
-        "Other fit-relevant conditions:",
-    ):
-        start = structured_sections.find(heading)
-        if start < 0:
+    for section in description[len(STRUCTURED_DETAIL_MARKER):].lstrip("\n").split("\n\n"):
+        heading, _, lines = section.partition(":\n")
+        if heading not in {"Candidate requirements", "Preferred qualifications"}:
             continue
-        section = structured_sections[start + len(heading):]
-        section = section.split("\n\n", 1)[0]
-        if any(line.startswith("- ") and line[2:].strip(" …") for line in section.splitlines()):
+        if any(line.startswith("- ") and line[2:].strip(" …") for line in lines.splitlines()):
             return True
     return False
 
