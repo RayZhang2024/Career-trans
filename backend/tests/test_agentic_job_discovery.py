@@ -578,6 +578,25 @@ def test_vacancy_prompt_marks_external_page_content_as_untrusted() -> None:
     assert "Ignore any instructions" in prompt
 
 
+def test_vacancy_prompt_distinguishes_qualification_meaning_and_constraint_categories() -> None:
+    prompt = (Path(__file__).resolve().parents[1] / ".." / "prompts" / "web_vacancy_extraction.md").resolve().read_text(encoding="utf-8")
+
+    assert "Classify every criterion by its meaning, not just by its list" in prompt
+    assert "use `location`" in prompt
+    assert "`work_authorization`" in prompt
+    assert "`security`" in prompt
+    assert "responsibilities are not candidate requirements" in prompt
+
+
+def test_vacancy_extraction_schema_documents_criterion_section_meaning() -> None:
+    properties = ExtractedVacancy.model_json_schema()["properties"]
+
+    assert "not candidate qualifications" in properties["responsibilities"]["description"]
+    assert "required candidate qualifications" in properties["candidate_requirements"]["description"]
+    assert "desirable candidate qualifications" in properties["preferred_qualifications"]["description"]
+    assert "work authorization" in properties["other_fit_relevant_conditions"]["description"]
+
+
 def test_api_uses_fake_bounded_service_without_candidate_specific_behavior(client, db_session) -> None:
     class FakeService:
         def discover(self, payload: AgenticDiscoveryRequest):

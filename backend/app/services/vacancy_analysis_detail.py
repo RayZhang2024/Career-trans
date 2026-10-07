@@ -2,10 +2,23 @@
 
 from app.schemas.agentic_discovery import ExtractedVacancy
 from app.schemas.discovery import JobListing
+from app.schemas.job import RequirementCategory
 
 
 MAX_ANALYSIS_DESCRIPTION_CHARS = 50_000
 STRUCTURED_DETAIL_MARKER = "Structured vacancy evidence:"
+SUBSTANTIVE_CANDIDATE_CATEGORIES = frozenset({
+    RequirementCategory.TECHNICAL.value,
+    RequirementCategory.EXPERIENCE.value,
+    RequirementCategory.EDUCATION.value,
+    RequirementCategory.DOMAIN.value,
+    RequirementCategory.LEADERSHIP.value,
+    RequirementCategory.CUSTOMER.value,
+    RequirementCategory.COMMUNICATION.value,
+    RequirementCategory.WORK_AUTHORIZATION.value,
+    RequirementCategory.SECURITY.value,
+})
+QUALIFICATION_SECTIONS = frozenset({"Candidate requirements", "Preferred qualifications"})
 
 
 def render_analysis_description(extracted: ExtractedVacancy) -> str | None:
@@ -52,16 +65,45 @@ def render_analysis_description(extracted: ExtractedVacancy) -> str | None:
 
 
 def has_explicit_candidate_criterion(description: str | None) -> bool:
-    """Readiness requires a persisted candidate qualification, never body length."""
+    """Readiness requires persisted substantive candidate criteria, never body length.
+
+    Category is authoritative across sections: substantive qualifications and
+    constraints count even if extraction placed them in the other-fit section,
+    while location/work-arrangement-only conditions never count. Work
+    authorization and security/clearance are explicit candidate constraints and
+    do count. ``other`` is intentionally conservative because it has no stable
+    meaning: it counts only when the persisted section itself declares a
+    required or preferred qualification. Responsibilities have no category
+    metadata and can never establish readiness.
+    """
     if not description or not description.startswith(STRUCTURED_DETAIL_MARKER):
         return False
     for section in description[len(STRUCTURED_DETAIL_MARKER):].lstrip("\n").split("\n\n"):
         heading, _, lines = section.partition(":\n")
-        if heading not in {"Candidate requirements", "Preferred qualifications"}:
-            continue
-        if any(line.startswith("- ") and line[2:].strip(" …") for line in lines.splitlines()):
-            return True
+        for line in lines.splitlines():
+            if not line.startswith("- "):
+                continue
+            category, criterion_text = _persisted_criterion_category(line[2:])
+            if not criterion_text:
+                continue
+            if category in SUBSTANTIVE_CANDIDATE_CATEGORIES:
+                return True
+            if category == RequirementCategory.OTHER.value and heading in QUALIFICATION_SECTIONS:
+                return True
     return False
+
+
+def _persisted_criterion_category(value: str) -> tuple[str | None, str]:
+    """Read the stable ``[importance; category] text`` persisted representation."""
+    if not value.startswith("["):
+        return None, ""
+    metadata, separator, criterion_text = value[1:].partition("] ")
+    if not separator:
+        return None, ""
+    _, importance_separator, category = metadata.partition(";")
+    if not importance_separator:
+        return None, ""
+    return category.strip(), criterion_text.strip(" …")
 
 
 def is_agentic_web_analysis_ready(job: JobListing) -> bool:

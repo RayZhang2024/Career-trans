@@ -662,6 +662,66 @@ def test_other_fit_conditions_are_persisted_but_do_not_unlock_deep_fit() -> None
         assert is_agentic_web_analysis_ready(ready_listing) is True
 
 
+def test_location_only_candidate_requirement_does_not_unlock_deep_fit() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="Remote Engineer",
+        candidate_requirements=[
+            JobRequirement(text="Must be based in London", category="location"),
+            JobRequirement(text="Office-based three days per week", category="location"),
+            JobRequirement(text="Remote within the UK", category="location"),
+        ],
+    ))
+
+    assert has_explicit_candidate_criterion(description) is False
+
+
+def test_responsibilities_alone_do_not_unlock_deep_fit() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="AI Engineer",
+        responsibilities=["Build AI products", "Collaborate with product teams"],
+    ))
+
+    assert has_explicit_candidate_criterion(description) is False
+
+
+def test_substantive_other_fit_criterion_unlocks_deep_fit_by_category() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="Data Engineer",
+        other_fit_relevant_conditions=[JobRequirement(
+            text="Five years of production data engineering experience", category="experience"
+        )],
+    ))
+
+    assert "Other fit-relevant conditions:" in description
+    assert has_explicit_candidate_criterion(description) is True
+
+
+def test_work_authorization_and_security_constraints_are_explicitly_substantive() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="Secure Systems Engineer",
+        other_fit_relevant_conditions=[
+            JobRequirement(text="Must be eligible to work in the UK", category="work_authorization"),
+            JobRequirement(text="Must hold active security clearance", category="security"),
+        ],
+    ))
+
+    assert has_explicit_candidate_criterion(description) is True
+
+
+def test_unclassified_other_condition_counts_only_in_a_qualification_section() -> None:
+    qualification = render_analysis_description(ExtractedVacancy(
+        title="Specialist role",
+        candidate_requirements=[JobRequirement(text="Must hold a specialist licence", category="other")],
+    ))
+    condition = render_analysis_description(ExtractedVacancy(
+        title="Specialist role",
+        other_fit_relevant_conditions=[JobRequirement(text="Some additional condition", category="other")],
+    ))
+
+    assert has_explicit_candidate_criterion(qualification) is True
+    assert has_explicit_candidate_criterion(condition) is False
+
+
 def test_other_fit_conditions_only_are_an_insufficient_nonfailure_before_graph() -> None:
     description = render_analysis_description(_conditions_only_vacancy())
     listing = job("Applied AI Engineer", description=description).model_copy(update={"source": "agentic_web"})

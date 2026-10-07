@@ -67,10 +67,22 @@ class ExtractedVacancy(BaseModel):
     posted_at: datetime | None = None
     employment_type: str | None = None
     work_arrangement: str | None = None
-    responsibilities: list[str] = Field(default_factory=list)
-    candidate_requirements: list[JobRequirement] = Field(default_factory=list)
-    preferred_qualifications: list[JobRequirement] = Field(default_factory=list)
-    other_fit_relevant_conditions: list[JobRequirement] = Field(default_factory=list)
+    responsibilities: list[str] = Field(
+        default_factory=list,
+        description="Duties the role performs; not candidate qualifications or readiness evidence.",
+    )
+    candidate_requirements: list[JobRequirement] = Field(
+        default_factory=list,
+        description="Explicit required candidate qualifications or capabilities. Classify location/work-arrangement constraints as location, not as a substantive qualification.",
+    )
+    preferred_qualifications: list[JobRequirement] = Field(
+        default_factory=list,
+        description="Explicit desirable candidate qualifications or capabilities; preserve their preferred status.",
+    )
+    other_fit_relevant_conditions: list[JobRequirement] = Field(
+        default_factory=list,
+        description="Other explicit candidate-facing conditions, such as location/work arrangement, work authorization, or security/clearance. Use the closest supported category; use other only when no category applies.",
+    )
 
 
 class AgenticDiscoveryOptions(BaseModel):
