@@ -454,6 +454,65 @@ def test_agentic_search_result_without_location_metadata_is_opened_and_extracted
     assert response.listings[0].location == "Paris"
 
 
+def test_json_ld_facts_do_not_short_circuit_structured_page_detail(db_session) -> None:
+    url = "https://jobs.example.test/jobs/structured"
+    vacancy_page = PageContent(
+        requested_url=url,
+        final_url=url,
+        html='''<script type="application/ld+json">{"@type":"JobPosting","title":"Metadata Engineer","hiringOrganization":{"name":"Metadata Co"},"jobLocation":{"address":{"addressLocality":"London"}},"employmentType":"FULL_TIME","datePosted":"2026-09-30T00:00:00Z","description":"Metadata context."}</script>''',
+    )
+    discovery, _, _, _, extractor = service(
+        db_session,
+        strategies=[strategy("structured")],
+        results={"structured": [result("Search title", url)]},
+        pages={url: vacancy_page},
+        extracted={url: ExtractedVacancy(
+            title="Page title", company="Page Co", location="Paris", employment_type="Contract",
+            responsibilities=["Deliver solutions to customers"],
+            candidate_requirements=[{"text": "Five years of Python experience", "importance": "essential", "category": "experience"}],
+            preferred_qualifications=[{"text": "Experience with cloud platforms", "importance": "desirable", "category": "technical"}],
+            other_fit_relevant_conditions=[{"text": "Must be eligible to work in the UK", "category": "work_authorization"}],
+        )},
+    )
+
+    response = discovery.discover(request())
+
+    assert extractor.calls == [url]
+    listing = response.listings[0]
+    assert (listing.title, listing.company, listing.location, listing.employment_type) == (
+        "Metadata Engineer", "Metadata Co", "London", "FULL_TIME"
+    )
+    assert listing.posted_at is not None
+    assert "Candidate requirements:" in listing.description
+    assert "Five years of Python experience" in listing.description
+    assert "Preferred qualifications:" in listing.description
+    assert "Responsibilities:" in listing.description
+
+
+def test_full_page_detail_failure_preserves_metadata_vacancy_but_not_analysis_readiness(db_session) -> None:
+    url = "https://jobs.example.test/jobs/metadata-only"
+    vacancy_page = PageContent(
+        requested_url=url,
+        final_url=url,
+        html='''<script type="application/ld+json">{"@type":"JobPosting","title":"Metadata Engineer","hiringOrganization":{"name":"Metadata Co"},"description":"A current engineering vacancy with useful background text."}</script>''',
+    )
+    discovery, _, _, _, _ = service(
+        db_session,
+        strategies=[strategy("metadata")],
+        results={"metadata": [result("Metadata Engineer", url)]},
+        pages={url: vacancy_page},
+        extracted={url: RuntimeError("private model detail")},
+    )
+
+    response = discovery.discover(request())
+
+    assert len(response.listings) == 1
+    assert response.listings[0].title == "Metadata Engineer"
+    assert response.diagnostics.detail_extraction_failures == 1
+    assert response.diagnostics.extraction_failures == 1
+    assert "private" not in str(response.diagnostics.page_errors)
+
+
 def test_structured_discovery_allows_an_adjacent_title_to_reach_semantic_screening() -> None:
     listing = ExtractedVacancy(title="Forward Deployed Engineer", company="Example", location="London")
 

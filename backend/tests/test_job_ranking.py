@@ -8,6 +8,7 @@ from app.agents.job_relevance import OpenAIJobRelevanceAgent
 from app.agents.job_extraction import JobExtractionError
 from app.agents.requirement_matching import RequirementMatchingError
 from app.schemas.assessment import FitAssessment
+from app.schemas.agentic_discovery import ExtractedVacancy
 from app.schemas.candidate import CandidateContext, CareerEvidence
 from app.schemas.career_assessment import (
     AlignmentConfidence,
@@ -28,6 +29,7 @@ from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.services.job_ranking_gate_service import JobRankingGateService
 from app.services.job_ranking_service import JobRankingService
 from app.services.posting_legitimacy_service import PostingLegitimacyService
+from app.services.vacancy_analysis_detail import render_analysis_description
 
 
 def job(title: str, *, description: str | None = "Useful role description", url: str = "https://jobs.example.test/1", posted_at: datetime | None = None) -> JobListing:
@@ -570,6 +572,66 @@ def test_incomplete_high_relevance_job_does_not_consume_deep_analysis_quota() ->
     assert [failure.stage for failure in result.failures] == ["insufficient_job_detail"]
     assert [item.job.title for item in result.semantic_screening] == ["Incomplete", "Complete"]
     assert all(item.archetype is not None for item in result.semantic_screening)
+
+
+def test_agentic_web_without_explicit_candidate_criteria_is_durably_insufficient_and_does_not_consume_graph_slot() -> None:
+    sparse = job(
+        "Sparse metadata vacancy",
+        description="A long metadata-backed vacancy description, but it contains no explicit candidate criteria." * 2,
+        url="https://jobs.example.test/sparse",
+    ).model_copy(update={"source": "agentic_web"})
+    ready = job(
+        "Structured vacancy",
+        description=render_analysis_description(ExtractedVacancy(
+            title="Structured vacancy",
+            candidate_requirements=[JobRequirement(text="Experience delivering Python services", importance=RequirementImportance.ESSENTIAL)],
+            responsibilities=["Build services"],
+        )),
+        url="https://jobs.example.test/ready",
+    ).model_copy(update={"source": "agentic_web"})
+    graph_calls: list[str] = []
+
+    class Relevant:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9 if listing.title.startswith("Sparse") else 0.8, reasoning="Synthetic.")
+
+    class Archetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class Graph:
+        def invoke(self, *, job_text: str, **_: object) -> dict[str, object]:
+            graph_calls.append(job_text)
+            return {
+                "fit_assessment": FitAssessment(fit_score=70),
+                "career_assessment": CareerAssessment(career_alignment_score=70, confidence=AlignmentConfidence.HIGH, dimensions=[], reasoning="Synthetic."),
+                "recommendation_assessment": recommendation(Recommendation.CONSIDER, 70, 70),
+            }
+
+    result = JobRankingService(
+        relevance_agent=Relevant(), archetype_agent=Archetype(), career_analysis_graph=Graph(),  # type: ignore[arg-type]
+    ).rank(JobRankingRequest(jobs=[sparse, ready], candidate_context=CandidateContext(), max_full_analyses=1))
+
+    assert graph_calls == [ready.description]
+    assert result.analysis_detail_ready == 1
+    assert result.analysis_detail_insufficient == 1
+    assert result.analysis_detail_insufficient_jobs == [sparse]
+    assert result.finalist_count == 1
+    assert result.failures == []
+
+
+def test_structured_vacancy_rendering_keeps_candidate_criteria_inside_graph_input_limit() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="Long vacancy",
+        candidate_requirements=[JobRequirement(text="Must have production Python experience", importance=RequirementImportance.ESSENTIAL)],
+        responsibilities=["Build systems"],
+        description="Context " * 10_000,
+    ))
+
+    assert description is not None
+    assert len(description) <= 50_000
+    assert "Must have production Python experience" in description
+    assert "Vacancy detail:" in description
 
 
 def test_ten_job_funnel_fixture_exercises_gate_screen_archetype_and_deep_caps() -> None:

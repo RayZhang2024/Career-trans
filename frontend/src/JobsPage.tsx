@@ -71,6 +71,7 @@ const outcomeLabels: Record<DiscoveryRunDetail["jobs"][number]["outcome"], strin
   newly_evaluated: "Newly evaluated", reused_evaluation: "Reused evaluation", not_actionable: "Not actionable",
   presemantic_filtered: "Presemantic filtered", geography_incompatible: "Geography incompatible", geography_unknown: "Geography unknown", outside_semantic_budget: "Outside semantic budget",
   semantic_rejected: "Semantic rejected", outside_deep_analysis_budget: "Outside deep-analysis budget",
+  insufficient_job_detail: "Insufficient vacancy detail",
   analysis_failed: "Analysis failed",
 };
 type FindRunOutcome =
@@ -1015,6 +1016,7 @@ const funnelLabels: Record<string, string> = {
   page_fetch_failures: "Page fetch failures",
   extraction_successes: "Extractions succeeded",
   extraction_failures: "Extraction failures",
+  detail_extraction_failures: "Full-page detail extraction failures",
   submitted: "Submitted",
   deduplicated_jobs: "Deduplicated jobs",
   duplicate_jobs_removed: "Duplicate jobs removed",
@@ -1027,6 +1029,8 @@ const funnelLabels: Record<string, string> = {
   fresh_selected: "Fresh selected",
   reused: "Reused",
   relevance_screened: "Relevance screened",
+  analysis_detail_ready: "Analysis detail ready",
+  analysis_detail_insufficient: "Analysis detail insufficient",
   full_analysis_attempts: "Full-analysis attempts",
   analysed: "Analysed",
 };

@@ -28,6 +28,7 @@ class DiscoveryRunJobOutcome(StrEnum):
     OUTSIDE_SEMANTIC_BUDGET = "outside_semantic_budget"
     SEMANTIC_REJECTED = "semantic_rejected"
     OUTSIDE_DEEP_ANALYSIS_BUDGET = "outside_deep_analysis_budget"
+    INSUFFICIENT_JOB_DETAIL = "insufficient_job_detail"
     ANALYSIS_FAILED = "analysis_failed"
 
 

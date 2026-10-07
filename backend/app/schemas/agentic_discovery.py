@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.candidate import CandidateContext
 from app.schemas.discovery import JobListing, JobSearchQuery
 from app.schemas.discovery_pipeline import DiscoveryLifecycleCounts
+from app.schemas.job import JobRequirement
 
 
 class SearchStrategy(BaseModel):
@@ -66,6 +67,10 @@ class ExtractedVacancy(BaseModel):
     posted_at: datetime | None = None
     employment_type: str | None = None
     work_arrangement: str | None = None
+    responsibilities: list[str] = Field(default_factory=list)
+    candidate_requirements: list[JobRequirement] = Field(default_factory=list)
+    preferred_qualifications: list[JobRequirement] = Field(default_factory=list)
+    other_fit_relevant_conditions: list[JobRequirement] = Field(default_factory=list)
 
 
 class AgenticDiscoveryOptions(BaseModel):
@@ -106,6 +111,7 @@ class AgenticDiscoveryDiagnostics(BaseModel):
     page_fetch_failures: int = 0
     extraction_successes: int = 0
     extraction_failures: int = 0
+    detail_extraction_failures: int = 0
     normalized_jobs: int = 0
     deduplicated_jobs: int = 0
     duplicate_jobs_removed: int = 0

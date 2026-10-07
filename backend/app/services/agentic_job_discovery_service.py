@@ -1,6 +1,7 @@
 import json
 import re
 from collections import Counter
+from datetime import datetime
 from hashlib import sha256
 from urllib.parse import urlsplit, urlunsplit
 
@@ -25,6 +26,7 @@ from app.services.discovered_job_state_store import DiscoveredJobStateStore
 from app.services.job_deduplication_service import JobDeduplicationService
 from app.services.job_screening_service import JobScreeningService
 from app.services.job_geography import result_location_affinity
+from app.services.vacancy_analysis_detail import render_analysis_description
 
 
 class AgenticJobDiscoveryService:
@@ -164,14 +166,21 @@ class AgenticJobDiscoveryService:
                 diagnostics.page_fetch_failures += 1
                 diagnostics.page_errors[candidate.url] = self._error(exc)
                 continue
-            extracted = self._metadata_vacancy(page)
-            if extracted is None:
-                try:
-                    extracted = self._vacancy_extractor.extract(page)
-                except Exception as exc:
-                    diagnostics.extraction_failures += 1
-                    diagnostics.page_errors[candidate.url] = self._error(exc)
+            metadata = self._metadata_vacancy(page)
+            try:
+                page_extraction = self._vacancy_extractor.extract(page)
+            except Exception as exc:
+                diagnostics.extraction_failures += 1
+                diagnostics.detail_extraction_failures += 1
+                diagnostics.page_errors[candidate.url] = self._error(exc)
+                # Metadata may still establish a real vacancy. Preserve those
+                # facts, but its unstructured description cannot pass the
+                # durable analysis-readiness gate.
+                if metadata is None:
                     continue
+                extracted = metadata
+            else:
+                extracted = self._merge_metadata_and_page(metadata, page_extraction)
             listing = self._normalize(extracted, page)
             if listing is None:
                 diagnostics.extraction_failures += 1
@@ -189,19 +198,61 @@ class AgenticJobDiscoveryService:
                 continue
             entries = payload if isinstance(payload, list) else [payload]
             for entry in entries:
-                if not isinstance(entry, dict) or entry.get("@type") != "JobPosting":
+                entry_type = entry.get("@type") if isinstance(entry, dict) else None
+                if not isinstance(entry, dict) or not (entry_type == "JobPosting" or isinstance(entry_type, list) and "JobPosting" in entry_type):
                     continue
                 organization = entry.get("hiringOrganization")
                 location = entry.get("jobLocation")
                 address = location.get("address") if isinstance(location, dict) else None
+                employment_type = entry.get("employmentType")
+                if isinstance(employment_type, list):
+                    employment_type = ", ".join(item.strip() for item in employment_type if isinstance(item, str) and item.strip())
                 return ExtractedVacancy(
                     title=entry.get("title") if isinstance(entry.get("title"), str) else None,
                     company=organization.get("name") if isinstance(organization, dict) and isinstance(organization.get("name"), str) else None,
                     location=address.get("addressLocality") if isinstance(address, dict) and isinstance(address.get("addressLocality"), str) else None,
                     description=entry.get("description") if isinstance(entry.get("description"), str) else None,
-                    employment_type=entry.get("employmentType") if isinstance(entry.get("employmentType"), str) else None,
+                    posted_at=AgenticJobDiscoveryService._parse_datetime(entry.get("datePosted")),
+                    employment_type=employment_type if isinstance(employment_type, str) else None,
+                    work_arrangement=entry.get("jobLocationType") if isinstance(entry.get("jobLocationType"), str) else None,
                 )
         return None
+
+    @staticmethod
+    def _merge_metadata_and_page(
+        metadata: ExtractedVacancy | None,
+        page_extraction: ExtractedVacancy | None,
+    ) -> ExtractedVacancy | None:
+        """Metadata owns supported facts; full-page extraction owns detail structure."""
+        if metadata is None:
+            return page_extraction
+        if page_extraction is None:
+            return metadata
+        factual = {
+            field: getattr(metadata, field) if AgenticJobDiscoveryService._has_factual_value(getattr(metadata, field)) else getattr(page_extraction, field)
+            for field in ("title", "company", "location", "posted_at", "employment_type", "work_arrangement")
+        }
+        return ExtractedVacancy(
+            **factual,
+            description=page_extraction.description or metadata.description,
+            responsibilities=page_extraction.responsibilities,
+            candidate_requirements=page_extraction.candidate_requirements,
+            preferred_qualifications=page_extraction.preferred_qualifications,
+            other_fit_relevant_conditions=page_extraction.other_fit_relevant_conditions,
+        )
+
+    @staticmethod
+    def _has_factual_value(value: object) -> bool:
+        return value is not None and (not isinstance(value, str) or bool(value.strip()))
+
+    @staticmethod
+    def _parse_datetime(value: object) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     @staticmethod
     def _normalize(extracted: ExtractedVacancy | None, page: PageContent) -> JobListing | None:
@@ -217,7 +268,7 @@ class AgenticJobDiscoveryService:
             company=extracted.company.strip() if extracted.company and extracted.company.strip() else None,
             location=extracted.location.strip() if extracted.location and extracted.location.strip() else None,
             url=url,
-            description=extracted.description.strip() if extracted.description and extracted.description.strip() else None,
+            description=render_analysis_description(extracted),
             posted_at=extracted.posted_at,
             employment_type=extracted.employment_type,
             work_arrangement=extracted.work_arrangement,

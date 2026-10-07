@@ -282,6 +282,58 @@ def test_unknown_geography_has_distinct_outcome_and_is_excluded_before_semantic_
     assert result.funnel["relevance_screened"] == 0
 
 
+def test_insufficient_agentic_vacancy_is_a_durable_nonfailure_run_outcome(db_session, monkeypatch) -> None:
+    class InsufficientDetailRanking:
+        def rank(self, request):
+            return JobRankingResponse(
+                discovered_count=len(request.jobs),
+                gated_out_count=0,
+                relevance_screened_count=1,
+                finalist_count=0,
+                analysed_count=0,
+                analysis_detail_ready=0,
+                analysis_detail_insufficient=1,
+                analysis_detail_insufficient_jobs=request.jobs,
+            )
+
+    job = _job()
+    job.source = "agentic_web"
+    job.description = "Metadata-only detail with no labeled candidate criteria."
+    db_session.add_all([_user("user-a"), job]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+
+    result = UserJobDiscoveryService(db_session, ranking_service=InsufficientDetailRanking()).start("user-a", _request(job.id))
+
+    assert result.status.value == "completed"
+    assert result.jobs[0].outcome.value == "insufficient_job_detail"
+    assert result.jobs[0].failure_stage is None
+    assert result.failure_summary == {}
+    assert result.funnel["analysis_detail_ready"] == 0
+    assert result.funnel["analysis_detail_insufficient"] == 1
+    assert result.funnel["full_analysis_attempts"] == 0
+
+
+def test_reloaded_agentic_metadata_does_not_reuse_an_old_unstructured_evaluation(db_session, monkeypatch, runtime_snapshot_a) -> None:
+    job = _job()
+    job.source = "agentic_web"
+    job.description = "Long enough metadata text, but no explicitly structured candidate criterion exists here."
+    db_session.add_all([_user("user-a"), job]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    ranking = _Ranking()
+    service = UserJobDiscoveryService(db_session, ranking_service=ranking, runtime_snapshot=runtime_snapshot_a)
+
+    first = service.start("user-a", _request(job.id))
+    db_session.expire_all()
+    second = service.start("user-a", _request(job.id))
+
+    assert first.jobs[0].outcome.value == "newly_evaluated"
+    assert second.jobs[0].outcome.value == "insufficient_job_detail"
+    assert second.jobs[0].evaluation_id is None
+    assert second.funnel["analysis_detail_insufficient"] == 1
+    assert second.funnel["reused"] == 0
+    assert ranking.calls == 1
+
+
 def test_reused_evaluation_respects_new_relevance_threshold_without_reranking(db_session, monkeypatch) -> None:
     job = _job(); db_session.add_all([_user("user-a"), job]); db_session.commit()
     patch_candidate_context(monkeypatch, _context())
