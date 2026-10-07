@@ -1031,6 +1031,9 @@ const funnelLabels: Record<string, string> = {
   relevance_screened: "Relevance screened",
   analysis_detail_ready: "Analysis detail ready",
   analysis_detail_insufficient: "Analysis detail insufficient",
+  agentic_analysis_detail_candidates: "Agentic detail candidates",
+  agentic_analysis_detail_ready: "Agentic detail ready",
+  agentic_analysis_detail_insufficient: "Agentic detail insufficient",
   full_analysis_attempts: "Full-analysis attempts",
   analysed: "Analysed",
 };

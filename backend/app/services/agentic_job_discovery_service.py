@@ -170,13 +170,13 @@ class AgenticJobDiscoveryService:
             try:
                 page_extraction = self._vacancy_extractor.extract(page)
             except Exception as exc:
-                diagnostics.extraction_failures += 1
                 diagnostics.detail_extraction_failures += 1
                 diagnostics.page_errors[candidate.url] = self._error(exc)
                 # Metadata may still establish a real vacancy. Preserve those
                 # facts, but its unstructured description cannot pass the
                 # durable analysis-readiness gate.
                 if metadata is None:
+                    diagnostics.extraction_failures += 1
                     continue
                 extracted = metadata
             else:

@@ -81,15 +81,17 @@ class JobRankingService:
 
         screened.sort(key=lambda item: (-item[2].score, item[0]))
         finalist_count = 0
-        analysis_detail_ready = 0
-        analysis_detail_insufficient_jobs: list[JobListing] = []
+        agentic_analysis_detail_candidates = 0
+        agentic_analysis_detail_ready = 0
+        agentic_analysis_detail_insufficient_jobs: list[JobListing] = []
         opportunities: list[tuple[int, RankedJobOpportunity]] = []
         for index, job, relevance, archetype in screened:
             if job.source.casefold() == "agentic_web":
+                agentic_analysis_detail_candidates += 1
                 if not is_agentic_web_analysis_ready(job):
-                    analysis_detail_insufficient_jobs.append(job)
+                    agentic_analysis_detail_insufficient_jobs.append(job)
                     continue
-                analysis_detail_ready += 1
+                agentic_analysis_detail_ready += 1
             if not job.description or not job.description.strip():
                 failures.append(self._insufficient_detail_failure(job, "missing or blank job description"))
                 continue
@@ -139,10 +141,11 @@ class JobRankingService:
         return JobRankingResponse(
             discovered_count=len(request.jobs), gated_out_count=gated_out_count,
             relevance_screened_count=len(semantic_candidates), finalist_count=finalist_count,
-            analysed_count=len(results), analysis_detail_ready=analysis_detail_ready,
-            analysis_detail_insufficient=len(analysis_detail_insufficient_jobs),
+            analysed_count=len(results), agentic_analysis_detail_candidates=agentic_analysis_detail_candidates,
+            agentic_analysis_detail_ready=agentic_analysis_detail_ready,
+            agentic_analysis_detail_insufficient=len(agentic_analysis_detail_insufficient_jobs),
             gated_out_jobs=gated_out_jobs,
-            analysis_detail_insufficient_jobs=analysis_detail_insufficient_jobs,
+            agentic_analysis_detail_insufficient_jobs=agentic_analysis_detail_insufficient_jobs,
             semantic_screening=semantic_screening, results=results, failures=failures,
         )
 

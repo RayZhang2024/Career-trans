@@ -13,6 +13,7 @@ from app.schemas.agentic_discovery import (
     SearchStrategy,
 )
 from app.schemas.candidate import CandidateContext
+from app.schemas.discovery import JobDetailAuthority, JobListing, JobVerificationStatus
 from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.job_discovery_service import JobDiscoveryService
@@ -509,8 +510,37 @@ def test_full_page_detail_failure_preserves_metadata_vacancy_but_not_analysis_re
     assert len(response.listings) == 1
     assert response.listings[0].title == "Metadata Engineer"
     assert response.diagnostics.detail_extraction_failures == 1
-    assert response.diagnostics.extraction_failures == 1
+    assert response.diagnostics.extraction_failures == 0
     assert "private" not in str(response.diagnostics.page_errors)
+
+
+def test_lower_authority_reacquisition_keeps_verified_detail_but_updates_freshness(db_session) -> None:
+    store = SqlAlchemyDiscoveredJobStateStore(db_session)
+    url = "https://jobs.example.test/jobs/authority"
+    verified = JobListing(
+        source="greenhouse", source_token="board", external_id="role-1", title="Verified Engineer",
+        company="Example", url=url, description="Verified employer detail." * 10,
+        detail_authority=JobDetailAuthority.VERIFIED_EMPLOYER_DETAIL,
+    )
+    store.persist([verified])
+    record = db_session.scalar(select(DiscoveredJob).where(DiscoveredJob.url == url))
+
+    lower_authority = JobListing(
+        source="agentic_web", title="Search-result Engineer", company="Example", url=url,
+        description="Richer-looking but unverified agentic text." * 20,
+        detail_authority=JobDetailAuthority.EXTERNAL_SUMMARY,
+        verification_status=JobVerificationStatus.UNVERIFIED,
+        verification_reason="Source could not be confirmed.",
+    )
+    store.persist([lower_authority])
+    db_session.refresh(record)
+
+    assert db_session.scalar(select(DiscoveredJob).where(DiscoveredJob.url == url)).id == record.id
+    assert record.title == "Verified Engineer"
+    assert record.description == verified.description
+    assert record.detail_authority == JobDetailAuthority.VERIFIED_EMPLOYER_DETAIL.value
+    assert record.verification_status == JobVerificationStatus.UNVERIFIED.value
+    assert record.verification_reason == "Source could not be confirmed."
 
 
 def test_structured_discovery_allows_an_adjacent_title_to_reach_semantic_screening() -> None:

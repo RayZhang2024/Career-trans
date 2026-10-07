@@ -613,9 +613,10 @@ def test_agentic_web_without_explicit_candidate_criteria_is_durably_insufficient
     ).rank(JobRankingRequest(jobs=[sparse, ready], candidate_context=CandidateContext(), max_full_analyses=1))
 
     assert graph_calls == [ready.description]
-    assert result.analysis_detail_ready == 1
-    assert result.analysis_detail_insufficient == 1
-    assert result.analysis_detail_insufficient_jobs == [sparse]
+    assert result.agentic_analysis_detail_candidates == 2
+    assert result.agentic_analysis_detail_ready == 1
+    assert result.agentic_analysis_detail_insufficient == 1
+    assert result.agentic_analysis_detail_insufficient_jobs == [sparse]
     assert result.finalist_count == 1
     assert result.failures == []
 
