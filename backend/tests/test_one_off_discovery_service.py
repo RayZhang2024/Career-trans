@@ -444,3 +444,38 @@ def test_one_off_preflight_launch_and_reconciliation_routes_require_authenticati
     assert client.get("/api/v1/jobs/one-off-discovery/executions").status_code == 401
     assert client.get("/api/v1/jobs/one-off-discovery/executions/private-id").status_code == 401
     assert client.post("/api/v1/jobs/one-off-discovery/executions", json={}).status_code == 401
+
+
+def test_metadata_vacancy_survives_detail_failure_as_partial_acquisition(db_session):
+    listing = JobListing(
+        source="agentic_web", title="Metadata Engineer", url="https://jobs.example.test/metadata",
+        description="A metadata-backed listing with no structured criteria.",
+    )
+    SqlAlchemyDiscoveredJobStateStore(db_session).persist([listing])
+
+    class Agentic:
+        def discover(self, _request):
+            return AgenticDiscoveryResponse(
+                listings=[listing],
+                diagnostics=AgenticDiscoveryDiagnostics(
+                    extraction_successes=1,
+                    detail_extraction_failures=1,
+                    page_errors={listing.url: "detail extraction failed"},
+                ),
+            )
+
+    core = AgenticWebExecutionCore(db_session)
+    acquired = core.acquire(
+        agentic_service=Agentic(), provider_metadata={}, candidate_context=CandidateContext(),
+        query=JobSearchQuery(keywords=["Engineer"]), country="gb", max_search_queries=1,
+        max_search_results_per_query=5, max_pages_to_open=1, max_discovered_jobs=5,
+    )
+
+    assert acquired.succeeded is True
+    assert acquired.failed is True
+    assert len(acquired.canonical_ids) == 1
+    assert core.final_status(
+        acquisition_failed=acquired.failed,
+        evaluation_status="completed",
+        useful_acquisition=acquired.succeeded,
+    ) == "partial_failed"

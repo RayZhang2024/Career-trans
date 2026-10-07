@@ -14,6 +14,7 @@ from app.schemas.job_ranking import (
 from app.schemas.recommendation import Recommendation
 from app.services.job_ranking_gate_service import JobRankingGateService
 from app.services.posting_legitimacy_service import PostingLegitimacyService
+from app.services.vacancy_analysis_detail import is_agentic_web_analysis_ready
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
 
 logger = logging.getLogger(__name__)
@@ -80,8 +81,17 @@ class JobRankingService:
 
         screened.sort(key=lambda item: (-item[2].score, item[0]))
         finalist_count = 0
+        agentic_analysis_detail_candidates = 0
+        agentic_analysis_detail_ready = 0
+        agentic_analysis_detail_insufficient_jobs: list[JobListing] = []
         opportunities: list[tuple[int, RankedJobOpportunity]] = []
         for index, job, relevance, archetype in screened:
+            if job.source.casefold() == "agentic_web":
+                agentic_analysis_detail_candidates += 1
+                if not is_agentic_web_analysis_ready(job):
+                    agentic_analysis_detail_insufficient_jobs.append(job)
+                    continue
+                agentic_analysis_detail_ready += 1
             if not job.description or not job.description.strip():
                 failures.append(self._insufficient_detail_failure(job, "missing or blank job description"))
                 continue
@@ -128,7 +138,16 @@ class JobRankingService:
         priority = {Recommendation.APPLY: 0, Recommendation.CONSIDER: 1, Recommendation.SKIP: 2}
         opportunities.sort(key=lambda item: (priority[item[1].recommendation_assessment.recommendation], -item[1].fit_assessment.fit_score, -item[1].career_assessment.career_alignment_score, -item[1].relevance.score, item[0]))
         results = [opportunity.model_copy(update={"rank": rank}) for rank, (_, opportunity) in enumerate(opportunities, start=1)]
-        return JobRankingResponse(discovered_count=len(request.jobs), gated_out_count=gated_out_count, relevance_screened_count=len(semantic_candidates), finalist_count=finalist_count, analysed_count=len(results), gated_out_jobs=gated_out_jobs, semantic_screening=semantic_screening, results=results, failures=failures)
+        return JobRankingResponse(
+            discovered_count=len(request.jobs), gated_out_count=gated_out_count,
+            relevance_screened_count=len(semantic_candidates), finalist_count=finalist_count,
+            analysed_count=len(results), agentic_analysis_detail_candidates=agentic_analysis_detail_candidates,
+            agentic_analysis_detail_ready=agentic_analysis_detail_ready,
+            agentic_analysis_detail_insufficient=len(agentic_analysis_detail_insufficient_jobs),
+            gated_out_jobs=gated_out_jobs,
+            agentic_analysis_detail_insufficient_jobs=agentic_analysis_detail_insufficient_jobs,
+            semantic_screening=semantic_screening, results=results, failures=failures,
+        )
 
     @staticmethod
     def _select_semantic_candidates(

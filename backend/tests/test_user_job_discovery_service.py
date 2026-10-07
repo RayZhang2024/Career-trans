@@ -19,6 +19,10 @@ from app.schemas.candidate import (
 )
 from app.schemas.career_assessment import AlignmentConfidence, CareerAssessment
 from app.schemas.discovery import DiscoveredJobState, JobSearchQuery
+from app.schemas.discovery import JobDetailAuthority, JobListing, JobVerificationStatus
+from app.schemas.agentic_discovery import ExtractedVacancy
+from app.schemas.job import JobProfile, JobRequirement
+from app.schemas.matching import RequirementMatch
 from app.schemas.job_ranking import JobArchetype, JobArchetypeAssessment, JobRankingResponse, JobRelevanceAssessment, PostingLegitimacy, PostingLegitimacyAssessment, RankedJobOpportunity
 from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.schemas.user_job_discovery import DiscoveryRunCreateRequest
@@ -26,6 +30,9 @@ from app.schemas.user_job_decision import UserJobDecisionMutation
 from app.services.user_job_discovery_service import DiscoveryRunExecutionFailure, UserJobDiscoveryService
 from app.services.user_job_discovery_service import UserJobDiscoveryHistoryReadService
 from app.services.user_job_decision_service import UserJobDecisionService
+from app.services.user_job_workspace_service import UserJobWorkspaceReadService
+from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
+from app.services.vacancy_analysis_detail import render_analysis_description
 from candidate_read_support import StaticCandidateReader, patch_candidate_context, snapshot_for_context
 from app.services.canonical_candidate_read_service import (
     CandidateEvidenceMaterializationIncomplete,
@@ -111,6 +118,7 @@ def test_unchanged_job_is_new_to_user_then_reused_without_ranking(db_session, mo
     assert third.jobs[0].outcome == "reused_evaluation"
     assert persisted.runtime_attribution_json is None
     assert UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", third.id, job.id).runtime_attribution.status == "legacy_unavailable"
+    assert not {"agentic_analysis_detail_candidates", "agentic_analysis_detail_ready", "agentic_analysis_detail_insufficient"}.intersection(third.funnel)
 
 
 def test_candidate_change_and_inactive_job_do_not_reuse(db_session, monkeypatch) -> None:
@@ -280,6 +288,172 @@ def test_unknown_geography_has_distinct_outcome_and_is_excluded_before_semantic_
     assert result.jobs[0].outcome == "geography_unknown"
     assert result.funnel["geography_unknown"] == 1
     assert result.funnel["relevance_screened"] == 0
+
+
+def test_insufficient_agentic_vacancy_is_a_durable_nonfailure_run_outcome(db_session, monkeypatch) -> None:
+    class InsufficientDetailRanking:
+        def rank(self, request):
+            return JobRankingResponse(
+                discovered_count=len(request.jobs),
+                gated_out_count=0,
+                relevance_screened_count=1,
+                finalist_count=0,
+                analysed_count=0,
+                agentic_analysis_detail_candidates=1,
+                agentic_analysis_detail_ready=0,
+                agentic_analysis_detail_insufficient=1,
+                agentic_analysis_detail_insufficient_jobs=request.jobs,
+            )
+
+    job = _job()
+    job.source = "agentic_web"
+    job.description = render_analysis_description(ExtractedVacancy(
+        title=job.title,
+        responsibilities=["Build AI products"],
+        other_fit_relevant_conditions=[
+            JobRequirement(text="Role is based in London", category="location"),
+            JobRequirement(text="Hybrid attendance three days per week", category="location"),
+        ],
+    ))
+    db_session.add_all([_user("user-a"), job]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+
+    result = UserJobDiscoveryService(db_session, ranking_service=InsufficientDetailRanking()).start("user-a", _request(job.id))
+
+    assert result.status.value == "completed"
+    assert result.jobs[0].outcome.value == "insufficient_job_detail"
+    assert result.jobs[0].failure_stage is None
+    assert result.failure_summary == {}
+    assert result.funnel["agentic_analysis_detail_candidates"] == 1
+    assert result.funnel["agentic_analysis_detail_ready"] == 0
+    assert result.funnel["agentic_analysis_detail_insufficient"] == 1
+    assert result.funnel["full_analysis_attempts"] == 0
+
+
+def test_reloaded_agentic_metadata_does_not_reuse_an_old_unstructured_evaluation(db_session, monkeypatch, runtime_snapshot_a) -> None:
+    class RankingWithCurrentDetailDecision(_Ranking):
+        def rank(self, request):
+            if self.calls == 0:
+                return super().rank(request)
+            self.calls += 1
+            return JobRankingResponse(
+                discovered_count=len(request.jobs), gated_out_count=0, relevance_screened_count=1,
+                finalist_count=0, analysed_count=0, agentic_analysis_detail_candidates=1,
+                agentic_analysis_detail_insufficient=1,
+                agentic_analysis_detail_insufficient_jobs=request.jobs,
+            )
+
+    job = _job()
+    job.source = "agentic_web"
+    job.description = "Long enough metadata text, but no explicitly structured candidate criterion exists here."
+    db_session.add_all([_user("user-a"), job]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    ranking = RankingWithCurrentDetailDecision()
+    service = UserJobDiscoveryService(db_session, ranking_service=ranking, runtime_snapshot=runtime_snapshot_a)
+
+    first = service.start("user-a", _request(job.id))
+    db_session.expire_all()
+    second = service.start("user-a", _request(job.id))
+
+    assert first.jobs[0].outcome.value == "newly_evaluated"
+    assert second.jobs[0].outcome.value == "insufficient_job_detail"
+    assert second.jobs[0].evaluation_id is None
+    assert second.funnel["agentic_analysis_detail_candidates"] == 1
+    assert second.funnel["agentic_analysis_detail_insufficient"] == 1
+    assert second.funnel["reused"] == 0
+    assert ranking.calls == 2
+
+
+def test_one_shared_currentness_authority_rejects_old_unstructured_agentic_evaluation_everywhere(db_session, monkeypatch, runtime_snapshot_a) -> None:
+    from app.schemas.job import JobProfile, JobRequirement
+    from app.schemas.matching import RequirementMatch
+
+    job = _job()
+    job.source = "agentic_web"
+    job.description = "A long saved description without a structured candidate criterion. " * 4
+    db_session.add_all([_user("user-a"), job]); db_session.commit()
+    context = _context(); patch_candidate_context(monkeypatch, context)
+    discovery = UserJobDiscoveryService(db_session, ranking_service=_Ranking(), runtime_snapshot=runtime_snapshot_a)
+    run = discovery.start("user-a", _request(job.id))
+    evaluation = db_session.get(UserJobEvaluation, run.jobs[0].evaluation_id)
+    stored = RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)
+    evaluation.evaluation_json = stored.model_copy(update={
+        "job_profile": JobProfile(title=job.title, requirements=[JobRequirement(text="Python", importance="essential", category="technical")]),
+        "requirement_matches": [RequirementMatch(requirement_index=0, requirement={"text": "Python", "importance": "essential", "category": "technical"}, match_type="demonstrated", score=.8, evidence_ids=[], reasoning="synthetic")],
+    }).model_dump_json()
+    db_session.commit()
+
+    assert discovery._reusable_evaluation("user-a", job, discovery.candidate_evaluation_fingerprint(context), discovery.evaluation_contract_fingerprint()) is None
+    assert discovery.current_evaluation_for_job("user-a", job, candidate_context=context) is None
+    assert discovery.current_opportunities("user-a").opportunities == []
+    assert discovery._current_opportunity_items_read_only("user-a", include_dismissed=True) == []
+    workspace = UserJobWorkspaceReadService(db_session, runtime_snapshot_resolver=lambda _: runtime_snapshot_a).read("user-a", job.id)
+    assert workspace.current_fit.status != "current"
+    historical = discovery.get_historical_run_job_detail("user-a", run.id, job.id)
+    assert historical.opportunity is not None
+    assert db_session.get(UserJobEvaluation, evaluation.id) is not None
+
+
+def test_agentic_reacquisition_replaces_sparse_detail_and_stales_existing_evaluation(db_session, monkeypatch, runtime_snapshot_a) -> None:
+    sparse = JobListing(
+        source="agentic_web", title="AI Engineer", company="Example", location="London",
+        url="https://jobs.example.test/reacquire", description="Sparse search-result detail.",
+        detail_authority=JobDetailAuthority.EXTERNAL_SUMMARY,
+    )
+    store = SqlAlchemyDiscoveredJobStateStore(db_session)
+    store.persist([sparse])
+    job = db_session.scalar(select(DiscoveredJob).where(DiscoveredJob.url == sparse.url))
+    db_session.add(_user("user-a")); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    service = UserJobDiscoveryService(db_session, ranking_service=_Ranking(), runtime_snapshot=runtime_snapshot_a)
+    run = service.start("user-a", _request(job.id))
+    evaluation = db_session.get(UserJobEvaluation, run.jobs[0].evaluation_id)
+    stored = RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)
+    evaluation.evaluation_json = stored.model_copy(update={
+        "job_profile": JobProfile(title=job.title, requirements=[JobRequirement(text="Python", importance="essential", category="technical")]),
+        "requirement_matches": [RequirementMatch(requirement_index=0, requirement={"text": "Python", "importance": "essential", "category": "technical"}, match_type="demonstrated", score=.8, evidence_ids=[], reasoning="synthetic")],
+    }).model_dump_json()
+    db_session.commit()
+    old_id, old_hash = job.id, job.content_hash
+    richer = sparse.model_copy(update={
+        "description": render_analysis_description(ExtractedVacancy(
+            title="AI Engineer", candidate_requirements=[{"text": "Production Python delivery", "importance": "essential", "category": "technical"}],
+        )),
+    })
+
+    store.persist([richer])
+    db_session.refresh(job)
+
+    assert job.id == old_id
+    assert job.content_hash != old_hash
+    assert job.description.startswith("Structured vacancy evidence:")
+    assert service._reusable_evaluation("user-a", job, service.candidate_evaluation_fingerprint(_context()), service.evaluation_contract_fingerprint()) is None
+    assert service.current_opportunities("user-a").opportunities == []
+
+
+def test_reused_ready_agentic_evaluation_is_counted_and_ats_runs_have_no_detail_metrics(db_session, monkeypatch, runtime_snapshot_a) -> None:
+    class CompleteRanking(_Ranking):
+        def rank(self, request):
+            response = super().rank(request)
+            opportunity = response.results[0]
+            return response.model_copy(update={"results": [opportunity.model_copy(update={
+                "job_profile": JobProfile(title=opportunity.job.title, requirements=[JobRequirement(text="Python", importance="essential", category="technical")]),
+                "requirement_matches": [RequirementMatch(requirement_index=0, requirement={"text": "Python", "importance": "essential", "category": "technical"}, match_type="demonstrated", score=.8, evidence_ids=[], reasoning="synthetic")],
+            })]})
+
+    job = _job()
+    job.source = "agentic_web"
+    job.description = render_analysis_description(ExtractedVacancy(title=job.title, candidate_requirements=[{"text": "Production Python delivery", "importance": "essential", "category": "technical"}]))
+    db_session.add_all([_user("user-a"), job]); db_session.commit()
+    patch_candidate_context(monkeypatch, _context())
+    ranking = CompleteRanking()
+    service = UserJobDiscoveryService(db_session, ranking_service=ranking, runtime_snapshot=runtime_snapshot_a)
+    service.start("user-a", _request(job.id))
+    reused = service.start("user-a", _request(job.id))
+    assert reused.jobs[0].outcome.value == "reused_evaluation"
+    assert reused.funnel["agentic_analysis_detail_candidates"] == 1
+    assert reused.funnel["agentic_analysis_detail_ready"] == 1
+    assert reused.funnel["agentic_analysis_detail_insufficient"] == 0
 
 
 def test_reused_evaluation_respects_new_relevance_threshold_without_reranking(db_session, monkeypatch) -> None:

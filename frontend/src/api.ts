@@ -306,7 +306,7 @@ export type DiscoveryRunSummary = {
 };
 export type DiscoveryRunJobSummary = {
   discovered_job_id: string; evaluation_id: string | null;
-  outcome: "newly_evaluated" | "reused_evaluation" | "not_actionable" | "presemantic_filtered" | "geography_incompatible" | "geography_unknown" | "outside_semantic_budget" | "semantic_rejected" | "outside_deep_analysis_budget" | "analysis_failed";
+  outcome: "newly_evaluated" | "reused_evaluation" | "not_actionable" | "presemantic_filtered" | "geography_incompatible" | "geography_unknown" | "outside_semantic_budget" | "semantic_rejected" | "outside_deep_analysis_budget" | "insufficient_job_detail" | "analysis_failed";
   failure_stage: string | null; failure_kind: string | null; opportunity: UserOpportunitySummary | null;
 };
 export type DiscoveryRunDetail = DiscoveryRunSummary & { jobs: DiscoveryRunJobSummary[] };

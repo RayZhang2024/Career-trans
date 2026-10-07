@@ -79,6 +79,7 @@ class AgenticWebExecutionCore:
         errors = bool(
             diagnostics.search_errors or diagnostics.page_errors
             or diagnostics.page_fetch_failures or diagnostics.extraction_failures
+            or diagnostics.detail_extraction_failures
         )
         ids = self.canonical_ids(response.listings[:max_discovered_jobs])
         counters = {
@@ -93,6 +94,7 @@ class AgenticWebExecutionCore:
             "page_fetch_failures": diagnostics.page_fetch_failures,
             "extraction_successes": diagnostics.extraction_successes,
             "extraction_failures": diagnostics.extraction_failures,
+            "detail_extraction_failures": diagnostics.detail_extraction_failures,
             "normalized_jobs": diagnostics.normalized_jobs,
             "deduplicated_jobs": diagnostics.deduplicated_jobs,
             "duplicate_jobs_removed": diagnostics.duplicate_jobs_removed,

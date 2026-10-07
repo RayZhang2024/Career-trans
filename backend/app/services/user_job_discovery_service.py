@@ -40,6 +40,7 @@ from app.services.public_job_actionability import is_public_job_actionable
 from app.services.llm_runtime import JOB_EVALUATION_OPERATIONS, ResolvedRuntimeSnapshot, resolve_runtime_snapshot
 from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, read_attribution
 from app.services.user_job_decision_service import utc_timestamp
+from app.services.vacancy_analysis_detail import is_agentic_web_analysis_ready
 
 
 _CONTRACT_VERSION = "user-discovery-run-v1"
@@ -94,13 +95,34 @@ def reusable_current_evaluation(
         UserJobEvaluation.candidate_evaluation_fingerprint == candidate,
         UserJobEvaluation.evaluation_contract_fingerprint == contract,
     ))
-    if evaluation is None:
+    if evaluation is None or not _evaluation_is_current_for_job(job, evaluation, candidate, contract):
         return None
     try:
         result = RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)
     except ValueError:
         return None
     return evaluation if result.job_profile is not None and result.requirement_matches else None
+
+
+def _evaluation_is_current_for_job(
+    job: DiscoveredJob,
+    evaluation: UserJobEvaluation,
+    candidate_fingerprint: str,
+    contract_fingerprint: str,
+) -> bool:
+    """One authority for currentness and source-specific analysis readiness."""
+    if (
+        not is_public_job_actionable(job)
+        or evaluation.job_content_hash != job.content_hash
+        or evaluation.candidate_evaluation_fingerprint != candidate_fingerprint
+        or evaluation.evaluation_contract_fingerprint != contract_fingerprint
+    ):
+        return False
+    if job.source.casefold() == "agentic_web" and not is_agentic_web_analysis_ready(
+        UserJobDiscoveryService._listing(job)
+    ):
+        return False
+    return True
 
 
 class UserJobDiscoveryHistoryReadService:
@@ -272,6 +294,7 @@ class UserJobDiscoveryService:
                 eligible.append((job_id, record))
         fresh: list[tuple[str, JobListing]] = []
         reused = 0
+        reused_agentic_ready = 0
         for job_id, record in eligible:
             evaluation = self._reusable_evaluation(user_id, record, candidate_fingerprint, contract_fingerprint)
             if evaluation is not None:
@@ -279,6 +302,7 @@ class UserJobDiscoveryService:
                 if stored.relevance.relevant and stored.relevance.score >= request.min_relevance_score:
                     run_rows[job_id] = self._add_relation(run, job_id, DiscoveryRunJobOutcome.REUSED_EVALUATION, evaluation=evaluation)
                     reused += 1
+                    reused_agentic_ready += int(record.source.casefold() == "agentic_web")
                 else:
                     run_rows[job_id] = self._add_relation(run, job_id, DiscoveryRunJobOutcome.SEMANTIC_REJECTED, evaluation=evaluation)
             else:
@@ -317,7 +341,10 @@ class UserJobDiscoveryService:
                 self._session.commit()
                 raise DiscoveryRunExecutionFailure(run.id, DiscoveryRunStatus(run.status)) from None
         self._persist_ranking(run, run_rows, fresh_by_identity, response, user_id, candidate_fingerprint, contract_fingerprint, request.min_relevance_score)
-        self._finish_run(run, request, selection, response, reused, all_selection)
+        self._finish_run(
+            run, request, selection, response, reused, all_selection,
+            reused_agentic_ready=reused_agentic_ready,
+        )
         self._session.commit()
         return self.get_run(user_id, run.id)
 
@@ -372,7 +399,7 @@ class UserJobDiscoveryService:
         ).all()
         opportunities: list[UserOpportunityRead] = []
         for evaluation, job in evaluations:
-            if self._is_actionable(job) and evaluation.job_content_hash == job.content_hash:
+            if _evaluation_is_current_for_job(job, evaluation, candidate, contract):
                 opportunities.append(UserOpportunityRead(evaluation_id=evaluation.id, discovered_job_id=job.id, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)))
         priority = {Recommendation.APPLY: 0, Recommendation.CONSIDER: 1, Recommendation.SKIP: 2}
         opportunities.sort(key=lambda item: (priority[item.opportunity.recommendation_assessment.recommendation], -item.opportunity.fit_assessment.fit_score, -item.opportunity.career_assessment.career_alignment_score, -item.opportunity.relevance.score, item.discovered_job_id))
@@ -441,7 +468,7 @@ class UserJobDiscoveryService:
             return []
         candidate, contract = self.candidate_evaluation_fingerprint(context), self.evaluation_contract_fingerprint()
         rows = self._session.execute(select(UserJobEvaluation, DiscoveredJob).join(DiscoveredJob, DiscoveredJob.id == UserJobEvaluation.discovered_job_id).where(UserJobEvaluation.user_id == user_id, UserJobEvaluation.candidate_evaluation_fingerprint == candidate, UserJobEvaluation.evaluation_contract_fingerprint == contract)).all()
-        result = [UserOpportunityRead(evaluation_id=evaluation.id, discovered_job_id=job.id, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)) for evaluation, job in rows if self._is_actionable(job) and evaluation.job_content_hash == job.content_hash]
+        result = [UserOpportunityRead(evaluation_id=evaluation.id, discovered_job_id=job.id, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)) for evaluation, job in rows if _evaluation_is_current_for_job(job, evaluation, candidate, contract)]
         if not include_dismissed and result:
             dismissed = set(self._session.scalars(select(UserJobDecision.discovered_job_id).where(UserJobDecision.user_id == user_id, UserJobDecision.decision == UserJobDecisionValue.DISMISSED.value, UserJobDecision.discovered_job_id.in_([item.discovered_job_id for item in result]))).all())
             result = [item for item in result if item.discovered_job_id not in dismissed]
@@ -514,12 +541,15 @@ class UserJobDiscoveryService:
         return evaluation_contract_fingerprint_for_runtime(self._runtime_snapshot)
 
     def _reusable_evaluation(self, user_id: str, job: DiscoveredJob, candidate: str, contract: str) -> UserJobEvaluation | None:
-        return self._session.scalar(select(UserJobEvaluation).where(
+        evaluation = self._session.scalar(select(UserJobEvaluation).where(
             UserJobEvaluation.user_id == user_id, UserJobEvaluation.discovered_job_id == job.id,
             UserJobEvaluation.job_content_hash == job.content_hash,
             UserJobEvaluation.candidate_evaluation_fingerprint == candidate,
             UserJobEvaluation.evaluation_contract_fingerprint == contract,
         ))
+        return evaluation if evaluation is not None and _evaluation_is_current_for_job(
+            job, evaluation, candidate, contract
+        ) else None
 
     def _persist_ranking(self, run, rows, job_ids, response, user_id, candidate, contract, min_relevance_score) -> None:
         result_keys: set[str] = set()
@@ -542,6 +572,15 @@ class UserJobDiscoveryService:
             key = self._listing_key(job)
             if key in job_ids:
                 rows[job_ids[key]].outcome = DiscoveryRunJobOutcome.PRESEMANTIC_FILTERED.value
+        insufficient_keys = set()
+        for job in response.agentic_analysis_detail_insufficient_jobs:
+            key = self._listing_key(job)
+            insufficient_keys.add(key)
+            if key in job_ids:
+                row = rows[job_ids[key]]
+                row.outcome = DiscoveryRunJobOutcome.INSUFFICIENT_JOB_DETAIL.value
+                row.failure_stage = None
+                row.failure_kind = None
         for failure in response.failures:
             key = self._listing_key(failure.job); failed_keys.add(key)
             if key in job_ids:
@@ -550,6 +589,8 @@ class UserJobDiscoveryService:
                 row.failure_stage = failure.stage; row.failure_kind = _safe_failure_kind(failure.error)
         for diagnostic in response.semantic_screening:
             key = self._listing_key(diagnostic.job)
+            if key in insufficient_keys:
+                continue
             if key not in job_ids or key in result_keys or key in failed_keys:
                 continue
             row = rows[job_ids[key]]
@@ -560,7 +601,7 @@ class UserJobDiscoveryService:
             elif diagnostic.failure_stage:
                 row.outcome = DiscoveryRunJobOutcome.ANALYSIS_FAILED.value; row.failure_stage = diagnostic.failure_stage; row.failure_kind = _safe_failure_kind(diagnostic.error)
 
-    def _finish_run(self, run, request, selection, response, reused, all_selection) -> None:
+    def _finish_run(self, run, request, selection, response, reused, all_selection, *, reused_agentic_ready: int = 0) -> None:
         relations = self._session.scalars(select(DiscoveryRunJob).where(DiscoveryRunJob.discovery_run_id == run.id)).all()
         failures = Counter(row.failure_stage for row in relations if row.failure_stage)
         # A terminal analysis_failed is itself failure even when a provider
@@ -569,7 +610,17 @@ class UserJobDiscoveryService:
             failures["analysis_failed"] += 1
         successful = sum(row.outcome in {DiscoveryRunJobOutcome.NEWLY_EVALUATED.value, DiscoveryRunJobOutcome.REUSED_EVALUATION.value} for row in relations)
         run.status = (DiscoveryRunStatus.PARTIAL_FAILED.value if failures and successful else DiscoveryRunStatus.FAILED.value if failures else DiscoveryRunStatus.COMPLETED.value)
-        run.funnel_json = _canonical_json({"submitted": len(request.discovered_job_ids), "fresh_selected": len(selection.selected), "reused": reused, "geography_eligible": len(all_selection.eligible), "geography_incompatible": len(all_selection.incompatible_geography), "geography_unknown": len(all_selection.unknown_geography), "remote_policy_filtered": len(all_selection.work_arrangement_filtered), "relevance_screened": response.relevance_screened_count, "full_analysis_attempts": response.finalist_count, "analysed": response.analysed_count})
+        funnel = {"submitted": len(request.discovered_job_ids), "fresh_selected": len(selection.selected), "reused": reused, "geography_eligible": len(all_selection.eligible), "geography_incompatible": len(all_selection.incompatible_geography), "geography_unknown": len(all_selection.unknown_geography), "remote_policy_filtered": len(all_selection.work_arrangement_filtered), "relevance_screened": response.relevance_screened_count, "full_analysis_attempts": response.finalist_count, "analysed": response.analysed_count}
+        detail_candidates = response.agentic_analysis_detail_candidates + reused_agentic_ready
+        detail_ready = response.agentic_analysis_detail_ready + reused_agentic_ready
+        detail_insufficient = response.agentic_analysis_detail_insufficient
+        if detail_candidates:
+            funnel.update({
+                "agentic_analysis_detail_candidates": detail_candidates,
+                "agentic_analysis_detail_ready": detail_ready,
+                "agentic_analysis_detail_insufficient": detail_insufficient,
+            })
+        run.funnel_json = _canonical_json(funnel)
         run.failure_summary_json = _canonical_json(dict(failures)); run.completed_at = datetime.now(timezone.utc)
 
     def _read_run(self, run: DiscoveryRun) -> DiscoveryRunRead:

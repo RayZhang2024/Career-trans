@@ -8,6 +8,7 @@ from app.agents.job_relevance import OpenAIJobRelevanceAgent
 from app.agents.job_extraction import JobExtractionError
 from app.agents.requirement_matching import RequirementMatchingError
 from app.schemas.assessment import FitAssessment
+from app.schemas.agentic_discovery import ExtractedVacancy
 from app.schemas.candidate import CandidateContext, CareerEvidence
 from app.schemas.career_assessment import (
     AlignmentConfidence,
@@ -28,6 +29,11 @@ from app.schemas.recommendation import Recommendation, RecommendationAssessment
 from app.services.job_ranking_gate_service import JobRankingGateService
 from app.services.job_ranking_service import JobRankingService
 from app.services.posting_legitimacy_service import PostingLegitimacyService
+from app.services.vacancy_analysis_detail import (
+    has_explicit_candidate_criterion,
+    is_agentic_web_analysis_ready,
+    render_analysis_description,
+)
 
 
 def job(title: str, *, description: str | None = "Useful role description", url: str = "https://jobs.example.test/1", posted_at: datetime | None = None) -> JobListing:
@@ -570,6 +576,223 @@ def test_incomplete_high_relevance_job_does_not_consume_deep_analysis_quota() ->
     assert [failure.stage for failure in result.failures] == ["insufficient_job_detail"]
     assert [item.job.title for item in result.semantic_screening] == ["Incomplete", "Complete"]
     assert all(item.archetype is not None for item in result.semantic_screening)
+
+
+def test_agentic_web_without_explicit_candidate_criteria_is_durably_insufficient_and_does_not_consume_graph_slot() -> None:
+    sparse = job(
+        "Sparse metadata vacancy",
+        description="A long metadata-backed vacancy description, but it contains no explicit candidate criteria." * 2,
+        url="https://jobs.example.test/sparse",
+    ).model_copy(update={"source": "agentic_web"})
+    ready = job(
+        "Structured vacancy",
+        description=render_analysis_description(ExtractedVacancy(
+            title="Structured vacancy",
+            candidate_requirements=[JobRequirement(text="Experience delivering Python services", importance=RequirementImportance.ESSENTIAL)],
+            responsibilities=["Build services"],
+        )),
+        url="https://jobs.example.test/ready",
+    ).model_copy(update={"source": "agentic_web"})
+    graph_calls: list[str] = []
+
+    class Relevant:
+        def assess(self, listing: JobListing, _: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9 if listing.title.startswith("Sparse") else 0.8, reasoning="Synthetic.")
+
+    class Archetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class Graph:
+        def invoke(self, *, job_text: str, **_: object) -> dict[str, object]:
+            graph_calls.append(job_text)
+            return {
+                "fit_assessment": FitAssessment(fit_score=70),
+                "career_assessment": CareerAssessment(career_alignment_score=70, confidence=AlignmentConfidence.HIGH, dimensions=[], reasoning="Synthetic."),
+                "recommendation_assessment": recommendation(Recommendation.CONSIDER, 70, 70),
+            }
+
+    result = JobRankingService(
+        relevance_agent=Relevant(), archetype_agent=Archetype(), career_analysis_graph=Graph(),  # type: ignore[arg-type]
+    ).rank(JobRankingRequest(jobs=[sparse, ready], candidate_context=CandidateContext(), max_full_analyses=1))
+
+    assert graph_calls == [ready.description]
+    assert result.agentic_analysis_detail_candidates == 2
+    assert result.agentic_analysis_detail_ready == 1
+    assert result.agentic_analysis_detail_insufficient == 1
+    assert result.agentic_analysis_detail_insufficient_jobs == [sparse]
+    assert result.finalist_count == 1
+    assert result.failures == []
+
+
+def _conditions_only_vacancy() -> ExtractedVacancy:
+    return ExtractedVacancy(
+        title="Applied AI Engineer",
+        responsibilities=["Build AI products"],
+        other_fit_relevant_conditions=[
+            JobRequirement(text="Role is based in London", category="location"),
+            JobRequirement(text="Hybrid attendance three days per week", category="location"),
+        ],
+    )
+
+
+def test_other_fit_conditions_are_persisted_but_do_not_unlock_deep_fit() -> None:
+    extracted = _conditions_only_vacancy()
+    description = render_analysis_description(extracted)
+    listing = job("Applied AI Engineer", description=description).model_copy(update={"source": "agentic_web"})
+
+    assert description is not None
+    assert "Other fit-relevant conditions:" in description
+    assert "Role is based in London" in description
+    assert "Hybrid attendance three days per week" in description
+    assert "Build AI products" in description
+    assert has_explicit_candidate_criterion(description) is False
+    assert is_agentic_web_analysis_ready(listing) is False
+
+    required = extracted.model_copy(update={"candidate_requirements": [
+        JobRequirement(text="Production Python experience", importance="essential", category="technical"),
+    ]})
+    preferred = extracted.model_copy(update={"preferred_qualifications": [
+        JobRequirement(text="Cloud platform experience", importance="desirable", category="technical"),
+    ]})
+    for ready_vacancy in (required, preferred):
+        ready_description = render_analysis_description(ready_vacancy)
+        ready_listing = listing.model_copy(update={"description": ready_description})
+        assert has_explicit_candidate_criterion(ready_description) is True
+        assert is_agentic_web_analysis_ready(ready_listing) is True
+
+
+def test_location_only_candidate_requirement_does_not_unlock_deep_fit() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="Remote Engineer",
+        candidate_requirements=[
+            JobRequirement(text="Must be based in London", category="location"),
+            JobRequirement(text="Office-based three days per week", category="location"),
+            JobRequirement(text="Remote within the UK", category="location"),
+        ],
+    ))
+
+    assert has_explicit_candidate_criterion(description) is False
+    listing = job("Remote Engineer", description=description).model_copy(update={"source": "agentic_web"})
+    assert is_agentic_web_analysis_ready(listing) is False
+
+
+def test_responsibilities_alone_do_not_unlock_deep_fit() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="AI Engineer",
+        responsibilities=["Build AI products", "Collaborate with product teams"],
+    ))
+
+    assert has_explicit_candidate_criterion(description) is False
+
+
+def test_responsibility_metadata_lookalike_does_not_unlock_readiness() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="AI Engineer",
+        responsibilities=["[essential; technical] Build Python systems"],
+    ))
+    listing = job("AI Engineer", description=description).model_copy(update={"source": "agentic_web"})
+
+    assert description is not None
+    assert has_explicit_candidate_criterion(description) is False
+    assert is_agentic_web_analysis_ready(listing) is False
+
+
+def test_vacancy_detail_metadata_lookalike_does_not_unlock_readiness() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="AI Engineer",
+        description="[essential; technical] Production Python experience",
+    ))
+    listing = job("AI Engineer", description=description).model_copy(update={"source": "agentic_web"})
+
+    assert description is not None
+    assert has_explicit_candidate_criterion(description) is False
+    assert is_agentic_web_analysis_ready(listing) is False
+
+
+def test_substantive_other_fit_criterion_unlocks_deep_fit_by_category() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="Data Engineer",
+        other_fit_relevant_conditions=[JobRequirement(
+            text="Five years of production data engineering experience", category="experience"
+        )],
+    ))
+
+    assert "Other fit-relevant conditions:" in description
+    assert has_explicit_candidate_criterion(description) is True
+    listing = job("Data Engineer", description=description).model_copy(update={"source": "agentic_web"})
+    assert is_agentic_web_analysis_ready(listing) is True
+
+
+def test_work_authorization_and_security_constraints_are_explicitly_substantive() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="Secure Systems Engineer",
+        other_fit_relevant_conditions=[
+            JobRequirement(text="Must be eligible to work in the UK", category="work_authorization"),
+            JobRequirement(text="Must hold active security clearance", category="security"),
+        ],
+    ))
+
+    assert has_explicit_candidate_criterion(description) is True
+
+
+def test_unclassified_other_condition_counts_only_in_a_qualification_section() -> None:
+    qualification = render_analysis_description(ExtractedVacancy(
+        title="Specialist role",
+        candidate_requirements=[JobRequirement(text="Must hold a specialist licence", category="other")],
+    ))
+    condition = render_analysis_description(ExtractedVacancy(
+        title="Specialist role",
+        other_fit_relevant_conditions=[JobRequirement(text="Some additional condition", category="other")],
+    ))
+
+    assert has_explicit_candidate_criterion(qualification) is True
+    assert has_explicit_candidate_criterion(condition) is False
+
+
+def test_other_fit_conditions_only_are_an_insufficient_nonfailure_before_graph() -> None:
+    description = render_analysis_description(_conditions_only_vacancy())
+    listing = job("Applied AI Engineer", description=description).model_copy(update={"source": "agentic_web"})
+    graph_calls: list[str] = []
+
+    class Relevant:
+        def assess(self, _: JobListing, __: CandidateContext) -> JobRelevanceAssessment:
+            return JobRelevanceAssessment(relevant=True, score=0.9, reasoning="Synthetic.")
+
+    class Archetype:
+        def classify(self, _: JobListing) -> JobArchetypeAssessment:
+            return JobArchetypeAssessment(archetype=JobArchetype.OTHER, reasoning="Synthetic.")
+
+    class Graph:
+        def invoke(self, *, job_text: str, **_: object) -> dict[str, object]:
+            graph_calls.append(job_text)
+            raise AssertionError("Conditions alone must not invoke deep analysis.")
+
+    result = JobRankingService(
+        relevance_agent=Relevant(), archetype_agent=Archetype(), career_analysis_graph=Graph(),  # type: ignore[arg-type]
+    ).rank(JobRankingRequest(jobs=[listing], candidate_context=CandidateContext(), max_full_analyses=1))
+
+    assert graph_calls == []
+    assert result.finalist_count == 0
+    assert result.agentic_analysis_detail_candidates == 1
+    assert result.agentic_analysis_detail_ready == 0
+    assert result.agentic_analysis_detail_insufficient == 1
+    assert result.agentic_analysis_detail_insufficient_jobs == [listing]
+    assert result.failures == []
+
+
+def test_structured_vacancy_rendering_keeps_candidate_criteria_inside_graph_input_limit() -> None:
+    description = render_analysis_description(ExtractedVacancy(
+        title="Long vacancy",
+        candidate_requirements=[JobRequirement(text="Must have production Python experience", importance=RequirementImportance.ESSENTIAL)],
+        responsibilities=["Build systems"],
+        description="Context " * 10_000,
+    ))
+
+    assert description is not None
+    assert len(description) <= 50_000
+    assert "Must have production Python experience" in description
+    assert "Vacancy detail:" in description
 
 
 def test_ten_job_funnel_fixture_exercises_gate_screen_archetype_and_deep_caps() -> None:

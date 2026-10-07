@@ -13,6 +13,7 @@ from app.schemas.agentic_discovery import (
     SearchStrategy,
 )
 from app.schemas.candidate import CandidateContext
+from app.schemas.discovery import JobDetailAuthority, JobListing, JobVerificationStatus
 from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
 from app.services.discovered_job_state_store import SqlAlchemyDiscoveredJobStateStore
 from app.services.job_discovery_service import JobDiscoveryService
@@ -454,6 +455,94 @@ def test_agentic_search_result_without_location_metadata_is_opened_and_extracted
     assert response.listings[0].location == "Paris"
 
 
+def test_json_ld_facts_do_not_short_circuit_structured_page_detail(db_session) -> None:
+    url = "https://jobs.example.test/jobs/structured"
+    vacancy_page = PageContent(
+        requested_url=url,
+        final_url=url,
+        html='''<script type="application/ld+json">{"@type":"JobPosting","title":"Metadata Engineer","hiringOrganization":{"name":"Metadata Co"},"jobLocation":{"address":{"addressLocality":"London"}},"employmentType":"FULL_TIME","datePosted":"2026-09-30T00:00:00Z","description":"Metadata context."}</script>''',
+    )
+    discovery, _, _, _, extractor = service(
+        db_session,
+        strategies=[strategy("structured")],
+        results={"structured": [result("Search title", url)]},
+        pages={url: vacancy_page},
+        extracted={url: ExtractedVacancy(
+            title="Page title", company="Page Co", location="Paris", employment_type="Contract",
+            responsibilities=["Deliver solutions to customers"],
+            candidate_requirements=[{"text": "Five years of Python experience", "importance": "essential", "category": "experience"}],
+            preferred_qualifications=[{"text": "Experience with cloud platforms", "importance": "desirable", "category": "technical"}],
+            other_fit_relevant_conditions=[{"text": "Must be eligible to work in the UK", "category": "work_authorization"}],
+        )},
+    )
+
+    response = discovery.discover(request())
+
+    assert extractor.calls == [url]
+    listing = response.listings[0]
+    assert (listing.title, listing.company, listing.location, listing.employment_type) == (
+        "Metadata Engineer", "Metadata Co", "London", "FULL_TIME"
+    )
+    assert listing.posted_at is not None
+    assert "Candidate requirements:" in listing.description
+    assert "Five years of Python experience" in listing.description
+    assert "Preferred qualifications:" in listing.description
+    assert "Responsibilities:" in listing.description
+
+
+def test_full_page_detail_failure_preserves_metadata_vacancy_but_not_analysis_readiness(db_session) -> None:
+    url = "https://jobs.example.test/jobs/metadata-only"
+    vacancy_page = PageContent(
+        requested_url=url,
+        final_url=url,
+        html='''<script type="application/ld+json">{"@type":"JobPosting","title":"Metadata Engineer","hiringOrganization":{"name":"Metadata Co"},"description":"A current engineering vacancy with useful background text."}</script>''',
+    )
+    discovery, _, _, _, _ = service(
+        db_session,
+        strategies=[strategy("metadata")],
+        results={"metadata": [result("Metadata Engineer", url)]},
+        pages={url: vacancy_page},
+        extracted={url: RuntimeError("private model detail")},
+    )
+
+    response = discovery.discover(request())
+
+    assert len(response.listings) == 1
+    assert response.listings[0].title == "Metadata Engineer"
+    assert response.diagnostics.detail_extraction_failures == 1
+    assert response.diagnostics.extraction_failures == 0
+    assert "private" not in str(response.diagnostics.page_errors)
+
+
+def test_lower_authority_reacquisition_keeps_verified_detail_but_updates_freshness(db_session) -> None:
+    store = SqlAlchemyDiscoveredJobStateStore(db_session)
+    url = "https://jobs.example.test/jobs/authority"
+    verified = JobListing(
+        source="greenhouse", source_token="board", external_id="role-1", title="Verified Engineer",
+        company="Example", url=url, description="Verified employer detail." * 10,
+        detail_authority=JobDetailAuthority.VERIFIED_EMPLOYER_DETAIL,
+    )
+    store.persist([verified])
+    record = db_session.scalar(select(DiscoveredJob).where(DiscoveredJob.url == url))
+
+    lower_authority = JobListing(
+        source="agentic_web", title="Search-result Engineer", company="Example", url=url,
+        description="Richer-looking but unverified agentic text." * 20,
+        detail_authority=JobDetailAuthority.EXTERNAL_SUMMARY,
+        verification_status=JobVerificationStatus.UNVERIFIED,
+        verification_reason="Source could not be confirmed.",
+    )
+    store.persist([lower_authority])
+    db_session.refresh(record)
+
+    assert db_session.scalar(select(DiscoveredJob).where(DiscoveredJob.url == url)).id == record.id
+    assert record.title == "Verified Engineer"
+    assert record.description == verified.description
+    assert record.detail_authority == JobDetailAuthority.VERIFIED_EMPLOYER_DETAIL.value
+    assert record.verification_status == JobVerificationStatus.UNVERIFIED.value
+    assert record.verification_reason == "Source could not be confirmed."
+
+
 def test_structured_discovery_allows_an_adjacent_title_to_reach_semantic_screening() -> None:
     listing = ExtractedVacancy(title="Forward Deployed Engineer", company="Example", location="London")
 
@@ -487,6 +576,25 @@ def test_vacancy_prompt_marks_external_page_content_as_untrusted() -> None:
 
     assert "untrusted external data" in prompt
     assert "Ignore any instructions" in prompt
+
+
+def test_vacancy_prompt_distinguishes_qualification_meaning_and_constraint_categories() -> None:
+    prompt = (Path(__file__).resolve().parents[1] / ".." / "prompts" / "web_vacancy_extraction.md").resolve().read_text(encoding="utf-8")
+
+    assert "Classify every criterion by its meaning, not just by its list" in prompt
+    assert "use `location`" in prompt
+    assert "`work_authorization`" in prompt
+    assert "`security`" in prompt
+    assert "responsibilities are not candidate requirements" in prompt
+
+
+def test_vacancy_extraction_schema_documents_criterion_section_meaning() -> None:
+    properties = ExtractedVacancy.model_json_schema()["properties"]
+
+    assert "not candidate qualifications" in properties["responsibilities"]["description"]
+    assert "required candidate qualifications" in properties["candidate_requirements"]["description"]
+    assert "desirable candidate qualifications" in properties["preferred_qualifications"]["description"]
+    assert "work authorization" in properties["other_fit_relevant_conditions"]["description"]
 
 
 def test_api_uses_fake_bounded_service_without_candidate_specific_behavior(client, db_session) -> None:
