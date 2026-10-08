@@ -276,9 +276,16 @@ def get_discovery_run(
 def list_current_opportunities(
     current_user: CurrentUser,
     limit: int = Query(default=20, ge=1, le=100),
+    discovered_job_ids: list[str] | None = Query(default=None),
     service: UserJobDiscoveryService = Depends(get_user_job_discovery_read_service),
 ) -> UserOpportunitySummaryResponse:
-    return service.current_opportunity_summaries(current_user.id, limit=limit)
+    if discovered_job_ids is not None and len(discovered_job_ids) > 100:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="At most 100 job IDs can be requested.")
+    return service.current_opportunity_summaries(
+        current_user.id,
+        limit=limit,
+        discovered_job_ids=discovered_job_ids,
+    )
 
 
 @router.get("/opportunities/{evaluation_id}", response_model=RankedJobOpportunity)

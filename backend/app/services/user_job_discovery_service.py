@@ -39,7 +39,7 @@ from app.services.posting_legitimacy_service import PostingLegitimacyService
 from app.services.public_job_actionability import is_public_job_actionable
 from app.services.llm_runtime import JOB_EVALUATION_OPERATIONS, ResolvedRuntimeSnapshot, resolve_runtime_snapshot
 from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, read_attribution
-from app.services.user_job_decision_service import utc_timestamp
+from app.services.user_job_decision_service import UserJobDecisionService, utc_timestamp
 from app.services.vacancy_analysis_detail import is_agentic_web_analysis_ready
 
 
@@ -148,9 +148,27 @@ class UserJobDiscoveryHistoryReadService:
             select(DiscoveryRunJob).where(DiscoveryRunJob.discovery_run_id == run.id)
             .order_by(DiscoveryRunJob.created_at, DiscoveryRunJob.id)
         ).all()
+        jobs = self._session.scalars(
+            select(DiscoveredJob).where(DiscoveredJob.id.in_({row.discovered_job_id for row in rows}))
+        ).all() if rows else []
+        current_jobs = {job.id: job for job in jobs}
+        decision_rows = self._session.scalars(
+            select(UserJobDecision).where(
+                UserJobDecision.user_id == user_id,
+                UserJobDecision.discovered_job_id.in_({row.discovered_job_id for row in rows}),
+            )
+        ).all() if rows else []
+        decisions = {decision.discovered_job_id: decision for decision in decision_rows}
         return DiscoveryRunDetailRead(
             **self._run_summary(run).model_dump(),
-            jobs=[self._run_row_summary(row) for row in rows],
+            jobs=[
+                self._run_row_summary(
+                    row,
+                    current_jobs.get(row.discovered_job_id),
+                    decisions.get(row.discovered_job_id),
+                )
+                for row in rows
+            ],
         )
 
     def get_historical_run_job_detail(self, user_id: str, run_id: str, discovered_job_id: str) -> DiscoveryRunJobDetailRead:
@@ -187,11 +205,20 @@ class UserJobDiscoveryHistoryReadService:
         )
 
     @staticmethod
-    def _run_row_summary(row: DiscoveryRunJob) -> DiscoveryRunJobSummaryRead:
+    def _run_row_summary(
+        row: DiscoveryRunJob,
+        current_job: DiscoveredJob | None = None,
+        decision_row: UserJobDecision | None = None,
+    ) -> DiscoveryRunJobSummaryRead:
         return DiscoveryRunJobSummaryRead(
             discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id,
             outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind,
             opportunity=None,
+            current_job_identity=(
+                {"title": current_job.title, "company": current_job.company, "first_seen_at": utc_timestamp(current_job.first_seen_at)}
+                if current_job is not None else None
+            ),
+            decision=UserJobDecisionService._read(decision_row, row.discovered_job_id),
         )
 
 
@@ -405,8 +432,18 @@ class UserJobDiscoveryService:
         opportunities.sort(key=lambda item: (priority[item.opportunity.recommendation_assessment.recommendation], -item.opportunity.fit_assessment.fit_score, -item.opportunity.career_assessment.career_alignment_score, -item.opportunity.relevance.score, item.discovered_job_id))
         return UserOpportunityResponse(opportunities=opportunities)
 
-    def current_opportunity_summaries(self, user_id: str, *, limit: int) -> UserOpportunitySummaryResponse:
-        items = self._current_opportunity_items_read_only(user_id)
+    def current_opportunity_summaries(
+        self,
+        user_id: str,
+        *,
+        limit: int,
+        discovered_job_ids: list[str] | None = None,
+    ) -> UserOpportunitySummaryResponse:
+        items = self._current_opportunity_items_read_only(
+            user_id,
+            include_dismissed=discovered_job_ids is not None,
+            discovered_job_ids=discovered_job_ids,
+        )
         decision_rows = self._session.scalars(select(UserJobDecision).where(UserJobDecision.user_id == user_id, UserJobDecision.discovered_job_id.in_([item.discovered_job_id for item in items]))).all() if items else []
         decisions = {row.discovered_job_id: row for row in decision_rows}
         return UserOpportunitySummaryResponse(items=[self._summary(item, decisions.get(item.discovered_job_id)) for item in items[:limit]], limit=limit, truncated=len(items) > limit)
@@ -427,7 +464,20 @@ class UserJobDiscoveryService:
     def get_run_detail(self, user_id: str, run_id: str) -> DiscoveryRunDetailRead:
         run = self._owned_run(user_id, run_id)
         rows = self._session.scalars(select(DiscoveryRunJob).where(DiscoveryRunJob.discovery_run_id == run.id).order_by(DiscoveryRunJob.created_at, DiscoveryRunJob.id)).all()
-        return DiscoveryRunDetailRead(**self._run_summary(run).model_dump(), jobs=[self._run_row_summary(row) for row in rows])
+        decisions = self._session.scalars(
+            select(UserJobDecision).where(
+                UserJobDecision.user_id == user_id,
+                UserJobDecision.discovered_job_id.in_({row.discovered_job_id for row in rows}),
+            )
+        ).all() if rows else []
+        by_job = {decision.discovered_job_id: decision for decision in decisions}
+        return DiscoveryRunDetailRead(
+            **self._run_summary(run).model_dump(),
+            jobs=[
+                self._run_row_summary(row, by_job.get(row.discovered_job_id))
+                for row in rows
+            ],
+        )
 
     def get_historical_run_job_detail(self, user_id: str, run_id: str, discovered_job_id: str) -> DiscoveryRunJobDetailRead:
         run = self._owned_run(user_id, run_id)
@@ -454,7 +504,15 @@ class UserJobDiscoveryService:
         """Expose the shared public-job actionability rule without copying it."""
         return self._is_actionable(job)
 
-    def _current_opportunity_items_read_only(self, user_id: str, *, include_dismissed: bool = False) -> list[UserOpportunityRead]:
+    def _current_opportunity_items_read_only(
+        self,
+        user_id: str,
+        *,
+        include_dismissed: bool = False,
+        discovered_job_ids: list[str] | None = None,
+    ) -> list[UserOpportunityRead]:
+        if discovered_job_ids is not None and not discovered_job_ids:
+            return []
         try:
             snapshot = self._candidate_reader.read(user_id)
             context = self._candidate_reader.candidate_context(
@@ -467,7 +525,10 @@ class UserJobDiscoveryService:
         if context is None:
             return []
         candidate, contract = self.candidate_evaluation_fingerprint(context), self.evaluation_contract_fingerprint()
-        rows = self._session.execute(select(UserJobEvaluation, DiscoveredJob).join(DiscoveredJob, DiscoveredJob.id == UserJobEvaluation.discovered_job_id).where(UserJobEvaluation.user_id == user_id, UserJobEvaluation.candidate_evaluation_fingerprint == candidate, UserJobEvaluation.evaluation_contract_fingerprint == contract)).all()
+        query = select(UserJobEvaluation, DiscoveredJob).join(DiscoveredJob, DiscoveredJob.id == UserJobEvaluation.discovered_job_id).where(UserJobEvaluation.user_id == user_id, UserJobEvaluation.candidate_evaluation_fingerprint == candidate, UserJobEvaluation.evaluation_contract_fingerprint == contract)
+        if discovered_job_ids is not None:
+            query = query.where(UserJobEvaluation.discovered_job_id.in_(set(discovered_job_ids)))
+        rows = self._session.execute(query).all()
         result = [UserOpportunityRead(evaluation_id=evaluation.id, discovered_job_id=job.id, opportunity=RankedJobOpportunity.model_validate_json(evaluation.evaluation_json)) for evaluation, job in rows if _evaluation_is_current_for_job(job, evaluation, candidate, contract)]
         if not include_dismissed and result:
             dismissed = set(self._session.scalars(select(UserJobDecision.discovered_job_id).where(UserJobDecision.user_id == user_id, UserJobDecision.decision == UserJobDecisionValue.DISMISSED.value, UserJobDecision.discovered_job_id.in_([item.discovered_job_id for item in result]))).all())
@@ -481,16 +542,28 @@ class UserJobDiscoveryService:
         opportunity = item.opportunity
         row = decision_row
         decision = UserJobDecisionRead(discovered_job_id=item.discovered_job_id, decision=UserJobDecisionValue.UNDECIDED) if row is None else UserJobDecisionRead(discovered_job_id=row.discovered_job_id, decision=UserJobDecisionValue(row.decision), revision=row.revision, created_at=utc_timestamp(row.created_at), updated_at=utc_timestamp(row.updated_at))
-        return UserOpportunitySummary(evaluation_id=item.evaluation_id, discovered_job_id=item.discovered_job_id, recommendation=opportunity.recommendation_assessment.recommendation, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, fit_score=opportunity.fit_assessment.fit_score, career_alignment_score=opportunity.career_assessment.career_alignment_score, career_alignment_confidence=opportunity.career_assessment.confidence, relevance_score=opportunity.relevance.score, archetype=opportunity.archetype.archetype, url=job.url, posting_recency=PostingLegitimacyService().assess(self._listing(job)), decision=decision)
+        return UserOpportunitySummary(evaluation_id=item.evaluation_id, discovered_job_id=item.discovered_job_id, recommendation=opportunity.recommendation_assessment.recommendation, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, fit_score=opportunity.fit_assessment.fit_score, career_alignment_score=opportunity.career_assessment.career_alignment_score, career_alignment_confidence=opportunity.career_assessment.confidence, relevance_score=opportunity.relevance.score, archetype=opportunity.archetype.archetype, url=job.url, first_seen_at=utc_timestamp(job.first_seen_at), posting_recency=PostingLegitimacyService().assess(self._listing(job)), decision=decision)
 
     @staticmethod
     def _run_summary(run: DiscoveryRun) -> DiscoveryRunSummaryRead:
         return DiscoveryRunSummaryRead(id=run.id, status=run.status, run_input=json.loads(run.search_input_json), funnel=json.loads(run.funnel_json), failure_summary=json.loads(run.failure_summary_json), started_at=run.started_at, completed_at=run.completed_at)
 
-    def _run_row_summary(self, row: DiscoveryRunJob) -> DiscoveryRunJobSummaryRead:
+    def _run_row_summary(
+        self,
+        row: DiscoveryRunJob,
+        decision_row: UserJobDecision | None = None,
+    ) -> DiscoveryRunJobSummaryRead:
         # Run summaries are strictly historical outcome rows. Full historical
         # snapshots are available only through the exact run-job detail route.
-        return DiscoveryRunJobSummaryRead(discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id, outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind, opportunity=None)
+        return DiscoveryRunJobSummaryRead(
+            discovered_job_id=row.discovered_job_id,
+            evaluation_id=row.evaluation_id,
+            outcome=row.outcome,
+            failure_stage=row.failure_stage,
+            failure_kind=row.failure_kind,
+            opportunity=None,
+            decision=UserJobDecisionService._read(decision_row, row.discovered_job_id),
+        )
 
     def _owned_run(self, user_id: str, run_id: str) -> DiscoveryRun:
         run = self._session.scalar(select(DiscoveryRun).where(DiscoveryRun.id == run_id, DiscoveryRun.user_id == user_id))

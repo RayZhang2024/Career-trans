@@ -117,6 +117,7 @@ def test_decision_list_is_ordered_bounded_and_strictly_scoped(db_session):
     result = service.list("owner", decision=UserJobDecisionValue.SHORTLISTED, limit=2)
     assert [item.discovered_job_id for item in result.items] == [jobs[2].id, jobs[1].id]
     assert result.truncated is True and result.limit == 2
+    assert result.items[0].first_seen_at == jobs[2].first_seen_at.replace(tzinfo=timezone.utc)
     assert service.list("other", decision=UserJobDecisionValue.SHORTLISTED, limit=2).items == []
 
 

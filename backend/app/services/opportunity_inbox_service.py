@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from app.models.discovered_job import DiscoveredJob
@@ -15,20 +15,22 @@ from app.schemas.opportunity_inbox import (
     PersistedJobProvenance,
 )
 from app.services.public_job_actionability import is_public_job_actionable
-from app.services.user_job_decision_service import UserJobDecisionService
+from app.services.user_job_decision_service import UserJobDecisionService, utc_timestamp
 
 
 class OpportunityInboxService:
-    """Read recent agent-runtime discoveries without invoking discovery or ranking."""
+    """Read a bounded catalogue of supported public discoveries without provider work."""
+
+    CATALOGUE_SOURCES = frozenset({
+        "agent_runtime", "agentic_web", "ashby", "greenhouse", "lever",
+        "recruitee", "smartrecruiters", "workday",
+    })
 
     def __init__(self, session: Session) -> None:
         self._session = session
 
     def list_recent(self, *, limit: int, user_id: str | None = None) -> OpportunityInboxResponse:
-        eligibility = or_(
-            DiscoveredJob.source == "agent_runtime",
-            DiscoveredJob.id.in_(select(DiscoveredJobProvenance.job_id).where(DiscoveredJobProvenance.runtime == "codex")),
-        )
+        eligibility = DiscoveredJob.source.in_(self.CATALOGUE_SOURCES)
         if user_id is not None:
             eligibility = eligibility & ~exists(
                 select(UserJobDecision.id).where(
@@ -40,7 +42,7 @@ class OpportunityInboxService:
         records = self._session.scalars(
             select(DiscoveredJob)
             .where(eligibility)
-            .order_by(DiscoveredJob.last_seen_at.desc(), DiscoveredJob.id.asc())
+            .order_by(DiscoveredJob.first_seen_at.desc(), DiscoveredJob.id.asc())
             .limit(limit + 1)
         ).all()
         records, truncated = records[:limit], len(records) > limit
@@ -86,8 +88,8 @@ class OpportunityInboxService:
                         provenance=self._ranking_provenance(provenance_by_job[record.id]),
                     ),
                     state=DiscoveredJobState(record.state),
-                    first_seen_at=record.first_seen_at,
-                    last_seen_at=record.last_seen_at,
+                    first_seen_at=utc_timestamp(record.first_seen_at),
+                    last_seen_at=utc_timestamp(record.last_seen_at),
                     actionable=is_public_job_actionable(record),
                     verification_status=JobVerificationStatus(record.verification_status),
                     verification_reason=record.verification_reason,
@@ -101,10 +103,10 @@ class OpportunityInboxService:
     def list_recent_summary(self, *, limit: int, user_id: str | None = None):
         """Lightweight dashboard projection that never returns descriptions."""
         from app.schemas.opportunity_inbox import OpportunityInboxSummary, OpportunityInboxSummaryResponse
-        eligibility = or_(DiscoveredJob.source == "agent_runtime", DiscoveredJob.id.in_(select(DiscoveredJobProvenance.job_id).where(DiscoveredJobProvenance.runtime == "codex")))
+        eligibility = DiscoveredJob.source.in_(self.CATALOGUE_SOURCES)
         if user_id is not None:
             eligibility = eligibility & ~exists(select(UserJobDecision.id).where(UserJobDecision.user_id == user_id, UserJobDecision.discovered_job_id == DiscoveredJob.id, UserJobDecision.decision == "dismissed"))
-        records = self._session.scalars(select(DiscoveredJob).where(eligibility).order_by(DiscoveredJob.last_seen_at.desc(), DiscoveredJob.id.asc()).limit(limit + 1)).all()
+        records = self._session.scalars(select(DiscoveredJob).where(eligibility).order_by(DiscoveredJob.first_seen_at.desc(), DiscoveredJob.id.asc()).limit(limit + 1)).all()
         records, truncated = records[:limit], len(records) > limit
         ids = [record.id for record in records]
         rows = self._session.scalars(select(DiscoveredJobProvenance).where(DiscoveredJobProvenance.job_id.in_(ids)).order_by(DiscoveredJobProvenance.imported_at.desc(), DiscoveredJobProvenance.id.asc())).all() if ids else []
@@ -114,7 +116,7 @@ class OpportunityInboxService:
             if len(grouped[row.job_id]) < 3:
                 grouped[row.job_id].append(PersistedJobProvenance(runtime=row.runtime, source_ref=row.source_ref, discovered_via=row.discovered_via, imported_at=row.imported_at))
         decisions = self._decision_map(user_id, ids)
-        return OpportunityInboxSummaryResponse(items=[OpportunityInboxSummary(discovered_job_id=record.id, title=record.title, company=record.company, location=record.location, work_arrangement=record.work_arrangement, employment_type=record.employment_type, url=record.url, state=DiscoveredJobState(record.state), verification_status=JobVerificationStatus(record.verification_status), verification_reason=record.verification_reason, actionable=is_public_job_actionable(record), first_seen_at=record.first_seen_at, last_seen_at=record.last_seen_at, provenance=grouped[record.id], provenance_count=counts[record.id], decision=decisions[record.id]) for record in records], limit=limit, truncated=truncated)
+        return OpportunityInboxSummaryResponse(items=[OpportunityInboxSummary(discovered_job_id=record.id, title=record.title, company=record.company, location=record.location, work_arrangement=record.work_arrangement, employment_type=record.employment_type, url=record.url, state=DiscoveredJobState(record.state), verification_status=JobVerificationStatus(record.verification_status), verification_reason=record.verification_reason, actionable=is_public_job_actionable(record), first_seen_at=utc_timestamp(record.first_seen_at), last_seen_at=utc_timestamp(record.last_seen_at), provenance=grouped[record.id], provenance_count=counts[record.id], decision=decisions[record.id]) for record in records], limit=limit, truncated=truncated)
 
     def _decision_map(self, user_id: str | None, ids: list[str]):
         rows = self._session.scalars(select(UserJobDecision).where(UserJobDecision.user_id == user_id, UserJobDecision.discovered_job_id.in_(ids))).all() if user_id is not None and ids else []
