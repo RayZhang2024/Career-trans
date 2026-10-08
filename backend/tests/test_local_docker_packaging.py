@@ -77,3 +77,23 @@ def test_backend_package_is_copied_before_the_project_is_installed() -> None:
     dockerfile = (ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
 
     assert dockerfile.index("COPY backend/app ./app") < dockerfile.index("RUN pip install --no-cache-dir .")
+
+
+def test_langsmith_operator_smoke_command_flushes_synthetic_trace_offline() -> None:
+    docs = (ROOT / "docs" / "langsmith-tracing.md").read_text(encoding="utf-8")
+    smoke_section = docs.split("## Verify trace visibility", maxsplit=1)[1]
+    command = smoke_section.split("```", maxsplit=2)[1]
+
+    assert command.startswith("powershell\n")
+    assert "@'\n" in command
+    assert "client = Client()" in command
+    assert '@traceable(name="career-trans-operator-smoke", client=client)' in command
+    assert 'smoke_trace("synthetic connectivity check")' in command
+    assert "client.flush(timeout=30)" in command
+    assert command.index('smoke_trace("synthetic connectivity check")') < command.index(
+        "client.flush(timeout=30)"
+    )
+    assert "docker compose exec -T backend python -" in command
+
+    # This regression only reads the documented command; pytest never runs the
+    # smoke script or contacts LangSmith.

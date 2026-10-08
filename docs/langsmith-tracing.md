@@ -61,29 +61,54 @@ do not print or paste the container environment or `.env` values.
 
 ## Verify trace visibility
 
-First verify the selected project and workspace in LangSmith. Then, only after
-explicitly opting in, send one provider-free synthetic trace with an inert
-public value from inside the backend container:
+First verify the selected LangSmith workspace and project. The project must
+match `LANGSMITH_PROJECT`; for an organization-scoped key, select the workspace
+identified by the configured `LANGSMITH_WORKSPACE_ID`. Also ensure the account
+is using the region selected by `LANGSMITH_ENDPOINT`. Then, only after
+explicitly opting in, run this PowerShell command. It creates one provider-free
+trace with an inert synthetic value, sends it to the same client selected from
+the backend environment, and explicitly waits for that client's pending
+traces to flush before Python exits:
 
-```python
-from langsmith import traceable
+```powershell
+@'
+from langsmith import Client, traceable
 
+client = Client()
 
-@traceable(name="career-trans-operator-smoke")
+@traceable(name="career-trans-operator-smoke", client=client)
 def smoke_trace(value: str) -> str:
     return f"received {value}"
 
-
 smoke_trace("synthetic connectivity check")
+client.flush(timeout=30)
+'@ | docker compose exec -T backend python -
 ```
 
-Allow the SDK time to flush the trace, then look for the new
-`career-trans-operator-smoke` run in the configured project. This verifies
-basic trace ingestion only; it does not verify OpenAI provider spans. To check
-the existing `wrap_openai` spans, an operator must explicitly approve and run
-one real OpenAI-backed semantic operation with safe synthetic input. That
-operation may incur provider cost, so it is intentionally absent from tests
-and this implementation's validation.
+The flush timeout is in seconds. Cloud ingestion and UI indexing may take a
+little longer after the command completes; wait up to about 60 seconds, then
+refresh the selected workspace's `LANGSMITH_PROJECT` and look for a new
+`career-trans-operator-smoke` run. The trace payload contains only the literal
+synthetic string above. This verifies basic trace ingestion only; it does not
+verify OpenAI provider spans.
+
+If the trace does not appear:
+
+1. Recheck the sanitized runtime status above. Confirm tracing is enabled, the
+   key is configured, the project and endpoint match the LangSmith UI, and a
+   workspace ID is configured when required by the key type.
+2. If you changed the root `.env`, recreate the backend with
+   `docker compose up -d --build backend`, then run the smoke command again.
+3. Review recent backend logs for LangSmith connection or authentication
+   errors. Inspect only the sanitized diagnostic and error text; never print
+   or share the container environment, API key, workspace ID, or `.env`.
+4. If `client.flush(timeout=30)` times out or the command reports an error,
+   resolve the reported connectivity/configuration issue before retrying.
+
+To check the existing `wrap_openai` spans, an operator must separately and
+explicitly approve and run one real OpenAI-backed semantic operation with safe
+synthetic input. That operation may incur provider cost, so it is intentionally
+absent from tests and this implementation's validation.
 
 Only new LLM-backed calls can create new OpenAI spans. Search History, Results,
 Saved, other read-only requests, reused evaluations that make no model call,
