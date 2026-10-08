@@ -8,11 +8,36 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_compose_uses_an_absolute_sqlite_database_in_a_named_volume() -> None:
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    backend, frontend = compose.split("  frontend:", maxsplit=1)
 
     assert "DATABASE_URL: sqlite:////data/career_agent.db" in compose
     assert "career_agent_data:/data" in compose
     assert "career_agent_data:" in compose
     assert "OPENAI_API_KEY: ${OPENAI_API_KEY:-}" in compose
+    assert "LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}" in backend
+    assert "LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}" in backend
+    assert "LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-career-trans-dev}" in backend
+    assert "LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}" in backend
+    assert "LANGSMITH_WORKSPACE_ID: ${LANGSMITH_WORKSPACE_ID:-}" in backend
+    assert "LANGSMITH_" not in frontend
+
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "LANGSMITH_TRACING=false" in env_example
+    assert "LANGSMITH_API_KEY=" in env_example
+    assert "LANGSMITH_PROJECT=career-trans-dev" in env_example
+    assert "LANGSMITH_ENDPOINT=https://api.smith.langchain.com" in env_example
+    assert "https://eu.api.smith.langchain.com" in env_example
+    assert "LANGSMITH_WORKSPACE_ID=" in env_example
+    assert "LANGSMITH_API_KEY=" in env_example.splitlines()
+    assert "LANGSMITH_WORKSPACE_ID=" in env_example.splitlines()
+    assert "docs/langsmith-tracing.md" in env_example
+
+    backend_env_example = (ROOT / "backend" / ".env.example").read_text(encoding="utf-8")
+    assert "LANGSMITH_API_KEY=" in backend_env_example.splitlines()
+    assert "LANGSMITH_PROJECT=career-trans-dev" in backend_env_example
+    assert "LANGSMITH_ENDPOINT=https://api.smith.langchain.com" in backend_env_example
+    assert "LANGSMITH_WORKSPACE_ID=" in backend_env_example.splitlines()
+    assert "repository-root .env" in backend_env_example
 
 
 def test_frontend_runtime_is_same_origin_proxy_with_spa_fallback_and_upload_limit() -> None:
