@@ -309,6 +309,7 @@ export type DiscoveryRunJobSummary = {
   outcome: "newly_evaluated" | "reused_evaluation" | "not_actionable" | "presemantic_filtered" | "geography_incompatible" | "geography_unknown" | "outside_semantic_budget" | "semantic_rejected" | "outside_deep_analysis_budget" | "insufficient_job_detail" | "analysis_failed";
   failure_stage: string | null; failure_kind: string | null; opportunity: UserOpportunitySummary | null;
   current_job_identity?: { title: string; company: string | null; first_seen_at: string } | null;
+  decision: UserJobDecision;
 };
 export type DiscoveryRunDetail = DiscoveryRunSummary & { jobs: DiscoveryRunJobSummary[] };
 export type SemanticRuntimeOperation =
@@ -445,7 +446,7 @@ export type ScheduledExecutionRead = {
   completed_at: string | null;
 };
 export type LLMConfigurationCheck = { ready: boolean };
-export type DiscoveryRunCreatedJob = Omit<DiscoveryRunJobSummary, "opportunity"> & { opportunity: RankedJobOpportunity | null };
+export type DiscoveryRunCreatedJob = Omit<DiscoveryRunJobSummary, "opportunity" | "decision"> & { opportunity: RankedJobOpportunity | null };
 export type DiscoveryRunCreated = DiscoveryRunSummary & { search_input_fingerprint: string; candidate_evaluation_fingerprint: string; evaluation_contract_fingerprint: string; jobs: DiscoveryRunCreatedJob[] };
 
 export type JobWorkspace = {

@@ -143,6 +143,7 @@ class DiscoveryRunJobSummaryRead(BaseModel):
     failure_kind: str | None = None
     opportunity: UserOpportunitySummary | None = None
     current_job_identity: CurrentJobIdentityRead | None = None
+    decision: UserJobDecisionRead
 
 
 class DiscoveryRunDetailRead(DiscoveryRunSummaryRead):

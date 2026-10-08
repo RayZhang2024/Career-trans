@@ -159,6 +159,11 @@ def test_search_history_retains_all_twelve_exact_outcomes_and_current_identity(d
     assert {row.outcome for row in detail.jobs} >= {"geography_unknown", "outside_semantic_budget"}
     assert [row.current_job_identity.title for row in detail.jobs] == [job.title for job in jobs]
     assert all(row.opportunity is None for row in detail.jobs)
+    decisions = UserJobDecisionService(db_session)
+    decisions.mutate("uat-owner", jobs[0].id, UserJobDecisionMutation(decision="shortlisted"))
+    owner_detail = UserJobDiscoveryService(db_session).get_run_detail("uat-owner", run.id)
+    assert owner_detail.jobs[0].decision.decision == "shortlisted"
+    assert owner_detail.jobs[1].decision.decision == "undecided"
     with pytest.raises(LookupError):
         UserJobDiscoveryHistoryReadService(db_session).get_run_detail("other-owner", run.id)
 
@@ -616,6 +621,20 @@ def test_authenticated_run_and_opportunity_routes_enforce_user_scope(client, db_
         assert client.get(historical_path, headers=headers_b).status_code == 404
         assert client.get("/api/v1/jobs/opportunities", headers=headers_a).json()["items"]
         assert client.get("/api/v1/jobs/opportunities", headers=headers_b).json()["items"] == []
+        visible_path = f"/api/v1/jobs/opportunities?limit=1&discovered_job_ids={job.id}"
+        UserJobDecisionService(db_session).mutate(
+            "user-a", job.id, UserJobDecisionMutation(decision="dismissed")
+        )
+        visible_a = client.get(visible_path, headers=headers_a)
+        visible_b = client.get(visible_path, headers=headers_b)
+        assert visible_a.status_code == 200
+        assert [item["discovered_job_id"] for item in visible_a.json()["items"]] == [job.id]
+        assert visible_a.json()["items"][0]["decision"]["decision"] == "dismissed"
+        assert visible_b.status_code == 200 and visible_b.json()["items"] == []
+        too_many = client.get("/api/v1/jobs/opportunities", params=[("discovered_job_ids", str(index)) for index in range(101)], headers=headers_a)
+        assert too_many.status_code == 422
+        detail = client.get(f"/api/v1/jobs/discovery-runs/{run_id}", headers=headers_a)
+        assert detail.json()["jobs"][0]["decision"]["discovered_job_id"] == job.id
     finally:
         fastapi_app.dependency_overrides.pop(get_user_job_discovery_service, None)
         fastapi_app.dependency_overrides.pop(get_user_job_discovery_read_service, None)
@@ -883,6 +902,36 @@ def test_current_opportunity_routes_remain_runtime_aware():
     for route in routes:
         dependency = next(item for item in route.dependant.dependencies if item.call is get_user_job_discovery_read_service)
         assert any(item.call is get_user_runtime_snapshot for item in dependency.dependencies)
+
+
+def test_visible_current_opportunity_projection_finds_catalogue_fit_beyond_top_100(db_session, monkeypatch):
+    jobs, _run, service, _ranking = prepared_read_model(db_session, monkeypatch, count=100)
+    jobs.append(_job("beyond-top-100"))
+    db_session.add(jobs[-1]); db_session.commit()
+    for offset in range(0, len(jobs), 30):
+        ids = [job.id for job in jobs[offset:offset + 30]]
+        service.start("owner", DiscoveryRunCreateRequest.model_validate({
+            "query": {"keywords": ["AI"], "locations": ["London"]},
+            "discovered_job_ids": ids,
+            "max_semantic_candidates": 30,
+            "max_full_analyses": 30,
+            "min_relevance_score": 0.5,
+        }))
+
+    top_window = service.current_opportunity_summaries("owner", limit=100)
+    top_ids = {item.discovered_job_id for item in top_window.items}
+    outside_top = next(job for job in jobs if job.id not in top_ids)
+    visible = service.current_opportunity_summaries(
+        "owner", limit=1, discovered_job_ids=[outside_top.id]
+    )
+    hidden_owner = service.current_opportunity_summaries(
+        "other-owner", limit=1, discovered_job_ids=[outside_top.id]
+    )
+
+    assert len(top_window.items) == 100 and top_window.truncated is True
+    assert [item.discovered_job_id for item in visible.items] == [outside_top.id]
+    assert hidden_owner.items == []
+    assert visible.limit == 1
 
 
 def test_current_opportunities_filter_owner_dismissals_before_slice_and_detail_remains_readable(db_session, monkeypatch):

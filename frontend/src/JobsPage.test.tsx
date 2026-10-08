@@ -37,7 +37,7 @@ const savedExecution = (status: ScheduledExecutionRead["status"] = "completed"):
 });
 const oneOffPreflight = (patch: Partial<OneOffPreflight> = {}): OneOffPreflight => ({ effective_provider: "tavily", readiness: "configured_for_launch", available: true, reason: null, policy: { version: "v2", country: "gb", max_search_queries: 6, max_search_results_per_query: 10, max_pages_to_open: 20, max_discovered_jobs: 20, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 }, provider_settings_revision: 2, launch_fingerprint: "a".repeat(64), ...patch });
 const oneOffExecution = (patch: Partial<OneOffExecution> = {}): OneOffExecution => ({ id: "one-off-1", client_request_id: "request-1", query: { keywords: ["AI"], locations: [], remote_ok: null, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 }, policy: oneOffPreflight().policy, provider: { provider: "tavily", credential_source: "user", search_depth: "basic" }, status: "completed", started_at: "2026-10-01T00:00:00Z", completed_at: "2026-10-01T00:01:00Z", acquisition_summary: { canonical_jobs: 0, relevance_screened: 0, analysed: 0 }, failure_summary: {}, discovery_run_id: null, ...patch });
-const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "geography_incompatible", "geography_unknown", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "insufficient_job_detail", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null })) });
+const runDetail = (status: DiscoveryRunSummary["status"] = "completed"): DiscoveryRunDetail => ({ ...run("run-1", status), jobs: (["newly_evaluated", "reused_evaluation", "not_actionable", "presemantic_filtered", "geography_incompatible", "geography_unknown", "outside_semantic_budget", "semantic_rejected", "outside_deep_analysis_budget", "insufficient_job_detail", "analysis_failed"] as const).map((outcome, i) => ({ discovered_job_id: `job-${i}`, evaluation_id: null, outcome, failure_stage: outcome === "analysis_failed" ? "career_analysis" : null, failure_kind: null, opportunity: null, decision: decision(`job-${i}`) })) });
 const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered_job_id: id, title: `Inbox ${id}`, company: "Public Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: `https://public.example.test/${id}`, state: "new", verification_status: actionable ? "verified" : "unverified", verification_reason: actionable ? null : "provider_detail_unavailable", actionable, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", provenance: [{ runtime: "codex", source_ref: "not-rendered", discovered_via: "external_import", imported_at: "2026-02-02T00:00:00Z" }], provenance_count: 1, decision: decision(id) });
 const workspaceJob = (patch: Record<string, unknown> = {}) => ({ id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z", ...patch });
 const workspacePayload = (workspaceDecision = decision("actionable"), patch: Record<string, unknown> = {}) => ({ job: workspaceJob(), decision: workspaceDecision, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false }, applications: { items: [], limit: 20, truncated: false }, ...patch });
@@ -68,7 +68,7 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
     if (path === "/api/v1/profile") return Promise.resolve(json({ id: "profile", user_id: user.id, display_name: "Current Person", created_at: "", updated_at: "" }));
     if (path === "/api/v1/profile/snapshot") return Promise.resolve(json(profileSnapshot()));
     if (path === "/api/v1/profile/revisions/active") return Promise.resolve(json(null));
-    if (path === "/api/v1/jobs/opportunities") return Promise.resolve(json(page([op("alpha", "Alpha", 99), op("beta", "Beta", 1)])));
+    if (path === "/api/v1/jobs/opportunities") { const ids = url.searchParams.getAll("discovered_job_ids"); return Promise.resolve(json(page(ids.length ? [] : [op("alpha", "Alpha", 99), op("beta", "Beta", 1)]))); }
     if (path === "/api/v1/jobs/discovery-runs") return Promise.resolve(json(page([run()])));
     if (path === "/api/v1/jobs/inbox") return Promise.resolve(json(page([inboxItem("actionable"), inboxItem("blocked", false)])));
     if (path === "/api/v1/jobs/decisions") return Promise.resolve(json(page([])));
@@ -97,10 +97,10 @@ function DecisionProbe() {
   return <div><output>{user?.id ?? "loading"}</output><button type="button" onClick={() => { mutate("job-a", "shortlisted"); mutate("job-a", "dismissed"); }}>Mutate A twice</button><button type="button" onClick={() => mutate("job-b", "shortlisted")}>Mutate B</button><button type="button" onClick={() => api.replaceToken("replacement-token")}>Replace session</button></div>;
 }
 function AuthSwitcher() { const { api, retryRestore } = useAuth(); return <button type="button" onClick={() => { api.replaceToken("user-b-token"); retryRestore(); }}>Switch user</button>; }
-function renderJobsWithAuthSwitcher(fetch: ReturnType<typeof fakeFetch>) {
+function renderJobsWithAuthSwitcher(fetch: ReturnType<typeof fakeFetch>, path = "/jobs/find") {
   sessionStorage.setItem(TOKEN, "test-token");
   vi.stubGlobal("fetch", fetch);
-  return render(<MemoryRouter initialEntries={["/jobs/find"]}><AuthProvider><App /><AuthSwitcher /></AuthProvider></MemoryRouter>);
+  return render(<MemoryRouter initialEntries={[path]}><AuthProvider><App /><AuthSwitcher /></AuthProvider></MemoryRouter>);
 }
 function requestPaths(fetch: ReturnType<typeof fakeFetch>) { return fetch.mock.calls.map(([input]) => { const url = new URL(String(input), window.location.origin); return `${url.pathname}${url.search}`; }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
@@ -1068,6 +1068,7 @@ describe("Issue #261 transient one-off discovery", () => {
     } });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    await screen.findByRole("button", { name: "Find jobs" });
     fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
     expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
     expect(screen.getByText(/result is uncertain/)).toBeInTheDocument();
@@ -1382,7 +1383,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     await screen.findByRole("heading", { name: "Find jobs" });
     expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("Applied AI");
     expect(screen.getByRole("link", { name: "Job Search" })).toHaveAttribute("aria-current", "page");
-    expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=100");
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=1&discovered_job_ids=actionable");
   });
 
   it("defaults Results to a linked exact run and renders all twelve synthetic outcomes", async () => {
@@ -1390,7 +1391,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
       ...Array(5).fill("newly_evaluated"), ...Array(5).fill("insufficient_job_detail"), "geography_unknown", "outside_semantic_budget",
     ];
     const detail: DiscoveryRunDetail = { ...run("run-uat"), jobs: outcomes.map((outcome, index) => ({
-      discovered_job_id: `uat-${index}`, evaluation_id: null, outcome, failure_stage: null, failure_kind: null, opportunity: null,
+      discovered_job_id: `uat-${index}`, evaluation_id: null, outcome, failure_stage: null, failure_kind: null, opportunity: null, decision: decision(`uat-${index}`),
       current_job_identity: { title: `Synthetic vacancy ${index + 1}`, company: "Fixture Co", first_seen_at: "2026-10-01T10:00:00Z" },
     })) };
     const fetch = fakeFetch({
@@ -1413,9 +1414,131 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-uat");
   });
 
+  it("lets a user save run-specific rows and removes the same saved decision from both surfaces", async () => {
+    let saved = false;
+    const makeDetail = (): DiscoveryRunDetail => ({ ...run("run-uat"), jobs: Array.from({ length: 12 }, (_, index) => ({
+      discovered_job_id: `uat-${index}`, evaluation_id: index < 5 ? `eval-${index}` : null,
+      outcome: (index < 5 ? "newly_evaluated" : index < 10 ? "insufficient_job_detail" : "geography_unknown") as DiscoveryRunDetail["jobs"][number]["outcome"],
+      failure_stage: null, failure_kind: null, opportunity: null,
+      current_job_identity: { title: `Synthetic vacancy ${index + 1}`, company: "Fixture Co", first_seen_at: "2026-10-01T10:00:00Z" },
+      decision: index === 0 && saved ? { ...decision("uat-0", "shortlisted"), revision: 1 } : decision(`uat-${index}`),
+    })) });
+    const fetch = fakeFetch({
+      "/api/v1/jobs/search-history": () => json(page([{ type: "discovery_run", id: "run-uat", started_at: run().started_at, run: run("run-uat") }])),
+      "/api/v1/jobs/discovery-runs/run-uat": () => json(makeDetail()),
+      "PUT /api/v1/jobs/decisions/uat-0": () => { saved = !saved; return json({ ...decision("uat-0", saved ? "shortlisted" : "undecided"), revision: saved ? 1 : 2 }); },
+      "/api/v1/jobs/decisions": (url) => json(page(url.searchParams.get("decision") === "shortlisted" && saved ? [listedDecision("uat-0", "shortlisted", 1, "Synthetic vacancy 1")] : [])),
+    });
+    renderJobs(fetch, "/jobs/results?scope=latest&run=run-uat");
+    const runRows = await screen.findByText("Per-job outcomes");
+    expect(within(runRows.closest("section")!).getAllByRole("button", { name: /^Shortlist Synthetic vacancy/ })).toHaveLength(12);
+    fireEvent.click(screen.getByRole("button", { name: "Shortlist Synthetic vacancy 1 · Fixture Co" }));
+    await screen.findByText("Shortlisted", { selector: "span" });
+    fireEvent.click(screen.getByRole("link", { name: "Saved" }));
+    expect(await screen.findByRole("heading", { name: "Saved jobs" })).toBeInTheDocument();
+    expect(await screen.findByText("Synthetic vacancy 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Remove from shortlist Synthetic vacancy 1/ }));
+    await waitFor(() => expect(screen.queryByText("Synthetic vacancy 1")).not.toBeInTheDocument());
+    goToResultsScope("Latest");
+    expect(await screen.findByRole("heading", { name: "Search results" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Shortlist Synthetic vacancy 1 · Fixture Co" })).toBeInTheDocument();
+  });
+
+  it("reconciles a run-row decision conflict from the authoritative user-scoped decision read", async () => {
+    let puts = 0;
+    const detail = { ...runDetail(), jobs: [{ ...runDetail().jobs[0], discovered_job_id: "conflict-job", current_job_identity: { title: "Conflict job", company: "Fixture Co", first_seen_at: "2026-10-01T10:00:00Z" }, decision: decision("conflict-job") }] };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/search-history": () => json(page([{ type: "discovery_run", id: "run-1", started_at: detail.started_at, run: detail }])),
+      "/api/v1/jobs/discovery-runs/run-1": () => json(detail),
+      "PUT /api/v1/jobs/decisions/conflict-job": () => { puts += 1; return json({ detail: "Decision changed elsewhere." }, 409); },
+      "GET /api/v1/jobs/decisions/conflict-job": () => json({ ...decision("conflict-job", "shortlisted"), revision: 4 }),
+    });
+    renderJobs(fetch, "/jobs/results?scope=latest&run=run-1");
+    await screen.findByRole("heading", { name: "Per-job outcomes" });
+    fireEvent.click(screen.getByRole("button", { name: /^Shortlist Conflict job/ }));
+    expect(await screen.findByRole("button", { name: /^Remove from shortlist Conflict job/ })).toBeInTheDocument();
+    expect(await screen.findByText(/This decision changed elsewhere/)).toBeInTheDocument();
+    expect(puts).toBe(1);
+  });
+
+  it("uses one bounded visible-page current-Fit read and clears it on user switch", async () => {
+    const userB = { ...user, id: "user-b", email: "b@example.test" };
+    const fetch = fakeFetch({
+      "/api/v1/users/me": (_url, init) => new Headers(init?.headers).get("Authorization")?.includes("user-b-token") ? json(userB) : json(user),
+      "/api/v1/jobs/inbox": () => json(page([inboxItem("visible-outside-top-100")])),
+      "/api/v1/jobs/opportunities": (url, init) => {
+        const ids = url.searchParams.getAll("discovered_job_ids");
+        const token = new Headers(init?.headers).get("Authorization");
+        if (!ids.length || token?.includes("user-b-token")) return json(page([]));
+        return json(page([{ ...op("visible-outside-top-100", "Visible current role"), discovered_job_id: ids[0], decision: decision(ids[0]) }]));
+      },
+    });
+    renderJobsWithAuthSwitcher(fetch, "/jobs/results?scope=all");
+    await screen.findByRole("heading", { name: "All discovered jobs" });
+    expect(await screen.findByText("AI analysed · CONSIDER · Fit 72")).toBeInTheDocument();
+    const fitCallsA = fetch.mock.calls.filter(([input]) => String(input).includes("discovered_job_ids=visible-outside-top-100"));
+    expect(fitCallsA).toHaveLength(1);
+    expect(screen.queryByText("Available for evaluation")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
+    await waitFor(() => expect(screen.getByText("Available for evaluation")).toBeInTheDocument());
+    expect(screen.queryByText("AI analysed · CONSIDER · Fit 72")).not.toBeInTheDocument();
+    const fitCallsB = fetch.mock.calls.filter(([input, init]) => String(input).includes("discovered_job_ids=visible-outside-top-100") && new Headers(init?.headers).get("Authorization")?.includes("user-b-token"));
+    expect(fitCallsB).toHaveLength(1);
+  });
+
+  it("shows the newest unlinked one-off outcome instead of falling back to an older run", async () => {
+    const newest = oneOffExecution({ id: "newest-zero-search", status: "failed", started_at: "2026-10-08T12:00:00Z", completed_at: "2026-10-08T12:01:00Z", acquisition_summary: { canonical_jobs: 0, analysed: 0 }, failure_summary: { agentic_web: 1 } });
+    const older = run("older-linked-run");
+    const fetch = fakeFetch({ "/api/v1/jobs/search-history": () => json(page([
+      { type: "one_off", id: newest.id, started_at: newest.started_at, execution: newest },
+      { type: "discovery_run", id: older.id, started_at: older.started_at, run: older },
+    ])) });
+    renderJobs(fetch, "/jobs/results");
+    expect(await screen.findByRole("heading", { name: "One-off search · Failed" })).toBeInTheDocument();
+    expect(screen.getByText(/0 jobs found · 0 analysed/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("View search details"));
+    expect(await screen.findByText(/Failures: Agentic Web 1/)).toBeInTheDocument();
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-runs/older-linked-run");
+  });
+
+  it("keeps a linked one-off acquisition warning visible after returning from its workspace", async () => {
+    const linked = oneOffExecution({ status: "partial_failed", discovery_run_id: "partial-run", acquisition_summary: { canonical_jobs: 12, analysed: 5 } });
+    const detail: DiscoveryRunDetail = { ...run("partial-run"), jobs: [{ ...runDetail().jobs[0], discovered_job_id: "partial-job", current_job_identity: { title: "Partial acquisition role", company: "Fixture Co", first_seen_at: "2026-10-01T10:00:00Z" } }] };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/search-history": () => json(page([{ type: "one_off", id: linked.id, started_at: linked.started_at, execution: linked }])),
+      "/api/v1/jobs/discovery-runs/partial-run": () => json(detail),
+      "/api/v1/jobs/workspaces/partial-job": () => json(workspacePayload(decision("partial-job"), { job: workspaceJob({ id: "partial-job", title: "Partial acquisition role" }) })),
+    });
+    renderJobs(fetch, "/jobs/results?scope=latest&run=partial-run");
+    expect(await screen.findByText("Some pages could not be processed; saved results remain available.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Open workspace for Partial acquisition role · Fixture Co" }));
+    await screen.findByRole("heading", { name: "Partial acquisition role" });
+    fireEvent.click(screen.getByRole("link", { name: "Back to Results" }));
+    expect(await screen.findByText("Some pages could not be processed; saved results remain available.")).toBeInTheDocument();
+  });
+
+  it("opens exact diagnostics for both zero-result and failed unlinked searches in Past searches", async () => {
+    const completed = oneOffExecution({ id: "zero", status: "completed", started_at: "2026-10-07T12:00:00Z", completed_at: "2026-10-07T12:01:00Z", acquisition_summary: { canonical_jobs: 0, analysed: 0 } });
+    const failed = oneOffExecution({ id: "failed", status: "failed", started_at: "2026-10-08T12:00:00Z", completed_at: "2026-10-08T12:01:00Z", acquisition_summary: { canonical_jobs: 0, analysed: 0 }, failure_summary: { page_fetch: 2 } });
+    const fetch = fakeFetch({ "/api/v1/jobs/search-history": () => json(page([
+      { type: "one_off", id: failed.id, started_at: failed.started_at, execution: failed },
+      { type: "one_off", id: completed.id, started_at: completed.started_at, execution: completed },
+    ])) });
+    renderJobs(fetch, "/jobs/history");
+    await screen.findByRole("heading", { name: "Past searches" });
+    const failedCard = screen.getByRole("heading", { name: "One-off search · Failed" }).closest("li")!;
+    fireEvent.click(within(failedCard).getByText("View search details"));
+    expect(await within(failedCard).findByText(/Failures: Page Fetch 2/)).toBeInTheDocument();
+    const completedCard = screen.getByRole("heading", { name: "One-off search · Completed" }).closest("li")!;
+    fireEvent.click(within(completedCard).getByText("View search details"));
+    expect(await within(completedCard).findByText(/No linked evaluation run was saved/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "View search details" })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href="#runs-heading"]')).toBeNull();
+  });
+
   it("returns from an exact-run workspace to the same Results run after switching workspace sections", async () => {
     const detail: DiscoveryRunDetail = { ...runDetail(), jobs: [{
-      discovered_job_id: "actionable", evaluation_id: null, outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: null,
+      discovered_job_id: "actionable", evaluation_id: null, outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: null, decision: decision("actionable"),
       current_job_identity: { title: "Run-specific role", company: "Public Co", first_seen_at: "2026-10-01T10:00:00Z" },
     }] };
     const fetch = fakeFetch({
