@@ -166,7 +166,7 @@ describe("Issue #171 Jobs workspace", () => {
       expect(within(card).queryByRole("button", { name: /Prepare application/ })).not.toBeInTheDocument();
       expect(within(card).getByText(/First found:/)).toBeInTheDocument();
     }
-    expect(screen.getAllByRole("button", { name: /^Shortlist Repeated role/ })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /^Save Repeated role/ })).toHaveLength(2);
     expect(screen.getAllByText(/CONSIDER · Fit 72/)).toHaveLength(2);
   });
 
@@ -765,6 +765,7 @@ describe("Issue #171 Jobs workspace", () => {
     const fetch = fakeFetch(); renderJobs(fetch); await loaded();
     const card = screen.getByRole("link", { name: /Open workspace for Alpha/ }).closest("li")!;
     expect(within(card).getAllByRole("link")).toHaveLength(1);
+    expect(within(card).getByRole("button", { name: "Save Alpha · Example Co · London · result 1" })).toBeInTheDocument();
     expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/opportunities/eval-"))).toBe(false);
   });
 
@@ -1416,6 +1417,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
 
   it("lets a user save run-specific rows and removes the same saved decision from both surfaces", async () => {
     let saved = false;
+    const mutations: Array<Record<string, unknown>> = [];
     const makeDetail = (): DiscoveryRunDetail => ({ ...run("run-uat"), jobs: Array.from({ length: 12 }, (_, index) => ({
       discovered_job_id: `uat-${index}`, evaluation_id: index < 5 ? `eval-${index}` : null,
       outcome: (index < 5 ? "newly_evaluated" : index < 10 ? "insufficient_job_detail" : "geography_unknown") as DiscoveryRunDetail["jobs"][number]["outcome"],
@@ -1426,22 +1428,29 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     const fetch = fakeFetch({
       "/api/v1/jobs/search-history": () => json(page([{ type: "discovery_run", id: "run-uat", started_at: run().started_at, run: run("run-uat") }])),
       "/api/v1/jobs/discovery-runs/run-uat": () => json(makeDetail()),
-      "PUT /api/v1/jobs/decisions/uat-0": () => { saved = !saved; return json({ ...decision("uat-0", saved ? "shortlisted" : "undecided"), revision: saved ? 1 : 2 }); },
+      "PUT /api/v1/jobs/decisions/uat-0": (_url, init) => { mutations.push(JSON.parse(String(init?.body))); saved = !saved; return json({ ...decision("uat-0", saved ? "shortlisted" : "undecided"), revision: saved ? 1 : 2 }); },
       "/api/v1/jobs/decisions": (url) => json(page(url.searchParams.get("decision") === "shortlisted" && saved ? [listedDecision("uat-0", "shortlisted", 1, "Synthetic vacancy 1")] : [])),
     });
-    renderJobs(fetch, "/jobs/results?scope=latest&run=run-uat");
+    renderJobs(fetch, "/jobs/find");
+    await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.click(screen.getByRole("link", { name: "Results" }));
+    expect(await screen.findByRole("heading", { name: "Latest search" })).toBeInTheDocument();
     const runRows = await screen.findByText("Per-job outcomes");
-    expect(within(runRows.closest("section")!).getAllByRole("button", { name: /^Shortlist Synthetic vacancy/ })).toHaveLength(12);
-    fireEvent.click(screen.getByRole("button", { name: "Shortlist Synthetic vacancy 1 · Fixture Co" }));
-    await screen.findByText("Shortlisted", { selector: "span" });
+    expect(within(runRows.closest("section")!).getAllByRole("button", { name: /^Save Synthetic vacancy/ })).toHaveLength(12);
+    fireEvent.click(screen.getByRole("button", { name: "Save Synthetic vacancy 1 · Fixture Co" }));
+    await screen.findByText("Saved", { selector: "span" });
+    expect(screen.getByRole("button", { name: "Remove from Saved Synthetic vacancy 1 · Fixture Co" })).toBeInTheDocument();
+    expect(mutations[0]).toEqual({ decision: "shortlisted", expected_revision: null });
     fireEvent.click(screen.getByRole("link", { name: "Saved" }));
     expect(await screen.findByRole("heading", { name: "Saved jobs" })).toBeInTheDocument();
     expect(await screen.findByText("Synthetic vacancy 1")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^Remove from shortlist Synthetic vacancy 1/ }));
+    expect(screen.getByLabelText("Saved")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Remove from Saved Synthetic vacancy 1/ }));
     await waitFor(() => expect(screen.queryByText("Synthetic vacancy 1")).not.toBeInTheDocument());
+    expect(mutations[1]).toEqual({ decision: "undecided", expected_revision: 1 });
     goToResultsScope("Latest");
     expect(await screen.findByRole("heading", { name: "Search results" })).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "Shortlist Synthetic vacancy 1 · Fixture Co" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Save Synthetic vacancy 1 · Fixture Co" })).toBeInTheDocument();
   });
 
   it("reconciles a run-row decision conflict from the authoritative user-scoped decision read", async () => {
@@ -1455,8 +1464,8 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     });
     renderJobs(fetch, "/jobs/results?scope=latest&run=run-1");
     await screen.findByRole("heading", { name: "Per-job outcomes" });
-    fireEvent.click(screen.getByRole("button", { name: /^Shortlist Conflict job/ }));
-    expect(await screen.findByRole("button", { name: /^Remove from shortlist Conflict job/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Save Conflict job/ }));
+    expect(await screen.findByRole("button", { name: /^Remove from Saved Conflict job/ })).toBeInTheDocument();
     expect(await screen.findByText(/This decision changed elsewhere/)).toBeInTheDocument();
     expect(puts).toBe(1);
   });
@@ -1526,7 +1535,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     ])) });
     renderJobs(fetch, "/jobs/history");
     await screen.findByRole("heading", { name: "Past searches" });
-    const failedCard = screen.getByRole("heading", { name: "One-off search · Failed" }).closest("li")!;
+    const failedCard = (await screen.findByRole("heading", { name: "One-off search · Failed" })).closest("li")!;
     fireEvent.click(within(failedCard).getByText("View search details"));
     expect(await within(failedCard).findByText(/Failures: Page Fetch 2/)).toBeInTheDocument();
     const completedCard = screen.getByRole("heading", { name: "One-off search · Completed" }).closest("li")!;
@@ -1566,10 +1575,11 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     expect(screen.getByText(/First found is when Career-trans first added this vacancy to its shared public catalogue/)).toBeInTheDocument();
     expect(within(card!).getAllByRole("link")).toHaveLength(1);
     expect(within(card!).getByRole("link", { name: "Open job: Inbox actionable · Public Co · London" })).toHaveAttribute("href", "/jobs/actionable");
+    expect(within(card!).getByRole("button", { name: "Save Inbox actionable · Public Co · London" })).toBeInTheDocument();
     expect(within(card!).getByText("Available for evaluation")).toBeInTheDocument();
   });
 
-  it("loads the authoritative Shortlisted decision projection without reading opportunity state", async () => {
+  it("loads the authoritative Saved decision projection without reading opportunity state", async () => {
     const { fetch } = renderJobs(fakeFetch(), "/jobs/opportunities/shortlisted");
     expect(await screen.findByRole("heading", { name: "Saved jobs" })).toBeInTheDocument();
     expect(await screen.findByText(/No saved jobs yet/)).toBeInTheDocument();
@@ -1581,17 +1591,17 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
 
   it("renders a non-actionable shortlisted decision and refetches after removal", async () => {
     let listCalls = 0;
-    const item = { discovered_job_id: "job-short", title: "Shortlisted role", company: "Public Co", location: "London", url: "https://public.example.test/short", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "inactive" as const, verification_status: "verified" as const, verification_reason: null, actionable: false, last_seen_at: "2026-02-02T00:00:00Z", decision: "shortlisted" as const, revision: 1, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" };
+    const item = { discovered_job_id: "job-short", title: "Saved role", company: "Public Co", location: "London", url: "https://public.example.test/short", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "inactive" as const, verification_status: "verified" as const, verification_reason: null, actionable: false, last_seen_at: "2026-02-02T00:00:00Z", decision: "shortlisted" as const, revision: 1, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" };
     const fetch = fakeFetch({
       "/api/v1/jobs/decisions": (url) => { listCalls += 1; return json(url.searchParams.get("decision") === "shortlisted" && listCalls === 1 ? page([item]) : page([])); },
       "PUT /api/v1/jobs/decisions/job-short": () => json(decision("job-short")),
     });
     renderJobs(fetch, "/jobs/opportunities/shortlisted");
-    expect(await screen.findByText("Shortlisted role")).toBeInTheDocument();
+    expect(await screen.findByText("Saved role")).toBeInTheDocument();
     expect(screen.getByText(/This vacancy is no longer available for new actions/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^Remove from shortlist/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Remove from Saved/ }));
     await waitFor(() => expect(listCalls).toBeGreaterThan(1));
-    expect(screen.queryByText("Shortlisted role")).not.toBeInTheDocument();
+    expect(screen.queryByText("Saved role")).not.toBeInTheDocument();
   });
 
   it("loads history deep links directly and preserves run/job query navigation", async () => {
@@ -2048,7 +2058,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
     });
     renderJobs(fetch, "/jobs/inbox"); await screen.findByText("Inbox actionable");
     fireEvent.click(screen.getAllByRole("button", { name: /^Dismiss/ })[0]);
-    await waitFor(() => expect(screen.getByLabelText("Shortlisted")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("Saved")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
     expect(screen.getByText(/decision changed elsewhere/)).toBeInTheDocument();
     expect(fetch.mock.calls.filter(([input, init]) => String(input).includes("/api/v1/jobs/decisions/actionable") && init?.method === "PUT")).toHaveLength(1);
@@ -2089,7 +2099,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
     fireEvent.click(screen.getAllByRole("button", { name: /^Dismiss/ })[0]);
     await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    await waitFor(() => expect(screen.getByLabelText("Shortlisted")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText("Saved")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
     expect(screen.getByText(/decision changed elsewhere/)).toBeInTheDocument();
   });
@@ -2108,7 +2118,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
     expect(inboxCalls).toBe(1);
   });
 
-  it("ignores a stale Show more Shortlisted response after authoritative removal", async () => {
+  it("ignores a stale Show more Saved response after authoritative removal", async () => {
     const oldResponse = deferred<Response>();
     const item = { discovered_job_id: "job-short", title: "Stale shortlisted role", company: "Public Co", location: "London", url: "https://public.example.test/short", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "inactive" as const, verification_status: "verified" as const, verification_reason: null, actionable: false, last_seen_at: "2026-02-02T00:00:00Z", decision: "shortlisted" as const, revision: 1, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" };
     let calls = 0;
@@ -2119,7 +2129,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
     renderJobs(fetch, "/jobs/opportunities/shortlisted"); await screen.findByText(item.title);
     fireEvent.click(screen.getByRole("button", { name: "Show more saved jobs" }));
     await waitFor(() => expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=shortlisted&limit=40"));
-    fireEvent.click(screen.getByRole("button", { name: /^Remove from shortlist/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Remove from Saved/ }));
     await waitFor(() => expect(screen.queryByText(item.title)).not.toBeInTheDocument());
     oldResponse.resolve(json(page([item], true)));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2128,7 +2138,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
 
   it("loads Dismissed management lazily and ignores stale Show more after Undo", async () => {
     const oldResponse = deferred<Response>();
-    const shortlisted = { discovered_job_id: "job-short", title: "Shortlisted anchor", company: "Public Co", location: "London", url: "https://public.example.test/short", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "new" as const, verification_status: "verified" as const, verification_reason: null, actionable: true, last_seen_at: "2026-02-02T00:00:00Z", decision: "shortlisted" as const, revision: 1, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" };
+    const shortlisted = { discovered_job_id: "job-short", title: "Saved anchor", company: "Public Co", location: "London", url: "https://public.example.test/short", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "new" as const, verification_status: "verified" as const, verification_reason: null, actionable: true, last_seen_at: "2026-02-02T00:00:00Z", decision: "shortlisted" as const, revision: 1, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" };
     const item = { ...shortlisted, discovered_job_id: "job-dismissed", title: "Stale dismissed role", decision: "dismissed" as const };
     const listCalls = { shortlisted: 0, dismissed: 0 };
     const fetch = fakeFetch({
@@ -2214,10 +2224,10 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
 
 describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
   const workspaceDecisionCases = [
-    ["never-decided", "undecided", null, ["Shortlist", "Dismiss"], "Shortlist", "shortlisted"],
-    ["persisted-undecided", "undecided", 4, ["Shortlist", "Dismiss"], "Dismiss", "dismissed"],
-    ["shortlisted", "shortlisted", 5, ["Shortlisted", "Remove from shortlist", "Dismiss"], "Dismiss", "dismissed"],
-    ["dismissed", "dismissed", 6, ["Dismissed", "Undo dismissal", "Shortlist"], "Shortlist", "shortlisted"],
+    ["never-decided", "undecided", null, ["Save", "Dismiss"], "Save", "shortlisted"],
+    ["persisted-undecided", "undecided", 4, ["Save", "Dismiss"], "Dismiss", "dismissed"],
+    ["shortlisted", "shortlisted", 5, ["Saved", "Remove from Saved", "Dismiss"], "Dismiss", "dismissed"],
+    ["dismissed", "dismissed", 6, ["Dismissed", "Undo dismissal", "Save"], "Save", "shortlisted"],
   ] as const;
 
   it.each(workspaceDecisionCases)("renders %s Workspace controls and preserves exact decision authority", async (_label, value, revision, controls, mutation, returned) => {
@@ -2229,7 +2239,7 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     renderJobs(fetch, "/jobs/actionable");
     await screen.findByRole("heading", { name: "Workspace role" });
     expect(screen.getByLabelText("Your decision")).toBeInTheDocument();
-    for (const control of controls) expect(screen.getByRole(control === "Shortlisted" || control === "Dismissed" ? "generic" : "button", { name: control })).toBeInTheDocument();
+    for (const control of controls) expect(screen.getByRole(control === "Saved" || control === "Dismissed" ? "generic" : "button", { name: control })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: mutation }));
     await waitFor(() => expect(body).toEqual({ decision: returned, expected_revision: revision }));
   });
@@ -2244,7 +2254,7 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     renderJobs(fetch, path);
     await screen.findByRole("heading", { name: "Workspace role" });
     expect(screen.getByLabelText("Your decision")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Shortlist/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Save/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /^Dismiss/ })).toBeEnabled();
   });
 
@@ -2256,11 +2266,11 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     renderJobs(fetch, "/jobs/actionable/fit");
     await screen.findByRole("heading", { name: "Current Fit" });
     expect(screen.getByText(expectedText)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Shortlist/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Save/ })).toBeEnabled();
     expect(screen.getByRole("button", { name: /^Dismiss/ })).toBeEnabled();
   });
 
-  it("moves a confirmed Shortlisted item to Dismissed through authoritative refetches", async () => {
+  it("moves a confirmed Saved item to Dismissed through authoritative refetches", async () => {
     const shortlisted = listedDecision("job-transition", "shortlisted", 7, "Transition shortlist");
     const dismissed = { ...shortlisted, title: "Transition dismissed", decision: "dismissed" as const, revision: 8 };
     let shortlistedCalls = 0; let dismissedCalls = 0; let body: Record<string, unknown> | undefined;
@@ -2284,7 +2294,7 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(await screen.findByText(dismissed.title)).toBeInTheDocument();
   });
 
-  it("moves a confirmed Dismissed item to Shortlisted through authoritative refetches", async () => {
+  it("moves a confirmed Dismissed item to Saved through authoritative refetches", async () => {
     const anchor = listedDecision("job-anchor", "shortlisted", 2, "Existing shortlist");
     const dismissed = listedDecision("job-recover", "dismissed", 9, "Recoverable dismissal");
     const promoted = { ...dismissed, title: "Recovered shortlist", decision: "shortlisted" as const, revision: 10 };
@@ -2301,7 +2311,7 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     await screen.findByText(anchor.title);
     fireEvent.click(screen.getByRole("button", { name: "Manage dismissed jobs" }));
     await screen.findByText(dismissed.title);
-    fireEvent.click(screen.getByRole("button", { name: /^Shortlist/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
     await waitFor(() => expect(screen.queryByText(dismissed.title)).not.toBeInTheDocument());
     expect(body).toEqual({ decision: "shortlisted", expected_revision: 9 });
     await waitFor(() => expect(shortlistedCalls).toBeGreaterThan(1));
@@ -2309,12 +2319,12 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(dismissedCalls).toBeGreaterThan(1);
   });
 
-  it("grows Shortlisted deterministically from 20 to 100 and states max-window truncation truthfully", async () => {
+  it("grows Saved deterministically from 20 to 100 and states max-window truncation truthfully", async () => {
     const fetch = fakeFetch({
-      "/api/v1/jobs/decisions": (url) => url.searchParams.get("decision") === "shortlisted" ? json(page([listedDecision(`short-${url.searchParams.get("limit")}`, "shortlisted", 1, `Shortlisted ${url.searchParams.get("limit")}`)], true)) : json(page([])),
+      "/api/v1/jobs/decisions": (url) => url.searchParams.get("decision") === "shortlisted" ? json(page([listedDecision(`short-${url.searchParams.get("limit")}`, "shortlisted", 1, `Saved ${url.searchParams.get("limit")}`)], true)) : json(page([])),
     });
     renderJobs(fetch, "/jobs/opportunities/shortlisted");
-    await screen.findByText("Shortlisted 20");
+    await screen.findByText("Saved 20");
     for (const limit of [40, 60, 80, 100]) {
       fireEvent.click(screen.getByRole("button", { name: "Show more saved jobs" }));
       await waitFor(() => expect(requestPaths(fetch)).toContain(`/api/v1/jobs/decisions?decision=shortlisted&limit=${limit}`));
@@ -2324,7 +2334,7 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
   });
 
   it("grows Dismissed independently from 20 to 100 and states max-window truncation truthfully", async () => {
-    const anchor = listedDecision("job-anchor", "shortlisted", 2, "Shortlisted anchor");
+    const anchor = listedDecision("job-anchor", "shortlisted", 2, "Saved anchor");
     const fetch = fakeFetch({
       "/api/v1/jobs/decisions": (url) => url.searchParams.get("decision") === "shortlisted" ? json(page([anchor])) : json(page([listedDecision(`dismissed-${url.searchParams.get("limit")}`, "dismissed", 1, `Dismissed ${url.searchParams.get("limit")}`)], true)),
     });
@@ -2340,20 +2350,20 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(screen.queryByRole("button", { name: "Show more dismissed jobs" })).not.toBeInTheDocument();
   });
 
-  it("keeps an Inbox row visible when Shortlist is confirmed", async () => {
+  it("keeps an Inbox row visible when Save is confirmed", async () => {
     let body: Record<string, unknown> | undefined;
     const fetch = fakeFetch({
       "PUT /api/v1/jobs/decisions/actionable": (_url, init) => { body = JSON.parse(String(init?.body)); return json({ ...decision("actionable", "shortlisted"), revision: 4 }); },
     });
     renderJobs(fetch, "/jobs/inbox");
     await screen.findByText("Inbox actionable");
-    fireEvent.click(screen.getAllByRole("button", { name: /^Shortlist/ })[0]);
-    await waitFor(() => expect(screen.getByLabelText("Shortlisted")).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole("button", { name: /^Save/ })[0]);
+    await waitFor(() => expect(screen.getByLabelText("Saved")).toBeInTheDocument());
     expect(body).toEqual({ decision: "shortlisted", expected_revision: null });
     expect(screen.getByText("Inbox actionable")).toBeInTheDocument();
   });
 
-  it("keeps Recommended ordering and analysis fields unchanged when Shortlist is confirmed", async () => {
+  it("keeps Recommended ordering and analysis fields unchanged when Save is confirmed", async () => {
     let opportunityCalls = 0; let body: Record<string, unknown> | undefined;
     const fetch = fakeFetch({
       "/api/v1/jobs/opportunities": () => { opportunityCalls += 1; return json(page([op("alpha", "Alpha", 1), op("beta", "Beta", 2)])); },
@@ -2362,8 +2372,8 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     renderJobs(fetch, "/jobs/opportunities/recommended");
     await screen.findByText("Alpha");
     const alpha = screen.getByText("Alpha").closest("li")!;
-    fireEvent.click(within(alpha).getByRole("button", { name: /^Shortlist/ }));
-    await waitFor(() => expect(within(alpha).getByLabelText("Shortlisted")).toBeInTheDocument());
+    fireEvent.click(within(alpha).getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(within(alpha).getByLabelText("Saved")).toBeInTheDocument());
     expect(body).toEqual({ decision: "shortlisted", expected_revision: null });
     expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Alpha", "Beta"]);
     expect(within(alpha).getByText(/CONSIDER · Fit 72/)).toBeInTheDocument();
@@ -2400,14 +2410,14 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     renderJobs(fetch, "/jobs/opportunities/recommended");
     const alpha = await screen.findByText("Alpha");
     fireEvent.click(within(alpha.closest("li")!).getByRole("button", { name: /^Dismiss/ }));
-    await waitFor(() => expect(within(screen.getByText("Alpha").closest("li")!).getByLabelText("Shortlisted")).toBeInTheDocument());
+    await waitFor(() => expect(within(screen.getByText("Alpha").closest("li")!).getByLabelText("Saved")).toBeInTheDocument());
     expect(puts).toBe(1);
     expect(opportunityCalls).toBe(1);
     expect(screen.getByText(/decision changed elsewhere/)).toBeInTheDocument();
   });
 
-  it("reloads Dismissed management from durable authority on a direct Shortlisted route", async () => {
-    const anchor = listedDecision("job-anchor", "shortlisted", 2, "Shortlisted anchor");
+  it("reloads Dismissed management from durable authority on a direct Saved route", async () => {
+    const anchor = listedDecision("job-anchor", "shortlisted", 2, "Saved anchor");
     const dismissed = listedDecision("job-reload", "dismissed", 5, "Reloaded dismissal");
     const fetch = fakeFetch({
       "/api/v1/jobs/decisions": (url) => url.searchParams.get("decision") === "shortlisted" ? json(page([anchor])) : json(page([dismissed])),
@@ -2640,8 +2650,8 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(await screen.findByText("prep-20")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create preparation" }));
     await waitFor(() => expect(workspaceCalls).toBe(2));
-    fireEvent.click(screen.getByRole("button", { name: /^Shortlist/ }));
-    expect(await screen.findByLabelText("Shortlisted")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    expect(await screen.findByLabelText("Saved")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show more" }));
     expect(await screen.findByText("prep-40")).toBeInTheDocument();
     staleRefresh.resolve(json(workspacePayload(decision("actionable", "dismissed"), {
@@ -2652,7 +2662,7 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(await screen.findByText("This vacancy is no longer actionable. Saved preparations remain visible, but new preparation creation is disabled.")).toBeInTheDocument();
     expect(screen.getByText("prep-40")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Shortlisted")).toBeInTheDocument();
+    expect(screen.getByLabelText("Saved")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Fit" }));
     expect(await screen.findByText("This vacancy is not currently actionable, so no current Fit is claimed.")).toBeInTheDocument();
     expect(screen.getByText("Historical workspace role")).toBeInTheDocument();

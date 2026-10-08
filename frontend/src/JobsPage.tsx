@@ -149,7 +149,7 @@ function ResultsNavigation({ scope }: { scope: "latest" | "all" | "analysed" | "
 }
 
 function OpportunitiesNavigation({ view }: { view: JobSearchView }) {
-  return <nav className="jobs-tabs" aria-label="My opportunities sections"><NavLink to="/jobs/opportunities/shortlisted" aria-current={view === "shortlisted" ? "page" : undefined} className={view === "shortlisted" ? "active" : undefined}>Shortlisted</NavLink><NavLink to="/jobs/opportunities/recommended" aria-current={view === "recommended" ? "page" : undefined} className={view === "recommended" ? "active" : undefined}>Recommended / Current analyses</NavLink></nav>;
+  return <nav className="jobs-tabs" aria-label="My opportunities sections"><NavLink to="/jobs/opportunities/shortlisted" aria-current={view === "shortlisted" ? "page" : undefined} className={view === "shortlisted" ? "active" : undefined}>Saved</NavLink><NavLink to="/jobs/opportunities/recommended" aria-current={view === "recommended" ? "page" : undefined} className={view === "recommended" ? "active" : undefined}>Recommended / Current analyses</NavLink></nav>;
 }
 
 function StateMessage<T>({ state, empty, children, onRetry }: { state: SectionState<T>; empty: boolean; children: React.ReactNode; onRetry: () => void }) {
@@ -583,7 +583,7 @@ export function JobsPage() {
       const data = await api.request<BoundedResponse<UserJobDecisionListItem>>(`/api/v1/jobs/decisions?decision=${kind}&limit=${limit}`);
       if (alive.current && request === generations.current[kind]) { setter({ phase: "loaded", data }); return true; }
     } catch {
-      if (alive.current && request === generations.current[kind]) setter((previous) => ({ phase: "error", data: previous.data, error: `${kind === "shortlisted" ? "Shortlisted" : "Dismissed jobs"} are unavailable.` }));
+      if (alive.current && request === generations.current[kind]) setter((previous) => ({ phase: "error", data: previous.data, error: `${kind === "shortlisted" ? "Saved jobs" : "Dismissed jobs"} are unavailable.` }));
     }
     return false;
   };
