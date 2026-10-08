@@ -687,7 +687,7 @@ describe("Issue #171 Jobs workspace", () => {
     expect(await screen.findByLabelText("What roles are you looking for? (one per line)")).toHaveValue("AI");
     goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("button", { name: "Retry this same evaluation safely" }));
-    expect(await screen.findByRole("region", { name: "Analysis just completed" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Search evaluation result" })).toBeInTheDocument();
     expect(posts).toBe(1);
     expect(sessionStorage.getItem("career-trans.inbox-evaluation-uncertain")).toBeNull();
   });
@@ -1021,6 +1021,22 @@ describe("Issue #261 transient one-off discovery", () => {
     expect(posts).toBe(1);
   });
 
+  it("explains partial one-off acquisition failures while keeping saved results available", async () => {
+    const fetch = fakeFetch({
+      "POST /api/v1/jobs/one-off-discovery/executions": () => json(oneOffExecution({
+        status: "partial_failed", discovery_run_id: "partial-run",
+        acquisition_summary: { canonical_jobs: 12, analysed: 5 }, failure_summary: { page_fetch: 2 },
+      })),
+    });
+    renderJobs(fetch);
+    await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
+    expect(await screen.findByText("Some pages could not be processed; saved results remain available.")).toBeInTheDocument();
+    expect(screen.getByText(/12 jobs were saved from this search/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View these results" })).toHaveAttribute("href", "/jobs/results?scope=latest&run=partial-run");
+  });
+
   it("keeps an unresolved interruption behind explicit Reconcile search with the same request id", async () => {
     const submitted: Array<Record<string, unknown>> = [];
     let posts = 0;
@@ -1137,7 +1153,7 @@ describe("Issue #261 transient one-off discovery", () => {
     } });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(await screen.findByRole("heading", { name: "Search Completed" })).toBeInTheDocument();
     expect(submitted).toHaveLength(2);
     expect(submitted[1]).toEqual(submitted[0]);
@@ -1383,7 +1399,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     });
     renderJobs(fetch, "/jobs/results");
     expect(await screen.findByRole("heading", { name: "Latest search" })).toBeInTheDocument();
-    expect(await screen.findByText("12 exact persisted outcomes")).toBeInTheDocument();
+    expect(await screen.findByText("12 jobs · 5 analysed · 5 need more details · 2 not analysed")).toBeInTheDocument();
     const rows = screen.getByText("Per-job outcomes").closest("section");
     expect(rows).not.toBeNull();
     expect(within(rows!).getAllByText("Newly evaluated")).toHaveLength(5);
@@ -1397,6 +1413,26 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-uat");
   });
 
+  it("returns from an exact-run workspace to the same Results run after switching workspace sections", async () => {
+    const detail: DiscoveryRunDetail = { ...runDetail(), jobs: [{
+      discovered_job_id: "actionable", evaluation_id: null, outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: null,
+      current_job_identity: { title: "Run-specific role", company: "Public Co", first_seen_at: "2026-10-01T10:00:00Z" },
+    }] };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/discovery-runs/run-1": () => json(detail),
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload()),
+    });
+    renderJobs(fetch, "/jobs/results?scope=latest&run=run-1", true);
+    await screen.findByText("Per-job outcomes");
+    fireEvent.click(screen.getByRole("link", { name: "Open workspace for Run-specific role · Public Co" }));
+    await screen.findByRole("heading", { name: "Workspace role" });
+    fireEvent.click(screen.getByRole("link", { name: "Fit" }));
+    await screen.findByRole("heading", { name: "Current Fit" });
+    fireEvent.click(screen.getByRole("link", { name: "Back to Results" }));
+    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/results?scope=latest&run=run-1:"));
+    expect(await screen.findByText("Per-job outcomes")).toBeInTheDocument();
+  });
+
   it("shows source-neutral All discovered cards with First found and a single internal job action", async () => {
     renderJobs(fakeFetch(), "/jobs/results?scope=all");
     await screen.findByRole("heading", { name: "All discovered jobs" });
@@ -1404,6 +1440,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     const card = cardTitle.closest("li");
     expect(card).not.toBeNull();
     expect(within(card!).getByText(/^First found:/)).toBeInTheDocument();
+    expect(screen.getByText(/First found is when Career-trans first added this vacancy to its shared public catalogue/)).toBeInTheDocument();
     expect(within(card!).getAllByRole("link")).toHaveLength(1);
     expect(within(card!).getByRole("link", { name: "Open job: Inbox actionable · Public Co · London" })).toHaveAttribute("href", "/jobs/actionable");
     expect(within(card!).getByText("Available for evaluation")).toBeInTheDocument();
@@ -1630,7 +1667,7 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     pending.resolve(json({ ...run("run-new"), run_input: {}, jobs: [] }));
     await waitFor(() => expect(posts).toBe(1));
     goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
-    const exactResult = screen.getByRole("region", { name: "Analysis just completed" });
+    const exactResult = screen.getByRole("region", { name: "Search evaluation result" });
     fireEvent.click(within(exactResult).getByText("Search details"));
     expect(within(exactResult).getByText(/Search themes: Deferred AI/)).toBeInTheDocument();
   });
@@ -1676,15 +1713,16 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
-    await screen.findByRole("region", { name: "Analysis just completed" });
-    const exactResult = screen.getByRole("region", { name: "Analysis just completed" });
+    await screen.findByRole("region", { name: "Search evaluation result" });
+    const exactResult = screen.getByRole("region", { name: "Search evaluation result" });
     fireEvent.click(within(exactResult).getByRole("link", { name: "View these results" }));
     await screen.findByText("Per-job outcomes");
     fireEvent.click(screen.getByRole("link", { name: /Open workspace for Exact returned role/ }));
     await screen.findByRole("heading", { name: "Exact returned role" });
     goToResultsScope("All discovered");
     await screen.findByRole("heading", { name: "All discovered jobs" });
-    expect(screen.getByRole("region", { name: "Analysis just completed" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Search evaluation result" })).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Search evaluation result" })).getByText("1 job · 1 analysed")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View these results" })).toHaveAttribute("href", "/jobs/results?scope=latest&run=run-exact");
   });
 
@@ -1697,8 +1735,8 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
-    await screen.findByRole("region", { name: "Analysis just completed" });
-    const exactResult = screen.getByRole("region", { name: "Analysis just completed" });
+    await screen.findByRole("region", { name: "Search evaluation result" });
+    const exactResult = screen.getByRole("region", { name: "Search evaluation result" });
     fireEvent.click(within(exactResult).getByRole("link", { name: "View these results" }));
     await screen.findByText("Per-job outcomes");
     expect(screen.getAllByText("Semantic rejected")).toHaveLength(2);
@@ -1778,8 +1816,8 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
     goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
-    await screen.findByRole("region", { name: "Analysis just completed" });
-    const exactResult = screen.getByRole("region", { name: "Analysis just completed" });
+    await screen.findByRole("region", { name: "Search evaluation result" });
+    const exactResult = screen.getByRole("region", { name: "Search evaluation result" });
     fireEvent.click(within(exactResult).getByText("Search details"));
     expect(within(exactResult).getByText(/Exact refresh failure role/)).toBeInTheDocument();
     expect(within(exactResult).getByRole("link", { name: "View these results" })).toHaveAttribute("href", "/jobs/results?scope=latest&run=run-refresh-failure");
@@ -1807,7 +1845,7 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
     renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" }); fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Leave family" } }); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" }); fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
     fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     await screen.findByText(/Leave result/); fireEvent.click(screen.getByRole("link", { name: "Profile" })); await screen.findByRole("heading", { name: "Your career profile" }); fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
-    expect(screen.queryByRole("region", { name: "Analysis just completed" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Search evaluation result" })).not.toBeInTheDocument();
   });
 
   it.each([
