@@ -95,6 +95,7 @@ class UserOpportunitySummary(BaseModel):
     relevance_score: float
     archetype: str
     url: str
+    first_seen_at: datetime
     posting_recency: PostingLegitimacyAssessment
     decision: UserJobDecisionRead
 
@@ -124,6 +125,15 @@ class DiscoveryRunSummaryResponse(BaseModel):
     truncated: bool
 
 
+class CurrentJobIdentityRead(BaseModel):
+    """Current canonical identity fallback for sparse historical outcomes."""
+
+    model_config = ConfigDict(extra="forbid")
+    title: str
+    company: str | None = None
+    first_seen_at: datetime
+
+
 class DiscoveryRunJobSummaryRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
     discovered_job_id: str
@@ -132,6 +142,7 @@ class DiscoveryRunJobSummaryRead(BaseModel):
     failure_stage: str | None = None
     failure_kind: str | None = None
     opportunity: UserOpportunitySummary | None = None
+    current_job_identity: CurrentJobIdentityRead | None = None
 
 
 class DiscoveryRunDetailRead(DiscoveryRunSummaryRead):

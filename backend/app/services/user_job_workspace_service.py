@@ -40,7 +40,7 @@ from app.services.posting_legitimacy_service import PostingLegitimacyService
 from app.services.public_job_actionability import is_public_job_actionable
 from app.services.semantic_runtime_attribution import read_attribution
 from app.services.user_job_discovery_service import reusable_current_evaluation, UserJobDiscoveryService
-from app.services.user_job_decision_service import UserJobDecisionService
+from app.services.user_job_decision_service import UserJobDecisionService, utc_timestamp
 from app.schemas.job_ranking import RankedJobOpportunity
 from app.services.application_preparation_service import _decode_persisted_result
 
@@ -157,7 +157,7 @@ class UserJobWorkspaceReadService:
                 id=job.id, title=job.title, company=job.company, location=job.location, url=job.url, description=job.description,
                 posted_at=job.posted_at, work_arrangement=job.work_arrangement, employment_type=job.employment_type,
                 detail_authority=job.detail_authority, verification_status=job.verification_status, verification_reason=job.verification_reason,
-                state=job.state, actionable=is_public_job_actionable(job), first_seen_at=job.first_seen_at,
+                state=job.state, actionable=is_public_job_actionable(job), first_seen_at=utc_timestamp(job.first_seen_at),
                 last_seen_at=job.last_seen_at, last_changed_at=job.last_changed_at,
             ),
             provenance=WorkspaceProvenanceResponse(

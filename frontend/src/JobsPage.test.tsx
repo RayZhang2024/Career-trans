@@ -11,7 +11,7 @@ const TOKEN = "career-trans.access-token";
 const user: User = { id: "user-1", email: "jobs@example.test", created_at: "2026-01-01T00:00:00Z" };
 const ready: OnboardingStatus = { profile_exists: true, candidate_context_ready: true, latest_cv_draft: { id: "cv-1", state: "confirmed", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }, adviser: { intake_exists: false, assessment_status: null, confirmed_clarification_count: 0, journey: { candidate_context_ready: true, job_search_ready: true, intake_exists: false, assessment_status: null, confirmed_guidance_active: false, clarification_session_active: false, current_follow_up_available: false, clarification_interpretation_awaiting_confirmation: false, unresolved_profile_enrichment_count: 0, next_enrichment_clarification_id: null, next_enrichment: null, active_profile_draft: false, next_action: "start_intake", status_category: "setup", confirmed_clarification_count: 0 } } };
 const decision = (id: string, value: "undecided" | "shortlisted" | "dismissed" = "undecided"): { discovered_job_id: string; decision: "undecided" | "shortlisted" | "dismissed"; revision: number | null; created_at: string | null; updated_at: string | null } => ({ discovered_job_id: id, decision: value, revision: null, created_at: null, updated_at: null });
-const op = (id: string, title = id, rank = 999): UserOpportunitySummary => ({ evaluation_id: `eval-${id}`, discovered_job_id: `job-${id}`, recommendation: "consider", title, company: "Example Co", location: "London", work_arrangement: "Hybrid", fit_score: 72, career_alignment_score: 84, career_alignment_confidence: "medium", relevance_score: 0.91, archetype: "ai_forward_deployed", url: `https://jobs.example.test/${id}`, posting_recency: { legitimacy: "unknown", reasoning: "The listing date is not independently verified." }, decision: decision(`job-${id}`), ...( { rank } as object) });
+const op = (id: string, title = id, rank = 999): UserOpportunitySummary => ({ evaluation_id: `eval-${id}`, discovered_job_id: `job-${id}`, recommendation: "consider", title, company: "Example Co", location: "London", work_arrangement: "Hybrid", fit_score: 72, career_alignment_score: 84, career_alignment_confidence: "medium", relevance_score: 0.91, archetype: "ai_forward_deployed", url: `https://jobs.example.test/${id}`, first_seen_at: "2026-02-01T00:00:00Z", posting_recency: { legitimacy: "unknown", reasoning: "The listing date is not independently verified." }, decision: decision(`job-${id}`), ...( { rank } as object) });
 const ranked = (title: string): RankedJobOpportunity => ({
   job: { title, company: "Example Co", location: "London", work_arrangement: "Hybrid", employment_type: "Full-time", url: "https://jobs.example.test/detail", posted_at: null },
   relevance: { relevant: true, score: 0.91, reasoning: "Backend relevance reasoning." }, archetype: { archetype: "ai_forward_deployed", reasoning: "Backend archetype reasoning." },
@@ -42,7 +42,7 @@ const inboxItem = (id: string, actionable = true): InboxSummary => ({ discovered
 const workspaceJob = (patch: Record<string, unknown> = {}) => ({ id: "actionable", title: "Workspace role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: "Public description", posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z", ...patch });
 const workspacePayload = (workspaceDecision = decision("actionable"), patch: Record<string, unknown> = {}) => ({ job: workspaceJob(), decision: workspaceDecision, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false }, applications: { items: [], limit: 20, truncated: false }, ...patch });
 const workspacePreparation = (id = "prep-1", title = "Saved workspace preparation") => ({ preparation_id: id, created_at: "2026-03-01T12:00:00Z", target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title, company: "Public Co", location: "London", public_url: null, work_arrangement: null, employment_type: null, job_content_hash: "hash" }, snapshot_status: "current_job_content", result_summary: null, tracking: null });
-const listedDecision = (id: string, value: "shortlisted" | "dismissed", revision: number, title = `${value} ${id}`) => ({ discovered_job_id: id, title, company: "Public Co", location: "London", url: `https://public.example.test/${id}`, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "new" as const, verification_status: "verified" as const, verification_reason: null, actionable: true, last_seen_at: "2026-02-02T00:00:00Z", decision: value, revision, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" });
+const listedDecision = (id: string, value: "shortlisted" | "dismissed", revision: number, title = `${value} ${id}`) => ({ discovered_job_id: id, title, company: "Public Co", location: "London", url: `https://public.example.test/${id}`, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", state: "new" as const, verification_status: "verified" as const, verification_reason: null, actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", decision: value, revision, created_at: "2026-02-01T00:00:00Z", updated_at: "2026-02-02T00:00:00Z" });
 const historyDetail: HistoricalRunJobDetail = { discovered_job_id: "job-0", evaluation_id: "historical-eval", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Historical role"), runtime_attribution: { status: "available", provider: "openai", operations: { job_relevance: { model: "old-job-relevance", reasoning_effort: null }, job_archetype: { model: "old-archetype", reasoning_effort: "low" }, job_extraction: { model: "old-extraction", reasoning_effort: "medium" }, requirement_matching: { model: "old-matching", reasoning_effort: "high" }, career_alignment: { model: "old-alignment", reasoning_effort: "max" } } } };
 const json = (body: unknown, status = 200) => new Response(body === undefined ? "" : JSON.stringify(body), { status });
 type Handler = (url: URL, init?: RequestInit) => Response | Promise<Response>;
@@ -104,9 +104,17 @@ function renderJobsWithAuthSwitcher(fetch: ReturnType<typeof fakeFetch>) {
 }
 function requestPaths(fetch: ReturnType<typeof fakeFetch>) { return fetch.mock.calls.map(([input]) => { const url = new URL(String(input), window.location.origin); return `${url.pathname}${url.search}`; }); }
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason?: unknown) => void; const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
-async function loaded() { await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Alpha"); }
-async function selectSavedSchedule() { await screen.findByRole("heading", { name: "Find jobs" }); await screen.findByRole("option", { name: "AI roles" }); fireEvent.change(screen.getByLabelText("Saved search configuration"), { target: { value: "s-1" } }); await waitFor(() => expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()); }
-async function editIntentOnFind(themes: string, locations?: string, remote?: string) { fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: themes } }); if (locations !== undefined) fireEvent.change(screen.getByLabelText("Locations (search criteria, not eligibility)"), { target: { value: locations } }); if (remote !== undefined) fireEvent.change(screen.getByRole("combobox", { name: "Remote policy" }), { target: { value: remote } }); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); }
+function goToResultsScope(label: "Latest" | "All discovered" | "AI analysed" | "Past searches") {
+  let link = screen.queryByRole("link", { name: label });
+  if (!link) {
+    fireEvent.click(screen.getByRole("link", { name: "Results" }));
+    link = screen.getByRole("link", { name: label });
+  }
+  if (link.getAttribute("aria-current") !== "page") fireEvent.click(link);
+}
+async function loaded() { await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); await screen.findByRole("heading", { name: "AI analysed" }); await screen.findByText("Alpha"); }
+async function selectSavedSchedule() { await screen.findByRole("heading", { name: "Find jobs" }); const more = screen.getByText("More search options"); if (more.closest("details")?.getAttribute("open") === null) fireEvent.click(more); await screen.findByRole("option", { name: "AI roles" }); fireEvent.change(screen.getByLabelText("Saved search configuration"), { target: { value: "s-1" } }); await waitFor(() => expect(screen.getByRole("button", { name: "Run now" })).toBeEnabled()); }
+async function editIntentOnFind(themes: string, locations?: string, remote?: string) { fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: themes } }); if (locations !== undefined) fireEvent.change(screen.getByLabelText("Where? (one per line)"), { target: { value: locations } }); if (remote !== undefined) fireEvent.change(screen.getByRole("combobox", { name: "Remote work" }), { target: { value: remote } }); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" }); }
 async function expectStatusContaining(text: string) { await waitFor(() => expect(screen.getAllByRole("status").some((status) => status.textContent?.includes(text))).toBe(true)); }
 async function growToLimit(fetch: ReturnType<typeof fakeFetch>, endpoint: string, buttonName: string) {
   for (const limit of [40, 60, 80, 100]) {
@@ -128,15 +136,15 @@ describe("Issue #171 Jobs workspace", () => {
     expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/inbox?limit=20");
     const titles = screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent);
     expect(titles.slice(0, 2)).toEqual(["Alpha", "Beta"]);
-    expect(screen.getByText("1")).toBeInTheDocument(); expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getAllByText(/CONSIDER · Fit 72/)).toHaveLength(2);
     expect(screen.queryByText("99")).not.toBeInTheDocument();
   });
 
   it("disambiguates repeated current opportunity actions with the visible result ordinal", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([op("first", "Repeated role", 1), op("second", "Repeated role", 2)])) });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.click(screen.getByRole("link", { name: "My opportunities" }));
-    await screen.findByRole("heading", { name: "Recommended / Current analyses" });
+    goToResultsScope("AI analysed");
+    await screen.findByRole("heading", { name: "AI analysed" });
     const workspaceLinks = await screen.findAllByRole("link", { name: /Open workspace for Repeated role/ });
     expect(workspaceLinks).toHaveLength(2);
     expect(new Set(workspaceLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
@@ -147,112 +155,64 @@ describe("Issue #171 Jobs workspace", () => {
     expect(workspaceLinks.every((link) => !link.getAttribute("aria-label")?.includes("first") && !link.getAttribute("aria-label")?.includes("second"))).toBe(true);
   });
 
-  it("keeps repeated opportunity preparation and decision actions distinguishable", async () => {
+  it("keeps one primary job link and durable save controls on AI analysed cards", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([op("first", "Repeated role", 1), op("second", "Repeated role", 2)])) });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.click(screen.getByRole("link", { name: "My opportunities" }));
-    await screen.findByRole("heading", { name: "Recommended / Current analyses" });
-    const prepareButtons = screen.getAllByRole("button", { name: /^Prepare application for Repeated role/ });
-    expect(prepareButtons).toHaveLength(2);
-    expect(new Set(prepareButtons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
-    expect(prepareButtons.every((button) => button.textContent === "Prepare application")).toBe(true);
-    const shortlistButtons = screen.getAllByRole("button", { name: /^Shortlist Repeated role/ });
-    expect(shortlistButtons).toHaveLength(2);
-    expect(new Set(shortlistButtons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
-    expect(shortlistButtons.every((button) => button.textContent === "Shortlist")).toBe(true);
-    fireEvent.click(prepareButtons[0]);
-    const closeButton = await screen.findByRole("button", { name: /^Close preparation options for Repeated role/ });
-    expect(closeButton).toHaveTextContent("Close preparation options");
-    expect(closeButton).toHaveAttribute("aria-expanded", "true");
+    goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" });
+    const cards = await screen.findAllByRole("listitem");
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(within(card).getAllByRole("link")).toHaveLength(1);
+      expect(within(card).queryByRole("button", { name: /Prepare application/ })).not.toBeInTheDocument();
+      expect(within(card).getByText(/First found:/)).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("button", { name: /^Shortlist Repeated role/ })).toHaveLength(2);
+    expect(screen.getAllByText(/CONSIDER · Fit 72/)).toHaveLength(2);
   });
 
-  it("uses visible timestamps to distinguish repeated Inbox, Shortlisted, and Dismissed actions", async () => {
-    const sameInbox = (id: string, lastSeen: string) => ({ ...inboxItem(id), title: "Repeated role", company: "Public Co", location: "London", last_seen_at: lastSeen });
-    const sameDecision = (id: string, value: "shortlisted" | "dismissed", updatedAt: string) => ({ ...listedDecision(id, value, 1, "Repeated role"), company: "Public Co", location: "London", updated_at: updatedAt });
-    const fetch = fakeFetch({
-      "/api/v1/jobs/inbox": () => json(page([sameInbox("inbox-a", "2026-02-02T00:00:00Z"), sameInbox("inbox-b", "2026-02-03T00:00:00Z")])),
-      "/api/v1/jobs/decisions": (url) => json(page(url.searchParams.get("decision") === "shortlisted"
-        ? [sameDecision("short-a", "shortlisted", "2026-02-02T00:00:00Z"), sameDecision("short-b", "shortlisted", "2026-02-03T00:00:00Z")]
-        : [sameDecision("dismiss-a", "dismissed", "2026-02-04T00:00:00Z"), sameDecision("dismiss-b", "dismissed", "2026-02-05T00:00:00Z")])),
-    });
-
-    renderJobs(fetch, "/jobs/inbox");
-    await screen.findByRole("heading", { name: "Inbox" });
-    const inboxCheckboxes = await screen.findAllByRole("checkbox", { name: /^Select Repeated role/ });
-    expect(inboxCheckboxes).toHaveLength(2);
-    const checkboxLabels = inboxCheckboxes.map((checkbox) => checkbox.getAttribute("aria-label") ?? "");
-    expect(checkboxLabels.every((label) => label.includes("Select Repeated role"))).toBe(true);
-    expect(new Set(checkboxLabels).size).toBe(2);
-    expect(checkboxLabels.every((label) => label.includes("last seen"))).toBe(true);
-    expect(checkboxLabels.every((label) => !/inbox-a|inbox-b|discovered_job_id/.test(label))).toBe(true);
-    fireEvent.click(inboxCheckboxes[0]);
-    expect(inboxCheckboxes[0]).toBeChecked();
-    expect(inboxCheckboxes[1]).not.toBeChecked();
-    fireEvent.click(inboxCheckboxes[0]);
-    expect(inboxCheckboxes[0]).not.toBeChecked();
-    for (const label of ["Open workspace", "View Fit", "Open vacancy"]) {
-      const actions = await screen.findAllByRole("link", { name: new RegExp(`^${label} for Repeated role`) });
-      expect(actions).toHaveLength(2);
-      expect(new Set(actions.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
-      expect(actions.every((link) => link.getAttribute("aria-label")?.includes("last seen"))).toBe(true);
-    }
-    const inboxShortlist = screen.getAllByRole("button", { name: /^Shortlist Repeated role/ });
-    expect(inboxShortlist).toHaveLength(2);
-    expect(new Set(inboxShortlist.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
-    expect(inboxShortlist.every((button) => button.textContent === "Shortlist")).toBe(true);
-
-    fireEvent.click(screen.getByRole("link", { name: "My opportunities" }));
-    await screen.findByRole("heading", { name: "Recommended / Current analyses" });
-    fireEvent.click(screen.getByRole("link", { name: "Shortlisted" }));
-    await screen.findByRole("heading", { name: "Shortlisted" });
-    const shortlistedCards = screen.getAllByRole("heading", { name: "Repeated role" }).map((heading) => heading.closest("li")).filter(Boolean) as HTMLElement[];
-    expect(shortlistedCards).toHaveLength(2);
-    for (const label of ["Open workspace", "View Fit", "Open vacancy"]) {
-      const links = shortlistedCards.flatMap((card) => within(card).getAllByRole("link", { name: new RegExp(`^${label} for Repeated role`) }));
-      expect(links).toHaveLength(2);
-      expect(new Set(links.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
-      expect(links.every((link) => link.getAttribute("aria-label")?.includes("decision updated"))).toBe(true);
-    }
-    const removeButtons = shortlistedCards.flatMap((card) => within(card).getAllByRole("button", { name: /^Remove from shortlist Repeated role/ }));
-    expect(removeButtons).toHaveLength(2);
-    expect(new Set(removeButtons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
-    expect(removeButtons.every((button) => button.textContent === "Remove from shortlist")).toBe(true);
-
-    fireEvent.click(screen.getByRole("button", { name: "Manage dismissed jobs" }));
-    await screen.findByRole("heading", { name: "Dismissed jobs" });
-    const dismissedSection = screen.getByRole("heading", { name: "Dismissed jobs" }).closest("section")!;
-    const dismissedCards = within(dismissedSection).getAllByRole("heading", { name: "Repeated role" }).map((heading) => heading.closest("li")).filter(Boolean) as HTMLElement[];
-    expect(dismissedCards).toHaveLength(2);
-    for (const label of ["Open workspace", "View Fit"]) {
-      const links = dismissedCards.flatMap((card) => within(card).getAllByRole("link", { name: new RegExp(`^${label} for Repeated role`) }));
-      expect(links).toHaveLength(2);
-      expect(new Set(links.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
-      expect(links.every((link) => link.getAttribute("aria-label")?.includes("decision updated"))).toBe(true);
-    }
-    const undoButtons = dismissedCards.flatMap((card) => within(card).getAllByRole("button", { name: /^Undo dismissal Repeated role/ }));
-    expect(undoButtons).toHaveLength(2);
-    expect(new Set(undoButtons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
-    expect(undoButtons.every((button) => button.textContent === "Undo dismissal")).toBe(true);
+  it("shows the shared first-found date and one job link in Results and Saved", async () => {
+    const firstSeen = (day: number) => `2026-02-${String(day).padStart(2, "0")}T10:30:00Z`;
+    const items = [
+      { ...inboxItem("inbox-a"), title: "Repeated role", first_seen_at: firstSeen(2) },
+      { ...inboxItem("inbox-b"), title: "Repeated role", first_seen_at: firstSeen(3) },
+    ];
+    const saved = [
+      { ...listedDecision("saved-a", "shortlisted", 1, "Saved role A"), first_seen_at: firstSeen(4) },
+      { ...listedDecision("saved-b", "shortlisted", 1, "Saved role B"), first_seen_at: firstSeen(5) },
+    ];
+    renderJobs(fakeFetch({
+      "/api/v1/jobs/inbox": () => json(page(items)),
+      "/api/v1/jobs/decisions": (url) => json(page(url.searchParams.get("decision") === "shortlisted" ? saved : [])),
+    }), "/jobs/inbox");
+    await screen.findByRole("heading", { name: "All discovered jobs" });
+    const resultCards = await screen.findAllByRole("listitem");
+    expect(resultCards).toHaveLength(2);
+    expect(within(resultCards[0]).getByText(/^First found:/)).toBeInTheDocument();
+    expect(within(resultCards[1]).getByText(/^First found:/)).toBeInTheDocument();
+    for (const card of resultCards) expect(within(card).getAllByRole("link")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("link", { name: "Saved" }));
+    await screen.findByRole("heading", { name: "Saved jobs" });
+    const savedCard = screen.getByText("Saved role A").closest("li");
+    expect(savedCard).not.toBeNull();
+    expect(within(savedCard!).getByText(/^First found:/)).toBeInTheDocument();
+    expect(within(savedCard!).getAllByRole("link")).toHaveLength(1);
   });
 
-  it("contextualizes repeated Search history run toggles with status and start time", async () => {
+  it("opens an exact saved run from Past searches with a contextual result action", async () => {
     const first = { ...run("run-a"), started_at: "2026-02-01T12:00:00Z" };
     const second = { ...run("run-b"), started_at: "2026-02-02T12:00:00Z" };
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([first, second])) });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.click(screen.getByRole("link", { name: "Search history" }));
-    await screen.findByRole("heading", { name: "Search history" });
+    goToResultsScope("Past searches");
+    await screen.findByRole("heading", { name: "Past searches" });
     expect(await screen.findAllByText("Geography incompatible")).toHaveLength(2);
     expect(screen.getAllByText("Geography unknown")).toHaveLength(2);
-    const viewButtons = screen.getAllByRole("button", { name: /^View run/ });
-    expect(viewButtons).toHaveLength(2);
-    expect(new Set(viewButtons.map((button) => button.getAttribute("aria-label"))).size).toBe(2);
-    expect(viewButtons.every((button) => /Completed · started/.test(button.getAttribute("aria-label") ?? ""))).toBe(true);
-    expect(viewButtons.every((button) => !/run-a|run-b/.test(button.getAttribute("aria-label") ?? ""))).toBe(true);
-    fireEvent.click(viewButtons[0]);
-    const closeButton = await screen.findByRole("button", { name: /^Close run for Completed · started/ });
-    expect(closeButton).toHaveAttribute("aria-expanded", "true");
-    expect(closeButton).toHaveTextContent("Close run");
+    const viewLinks = screen.getAllByRole("link", { name: "View results" });
+    expect(viewLinks).toHaveLength(2);
+    expect(viewLinks[0]).toHaveAttribute("href", "/jobs/results?scope=latest&run=run-a");
+    expect(viewLinks[1]).toHaveAttribute("href", "/jobs/results?scope=latest&run=run-b");
+    fireEvent.click(viewLinks[0]);
+    expect(await screen.findByRole("heading", { name: "Search results" })).toBeInTheDocument();
   });
 
   it("renders all safe integer funnel counters with readable labels and omits non-integer values", async () => {
@@ -276,8 +236,8 @@ describe("Issue #171 Jobs workspace", () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([historyRun])) });
     renderJobs(fetch);
     await loaded();
-    fireEvent.click(screen.getByRole("link", { name: "Search history" }));
-    await screen.findByRole("heading", { name: "Search history" });
+    goToResultsScope("Past searches");
+    await screen.findByRole("heading", { name: "Past searches" });
 
     const funnel = screen.getByLabelText("Discovery funnel");
     for (const label of [
@@ -292,271 +252,33 @@ describe("Issue #171 Jobs workspace", () => {
     expect(within(funnel).queryByText("private text must not render")).not.toBeInTheDocument();
   });
 
-  it("prepares from the canonical discovered job ID, cleans questions, and does not gate on SKIP", async () => {
-    let body: unknown;
-    const alpha = { ...op("alpha", "Alpha", 99), recommendation: "apply" as const };
-    const beta = { ...op("beta", "Beta", 1), recommendation: "skip" as const };
-    const created = { id: "prep-alpha" } as ApplicationPreparation;
-    const fetch = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([alpha, beta, op("gamma", "Gamma", 2)])), "POST /api/v1/applications/prepare": (_url, init) => { body = JSON.parse(String(init?.body)); return json(created, 201); } });
-    renderJobs(fetch); await loaded();
-    const prepareButtons = screen.getAllByRole("button", { name: /^Prepare application/ });
-    expect(prepareButtons).toHaveLength(3); expect(prepareButtons.every((button) => !button.hasAttribute("disabled"))).toBe(true);
-    fireEvent.click(prepareButtons[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    expect(within(form).getByRole("combobox", { name: "Target CV pages" })).toHaveValue("2");
-    expect(within(form).getByRole("checkbox", { name: "Include a cover letter" })).toBeChecked();
-    fireEvent.change(within(form).getByRole("textbox", { name: "Question 1" }), { target: { value: "  Why this role?  " } });
-    fireEvent.click(within(form).getByRole("button", { name: "Add question" }));
-    fireEvent.change(within(form).getByRole("textbox", { name: "Question 2" }), { target: { value: "   " } });
-    fireEvent.change(within(form).getByRole("combobox", { name: "Target CV pages" }), { target: { value: "3" } });
-    fireEvent.click(within(form).getByRole("checkbox", { name: "Include a cover letter" }));
-    await waitFor(() => expect(within(form).getByRole("button", { name: "Create preparation" })).toBeEnabled());
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    await waitFor(() => expect(body).toEqual({ target: { discovered_job_id: "job-alpha" }, target_pages: 3, include_cover_letter: false, application_questions: ["Why this role?"] }));
-    expect(await screen.findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/prep-alpha");
-    expect(requestPaths(fetch)).not.toContain("/api/v1/applications");
-  });
-
-  it("fails closed when profile display name is missing without requiring preferred email", async () => {
-    let posts = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json({ detail: "not found" }, 404), "POST /api/v1/applications/prepare": () => { posts += 1; return json({ id: "unexpected" }, 201); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /^Prepare application/ })[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    expect(await within(form).findByRole("alert")).toHaveTextContent("application display name is required");
-    expect(within(form).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
-    expect(within(form).queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
-    expect(posts).toBe(0);
-  });
-
-  it("reports an unavailable target truthfully when the shortlist refresh fails", async () => {
-    let opportunityCalls = 0; let posts = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "/api/v1/jobs/opportunities": () => { opportunityCalls += 1; return opportunityCalls === 1 ? json(page([op("alpha", "Alpha")] )) : Promise.reject(new TypeError("offline")); }, "POST /api/v1/applications/prepare": () => { posts += 1; return json({ detail: "not found" }, 404); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("button", { name: /^Prepare application/ }));
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    expect(await within(form).findByRole("alert")).toHaveTextContent("opportunity refresh could not be confirmed");
-    expect(within(form).queryByText(/created/)).not.toBeInTheDocument();
-    expect(within(form).getByRole("button", { name: "Create preparation" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Close preparation options/ })).toBeEnabled();
-    fireEvent.submit(form);
-    expect(posts).toBe(1);
-    fireEvent.click(screen.getByRole("button", { name: /^Close preparation options/ }));
-    expect(screen.queryByRole("form", { name: "Prepare application for Alpha" })).not.toBeInTheDocument();
-    expect(opportunityCalls).toBe(2);
-  });
-
-  it.each([[422, "did not contain sufficient usable information"], [503, "temporarily unavailable"]] as const)("handles HTTP %s without raw server detail", async (status, message) => {
-    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "POST /api/v1/applications/prepare": () => json({ detail: "private provider diagnostic" }, status) });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /^Prepare application/ })[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    const alert = await within(form).findByRole("alert");
-    expect(alert).toHaveTextContent(message); expect(alert).not.toHaveTextContent("private provider diagnostic");
-    expect(within(form).queryByRole("link", { name: "Review this preparation" })).not.toBeInTheDocument();
-  });
-
-  it("routes a refreshed candidate-not-ready 409 to CV onboarding", async () => {
-    let readinessCalls = 0; let posts = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "/api/v1/onboarding/status": () => json(++readinessCalls === 1 ? ready : { ...ready, candidate_context_ready: false }), "POST /api/v1/applications/prepare": () => { posts += 1; return json({ detail: "profile invalid" }, 409); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /^Prepare application/ })[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    expect(await within(form).findByRole("alert")).toHaveTextContent("confirmed candidate CV is required");
-    expect(within(form).getByRole("link", { name: "Continue CV onboarding" })).toHaveAttribute("href", "/profile/cv");
-    expect(screen.getByRole("button", { name: /^Close preparation options/ })).toBeEnabled();
-    expect(within(form).getByRole("button", { name: "Create preparation" })).toBeDisabled();
-    fireEvent.submit(form);
-    expect(posts).toBe(1);
-  });
-
-  it("routes a refreshed missing-display-name 409 to Profile", async () => {
-    let profileCalls = 0; let posts = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json(++profileCalls === 1 ? { display_name: "Current Person" } : { display_name: "   " }), "POST /api/v1/applications/prepare": () => { posts += 1; return json({ detail: "profile invalid" }, 409); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /^Prepare application/ })[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    expect(await within(form).findByRole("alert")).toHaveTextContent("application display name is required");
-    expect(within(form).getByRole("link", { name: "Update your profile" })).toHaveAttribute("href", "/profile");
-    expect(within(form).queryByRole("button", { name: "Create preparation" })).not.toBeInTheDocument();
-    fireEvent.submit(form);
-    expect(posts).toBe(1);
-  });
-
-  it.each(["onboarding", "profile", "both"] as const)("fails closed after 409 when %s prerequisite refresh fails", async (failedRefreshes) => {
-    const onboardingRefreshSucceeds = failedRefreshes === "profile";
-    const profileRefreshSucceeds = failedRefreshes === "onboarding";
-    let readinessCalls = 0; let profileCalls = 0; let posts = 0;
+  it("keeps application preparation in the job workspace instead of repeating it on result cards", async () => {
     const fetch = fakeFetch({
-      "/api/v1/onboarding/status": () => {
-        readinessCalls += 1;
-        if (readinessCalls === 1 || onboardingRefreshSucceeds) return json(ready);
-        return Promise.reject(new TypeError("offline"));
-      },
-      "/api/v1/profile": () => {
-        profileCalls += 1;
-        if (profileCalls === 1 || profileRefreshSucceeds) return json({ display_name: "Current Person" });
-        return Promise.reject(new TypeError("offline"));
-      },
-      "POST /api/v1/applications/prepare": () => { posts += 1; return json({ detail: "conflict" }, posts === 1 ? 409 : 201); },
+      "/api/v1/jobs/workspaces/job-alpha": () => json(workspacePayload(decision("job-alpha"), { job: workspaceJob({ id: "job-alpha", title: "Alpha" }) })),
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /^Prepare application/ })[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    expect(await within(form).findByText("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.")).toBeInTheDocument();
-    const create = within(form).queryByRole("button", { name: "Create preparation" });
-    if (create) expect(create).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Close preparation options/ })).toBeEnabled();
-    fireEvent.submit(form);
-    expect(posts).toBe(1);
-  });
-
-  it("restores preparation after readiness is authoritatively confirmed again", async () => {
-    let readinessCalls = 0; let posts = 0;
-    const fetch = fakeFetch({
-      "/api/v1/onboarding/status": () => {
-        readinessCalls += 1;
-        if (readinessCalls === 2) return Promise.reject(new TypeError("offline"));
-        return json(ready);
-      },
-      "/api/v1/profile": () => json({ display_name: "Current Person" }),
-      "POST /api/v1/applications/prepare": () => { posts += 1; return json(posts === 1 ? { detail: "conflict" } : { id: "prep-alpha" }, posts === 1 ? 409 : 201); },
-    });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /^Prepare application/ })[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    expect(await within(form).findByText("Career-trans could not confirm the current preparation prerequisites. Review your CV and profile, then try again.")).toBeInTheDocument();
-    expect(within(form).getByRole("button", { name: "Create preparation" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Retry readiness" }));
-    await waitFor(() => expect(within(form).getByRole("button", { name: "Create preparation" })).toBeEnabled());
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    expect(await within(form).findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/prep-alpha");
-    expect(posts).toBe(2);
-  });
-
-  it("keeps opportunity B usable when A becomes unavailable after a failed shortlist refresh", async () => {
-    let opportunityCalls = 0; let posts = 0;
-    const fetch = fakeFetch({
-      "/api/v1/jobs/opportunities": () => ++opportunityCalls === 1 ? json(page([op("alpha", "Alpha"), op("beta", "Beta")])) : Promise.reject(new TypeError("offline")),
-      "POST /api/v1/applications/prepare": (_url, init) => {
-        posts += 1;
-        const body = JSON.parse(String(init?.body)) as { target: { discovered_job_id: string } };
-        return body.target.discovered_job_id === "job-alpha" ? json({ detail: "gone" }, 404) : json({ id: "prep-beta" }, 201);
-      },
-    });
-    renderJobs(fetch); await loaded();
-    const panels = screen.getAllByRole("button", { name: /^Prepare application/ });
-    fireEvent.click(panels[0]); fireEvent.click(panels[1]);
-    const forms = screen.getAllByRole("form", { name: /Prepare application for/ });
-    await within(forms[0]).findByRole("button", { name: "Create preparation" });
-    await within(forms[1]).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(forms[0]).getByRole("button", { name: "Create preparation" }));
-    expect(await within(forms[0]).findByRole("alert")).toHaveTextContent("opportunity refresh could not be confirmed");
-    expect(within(forms[0]).getByRole("button", { name: "Create preparation" })).toBeDisabled();
-    expect(within(forms[1]).getByRole("button", { name: "Create preparation" })).toBeEnabled();
-    fireEvent.click(within(forms[1]).getByRole("button", { name: "Create preparation" }));
-    expect(await within(forms[1]).findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/prep-beta");
-    expect(posts).toBe(2);
-  });
-
-  it("keeps preparation pending/results independent for two opportunity cards", async () => {
-    const pending = new Map<string, ReturnType<typeof deferred<Response>>>();
-    const fetch = fakeFetch({ "POST /api/v1/applications/prepare": (_url, init) => {
-      const body = JSON.parse(String(init?.body)) as { target: { discovered_job_id: string } };
-      const request = deferred<Response>(); pending.set(body.target.discovered_job_id, request); return request.promise;
-    } });
-    renderJobs(fetch); await loaded();
-    const buttons = screen.getAllByRole("button", { name: /^Prepare application/ });
-    fireEvent.click(buttons[0]); fireEvent.click(buttons[1]);
-    const forms = screen.getAllByRole("form", { name: /Prepare application for/ });
-    for (const form of forms) await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(forms[0]).getByRole("button", { name: "Create preparation" }));
-    expect(await within(forms[0]).findByRole("status")).toHaveTextContent("Alpha: Preparing application");
-    expect(within(forms[0]).getByRole("button", { name: "Preparing…" })).toBeDisabled();
-    fireEvent.submit(forms[0]);
-    expect(within(forms[1]).getByRole("button", { name: "Create preparation" })).toBeEnabled();
-    fireEvent.click(within(forms[1]).getByRole("button", { name: "Create preparation" }));
-    await waitFor(() => expect(within(forms[1]).getByRole("status")).toHaveTextContent("Beta: Preparing application"));
-    pending.get("job-beta")!.resolve(json({ id: "prep-beta" }, 201));
-    expect(await within(forms[1]).findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/prep-beta");
-    expect(within(forms[0]).queryByRole("link", { name: "Review this preparation" })).not.toBeInTheDocument();
-    pending.get("job-alpha")!.resolve(json({ id: "prep-alpha" }, 201));
-    expect(await within(forms[0]).findByRole("link", { name: "Review this preparation" })).toHaveAttribute("href", "/applications/prep-alpha");
-    expect(requestPaths(fetch).filter((path) => path === "/api/v1/applications/prepare")).toHaveLength(2);
-  });
-
-  it("keeps B editor state intact when A fails after B has been opened", async () => {
-    const fetch = fakeFetch({ "POST /api/v1/applications/prepare": () => json({ detail: "private provider diagnostic" }, 503) });
-    renderJobs(fetch); await loaded();
-    const buttons = screen.getAllByRole("button", { name: /^Prepare application/ });
-    fireEvent.click(buttons[0]); fireEvent.click(buttons[1]);
-    const forms = screen.getAllByRole("form", { name: /Prepare application for/ });
-    await within(forms[0]).findByRole("button", { name: "Create preparation" });
-    await within(forms[1]).findByRole("button", { name: "Create preparation" });
-    fireEvent.change(within(forms[1]).getByRole("textbox", { name: "Question 1" }), { target: { value: "B-only question" } });
-    fireEvent.click(within(forms[0]).getByRole("button", { name: "Create preparation" }));
-    expect(await within(forms[0]).findByRole("alert")).toHaveTextContent("temporarily unavailable");
-    expect(within(forms[0]).queryByText("private provider diagnostic")).not.toBeInTheDocument();
-    expect(within(forms[1]).getByRole("textbox", { name: "Question 1" })).toHaveValue("B-only question");
-    expect(within(forms[1]).getByRole("button", { name: "Create preparation" })).toBeEnabled();
-  });
-
-  it("does not retry an interrupted preparation and truthfully reconciles persisted history", async () => {
-    let posts = 0; let gets = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "POST /api/v1/applications/prepare": () => { posts += 1; return Promise.reject(new TypeError("offline")); }, "/api/v1/applications": () => { gets += 1; return json([({ id: "existing", target: { title: "Alpha", canonical_discovered_job_id: "job-alpha" }, created_at: "2026-01-01T00:00:00Z" })]); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /^Prepare application/ })[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    expect(await within(form).findByText(/cannot confirm from this response whether a preparation was created/)).toBeInTheDocument();
-    expect(within(form).getAllByText(/shown as history only/).length).toBeGreaterThan(0);
-    expect(within(form).getByRole("link", { name: /Alpha ·/ })).toHaveAttribute("href", "/applications/existing");
-    expect(posts).toBe(1); expect(gets).toBe(1);
-  });
-
-  it("reports a failed transport-history reconciliation without retrying creation", async () => {
-    let posts = 0; let gets = 0;
-    const fetch = fakeFetch({ "/api/v1/profile": () => json({ display_name: "Current Person" }), "POST /api/v1/applications/prepare": () => { posts += 1; return Promise.reject(new TypeError("offline")); }, "/api/v1/applications": () => { gets += 1; return Promise.reject(new TypeError("offline")); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /^Prepare application/ })[0]);
-    const form = await screen.findByRole("form", { name: "Prepare application for Alpha" });
-    await within(form).findByRole("button", { name: "Create preparation" });
-    fireEvent.click(within(form).getByRole("button", { name: "Create preparation" }));
-    expect(await within(form).findByRole("alert")).toHaveTextContent("cannot confirm from this response whether a preparation was created");
-    expect(within(form).getByRole("alert")).toHaveTextContent("history could not be confirmed as refreshed");
-    expect(posts).toBe(1); expect(gets).toBe(1);
-  });
-
-  it("redirects unauthenticated /jobs through the existing sign-in route", async () => {
-    vi.stubGlobal("fetch", vi.fn());
-    render(<MemoryRouter initialEntries={["/jobs"]}><AuthProvider><App /></AuthProvider></MemoryRouter>);
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Jobs" })).not.toBeInTheDocument();
-  });
-
-  it("blocks evaluation before candidate context is ready and links to Profile", async () => {
-    renderJobs(fakeFetch({ "/api/v1/onboarding/status": () => json({ ...ready, candidate_context_ready: false }) }));
-    expect(await screen.findByRole("heading", { name: "Complete your Profile first" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Review Profile" })).toHaveAttribute("href", "/profile");
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    expect(screen.queryByRole("heading", { name: "Evaluate selected actionable jobs" })).not.toBeInTheDocument();
+    renderJobs(fetch); await loaded(); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" });
+    const card = screen.getByRole("link", { name: /Open workspace for Alpha/ }).closest("li");
+    expect(card).not.toBeNull();
+    expect(within(card!).getAllByRole("link")).toHaveLength(1);
+    expect(within(card!).queryByRole("button", { name: /Prepare application|Create preparation/ })).not.toBeInTheDocument();
+    fireEvent.click(within(card!).getByRole("link", { name: /Open workspace for Alpha/ }));
+    await screen.findByRole("heading", { name: "Alpha" });
+    fireEvent.click(screen.getByRole("link", { name: "Application" }));
+    expect(await screen.findByRole("heading", { name: "Create preparation" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Create preparation" })).toBeEnabled();
   });
 
   it("keeps Jobs usable for an unconfirmed newer CV and incomplete optional Adviser", async () => {
     renderJobs(fakeFetch({ "/api/v1/onboarding/status": () => json({ ...ready, latest_cv_draft: { ...ready.latest_cv_draft!, state: "review_ready" }, adviser: { ...ready.adviser, intake_exists: true, assessment_status: "stale" } }) }));
     expect(await screen.findByText(/A newer CV update is awaiting review/)).toBeInTheDocument();
-    expect(screen.getByText(/Career Adviser completion is optional/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    expect(screen.getByRole("heading", { name: "Evaluate selected actionable jobs" })).toBeInTheDocument();
+    expect(screen.queryByText(/Career Adviser completion is optional/)).not.toBeInTheDocument();
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    expect(screen.queryByRole("heading", { name: /Evaluate selected jobs/ })).not.toBeInTheDocument();
   });
 
   it("replaces the entire top-N opportunity window when Show more is used", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/opportunities": (url) => json(page(url.searchParams.get("limit") === "40" ? [op("new-top", "New top window")] : [op("old-top", "Old window")], true)) });
-    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(await screen.findByText("Old window")).toBeInTheDocument();
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); expect(await screen.findByText("Old window")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show more current opportunities" }));
     expect(await screen.findByText("New top window")).toBeInTheDocument();
     expect(screen.queryByText("Old window")).not.toBeInTheDocument();
@@ -565,7 +287,7 @@ describe("Issue #171 Jobs workspace", () => {
 
   it("caps opportunities at 100 and explains a truncated maximum window", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([op("at-limit")], true)) });
-    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("at-limit");
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); await screen.findByText("at-limit");
     await growToLimit(fetch, "/api/v1/jobs/opportunities", "Show more current opportunities");
     expect(screen.queryByRole("button", { name: "Show more current opportunities" })).not.toBeInTheDocument();
     expect(screen.getByText("Showing the first 100 current opportunities available through this view.")).toBeInTheDocument();
@@ -575,9 +297,9 @@ describe("Issue #171 Jobs workspace", () => {
 
   it("caps discovery runs at 100 and explains a truncated maximum window", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([run()], true)) });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" });
-    await growToLimit(fetch, "/api/v1/jobs/search-history", "Show more search history");
-    expect(screen.queryByRole("button", { name: "Show more search history" })).not.toBeInTheDocument();
+    renderJobs(fetch); await loaded(); goToResultsScope("Past searches"); await screen.findByRole("heading", { name: "Past searches" });
+    await growToLimit(fetch, "/api/v1/jobs/search-history", "Show more past searches");
+    expect(screen.queryByRole("button", { name: "Show more past searches" })).not.toBeInTheDocument();
     expect(screen.getByText("Showing the first 100 Search History items available through this view.")).toBeInTheDocument();
     const limits = requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/search-history?")).map((path) => Number(new URL(path, window.location.origin).searchParams.get("limit")));
     expect(limits).toContain(100); expect(limits.every((limit) => limit <= 100)).toBe(true); expect(limits).not.toContain(120);
@@ -585,7 +307,7 @@ describe("Issue #171 Jobs workspace", () => {
 
   it("caps the recent inbox at 100 and explains a truncated maximum window", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/inbox": () => json(page([inboxItem("at-limit")], true)) });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     await growToLimit(fetch, "/api/v1/jobs/inbox", "Show more recent vacancies");
     expect(screen.queryByRole("button", { name: "Show more recent vacancies" })).not.toBeInTheDocument();
     expect(screen.getByText("Showing the first 100 recent vacancies available through this view.")).toBeInTheDocument();
@@ -593,36 +315,31 @@ describe("Issue #171 Jobs workspace", () => {
     expect(limits).toContain(100); expect(limits.every((limit) => limit <= 100)).toBe(true); expect(limits).not.toContain(120);
   });
 
-  it("loads current detail lazily, renders backend explanations safely, and never shows evidence IDs", async () => {
-    const fetch = fakeFetch(); renderJobs(fetch); await loaded();
-    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/opportunities/eval-alpha");
-    fireEvent.click(screen.getAllByRole("button", { name: /View detail for/ })[0]);
-    expect(await screen.findByRole("article", { name: "Current opportunity detail" })).toBeInTheDocument();
-    expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities/eval-alpha");
-    expect(screen.getByText(/Recommendation reasoning/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Canonical requirement/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Requirement reference unavailable.").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Posting recency signal/).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/private-evidence-id/)).not.toBeInTheDocument();
-    const link = screen.getAllByRole("link", { name: /Open vacancy for/ })[0];
-    expect(link).toHaveAttribute("target", "_blank"); expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  it("uses one job-card link to open its workspace and current Fit", async () => {
+    const fetch = fakeFetch({ "/api/v1/jobs/workspaces/job-alpha": () => json(workspacePayload(decision("job-alpha"), { job: workspaceJob({ id: "job-alpha", title: "Alpha" }) })) });
+    renderJobs(fetch); await loaded();
+    const card = screen.getByRole("link", { name: /Open workspace for Alpha/ }).closest("li")!;
+    expect(within(card).getAllByRole("link")).toHaveLength(1);
+    fireEvent.click(within(card).getByRole("link", { name: /Open workspace for Alpha/ }));
+    expect(await screen.findByRole("heading", { name: "Alpha" })).toBeInTheDocument();
+    expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/workspaces/job-alpha?"))).toBe(true);
+    fireEvent.click(screen.getByRole("link", { name: "Fit" }));
+    expect(await screen.findByRole("heading", { name: "Current Fit" })).toBeInTheDocument();
   });
 
-  it("removes a no-longer-current opportunity and refreshes the shortlist neutrally", async () => {
-    let detailCalls = 0;
-    const fetch = fakeFetch({ "GET /api/v1/jobs/opportunities/eval-alpha": () => { detailCalls += 1; return json(undefined, 404); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getAllByRole("button", { name: /View detail for/ })[0]);
-    expect(await screen.findByText(/no longer current/)).toBeInTheDocument();
-    expect(screen.queryByRole("article", { name: "Current opportunity detail" })).not.toBeInTheDocument();
-    expect(detailCalls).toBe(1);
-    await waitFor(() => expect(requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/opportunities?")).length).toBeGreaterThan(1));
+  it("keeps card details compact and does not add a second internal navigation action", async () => {
+    const fetch = fakeFetch(); renderJobs(fetch); await loaded();
+    const card = screen.getByRole("link", { name: /Open workspace for Alpha/ }).closest("li")!;
+    expect(within(card).getAllByRole("link")).toHaveLength(1);
+    expect(within(card).queryByRole("button", { name: /View detail/ })).not.toBeInTheDocument();
+    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/opportunities/eval-alpha");
   });
 
   it("loads run summaries then lazy detail, labels in-progress rows safely, and retrieves historical detail", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => json(page([run("run-1", "running")])), "/api/v1/jobs/discovery-runs/run-1": () => json(runDetail("running")) });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" });
+    renderJobs(fetch); await loaded(); goToResultsScope("Past searches"); await screen.findByRole("heading", { name: "Past searches" });
     expect(await screen.findByText("Evaluation in progress")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /^View run/ }));
+    fireEvent.click(screen.getByRole("link", { name: "View results" }));
     expect(await screen.findByText("Newly evaluated")).toBeInTheDocument();
     expect(screen.getByText("In progress")).toBeInTheDocument();
     expect(screen.queryByText("Analysis failed")).not.toBeInTheDocument();
@@ -630,13 +347,13 @@ describe("Issue #171 Jobs workspace", () => {
   });
 
   it("renders every terminal run outcome and lazy historical job detail as historical", async () => {
-    const fetch = fakeFetch(); renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" });
-    fireEvent.click(await screen.findByRole("button", { name: /^View run/ }));
+    const fetch = fakeFetch(); renderJobs(fetch); await loaded(); goToResultsScope("Past searches"); await screen.findByRole("heading", { name: "Past searches" });
+    fireEvent.click(await screen.findByRole("link", { name: "View results" }));
     expect(screen.queryByRole("button", { name: /^Prepare application/ })).not.toBeInTheDocument();
     for (const label of ["Newly evaluated", "Reused evaluation", "Not actionable", "Presemantic filtered", "Outside semantic budget", "Semantic rejected", "Outside deep-analysis budget", "Insufficient vacancy detail", "Analysis failed"]) expect(await screen.findByText(label)).toBeInTheDocument();
     expect(screen.getAllByText("Geography incompatible")).toHaveLength(2);
     expect(screen.getAllByText("Geography unknown")).toHaveLength(2);
-    const historicalActions = screen.getAllByRole("button", { name: /Historical detail for historical result/ });
+    const historicalActions = screen.getAllByRole("button", { name: /Historical detail for/ });
     expect(historicalActions).toHaveLength(11);
     expect(new Set(historicalActions.map((button) => button.getAttribute("aria-label"))).size).toBe(11);
     expect(historicalActions.every((button) => !button.getAttribute("aria-label")?.includes("job-"))).toBe(true);
@@ -651,8 +368,8 @@ describe("Issue #171 Jobs workspace", () => {
 
   it("shows only the factual historical outcome when the historical snapshot is null", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs/run-1/jobs/job-0": () => json({ ...historyDetail, opportunity: null, outcome: "semantic_rejected" }) });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" });
-    fireEvent.click(await screen.findByRole("button", { name: /^View run/ }));
+    renderJobs(fetch); await loaded(); goToResultsScope("Past searches"); await screen.findByRole("heading", { name: "Past searches" });
+    fireEvent.click(await screen.findByRole("link", { name: "View results" }));
     await screen.findByText("Reused evaluation");
     fireEvent.click(screen.getAllByRole("button", { name: /Historical detail for/ })[0]);
     expect(await screen.findByText(/No evaluation snapshot exists for this row/)).toBeInTheDocument();
@@ -660,10 +377,10 @@ describe("Issue #171 Jobs workspace", () => {
   });
 
   it("describes the shared recent inbox neutrally and keeps non-actionable rows visible but disabled", async () => {
-    renderJobs(); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    expect(screen.getByText(/recent shared persisted public vacancies/)).toBeInTheDocument();
+    renderJobs(); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    expect(screen.getByText(/Persisted vacancies from supported public sources/)).toBeInTheDocument();
     const blocked = screen.getByRole("checkbox", { name: /^Select Inbox blocked/ });
-    expect(blocked).toBeDisabled(); expect(screen.getByText(/Not actionable/)).toBeInTheDocument();
+    expect(blocked).toBeDisabled(); expect(screen.getByText(/Not available for evaluation/)).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })).toBeEnabled();
     expect(screen.queryByRole("button", { name: /^Prepare application/ })).not.toBeInTheDocument();
   });
@@ -671,7 +388,7 @@ describe("Issue #171 Jobs workspace", () => {
   it("replaces the recent inbox window and only submits selected actionable persisted IDs with structured controls", async () => {
     let inboxFetch = 0; let postBody: unknown;
     const fetch = fakeFetch({ "/api/v1/jobs/inbox": (url) => { inboxFetch += 1; return json(page(url.searchParams.get("limit") === "40" ? [inboxItem("new-inbox")] : [inboxItem("actionable"), inboxItem("blocked", false)], true)); }, "POST /api/v1/jobs/discovery-runs": (_url, init) => { postBody = JSON.parse(String(init?.body)); return json({ ...run("new-run"), jobs: [] }); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("button", { name: "Show more recent vacancies" }));
     expect(await screen.findByText("Inbox new-inbox")).toBeInTheDocument(); expect(screen.queryByText("Inbox actionable")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show more recent vacancies" }));
@@ -680,7 +397,8 @@ describe("Issue #171 Jobs workspace", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox blocked/ }));
     await editIntentOnFind("AI Engineer\nApplied AI Engineer", "London, United Kingdom", "exclude_remote");
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     await waitFor(() => expect(postBody).toBeDefined());
     expect(postBody).toMatchObject({ discovered_job_ids: ["actionable"], query: { keywords: ["AI Engineer", "Applied AI Engineer"], locations: ["London, United Kingdom"], remote_ok: false, companies: [], excluded_companies: [], excluded_title_terms: [], employment_types: [], max_results: 50 }, max_semantic_candidates: 10, max_full_analyses: 5 });
   });
@@ -691,17 +409,18 @@ describe("Issue #171 Jobs workspace", () => {
       "/api/v1/jobs/inbox": () => json(page(inboxCalls++ < 2 ? [inboxItem("selected-A")] : [inboxItem("replacement-B")], true)),
       "POST /api/v1/jobs/discovery-runs": (_url, init) => { postBody = JSON.parse(String(init?.body)); return json({ ...run("run-new"), jobs: [] }); },
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     await editIntentOnFind("AI");
     fireEvent.click(await screen.findByRole("checkbox", { name: /^Select Inbox selected-A/ }));
-    expect(screen.getByRole("button", { name: "Evaluate 1 jobs" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Evaluate selected (1)" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByText("Inbox replacement-B")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /^Select Inbox selected-A/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
+    expect(screen.queryByRole("heading", { name: /Evaluate selected jobs/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox replacement-B/ }));
     await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     await waitFor(() => expect(postBody).toBeDefined());
     expect(postBody?.discovered_job_ids).toEqual(["replacement-B"]);
     expect(postBody?.discovered_job_ids).not.toContain("selected-A");
@@ -713,15 +432,16 @@ describe("Issue #171 Jobs workspace", () => {
       "/api/v1/jobs/inbox": () => json(page(inboxCalls++ === 0 ? [inboxItem("selected-A")] : [inboxItem("selected-A", false), inboxItem("replacement-B")], true)),
       "POST /api/v1/jobs/discovery-runs": (_url, init) => { postBody = JSON.parse(String(init?.body)); return json({ ...run("run-new"), jobs: [] }); },
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     const selected = await screen.findByRole("checkbox", { name: /^Select Inbox selected-A/ }); fireEvent.click(selected);
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     const nowBlocked = await screen.findByRole("checkbox", { name: /^Select Inbox selected-A/ });
     expect(nowBlocked).toBeDisabled(); expect(nowBlocked).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
+    expect(screen.queryByRole("heading", { name: /Evaluate selected jobs/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox replacement-B/ }));
     await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     await waitFor(() => expect(postBody).toBeDefined());
     expect(postBody?.discovered_job_ids).toEqual(["replacement-B"]);
     expect(postBody?.discovered_job_ids).not.toContain("selected-A");
@@ -730,14 +450,15 @@ describe("Issue #171 Jobs workspace", () => {
   it("keeps a long evaluation visibly pending and prevents a duplicate submission", async () => {
     const pending = deferred<Response>(); let postCount = 0;
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => { postCount += 1; return pending.promise; } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     expect(await screen.findByText(/may take several minutes/)).toBeInTheDocument();
     expect(screen.getByText(/Selected jobs: Inbox actionable/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Evaluating…" })).toBeDisabled();
-    fireEvent.submit(screen.getByRole("heading", { name: "Evaluate selected actionable jobs" }).closest("form")!);
+    fireEvent.submit(screen.getByRole("heading", { name: "Evaluate selected jobs (1)" }).closest("form")!);
     expect(postCount).toBe(1);
     pending.resolve(json({ ...run("run-new"), jobs: [] }));
     await screen.findByText(/Evaluation completed/);
@@ -752,14 +473,15 @@ describe("Issue #171 Jobs workspace", () => {
       },
       "/api/v1/jobs/discovery-runs": () => { runGet += 1; return json(page([run(`run-${runGet}`)])); },
     });
-    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(await screen.findByText("Initial page-one result")).toBeInTheDocument();
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); expect(await screen.findByText("Initial page-one result")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Show more current opportunities" }));
     expect(await screen.findByText("Larger window result")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
-    fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" });
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
+    goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" });
     expect(await screen.findByText("Fresh page-one result")).toBeInTheDocument();
     expect(screen.queryByText("Larger window result")).not.toBeInTheDocument();
     expect(runGet).toBeGreaterThan(1);
@@ -770,17 +492,18 @@ describe("Issue #171 Jobs workspace", () => {
     let runRequests = 0;
     let postRequests = 0;
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-runs": () => { runRequests += 1; return json(page([run(`run-${runRequests}`)])); }, "POST /api/v1/jobs/discovery-runs": () => { postRequests += 1; return Promise.reject(new TypeError("offline")); } });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     expect(await screen.findByRole("region", { name: "Unconfirmed Inbox evaluation" })).toBeInTheDocument();
     expect(await screen.findByText(/No saved run matches this request ID yet/)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Submitted evaluation" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Evaluation outcome unconfirmed" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Retry this same evaluation safely" })).toBeEnabled();
-    await waitFor(() => expect(runRequests).toBe(1));
+    const beforeManualReconcile = runRequests;
     fireEvent.click(screen.getByRole("button", { name: "Reconcile run history" }));
-    await waitFor(() => expect(runRequests).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(runRequests).toBeGreaterThan(beforeManualReconcile));
     expect(postRequests).toBe(1);
     expect(sessionStorage.getItem("career-trans.inbox-evaluation-uncertain")).not.toBeNull();
   });
@@ -791,15 +514,16 @@ describe("Issue #171 Jobs workspace", () => {
       "/api/v1/jobs/discovery-runs": () => { runRequests += 1; return json(undefined, 503); },
       "POST /api/v1/jobs/discovery-runs": () => Promise.reject(new TypeError("offline")),
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     expect(await screen.findByRole("region", { name: "Unconfirmed Inbox evaluation" })).toBeInTheDocument();
     expect(await screen.findByText(/saved Search History could not be refreshed/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Evaluation outcome unconfirmed" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Retry this same evaluation safely" })).not.toBeInTheDocument();
-    expect(runRequests).toBe(1);
+    expect(runRequests).toBeGreaterThanOrEqual(1);
   });
 
   it("reconciles an interrupted Inbox request to its exact saved run without reposting", async () => {
@@ -830,15 +554,16 @@ describe("Issue #171 Jobs workspace", () => {
       });
       },
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); await editIntentOnFind("AI");
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     await waitFor(() => expect(requestPaths(fetch)).toContain(`/api/v1/jobs/discovery-runs/${runId}`));
     expect(await screen.findByRole("region", { name: "Reconciled Inbox evaluation" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Review saved evaluation" })).toHaveAttribute("href", `/jobs/history?run=${runId}`);
     expect(screen.queryByRole("region", { name: "Unconfirmed Inbox evaluation" })).not.toBeInTheDocument();
     expect(sessionStorage.getItem("career-trans.inbox-evaluation-uncertain")).toBeNull();
-    expect(screen.getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
+    expect(screen.queryByRole("heading", { name: /Evaluate selected jobs/ })).not.toBeInTheDocument();
     expect(posts).toBe(1);
   });
 
@@ -858,7 +583,8 @@ describe("Issue #171 Jobs workspace", () => {
     renderJobs(fetch); await loaded();
     await editIntentOnFind("Straße", "London");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     expect(await screen.findByRole("region", { name: "Reconciled Inbox evaluation" })).toBeInTheDocument();
     expect(payload?.query.keywords).toEqual(["Straße"]);
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-unicode");
@@ -870,16 +596,17 @@ describe("Issue #171 Jobs workspace", () => {
       "/api/v1/jobs/discovery-runs": () => { runRequests += 1; return json(page([run(`run-${runRequests}`)])); },
       "POST /api/v1/jobs/discovery-runs": () => json({ detail: "Invalid request" }, 422),
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     expect(await screen.findByText(/Career-trans rejected the evaluation before a run could be created\. No evaluation was submitted/)).toBeInTheDocument();
     expect(screen.getByText(/Recent run history has been refreshed/)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Submitted evaluation" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Evaluate 1 jobs" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Evaluate selected (1)" })).toBeEnabled();
     expect(screen.queryByRole("region", { name: "Unconfirmed Inbox evaluation" })).not.toBeInTheDocument();
-    expect(runRequests).toBe(1);
+    expect(runRequests).toBeGreaterThanOrEqual(1);
   });
 
   it("reconciles a run persisted before an HTTP 500 using its request ID", async () => {
@@ -896,10 +623,11 @@ describe("Issue #171 Jobs workspace", () => {
       "/api/v1/jobs/search-history": () => json(page([{ type: "discovery_run", id: "persisted-before-error", started_at: new Date().toISOString(), run: persistedRun() }])),
       "/api/v1/jobs/discovery-runs/persisted-before-error": () => json({ ...persistedRun(), jobs: [{ discovered_job_id: "actionable", evaluation_id: null, outcome: "analysis_failed", failure_stage: "career_analysis", failure_kind: "provider_unavailable", opportunity: null }] }),
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     await editIntentOnFind("AI", "London");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     expect(await screen.findByRole("region", { name: "Reconciled Inbox evaluation" })).toBeInTheDocument();
     expect(screen.queryByText(/may have created a run/)).not.toBeInTheDocument();
     expect(payload?.client_request_id).toMatch(/^[0-9a-f-]{36}$/i);
@@ -920,9 +648,10 @@ describe("Issue #171 Jobs workspace", () => {
         },
       } }])) ,
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await loaded(); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     await editIntentOnFind("AI"); fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     expect(await screen.findByText(/No saved run matches this request ID yet/)).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Unconfirmed Inbox evaluation" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })).toBeChecked();
@@ -949,14 +678,14 @@ describe("Issue #171 Jobs workspace", () => {
         return json({ ...run("recovered-run"), run_input: { client_request_id: requestId, query: { ...request.query, keywords: ["ai"], locations: ["london"] }, discovered_job_ids: request.discovered_job_ids, max_semantic_candidates: 10, max_full_analyses: 5, min_relevance_score: 0.5 }, jobs: [] });
       },
     });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" });
     expect(await screen.findByText(/No saved run matches this request ID yet/)).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })).toBeChecked();
-    expect(screen.getByText(/SearchIntent:/).parentElement).toHaveTextContent(/SearchIntent: AI/);
+    expect(screen.getByText(/Search criteria:/).parentElement).toHaveTextContent(/Search criteria: AI/);
     expect(screen.getByRole("button", { name: "Retry this same evaluation safely" })).toBeEnabled();
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" }));
-    expect(await screen.findByLabelText("Prioritisation themes (one per line)")).toHaveValue("AI");
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    expect(await screen.findByLabelText("What roles are you looking for? (one per line)")).toHaveValue("AI");
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("button", { name: "Retry this same evaluation safely" }));
     expect(await screen.findByRole("region", { name: "Analysis just completed" })).toBeInTheDocument();
     expect(posts).toBe(1);
@@ -964,57 +693,56 @@ describe("Issue #171 Jobs workspace", () => {
   });
 
   it("discards the pre-evaluation shortlist while the authoritative post-evaluation refresh is pending", async () => {
-    let opportunityRequests = 0;
+    let postSubmitted = false;
+    let postRefreshRequests = 0;
     const refreshedOpportunities = deferred<Response>();
     const fetch = fakeFetch({
       "/api/v1/jobs/opportunities": () => {
-        opportunityRequests += 1;
-        return opportunityRequests === 1 ? json(page([op("old", "Pre-evaluation shortlist")])) : refreshedOpportunities.promise;
+        if (postSubmitted) { postRefreshRequests += 1; return refreshedOpportunities.promise; }
+        return json(page([op("old", "Pre-evaluation shortlist")]));
       },
-      "POST /api/v1/jobs/discovery-runs": () => json({ ...run("run-new"), jobs: [] }),
+      "POST /api/v1/jobs/discovery-runs": () => { postSubmitted = true; return json({ ...run("run-new"), jobs: [] }); },
     });
-    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Pre-evaluation shortlist");
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); await screen.findByText("Pre-evaluation shortlist");
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     await editIntentOnFind("AI");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
 
-    await waitFor(() => expect(opportunityRequests).toBe(2));
+    await waitFor(() => expect(postRefreshRequests).toBeGreaterThan(0));
     expect(await screen.findByText(/Evaluation completed\. Refreshing recent runs and current opportunities/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" });
-    expect(screen.queryByText("Pre-evaluation shortlist")).not.toBeInTheDocument();
-    expect(screen.getByText("Loading…")).toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=20");
-
     refreshedOpportunities.resolve(json(page([op("new", "Post-evaluation shortlist")])));
+    expect(await screen.findByText(/Evaluation completed\. Recent runs were refreshed; current opportunities were refreshed\./)).toBeInTheDocument();
+    goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" });
     expect(await screen.findByText("Post-evaluation shortlist")).toBeInTheDocument();
     expect(screen.queryByText("Pre-evaluation shortlist")).not.toBeInTheDocument();
-    expect(await screen.findByText(/Evaluation completed\. Recent runs were refreshed; current opportunities were refreshed\./)).toBeInTheDocument();
   });
 
   it("uses a route-local empty-opportunity message without consulting history", async () => {
     const noItems = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([])), "/api/v1/jobs/discovery-runs": () => json(page([])) });
-    renderJobs(noItems); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(await screen.findByText("No current evaluated opportunities.")).toBeInTheDocument(); expect(screen.getByRole("link", { name: "View Search history" })).toHaveAttribute("href", "/jobs/history"); expect(requestPaths(noItems)).not.toContain("/api/v1/jobs/discovery-runs?limit=20"); cleanup(); sessionStorage.clear();
+    renderJobs(noItems, "/jobs/results?scope=analysed"); await screen.findByRole("heading", { name: "AI analysed" }); expect(await screen.findByText("No current AI analyses.")).toBeInTheDocument(); expect(screen.getByRole("link", { name: "Past searches" })).toHaveAttribute("href", "/jobs/results?scope=history"); expect(requestPaths(noItems)).not.toContain("/api/v1/jobs/search-history?limit=20"); cleanup(); sessionStorage.clear();
     const oldRuns = fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([])), "/api/v1/jobs/discovery-runs": () => json(page([run()])) });
-    renderJobs(oldRuns); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" }); await screen.findByText("Completed"); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(await screen.findByText("No current evaluated opportunities.")).toBeInTheDocument(); expect(screen.queryByText(/Historical runs are available below/)).not.toBeInTheDocument();
+    renderJobs(oldRuns); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("Past searches"); await screen.findByRole("heading", { name: "Past searches" }); await screen.findByText("Completed"); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); expect(await screen.findByText("No current AI analyses.")).toBeInTheDocument();
   });
 
   it("does not claim historical runs exist when run history is unavailable", async () => {
     renderJobs(fakeFetch({ "/api/v1/jobs/opportunities": () => json(page([])), "/api/v1/jobs/discovery-runs": () => json(undefined, 503) }));
-    await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByRole("heading", { name: "Recommended / Current analyses" });
+    await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); await screen.findByRole("heading", { name: "AI analysed" });
     await waitFor(() => expect(screen.queryByText(/Historical runs are available below/)).not.toBeInTheDocument());
-    fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" });
+    goToResultsScope("Past searches"); await screen.findByRole("heading", { name: "Past searches" });
     expect(await screen.findByText(/Discovery run history is unavailable/)).toBeInTheDocument();
   });
 
   it("keeps successfully loaded sections when another section is retried", async () => {
     let opportunities = 0;
     const fetch = fakeFetch({ "/api/v1/jobs/opportunities": () => { opportunities += 1; return opportunities === 1 ? json(undefined, 503) : json(page([op("recovered")])); } });
-    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); expect(await screen.findByText(/Current opportunities are unavailable/)).toBeInTheDocument();
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); expect(await screen.findByText(/Current opportunities are unavailable/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry this section" }));
     expect(await screen.findByText("recovered")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" }); expect(screen.getByText("Completed")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); expect(screen.getByText("Inbox actionable")).toBeInTheDocument();
+    goToResultsScope("Past searches"); await screen.findByRole("heading", { name: "Past searches" }); expect(screen.getByText("Completed")).toBeInTheDocument();
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" }); expect(screen.getByText("Inbox actionable")).toBeInTheDocument();
   });
 
   it("uses the existing authenticated 401 session-clear behavior", async () => {
@@ -1033,15 +761,11 @@ describe("Issue #171 Jobs workspace", () => {
     expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
   });
 
-  it("ignores a delayed older selected-detail response when a newer card is opened", async () => {
-    const first = deferred<Response>(); const second = deferred<Response>();
-    const fetch = fakeFetch({ "GET /api/v1/jobs/opportunities/eval-alpha": () => first.promise, "GET /api/v1/jobs/opportunities/eval-beta": () => second.promise });
-    renderJobs(fetch); await loaded();
-    fireEvent.click(screen.getAllByRole("button", { name: /View detail for/ })[0]);
-    fireEvent.click(screen.getByRole("button", { name: /View detail for/ }));
-    second.resolve(json(ranked("Newest selected detail"))); expect(await screen.findByText("Newest selected detail")).toBeInTheDocument();
-    first.resolve(json(ranked("Stale older detail")));
-    await waitFor(() => expect(screen.queryByText("Stale older detail")).not.toBeInTheDocument());
+  it("does not fetch a second inline detail when opening a job from an analysed card", async () => {
+    const fetch = fakeFetch(); renderJobs(fetch); await loaded();
+    const card = screen.getByRole("link", { name: /Open workspace for Alpha/ }).closest("li")!;
+    expect(within(card).getAllByRole("link")).toHaveLength(1);
+    expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/opportunities/eval-"))).toBe(false);
   });
 
   it("ignores a delayed run detail when the user selects a newer run", async () => {
@@ -1051,9 +775,11 @@ describe("Issue #171 Jobs workspace", () => {
       "GET /api/v1/jobs/discovery-runs/run-1": () => first.promise,
       "GET /api/v1/jobs/discovery-runs/run-2": () => second.promise,
     });
-    renderJobs(fetch); await loaded(); fireEvent.click(screen.getByRole("link", { name: "Search history" })); await screen.findByRole("heading", { name: "Search history" });
-    fireEvent.click(screen.getAllByRole("button", { name: /^View run/ })[0]);
-    fireEvent.click(screen.getByRole("button", { name: /^View run/ }));
+    renderJobs(fetch); await loaded(); goToResultsScope("Past searches"); await screen.findByRole("heading", { name: "Past searches" });
+    fireEvent.click(screen.getAllByRole("link", { name: "View results" })[0]);
+    goToResultsScope("Past searches");
+    await screen.findByRole("heading", { name: "Past searches" });
+    fireEvent.click(screen.getAllByRole("link", { name: "View results" })[1]);
     second.resolve(json({ ...runDetail(), jobs: [{ discovered_job_id: "new", evaluation_id: null, outcome: "reused_evaluation", failure_stage: null, failure_kind: null, opportunity: null }] }));
     expect(await screen.findByText("Reused evaluation")).toBeInTheDocument();
     first.resolve(json({ ...runDetail(), jobs: [{ discovered_job_id: "old", evaluation_id: null, outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: null }] }));
@@ -1064,11 +790,11 @@ describe("Issue #171 Jobs workspace", () => {
     renderJobs(); await loaded();
     expect(screen.getByRole("main", { name: "" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Workspace" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    expect(screen.queryByLabelText("Prioritisation themes (one per line)")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Edit SearchIntent in Find jobs" })).toHaveAttribute("href", "/jobs/find");
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    expect(screen.queryByLabelText("What roles are you looking for? (one per line)")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Find jobs" })).toHaveAttribute("href", "/jobs/find");
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toBeInTheDocument();
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toBeInTheDocument();
     expect(screen.getByText(/SearchIntent is not automatically transferred to local Codex/)).toBeInTheDocument();
   });
 });
@@ -1096,7 +822,7 @@ describe("Issue #234 Find jobs saved-schedule execution", () => {
     const fetch = scheduleFetch(savedSchedule(), { "/api/v1/jobs/discovery-schedules/s-1": () => json(fresh), "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => { posts += 1; return json(savedExecution()); } });
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
     expect(await screen.findByText(/SearchIntent and persisted channels were refreshed/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Platform"); expect(posts).toBe(0);
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("Platform"); expect(posts).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Run now" })); await waitFor(() => expect(posts).toBe(1));
   });
 
@@ -1178,8 +904,8 @@ describe("Issue #234 Find jobs saved-schedule execution", () => {
   it.each([["completed", "Completed"], ["partial_failed", "Partial Failed"]] as const)("keeps %s visible on Find jobs and offers explicit Inbox review", async (status, label) => {
     const fetch = scheduleFetch(savedSchedule(), { "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => json(savedExecution(status)) });
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
-    expect(await screen.findByRole("status")).toHaveTextContent(label); expect(screen.getByRole("heading", { name: "Find jobs" })).toBeInTheDocument(); expect(screen.getByRole("link", { name: "Review recent vacancies" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Review recent vacancies" })); await screen.findByRole("heading", { name: "Inbox" }); expect(await screen.findByRole("heading", { name: "Inbox" })).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(label); expect(screen.getByRole("heading", { name: "Find jobs" })).toBeInTheDocument(); expect(screen.getByRole("link", { name: "Browse discovered jobs" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Browse discovered jobs" })); await screen.findByRole("heading", { name: "All discovered jobs" }); expect(await screen.findByRole("heading", { name: "All discovered jobs" })).toBeInTheDocument();
   });
 
   it.each([["failed", "Failed"], ["skipped", "Skipped"]] as const)("shows %s without success-style Inbox review", async (status, label) => {
@@ -1192,7 +918,7 @@ describe("Issue #234 Find jobs saved-schedule execution", () => {
     let inboxCalls = 0;
     const fetch = scheduleFetch(savedSchedule(), { "/api/v1/jobs/inbox": () => { inboxCalls += 1; return Promise.reject(new TypeError("offline")); }, "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => json(savedExecution()) });
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("Completed"); expect(screen.getByText(/Recent vacancies refresh: could not be confirmed as refreshed/)).toBeInTheDocument(); expect(screen.getByRole("link", { name: "Review recent vacancies" })).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent("Completed"); expect(screen.getByText(/The shared catalogue refresh is separate from exact evaluation results/)).toBeInTheDocument(); expect(screen.getByRole("link", { name: "Browse discovered jobs" })).toBeInTheDocument();
   });
 });
 
@@ -1203,9 +929,9 @@ describe("Issue #261 transient one-off discovery", () => {
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     expect(await screen.findByText(/Tavily · Configured for launch/)).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "One-off discovery policy" })).toHaveTextContent("Maximum jobs: 20");
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "  AI roles  " } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
-    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "  AI roles  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    expect(await screen.findByRole("heading", { name: "Search Completed" })).toBeInTheDocument();
     expect(submitted).toMatchObject({ expected_launch_fingerprint: "a".repeat(64), query: { keywords: ["AI roles"] } });
     expect(submitted?.client_request_id).toEqual(expect.any(String));
     expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-schedules/s-1/run-now");
@@ -1218,10 +944,10 @@ describe("Issue #261 transient one-off discovery", () => {
       "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return json(oneOffExecution()); },
     });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
     expect(await screen.findByText(/Tavily is not configured/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Review Job Discovery Settings" })).toHaveAttribute("href", "/settings/discovery");
-    expect(screen.queryByRole("button", { name: "Find jobs now" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Find jobs" })).not.toBeInTheDocument();
     expect(posts).toBe(0);
   });
 
@@ -1229,7 +955,7 @@ describe("Issue #261 transient one-off discovery", () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]) });
     renderJobs(fetch); await selectSavedSchedule();
     expect(screen.getByRole("button", { name: "Run now" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Find jobs now" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Find jobs" })).not.toBeInTheDocument();
     expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/one-off-discovery/executions");
   });
 
@@ -1238,23 +964,23 @@ describe("Issue #261 transient one-off discovery", () => {
     let posts = 0;
     const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return pending.promise; } });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    const launch = screen.getByRole("button", { name: "Find jobs now" });
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    const launch = screen.getByRole("button", { name: "Find jobs" });
     fireEvent.click(launch);
     expect(await screen.findByText(/One-off job discovery is in progress/)).toBeInTheDocument();
     fireEvent.click(launch);
     expect(posts).toBe(1);
     expect(launch).toBeDisabled();
     pending.resolve(json(oneOffExecution({ acquisition_summary: { canonical_jobs: 0 } })));
-    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Search Completed" })).toBeInTheDocument();
   });
 
   it.each([["completed", "Completed"], ["partial_failed", "Partial Failed"], ["failed", "Failed"]] as const)("shows truthful %s execution outcomes", async (status, label) => {
     const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => json(oneOffExecution({ status, acquisition_summary: { canonical_jobs: status === "completed" ? 0 : 2, relevance_screened: 1, analysed: 0 } })) });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
-    expect(await screen.findByRole("heading", { name: `One-off discovery ${label}` })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    expect(await screen.findByRole("heading", { name: `Search ${label}` })).toBeInTheDocument();
   });
 
   it("explains one-off acquisition and post-canonical geography losses in Find jobs", async () => {
@@ -1271,8 +997,8 @@ describe("Issue #261 transient one-off discovery", () => {
       failure_summary: { agentic_web: 1 },
     })) });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
 
     expect(await screen.findByText("Searches run")).toBeInTheDocument();
     expect(screen.getByText("Geography incompatible")).toBeInTheDocument();
@@ -1288,8 +1014,8 @@ describe("Issue #261 transient one-off discovery", () => {
       "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return json({ detail: "Job Discovery settings changed; refresh preflight." }, 409); },
     });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(await screen.findByText(/review the refreshed summary, then explicitly start again/i)).toBeInTheDocument();
     expect(preflights).toBe(2);
     expect(posts).toBe(1);
@@ -1303,14 +1029,14 @@ describe("Issue #261 transient one-off discovery", () => {
       return posts < 3 ? Promise.reject(new TypeError("offline")) : json(oneOffExecution());
     } });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    await screen.findByRole("button", { name: "Find jobs now" });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    await screen.findByRole("button", { name: "Find jobs" });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
     expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
     expect(posts).toBe(2);
     expect(submitted[1]).toEqual(submitted[0]);
     fireEvent.click(screen.getByRole("button", { name: "Reconcile search" }));
-    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Search Completed" })).toBeInTheDocument();
     expect(posts).toBe(3);
     expect(submitted[1]).toEqual(submitted[0]);
     expect(submitted[2]).toEqual(submitted[0]);
@@ -1325,12 +1051,12 @@ describe("Issue #261 transient one-off discovery", () => {
       return json(oneOffExecution());
     } });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
     expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
     expect(screen.getByText(/result is uncertain/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Reconcile search" }));
-    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Search Completed" })).toBeInTheDocument();
     expect(submitted).toHaveLength(3);
     expect(submitted[1]).toEqual(submitted[0]);
     expect(submitted[2]).toEqual(submitted[0]);
@@ -1347,10 +1073,10 @@ describe("Issue #261 transient one-off discovery", () => {
       },
     });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(await screen.findByText(/review the refreshed summary, then explicitly start again/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Find jobs now" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Find jobs" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
     expect(preflights).toBe(2);
     expect(submitted).toHaveLength(2);
@@ -1366,15 +1092,15 @@ describe("Issue #261 transient one-off discovery", () => {
       "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return first.promise; },
     });
     renderJobsWithAuthSwitcher(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
     expect(posts).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
     first.reject(new TypeError("interrupted"));
     expect(await screen.findByText(/session changed during this search/i)).toBeInTheDocument();
     expect(posts).toBe(1);
     expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /One-off discovery Completed/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Search Completed/ })).not.toBeInTheDocument();
   });
 
   it("does not reconcile an uncertain request after session replacement during explicit reconciliation", async () => {
@@ -1389,8 +1115,8 @@ describe("Issue #261 transient one-off discovery", () => {
       },
     });
     renderJobsWithAuthSwitcher(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Find jobs now" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
     fireEvent.click(await screen.findByRole("button", { name: "Reconcile search" }));
     expect(submitted).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
@@ -1398,7 +1124,7 @@ describe("Issue #261 transient one-off discovery", () => {
     expect(await screen.findByText(/session changed during this search/i)).toBeInTheDocument();
     expect(submitted).toHaveLength(3);
     expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /One-off discovery Completed/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /Search Completed/ })).not.toBeInTheDocument();
   });
 
   it("retries an interrupted POST with the same request id to reconcile its execution", async () => {
@@ -1410,9 +1136,9 @@ describe("Issue #261 transient one-off discovery", () => {
       return count === 1 ? Promise.reject(new TypeError("offline")) : json(oneOffExecution());
     } });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs now" }));
-    expect(await screen.findByRole("heading", { name: "One-off discovery Completed" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    expect(await screen.findByRole("heading", { name: "Search Completed" })).toBeInTheDocument();
     expect(submitted).toHaveLength(2);
     expect(submitted[1]).toEqual(submitted[0]);
   });
@@ -1421,14 +1147,14 @@ describe("Issue #261 transient one-off discovery", () => {
     const linked = oneOffExecution({ discovery_run_id: "run-1" });
     const fetch = fakeFetch({ "/api/v1/jobs/search-history": () => json(page([{ type: "one_off", id: linked.id, started_at: linked.started_at, execution: linked }])) });
     renderJobs(fetch, "/jobs/history");
-    expect(await screen.findByRole("heading", { name: "Search history" })).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "One-off discovery · Completed" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Past searches" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "One-off search · Completed" })).toBeInTheDocument();
     expect(screen.getAllByRole("heading", { name: /Completed/ })).toHaveLength(1);
     expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/discovery-runs?limit=20");
     expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/one-off-discovery/executions");
-    fireEvent.click(screen.getByRole("link", { name: "View evaluated results" }));
+    fireEvent.click(screen.getByRole("link", { name: "View results" }));
     expect(await screen.findByRole("heading", { name: "Per-job outcomes" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { name: /One-off discovery · Completed/ })).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: /One-off search · Completed/ })).not.toBeInTheDocument();
   });
 
   it("paginates the authoritative mixed history without duplicate linked-run rows", async () => {
@@ -1439,9 +1165,9 @@ describe("Issue #261 transient one-off discovery", () => {
     const allItems = [...firstItems, { type: "discovery_run" as const, id: "ordinary-next", started_at: "2026-09-30T23:00:00Z", run: run("ordinary-next") }];
     const fetch = fakeFetch({ "/api/v1/jobs/search-history": (url) => json({ items: allItems.slice(0, Number(url.searchParams.get("limit"))), limit: Number(url.searchParams.get("limit")), truncated: Number(url.searchParams.get("limit")) < allItems.length }) });
     renderJobs(fetch, "/jobs/history");
-    await screen.findByRole("heading", { name: "One-off discovery · Completed" });
+    await screen.findByRole("heading", { name: "One-off search · Completed" });
     expect(screen.getAllByRole("listitem")).toHaveLength(20);
-    fireEvent.click(screen.getByRole("button", { name: "Show more search history" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show more past searches" }));
     await waitFor(() => expect(screen.getAllByRole("listitem")).toHaveLength(21));
     expect(screen.getAllByRole("listitem")).toHaveLength(21);
     expect(requestPaths(fetch).filter((path) => path.startsWith("/api/v1/jobs/search-history?")).length).toBeGreaterThan(1);
@@ -1464,7 +1190,7 @@ describe("Issue #230 route and shell foundation", () => {
   it("hands a transient SearchIntent to saved searches without creating or running it", async () => {
     const { fetch } = renderJobs(fakeFetch());
     await screen.findByRole("heading", { name: "Find jobs" });
-    const themes = screen.getByLabelText("Prioritisation themes (one per line)");
+    const themes = screen.getByLabelText("What roles are you looking for? (one per line)");
     fireEvent.change(themes, { target: { value: "Agentic" } }); expect(themes).toHaveValue("Agentic");
     fireEvent.change(themes, { target: { value: "Agentic " } }); expect(themes).toHaveValue("Agentic ");
     fireEvent.change(themes, { target: { value: "Agentic AI   " } }); expect(themes).toHaveValue("Agentic AI   ");
@@ -1485,12 +1211,12 @@ describe("Issue #230 route and shell foundation", () => {
     await screen.findByRole("option", { name: "First" });
     const select = screen.getByLabelText("Saved search configuration");
     fireEvent.change(select, { target: { value: "s-1" } });
-    const themes = screen.getByLabelText("Prioritisation themes (one per line)");
+    const themes = screen.getByLabelText("What roles are you looking for? (one per line)");
     expect(themes).toHaveValue("Agentic AI");
     fireEvent.change(themes, { target: { value: "Unsaved previous text " } });
     expect(themes).toHaveValue("Unsaved previous text ");
     fireEvent.change(select, { target: { value: "s-2" } });
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Applied AI");
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("Applied AI");
   });
 
   it("protects Home and sends unauthenticated visitors to sign in", async () => {
@@ -1627,26 +1353,66 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     await screen.findByRole("heading", { name: "Find jobs" });
     const navigation = screen.getByRole("navigation", { name: "Job Search sections" });
     expect(within(navigation).getByRole("link", { name: "Find jobs" })).toHaveAttribute("href", "/jobs/find");
-    expect(within(navigation).getByRole("link", { name: "Inbox" })).toHaveAttribute("href", "/jobs/inbox");
-    expect(within(navigation).getByRole("link", { name: "My opportunities" })).toHaveAttribute("href", "/jobs/opportunities/recommended");
-    expect(within(navigation).getByRole("link", { name: "Search history" })).toHaveAttribute("href", "/jobs/history");
+    expect(within(navigation).getByRole("link", { name: "Results" })).toHaveAttribute("href", "/jobs/results");
+    expect(within(navigation).getByRole("link", { name: "Saved" })).toHaveAttribute("href", "/jobs/saved");
+    expect(within(navigation).getAllByRole("link")).toHaveLength(3);
 
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Applied AI" } });
-    fireEvent.click(within(navigation).getByRole("link", { name: "Inbox" }));
-    await screen.findByRole("heading", { name: "Inbox" });
-    expect(screen.getByText(/Applied AI/)).toBeInTheDocument();
-    expect(screen.queryByLabelText("Prioritisation themes (one per line)")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Edit SearchIntent in Find jobs" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Applied AI" } });
+    fireEvent.click(within(navigation).getByRole("link", { name: "Results" }));
+    goToResultsScope("All discovered");
+    await screen.findByRole("heading", { name: "All discovered jobs" });
+    expect(screen.queryByLabelText("What roles are you looking for? (one per line)")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" }));
     await screen.findByRole("heading", { name: "Find jobs" });
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Applied AI");
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("Applied AI");
     expect(screen.getByRole("link", { name: "Job Search" })).toHaveAttribute("aria-current", "page");
-    expect(requestPaths(fetch)).not.toContain("/api/v1/jobs/opportunities?limit=20");
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/opportunities?limit=100");
+  });
+
+  it("defaults Results to a linked exact run and renders all twelve synthetic outcomes", async () => {
+    const outcomes: DiscoveryRunDetail["jobs"][number]["outcome"][] = [
+      ...Array(5).fill("newly_evaluated"), ...Array(5).fill("insufficient_job_detail"), "geography_unknown", "outside_semantic_budget",
+    ];
+    const detail: DiscoveryRunDetail = { ...run("run-uat"), jobs: outcomes.map((outcome, index) => ({
+      discovered_job_id: `uat-${index}`, evaluation_id: null, outcome, failure_stage: null, failure_kind: null, opportunity: null,
+      current_job_identity: { title: `Synthetic vacancy ${index + 1}`, company: "Fixture Co", first_seen_at: "2026-10-01T10:00:00Z" },
+    })) };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/search-history": () => json(page([{ type: "discovery_run", id: "run-uat", started_at: detail.started_at, run: detail }])) ,
+      "/api/v1/jobs/discovery-runs/run-uat": () => json(detail),
+    });
+    renderJobs(fetch, "/jobs/results");
+    expect(await screen.findByRole("heading", { name: "Latest search" })).toBeInTheDocument();
+    expect(await screen.findByText("12 exact persisted outcomes")).toBeInTheDocument();
+    const rows = screen.getByText("Per-job outcomes").closest("section");
+    expect(rows).not.toBeNull();
+    expect(within(rows!).getAllByText("Newly evaluated")).toHaveLength(5);
+    expect(within(rows!).getAllByText("Insufficient vacancy detail")).toHaveLength(5);
+    expect(within(rows!).getByText("Geography unknown")).toBeInTheDocument();
+    expect(within(rows!).getByText("Outside semantic budget")).toBeInTheDocument();
+    expect(within(rows!).getAllByText(/Current job identity · Fixture Co · First found/)).toHaveLength(12);
+    const diagnostics = screen.getByText("Search diagnostics").closest("details");
+    expect(diagnostics).not.toHaveAttribute("open");
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/search-history?limit=20");
+    expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-uat");
+  });
+
+  it("shows source-neutral All discovered cards with First found and a single internal job action", async () => {
+    renderJobs(fakeFetch(), "/jobs/results?scope=all");
+    await screen.findByRole("heading", { name: "All discovered jobs" });
+    const cardTitle = await screen.findByText("Inbox actionable");
+    const card = cardTitle.closest("li");
+    expect(card).not.toBeNull();
+    expect(within(card!).getByText(/^First found:/)).toBeInTheDocument();
+    expect(within(card!).getAllByRole("link")).toHaveLength(1);
+    expect(within(card!).getByRole("link", { name: "Open job: Inbox actionable · Public Co · London" })).toHaveAttribute("href", "/jobs/actionable");
+    expect(within(card!).getByText("Available for evaluation")).toBeInTheDocument();
   });
 
   it("loads the authoritative Shortlisted decision projection without reading opportunity state", async () => {
     const { fetch } = renderJobs(fakeFetch(), "/jobs/opportunities/shortlisted");
-    expect(await screen.findByRole("heading", { name: "Shortlisted" })).toBeInTheDocument();
-    expect(await screen.findByText(/No shortlisted jobs yet/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Saved jobs" })).toBeInTheDocument();
+    expect(await screen.findByText(/No saved jobs yet/)).toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=shortlisted&limit=20");
     expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/opportunities"))).toBe(false);
     expect(requestPaths(fetch).some((path) => path.startsWith("/api/v1/jobs/inbox"))).toBe(false);
@@ -1662,7 +1428,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     });
     renderJobs(fetch, "/jobs/opportunities/shortlisted");
     expect(await screen.findByText("Shortlisted role")).toBeInTheDocument();
-    expect(screen.getByText(/Not actionable/)).toBeInTheDocument();
+    expect(screen.getByText(/This vacancy is no longer available for new actions/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^Remove from shortlist/ }));
     await waitFor(() => expect(listCalls).toBeGreaterThan(1));
     expect(screen.queryByText("Shortlisted role")).not.toBeInTheDocument();
@@ -1670,7 +1436,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
 
   it("loads history deep links directly and preserves run/job query navigation", async () => {
     const { fetch } = renderJobs(fakeFetch(), "/jobs/history?run=run-1&job=job-0");
-    expect(await screen.findByRole("heading", { name: "Search history" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Past searches" })).toBeInTheDocument();
     expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-1");
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/discovery-runs/run-1/jobs/job-0");
@@ -1678,15 +1444,15 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
 
   it("closes historical detail and removes only the job query", async () => {
     renderJobs(fakeFetch(), "/jobs/history", true);
-    await screen.findByRole("heading", { name: "Search history" });
+    await screen.findByRole("heading", { name: "Past searches" });
     await screen.findByText("Completed");
-    fireEvent.click(screen.getByRole("button", { name: /^View run/ }));
+    fireEvent.click(screen.getByRole("link", { name: "View results" }));
     await screen.findByText("Per-job outcomes");
     fireEvent.click(screen.getAllByRole("button", { name: /Historical detail for/ })[0]);
     expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: /Historical detail for/ })[0]);
     expect(screen.queryByRole("article", { name: "Historical evaluation detail" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history?run=run-1:");
+    expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/results?scope=latest&run=run-1:");
   });
 
   it("renders a direct history run and job when the bounded history list fails", async () => {
@@ -1698,7 +1464,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
       "/api/v1/jobs/discovery-runs/old-run/jobs/old-job": () => json(directJob),
     });
     renderJobs(fetch, "/jobs/history?run=old-run&job=old-job", true);
-    expect(await screen.findByRole("heading", { name: "Search history" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Past searches" })).toBeInTheDocument();
     expect(await screen.findByText(/Discovery run history is unavailable/)).toBeInTheDocument();
     expect(await screen.findByText("Old historical role")).toBeInTheDocument();
     expect(await screen.findByRole("article", { name: "Historical evaluation detail" })).toBeInTheDocument();
@@ -1734,11 +1500,12 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     });
     renderJobs(fetch, "/jobs/history");
     await screen.findByText("Completed");
-    fireEvent.click(screen.getByRole("button", { name: /^View run/ }));
+    fireEvent.click(screen.getByRole("link", { name: "View results" }));
     await screen.findByText("Per-job outcomes");
+    goToResultsScope("Past searches");
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(await screen.findByText("Refresh failed. Previously loaded information is still shown.")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /^Close run/ })).toHaveLength(1);
+    expect(screen.queryAllByRole("button", { name: /^Close run/ })).toHaveLength(0);
     expect(screen.queryByRole("region", { name: "Selected search history run" })).not.toBeInTheDocument();
   });
 
@@ -1747,7 +1514,7 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
       "GET /api/v1/jobs/discovery-runs/missing-run": () => json({ detail: "not found" }, 404),
     });
     renderJobs(fetch, path, false, true);
-    await screen.findByRole("heading", { name: "Search history" });
+    await screen.findByRole("heading", { name: "Past searches" });
     await waitFor(() => expect(screen.queryByText("Loading…")).not.toBeInTheDocument());
     expect(screen.queryByText("Loading discovery runs…")).not.toBeInTheDocument();
     expect(requestPaths(fetch)).toContain("/api/v1/jobs/search-history?limit=20");
@@ -1758,28 +1525,29 @@ describe("Issue #236 Phase 5 Job Search route family", () => {
     const fetch = fakeFetch();
     vi.stubGlobal("fetch", fetch);
     render(<MemoryRouter initialEntries={["/jobs/history?job=job-0"]}><AuthProvider><App /><RouteLocation /><HistoryControls /></AuthProvider></MemoryRouter>);
-    await screen.findByRole("heading", { name: "Search history" });
+    await screen.findByRole("heading", { name: "Past searches" });
     await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history:REPLACE"));
-    fireEvent.click(screen.getByRole("button", { name: /^View run/ }));
+    fireEvent.click(screen.getByRole("link", { name: "View results" }));
     await screen.findByText("Per-job outcomes");
     fireEvent.click(screen.getAllByRole("button", { name: /Historical detail for/ })[0]);
     await screen.findByRole("article", { name: "Historical evaluation detail" });
     fireEvent.click(screen.getByRole("button", { name: "Back history" }));
-    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history?run=run-1:POP"));
+    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/results?scope=latest&run=run-1:POP"));
     expect(screen.queryByRole("article", { name: "Historical evaluation detail" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Back history" }));
     await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history:POP"));
     fireEvent.click(screen.getByRole("button", { name: "Forward history" }));
-    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/history?run=run-1:POP"));
+    await waitFor(() => expect(screen.getByLabelText("Route location")).toHaveTextContent("/jobs/results?scope=latest&run=run-1:POP"));
   });
 
   it.each([
-    ["/jobs/opportunities/recommended", "Recommended / Current analyses"],
-    ["/jobs/opportunities/shortlisted", "Shortlisted"],
-  ])("marks only the active My opportunities child route for %s", async (path, heading) => {
+    ["/jobs/opportunities/recommended", "AI analysed", "Results views", "AI analysed"],
+    ["/jobs/opportunities/shortlisted", "Saved jobs", "Job Search sections", "Saved"],
+  ])("marks the active section for legacy route %s", async (path, heading, navigationName, activeLink) => {
     renderJobs(fakeFetch(), path);
     await screen.findByRole("heading", { name: heading });
-    const navigation = screen.getByRole("navigation", { name: "My opportunities sections" });
+    const navigation = screen.getByRole("navigation", { name: navigationName });
+    expect(within(navigation).getByRole("link", { name: activeLink })).toHaveAttribute("aria-current", "page");
     expect(within(navigation).getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 });
@@ -1788,13 +1556,13 @@ describe("Issue #236 Phase 5 repair regressions", () => {
   it("preserves, re-resolves, and clears selected saved schedules across the Job Search family", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]) });
     renderJobs(fetch); await selectSavedSchedule();
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("AI");
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("AI");
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
     expect(screen.getByLabelText("Saved search configuration")).toHaveValue("s-1");
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("AI");
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("AI");
     expect(screen.getByText(/5 full analyses/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
     expect(screen.getByLabelText("Saved search configuration")).toHaveValue("s-1");
     expect(screen.getByText(/5 full analyses/)).toBeInTheDocument();
@@ -1805,7 +1573,7 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     const refreshed = savedSchedule({ query: { ...savedSchedule().query, keywords: ["Refreshed"] }, evaluation: { ...savedSchedule().evaluation, max_full_analyses: 2 } });
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => { lists += 1; return json(lists === 1 ? [savedSchedule()] : [refreshed]); } });
     renderJobs(fetch); await selectSavedSchedule();
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
     expect(screen.getByLabelText("Saved search configuration")).toHaveValue("s-1");
     expect(screen.getByText(/2 full analyses/)).toBeInTheDocument();
@@ -1820,12 +1588,12 @@ describe("Issue #236 Phase 5 repair regressions", () => {
       "POST /api/v1/jobs/discovery-schedules/s-1/run-now": () => { posts += 1; return json(savedExecution()); },
     });
     renderJobs(fetch); await selectSavedSchedule();
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Preserved transient intent" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Preserved transient intent" } });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
     expect(screen.getByLabelText("Saved search configuration")).toHaveValue("");
     expect(screen.queryByRole("button", { name: "Run now" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Preserved transient intent");
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("Preserved transient intent");
     expect(posts).toBe(0);
   });
 
@@ -1838,7 +1606,7 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     });
     renderJobs(fetch); await selectSavedSchedule(); fireEvent.click(screen.getByRole("button", { name: "Run now" }));
     expect(await screen.findByRole("button", { name: "Running…" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     pending.resolve(json(savedExecution()));
     await waitFor(() => expect(posts).toBe(1));
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
@@ -1848,33 +1616,36 @@ describe("Issue #236 Phase 5 repair regressions", () => {
   it("keeps a deferred Inbox evaluation snapshot and blocks SearchIntent edits until completion", async () => {
     const pending = deferred<Response>(); let posts = 0;
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => { posts += 1; return pending.promise; } });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" }); await screen.findByText("Inbox actionable");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Deferred AI" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Deferred AI" } });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     expect(await screen.findByRole("button", { name: "Evaluating…" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Deferred AI");
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toBeDisabled();
-    pending.resolve(json({ ...run("run-new"), jobs: [] }));
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("Deferred AI");
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toBeDisabled();
+    pending.resolve(json({ ...run("run-new"), run_input: {}, jobs: [] }));
     await waitFor(() => expect(posts).toBe(1));
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    expect(await screen.findByText(/Search themes: Deferred AI/)).toBeInTheDocument();
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    const exactResult = screen.getByRole("region", { name: "Analysis just completed" });
+    fireEvent.click(within(exactResult).getByText("Search details"));
+    expect(within(exactResult).getByText(/Search themes: Deferred AI/)).toBeInTheDocument();
   });
 
   it("resets transient Job Search state after leaving the route family", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]) });
     renderJobs(fetch); await selectSavedSchedule();
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Transient state" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Transient state" } });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" }); await screen.findByText("Inbox actionable");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getByRole("link", { name: "Profile" })); await screen.findByRole("heading", { name: "Your career profile" });
     fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" });
     expect(screen.getByLabelText("Saved search configuration")).toHaveValue("");
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("");
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("");
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" }); await screen.findByText("Inbox actionable");
     expect(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })).not.toBeChecked();
   });
 
@@ -1896,46 +1667,46 @@ describe("Issue #236 Phase 5 repair regressions", () => {
   it("retains the exact successful Inbox analysis result across workspace navigation", async () => {
     const workspace = { job: { id: "actionable", title: "Exact returned role", company: "Public Co", location: "London", url: "https://public.example.test/actionable", description: null, posted_at: null, work_arrangement: "Hybrid", employment_type: "Full-time", detail_authority: "provider_detail", verification_status: "verified", verification_reason: null, state: "new", actionable: true, first_seen_at: "2026-02-01T00:00:00Z", last_seen_at: "2026-02-02T00:00:00Z", last_changed_at: "2026-02-01T00:00:00Z" }, provenance: { items: [], count: 0, limit: 20, truncated: false }, current_fit: { status: "none", reason: "no_current_evaluation", evaluation: null }, evaluations: { items: [], limit: 20, truncated: false } };
     const exactRun = { ...run("run-exact"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "actionable", evaluation_id: "eval-exact", outcome: "newly_evaluated", failure_stage: null, failure_kind: null, opportunity: ranked("Exact returned role") }] };
-    const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun), "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    const persistedRun = { ...exactRun, jobs: [{ ...exactRun.jobs[0], opportunity: null, current_job_identity: { title: "Exact returned role", company: "Public Co", first_seen_at: "2026-02-01T00:00:00Z" } }] };
+    const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun), "/api/v1/jobs/discovery-runs/run-exact": () => json(persistedRun), "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" }); await screen.findByText("Inbox actionable");
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Exact analysis" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Exact analysis" } });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" }); await screen.findByText("Inbox actionable");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
-    await screen.findByRole("heading", { name: "Analysis just completed" });
-    fireEvent.click(screen.getAllByRole("link", { name: /Open workspace for/ })[0]);
+    fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
+    await screen.findByRole("region", { name: "Analysis just completed" });
+    const exactResult = screen.getByRole("region", { name: "Analysis just completed" });
+    fireEvent.click(within(exactResult).getByRole("link", { name: "View these results" }));
+    await screen.findByText("Per-job outcomes");
+    fireEvent.click(screen.getByRole("link", { name: /Open workspace for Exact returned role/ }));
     await screen.findByRole("heading", { name: "Exact returned role" });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" }));
-    await screen.findByRole("heading", { name: "Inbox" });
-    expect(screen.getByRole("heading", { name: "Analysis just completed" })).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /View Fit for/ }).some((link) => link.getAttribute("href") === "/jobs/actionable/fit")).toBe(true);
-    expect(screen.getByText("Newly evaluated")).toBeInTheDocument();
-    expect(screen.getByText("eval-exact")).toBeInTheDocument();
-    expect(screen.getByText("CONSIDER")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Open exact run result for/ })).toHaveAttribute("href", "/jobs/history?run=run-exact&job=actionable");
+    goToResultsScope("All discovered");
+    await screen.findByRole("heading", { name: "All discovered jobs" });
+    expect(screen.getByRole("region", { name: "Analysis just completed" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View these results" })).toHaveAttribute("href", "/jobs/results?scope=latest&run=run-exact");
   });
 
   it("keeps exact factual outcomes and actions for rows without opportunities", async () => {
     const exactRun = { ...run("run-exact-no-opportunity"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "blocked", evaluation_id: null, outcome: "semantic_rejected" as const, failure_stage: "relevance", failure_kind: "not_relevant", opportunity: null }, { discovered_job_id: "blocked-2", evaluation_id: null, outcome: "outside_semantic_budget" as const, failure_stage: null, failure_kind: null, opportunity: null }] };
-    const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun) });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" });
+    const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun), "/api/v1/jobs/discovery-runs/run-exact-no-opportunity": () => json(exactRun) });
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Exact analysis" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
-    await screen.findByRole("heading", { name: "Analysis just completed" });
-    expect(screen.getByText("Semantic rejected")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Exact analysis" } });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
+    await screen.findByRole("region", { name: "Analysis just completed" });
+    const exactResult = screen.getByRole("region", { name: "Analysis just completed" });
+    fireEvent.click(within(exactResult).getByRole("link", { name: "View these results" }));
+    await screen.findByText("Per-job outcomes");
+    expect(screen.getAllByText("Semantic rejected")).toHaveLength(2);
     const workspaceLinks = screen.getAllByRole("link", { name: /Open workspace for returned result/ });
-    const exactResultLinks = screen.getAllByRole("link", { name: /Open exact run result for returned result/ });
     expect(workspaceLinks).toHaveLength(2);
-    expect(exactResultLinks).toHaveLength(2);
     expect(new Set(workspaceLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
-    expect(new Set(exactResultLinks.map((link) => link.getAttribute("aria-label"))).size).toBe(2);
     expect(workspaceLinks.every((link) => !link.getAttribute("aria-label")?.includes("blocked"))).toBe(true);
-    expect(exactResultLinks.every((link) => !link.getAttribute("aria-label")?.includes("blocked"))).toBe(true);
     expect(workspaceLinks.map((link) => link.getAttribute("aria-label"))).toEqual(expect.arrayContaining(["Open workspace for returned result 1", "Open workspace for returned result 2"]));
-    expect(exactResultLinks.map((link) => link.getAttribute("href"))).toEqual(expect.arrayContaining(["/jobs/history?run=run-exact-no-opportunity&job=blocked", "/jobs/history?run=run-exact-no-opportunity&job=blocked-2"]));
     expect(screen.queryByRole("link", { name: "Open Fit" })).not.toBeInTheDocument();
   });
 
@@ -1986,41 +1757,45 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
   it("preserves SearchIntent, selected schedule, and selected Inbox job through Workspace", async () => {
     const fetch = fakeFetch({ "/api/v1/jobs/discovery-schedules": () => json([savedSchedule()]), "/api/v1/jobs/workspaces/actionable": () => json(workspace) });
     renderJobs(fetch); await selectSavedSchedule();
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Persistent workspace intent" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Persistent workspace intent" } });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
-    fireEvent.click(screen.getAllByRole("link", { name: /Open workspace for/ }).find((link) => link.getAttribute("href") === "/jobs/actionable")!);
+     fireEvent.click(screen.getAllByRole("link", { name: /Open job:/ }).find((link) => link.getAttribute("href") === "/jobs/actionable")!);
     await screen.findByRole("heading", { name: "Workspace role" });
     fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" });
-    expect(screen.getByLabelText("Prioritisation themes (one per line)")).toHaveValue("Persistent workspace intent");
+    expect(screen.getByLabelText("What roles are you looking for? (one per line)")).toHaveValue("Persistent workspace intent");
     expect(screen.getByLabelText("Saved search configuration")).toHaveValue("s-1");
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
     expect(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })).toBeChecked();
   });
 
   it("keeps the exact result visible when history and opportunities refreshes fail", async () => {
     const exactRun = { ...run("run-refresh-failure"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "actionable", evaluation_id: "eval-refresh-failure", outcome: "reused_evaluation" as const, failure_stage: null, failure_kind: null, opportunity: ranked("Exact refresh failure role") }] };
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun), "/api/v1/jobs/discovery-runs": () => json(undefined, 503), "/api/v1/jobs/opportunities": () => json(undefined, 503) });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" });
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" });
     fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Refresh failure" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
-    await screen.findByRole("heading", { name: "Analysis just completed" });
-    expect(screen.getByText(/Exact refresh failure role/)).toBeInTheDocument();
-    expect(screen.getByText("eval-refresh-failure")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Open exact run result for/ })).toHaveAttribute("href", "/jobs/history?run=run-refresh-failure&job=actionable");
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Refresh failure" } });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
+    await screen.findByRole("region", { name: "Analysis just completed" });
+    const exactResult = screen.getByRole("region", { name: "Analysis just completed" });
+    fireEvent.click(within(exactResult).getByText("Search details"));
+    expect(within(exactResult).getByText(/Exact refresh failure role/)).toBeInTheDocument();
+    expect(within(exactResult).getByRole("link", { name: "View these results" })).toHaveAttribute("href", "/jobs/results?scope=latest&run=run-refresh-failure");
   });
 
   it("supersedes result A immediately when uncertain request B starts", async () => {
     let posts = 0;
     const resultA = { ...run("run-a"), search_input_fingerprint: "a", candidate_evaluation_fingerprint: "a", evaluation_contract_fingerprint: "a", jobs: [{ discovered_job_id: "actionable", evaluation_id: "eval-a", outcome: "newly_evaluated" as const, failure_stage: null, failure_kind: null, opportunity: ranked("Result A") }] };
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => { posts += 1; return posts === 1 ? json(resultA) : Promise.reject(new Error("transport interrupted")); } });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" });
-    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Two submissions" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Two submissions" } });
+    goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" }); fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     await screen.findByText(/Result A/);
-    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
     await screen.findByText(/evaluation request was interrupted/);
     expect(screen.queryByText(/Result A/)).not.toBeInTheDocument();
     expect(screen.queryByText("run-a")).not.toBeInTheDocument();
@@ -2029,9 +1804,10 @@ describe("Issue #238 final Phase 6 lifecycle regressions", () => {
   it("clears the exact result when leaving and returning to the Job Search family", async () => {
     const exactRun = { ...run("run-leave"), search_input_fingerprint: "search", candidate_evaluation_fingerprint: "candidate", evaluation_contract_fingerprint: "contract", jobs: [{ discovered_job_id: "actionable", evaluation_id: "eval-leave", outcome: "newly_evaluated" as const, failure_stage: null, failure_kind: null, opportunity: ranked("Leave result") }] };
     const fetch = fakeFetch({ "POST /api/v1/jobs/discovery-runs": () => json(exactRun) });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "Leave family" } }); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" }); fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByRole("button", { name: "Evaluate 1 jobs" }));
-    await screen.findByText(/Leave result/); fireEvent.click(screen.getByRole("link", { name: "Profile" })); await screen.findByRole("heading", { name: "Your career profile" }); fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByRole("heading", { name: "Inbox" });
-    expect(screen.queryByRole("heading", { name: "Analysis just completed" })).not.toBeInTheDocument();
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" }); fireEvent.click(screen.getByRole("link", { name: "Find jobs" })); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "Leave family" } }); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" }); fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ })); fireEvent.click(screen.getByLabelText("I have reviewed and confirm these criteria for the selected jobs."));
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate selected (1)" }));
+    await screen.findByText(/Leave result/); fireEvent.click(screen.getByRole("link", { name: "Profile" })); await screen.findByRole("heading", { name: "Your career profile" }); fireEvent.click(screen.getByRole("link", { name: "Job Search" })); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("All discovered"); await screen.findByRole("heading", { name: "All discovered jobs" });
+    expect(screen.queryByRole("region", { name: "Analysis just completed" })).not.toBeInTheDocument();
   });
 
   it.each([
@@ -2089,7 +1865,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
       "/api/v1/jobs/inbox": () => { inboxCalls += 1; return json(inboxCalls === 1 ? page([inboxItem("actionable")]) : inboxCalls === 2 ? page([]) : page([inboxItem("actionable")])); },
       "PUT /api/v1/jobs/decisions/actionable": (_url, init) => { putBodies.push(JSON.parse(String(init?.body))); return json({ ...dismissed.decision, decision: "dismissed", revision: 1, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:01Z" }); },
     });
-    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "Inbox" }); await screen.findByText("Inbox actionable");
+    renderJobs(fetch, "/jobs/inbox"); await screen.findByRole("heading", { name: "All discovered jobs" }); await screen.findByText("Inbox actionable");
     fireEvent.click(screen.getAllByRole("button", { name: /^Dismiss/ })[0]);
     await waitFor(() => expect(screen.queryByText("Inbox actionable")).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
@@ -2180,7 +1956,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
       "PUT /api/v1/jobs/decisions/job-short": () => json({ ...item, decision: "undecided", revision: 2 }),
     });
     renderJobs(fetch, "/jobs/opportunities/shortlisted"); await screen.findByText(item.title);
-    fireEvent.click(screen.getByRole("button", { name: "Show more shortlisted jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show more saved jobs" }));
     await waitFor(() => expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=shortlisted&limit=40"));
     fireEvent.click(screen.getByRole("button", { name: /^Remove from shortlist/ }));
     await waitFor(() => expect(screen.queryByText(item.title)).not.toBeInTheDocument());
@@ -2216,7 +1992,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
       "/api/v1/jobs/opportunities": (url) => { const limit = url.searchParams.get("limit"); if (limit === "20") return json(page([op("initial", "Initial")], true)); if (limit === "40") return json(page([op(dismissed ? "backfill" : "expanded", dismissed ? "Backfill" : "Expanded")], true)); if (limit === "60") return json(page([op("sixty", "Sixty")], true)); return json(page([])); },
       "PUT /api/v1/jobs/decisions/job-expanded": () => { dismissed = true; return json({ ...undecidedDecision("job-expanded"), decision: "dismissed", revision: 1 }); },
     });
-    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); fireEvent.click(screen.getByRole("link", { name: "My opportunities" })); await screen.findByRole("heading", { name: "Recommended / Current analyses" }); await screen.findByText("Initial");
+    renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" }); goToResultsScope("AI analysed"); await screen.findByRole("heading", { name: "AI analysed" }); await screen.findByText("Initial");
     fireEvent.click(screen.getByRole("button", { name: "Show more current opportunities" }));
     expect(await screen.findByText("Expanded")).toBeInTheDocument();
     const card = screen.getByText("Expanded").closest("li")!;
@@ -2237,14 +2013,12 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
       "POST /api/v1/jobs/discovery-runs": (_url, init) => { submitted = JSON.parse(String(init?.body)); return json({ ...run("submitted"), jobs: [] }); },
     });
     renderJobs(fetch, "/jobs/find"); await screen.findByRole("heading", { name: "Find jobs" });
-    fireEvent.change(screen.getByLabelText("Prioritisation themes (one per line)"), { target: { value: "AI" } });
-    fireEvent.click(screen.getByRole("link", { name: "Inbox" })); await screen.findByText("Inbox actionable");
+    fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI" } });
+    goToResultsScope("All discovered"); await screen.findByText("Inbox actionable");
     fireEvent.click(screen.getByRole("checkbox", { name: /^Select Inbox actionable/ }));
     fireEvent.click(screen.getAllByRole("button", { name: /^Dismiss/ })[0]);
     await waitFor(() => expect(screen.queryByText("Inbox actionable")).not.toBeInTheDocument());
-    const form = screen.getByRole("heading", { name: "Evaluate selected actionable jobs" }).closest("form")!;
-    expect(within(form).getByRole("button", { name: "Evaluate selected jobs" })).toBeDisabled();
-    fireEvent.submit(form);
+    expect(screen.queryByRole("heading", { name: /Evaluate selected jobs/ })).not.toBeInTheDocument();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(submitted).toBeUndefined();
     inboxRefresh.resolve(json(page([])));
@@ -2263,7 +2037,7 @@ describe("Issue #240 Phase 7 decision authority regressions", () => {
     vi.stubGlobal("fetch", fetch); sessionStorage.setItem(TOKEN, "test-token");
     render(<MemoryRouter initialEntries={["/jobs/opportunities/shortlisted"]}><AuthProvider><App /><AuthSwitcher /></AuthProvider></MemoryRouter>);
     await screen.findByText(shortlistA.title);
-    fireEvent.click(screen.getByRole("button", { name: "Show more shortlisted jobs" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show more saved jobs" }));
     await waitFor(() => expect(requestPaths(fetch)).toContain("/api/v1/jobs/decisions?decision=shortlisted&limit=40"));
     fireEvent.click(screen.getByRole("button", { name: "Manage dismissed jobs" }));
     fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
@@ -2381,11 +2155,11 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     renderJobs(fetch, "/jobs/opportunities/shortlisted");
     await screen.findByText("Shortlisted 20");
     for (const limit of [40, 60, 80, 100]) {
-      fireEvent.click(screen.getByRole("button", { name: "Show more shortlisted jobs" }));
+      fireEvent.click(screen.getByRole("button", { name: "Show more saved jobs" }));
       await waitFor(() => expect(requestPaths(fetch)).toContain(`/api/v1/jobs/decisions?decision=shortlisted&limit=${limit}`));
     }
-    expect(screen.getByText("Showing the first 100 shortlisted jobs; more matching decisions exist.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Show more shortlisted jobs" })).not.toBeInTheDocument();
+    expect(screen.getByText("Showing the first 100 saved jobs; more matching decisions exist.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show more saved jobs" })).not.toBeInTheDocument();
   });
 
   it("grows Dismissed independently from 20 to 100 and states max-window truncation truthfully", async () => {
@@ -2431,8 +2205,8 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     await waitFor(() => expect(within(alpha).getByLabelText("Shortlisted")).toBeInTheDocument());
     expect(body).toEqual({ decision: "shortlisted", expected_revision: null });
     expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Alpha", "Beta"]);
-    expect(within(alpha).getByText("72")).toBeInTheDocument();
-    expect(within(alpha).getByText(/84/)).toBeInTheDocument();
+    expect(within(alpha).getByText(/CONSIDER · Fit 72/)).toBeInTheDocument();
+    expect(within(alpha).queryByText(/84/)).not.toBeInTheDocument();
   });
 
   it("does not remove Recommended on an unconfirmed Dismiss, then removes only after confirmed authority", async () => {

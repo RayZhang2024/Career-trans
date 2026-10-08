@@ -39,6 +39,7 @@ class UserJobDecisionListItem(UserJobDecisionRead):
     verification_status: JobVerificationStatus
     verification_reason: str | None = None
     actionable: bool
+    first_seen_at: datetime
     last_seen_at: datetime
 
 

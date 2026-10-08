@@ -4,6 +4,7 @@ import runpy
 from uuid import uuid4
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from app.models.discovered_job import DiscoveredJob
@@ -93,6 +94,14 @@ def test_unchanged_job_is_new_to_user_then_reused_without_ranking(db_session, mo
     assert ranking.calls == 1
     assert first.jobs[0].outcome == "newly_evaluated"
     assert second.jobs[0].outcome == "reused_evaluation"
+    summary = UserJobDiscoveryHistoryReadService(db_session).get_run_detail("user-a", first.id)
+    assert summary.jobs[0].current_job_identity.model_dump() == {
+        "title": job.title,
+        "company": job.company,
+        "first_seen_at": job.first_seen_at.replace(tzinfo=timezone.utc),
+    }
+    opportunity = service.current_opportunity_summaries("user-a", limit=5).items[0]
+    assert opportunity.first_seen_at == job.first_seen_at.replace(tzinfo=timezone.utc)
     assert len(db_session.query(UserJobEvaluation).all()) == 1
     persisted = db_session.query(UserJobEvaluation).one()
     attribution = json.loads(persisted.runtime_attribution_json)
@@ -119,6 +128,39 @@ def test_unchanged_job_is_new_to_user_then_reused_without_ranking(db_session, mo
     assert persisted.runtime_attribution_json is None
     assert UserJobDiscoveryHistoryReadService(db_session).get_historical_run_job_detail("user-a", third.id, job.id).runtime_attribution.status == "legacy_unavailable"
     assert not {"agentic_analysis_detail_candidates", "agentic_analysis_detail_ready", "agentic_analysis_detail_insufficient"}.intersection(third.funnel)
+
+
+def test_search_history_retains_all_twelve_exact_outcomes_and_current_identity(db_session) -> None:
+    now = datetime.now(timezone.utc)
+    jobs = [_job(f"uat-{index}") for index in range(12)]
+    for index, job in enumerate(jobs):
+        job.title = f"UAT public vacancy {index + 1}"
+        job.first_seen_at = now - timedelta(days=index)
+    run = DiscoveryRun(
+        user_id="uat-owner", status="completed", search_input_json=json.dumps({"query": {"keywords": ["AI"]}}),
+        search_input_fingerprint="a" * 64, candidate_evaluation_fingerprint="b" * 64,
+        evaluation_contract_fingerprint="c" * 64, funnel_json="{}", failure_summary_json="{}",
+        started_at=now, completed_at=now,
+    )
+    db_session.add_all([_user("uat-owner"), _user("other-owner"), *jobs, run])
+    db_session.flush()
+    outcomes = ["newly_evaluated"] * 5 + ["insufficient_job_detail"] * 5 + ["geography_unknown", "outside_semantic_budget"]
+    db_session.add_all([
+        DiscoveryRunJob(discovery_run_id=run.id, discovered_job_id=job.id, outcome=outcome, created_at=now + timedelta(seconds=index))
+        for index, (job, outcome) in enumerate(zip(jobs, outcomes, strict=True))
+    ])
+    db_session.commit()
+
+    detail = UserJobDiscoveryHistoryReadService(db_session).get_run_detail("uat-owner", run.id)
+
+    assert len(detail.jobs) == 12
+    assert [row.outcome for row in detail.jobs].count("newly_evaluated") == 5
+    assert [row.outcome for row in detail.jobs].count("insufficient_job_detail") == 5
+    assert {row.outcome for row in detail.jobs} >= {"geography_unknown", "outside_semantic_budget"}
+    assert [row.current_job_identity.title for row in detail.jobs] == [job.title for job in jobs]
+    assert all(row.opportunity is None for row in detail.jobs)
+    with pytest.raises(LookupError):
+        UserJobDiscoveryHistoryReadService(db_session).get_run_detail("other-owner", run.id)
 
 
 def test_candidate_change_and_inactive_job_do_not_reuse(db_session, monkeypatch) -> None:

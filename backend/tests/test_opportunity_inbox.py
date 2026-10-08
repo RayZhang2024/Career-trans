@@ -99,7 +99,8 @@ def test_inbox_filters_owner_dismissals_before_limit_and_projects_owner_decision
     db_session.commit()
     now = datetime.now(timezone.utc)
     for offset, job in enumerate(jobs):
-        job.last_seen_at = now - timedelta(minutes=offset)
+        job.first_seen_at = now - timedelta(minutes=offset)
+        job.last_seen_at = now - timedelta(days=offset)
     db_session.commit()
     decisions = UserJobDecisionService(db_session)
     decisions.mutate("owner", jobs[0].id, UserJobDecisionMutation(decision="dismissed"))
@@ -111,6 +112,25 @@ def test_inbox_filters_owner_dismissals_before_limit_and_projects_owner_decision
     assert [item.discovered_job_id for item in page.items] == [jobs[1].id, jobs[2].id]
     assert page.truncated is True
     assert [item.decision.decision for item in page.items] == ["undecided", "shortlisted"]
+
+
+def test_catalogue_lists_supported_public_sources_by_first_found_and_normalizes_sqlite_utc(db_session) -> None:
+    jobs = [model_job(index) for index in range(740, 744)]
+    sources = ["agentic_web", "ashby", "workday", "internal_private_source"]
+    found = datetime(2026, 10, 1, 10, 0)
+    for index, job in enumerate(jobs):
+        job.source = sources[index]
+        job.first_seen_at = found + timedelta(hours=index)
+        job.last_seen_at = found - timedelta(days=index)
+    db_session.add_all(jobs)
+    db_session.commit()
+
+    page = OpportunityInboxService(db_session).list_recent_summary(limit=10)
+
+    assert [item.discovered_job_id for item in page.items] == [jobs[2].id, jobs[1].id, jobs[0].id]
+    assert page.items[0].first_seen_at == datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+    assert page.items[0].last_seen_at == datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+    assert all(item.first_seen_at.tzinfo == timezone.utc for item in page.items)
 
 
 def test_rank_me_can_rerank_inbox_job_with_confirmed_context(client, db_session) -> None:

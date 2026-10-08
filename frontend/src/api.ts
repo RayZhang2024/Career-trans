@@ -292,12 +292,12 @@ export type UserOpportunitySummary = {
   evaluation_id: string; discovered_job_id: string; recommendation: "apply" | "consider" | "skip"; title: string;
   company: string | null; location: string | null; work_arrangement: string | null; fit_score: number;
   career_alignment_score: number; career_alignment_confidence: string; relevance_score: number; archetype: string;
-  url: string; posting_recency: PostingRecency;
+  url: string; first_seen_at: string; posting_recency: PostingRecency;
   decision?: UserJobDecision;
 };
 export type UserJobDecisionValue = "undecided" | "shortlisted" | "dismissed";
 export type UserJobDecision = { discovered_job_id: string; decision: UserJobDecisionValue; revision: number | null; created_at: string | null; updated_at: string | null };
-export type UserJobDecisionListItem = { discovered_job_id: string; decision: UserJobDecisionValue; revision: number; created_at: string; updated_at: string; title: string; company: string | null; location: string | null; url: string; posted_at: string | null; work_arrangement: string | null; employment_type: string | null; state: "new" | "updated" | "unchanged" | "inactive"; verification_status: "verified" | "unverified"; verification_reason: string | null; actionable: boolean; last_seen_at: string };
+export type UserJobDecisionListItem = { discovered_job_id: string; decision: UserJobDecisionValue; revision: number; created_at: string; updated_at: string; title: string; company: string | null; location: string | null; url: string; posted_at: string | null; work_arrangement: string | null; employment_type: string | null; state: "new" | "updated" | "unchanged" | "inactive"; verification_status: "verified" | "unverified"; verification_reason: string | null; actionable: boolean; first_seen_at: string; last_seen_at: string };
 export type BoundedResponse<T> = { items: T[]; limit: number; truncated: boolean };
 export type DiscoveryRunStatus = "running" | "completed" | "partial_failed" | "failed";
 export type DiscoveryRunSummary = {
@@ -308,6 +308,7 @@ export type DiscoveryRunJobSummary = {
   discovered_job_id: string; evaluation_id: string | null;
   outcome: "newly_evaluated" | "reused_evaluation" | "not_actionable" | "presemantic_filtered" | "geography_incompatible" | "geography_unknown" | "outside_semantic_budget" | "semantic_rejected" | "outside_deep_analysis_budget" | "insufficient_job_detail" | "analysis_failed";
   failure_stage: string | null; failure_kind: string | null; opportunity: UserOpportunitySummary | null;
+  current_job_identity?: { title: string; company: string | null; first_seen_at: string } | null;
 };
 export type DiscoveryRunDetail = DiscoveryRunSummary & { jobs: DiscoveryRunJobSummary[] };
 export type SemanticRuntimeOperation =

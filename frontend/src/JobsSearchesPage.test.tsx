@@ -129,6 +129,8 @@ describe("Issue #175 saved discovery configurations", () => {
 
   it("protects the direct /jobs/searches route and exposes navigation from both authenticated surfaces", async () => {
     const { requests } = renderPage("/jobs");
+    await screen.findByRole("heading", { name: "Find jobs" });
+    fireEvent.click(screen.getByText("More search options"));
     expect(await screen.findByRole("link", { name: "Manage saved discovery configurations" })).toHaveAttribute("href", "/jobs/find/saved");
     fireEvent.click(screen.getByRole("link", { name: "Manage saved discovery configurations" }));
     expect(await screen.findByRole("heading", { name: "Saved discovery configurations" })).toBeInTheDocument();

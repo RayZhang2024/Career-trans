@@ -148,9 +148,13 @@ class UserJobDiscoveryHistoryReadService:
             select(DiscoveryRunJob).where(DiscoveryRunJob.discovery_run_id == run.id)
             .order_by(DiscoveryRunJob.created_at, DiscoveryRunJob.id)
         ).all()
+        jobs = self._session.scalars(
+            select(DiscoveredJob).where(DiscoveredJob.id.in_({row.discovered_job_id for row in rows}))
+        ).all() if rows else []
+        current_jobs = {job.id: job for job in jobs}
         return DiscoveryRunDetailRead(
             **self._run_summary(run).model_dump(),
-            jobs=[self._run_row_summary(row) for row in rows],
+            jobs=[self._run_row_summary(row, current_jobs.get(row.discovered_job_id)) for row in rows],
         )
 
     def get_historical_run_job_detail(self, user_id: str, run_id: str, discovered_job_id: str) -> DiscoveryRunJobDetailRead:
@@ -187,11 +191,15 @@ class UserJobDiscoveryHistoryReadService:
         )
 
     @staticmethod
-    def _run_row_summary(row: DiscoveryRunJob) -> DiscoveryRunJobSummaryRead:
+    def _run_row_summary(row: DiscoveryRunJob, current_job: DiscoveredJob | None = None) -> DiscoveryRunJobSummaryRead:
         return DiscoveryRunJobSummaryRead(
             discovered_job_id=row.discovered_job_id, evaluation_id=row.evaluation_id,
             outcome=row.outcome, failure_stage=row.failure_stage, failure_kind=row.failure_kind,
             opportunity=None,
+            current_job_identity=(
+                {"title": current_job.title, "company": current_job.company, "first_seen_at": utc_timestamp(current_job.first_seen_at)}
+                if current_job is not None else None
+            ),
         )
 
 
@@ -481,7 +489,7 @@ class UserJobDiscoveryService:
         opportunity = item.opportunity
         row = decision_row
         decision = UserJobDecisionRead(discovered_job_id=item.discovered_job_id, decision=UserJobDecisionValue.UNDECIDED) if row is None else UserJobDecisionRead(discovered_job_id=row.discovered_job_id, decision=UserJobDecisionValue(row.decision), revision=row.revision, created_at=utc_timestamp(row.created_at), updated_at=utc_timestamp(row.updated_at))
-        return UserOpportunitySummary(evaluation_id=item.evaluation_id, discovered_job_id=item.discovered_job_id, recommendation=opportunity.recommendation_assessment.recommendation, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, fit_score=opportunity.fit_assessment.fit_score, career_alignment_score=opportunity.career_assessment.career_alignment_score, career_alignment_confidence=opportunity.career_assessment.confidence, relevance_score=opportunity.relevance.score, archetype=opportunity.archetype.archetype, url=job.url, posting_recency=PostingLegitimacyService().assess(self._listing(job)), decision=decision)
+        return UserOpportunitySummary(evaluation_id=item.evaluation_id, discovered_job_id=item.discovered_job_id, recommendation=opportunity.recommendation_assessment.recommendation, title=job.title, company=job.company, location=job.location, work_arrangement=job.work_arrangement, fit_score=opportunity.fit_assessment.fit_score, career_alignment_score=opportunity.career_assessment.career_alignment_score, career_alignment_confidence=opportunity.career_assessment.confidence, relevance_score=opportunity.relevance.score, archetype=opportunity.archetype.archetype, url=job.url, first_seen_at=utc_timestamp(job.first_seen_at), posting_recency=PostingLegitimacyService().assess(self._listing(job)), decision=decision)
 
     @staticmethod
     def _run_summary(run: DiscoveryRun) -> DiscoveryRunSummaryRead:
