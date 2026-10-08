@@ -1,6 +1,8 @@
 from functools import lru_cache
+import logging
 import os
 import re
+from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -8,6 +10,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.schemas.ai_settings import ReasoningEffort
 
 SEMANTIC_CREDENTIAL_POLICIES = {"deployment_only", "user_required", "user_or_deployment"}
+_DEFAULT_LANGSMITH_ENDPOINT = "https://api.smith.langchain.com"
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_CODEX_EXTERNAL_DISCOVERY_MODEL = "gpt-5.6-luna"
@@ -128,6 +132,7 @@ class Settings(BaseSettings):
     langsmith_api_key: str | None = None
     langsmith_project: str | None = None
     langsmith_endpoint: str | None = None
+    langsmith_workspace_id: str | None = None
 
     greenhouse_board_tokens: str = ""
     ashby_board_tokens: str = ""
@@ -245,7 +250,67 @@ def configure_langsmith_environment(settings: Settings) -> None:
         "LANGSMITH_API_KEY": settings.langsmith_api_key,
         "LANGSMITH_PROJECT": settings.langsmith_project,
         "LANGSMITH_ENDPOINT": settings.langsmith_endpoint,
+        "LANGSMITH_WORKSPACE_ID": settings.langsmith_workspace_id,
     }
     for name, value in configured.items():
         if value:
             os.environ.setdefault(name, value)
+
+
+def _safe_langsmith_endpoint(value: str | None) -> str:
+    if not value:
+        return _DEFAULT_LANGSMITH_ENDPOINT
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "configured (URL omitted)"
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        return "configured (URL omitted)"
+    authority = hostname if port is None else f"{hostname}:{port}"
+    return f"{parsed.scheme}://{authority}"
+
+
+def langsmith_configuration_status(settings: Settings) -> dict[str, bool | str]:
+    """Return a display-safe tracer status without exposing credentials."""
+    project = " ".join((settings.langsmith_project or "default").split())[:128]
+    return {
+        "tracing_enabled": bool(settings.langsmith_tracing),
+        "api_key_configured": bool(
+            settings.langsmith_api_key and settings.langsmith_api_key.strip()
+        ),
+        "project": project or "default",
+        "endpoint": _safe_langsmith_endpoint(settings.langsmith_endpoint),
+        "workspace_id_configured": bool(
+            settings.langsmith_workspace_id and settings.langsmith_workspace_id.strip()
+        ),
+    }
+
+
+def log_langsmith_configuration(settings: Settings) -> None:
+    """Log opt-in tracing configuration without claiming that delivery succeeded."""
+    status = langsmith_configuration_status(settings)
+    if not status["tracing_enabled"]:
+        return
+
+    project = status["project"]
+    endpoint = status["endpoint"]
+    workspace_configured = status["workspace_id_configured"]
+    if not status["api_key_configured"]:
+        logger.warning(
+            "LangSmith tracing configuration: enabled=true api_key_configured=false; "
+            "trace delivery is unavailable. project=%s endpoint=%s workspace_id_configured=%s",
+            project,
+            endpoint,
+            workspace_configured,
+        )
+        return
+
+    logger.info(
+        "LangSmith tracing configuration: enabled=true api_key_configured=true "
+        "project=%s endpoint=%s workspace_id_configured=%s; trace delivery is not verified.",
+        project,
+        endpoint,
+        workspace_configured,
+    )

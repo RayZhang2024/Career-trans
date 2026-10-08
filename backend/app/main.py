@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
-from app.core.config import configure_langsmith_environment, get_settings
+from app.core.config import configure_langsmith_environment, get_settings, log_langsmith_configuration
 from app.core.database import engine
 from app.services.candidate_compatibility_runtime import run_candidate_compatibility_startup
 from app.services.semantic_runtime_attribution import RuntimeAttributionIntegrityError
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_langsmith_environment(settings)
+    log_langsmith_configuration(settings)
     result = run_candidate_compatibility_startup(engine)
     if result is not None:
         logger.info(
