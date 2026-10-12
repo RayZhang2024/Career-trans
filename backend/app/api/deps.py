@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.agents.career_alignment import OpenAICareerAlignmentAgent
 from app.agents.candidate_adviser import SemanticCandidateAdviser
 from app.agents.application_drafting import OpenAIApplicationDraftingAgent
+from app.agents.application_cv_tailoring import OpenAIApplicationCVTailoringAgent
 from app.agents.candidate_adviser_clarification import SemanticCandidateAdviserClarificationInterpreter
 from app.agents.candidate_adviser_question import SemanticCandidateAdviserQuestionGenerator
 from app.agents.candidate_adviser_profile_proposal import SemanticCandidateAdviserProfileProposalGenerator
@@ -42,9 +43,11 @@ from app.services.canonical_candidate_read_service import (
     CanonicalCandidateReadService,
 )
 from app.services.cv_visibility_budget import MAX_OUTPUT_TOKENS, PROVIDER_TIMEOUT_SECONDS
+from app.services.application_cv_tailoring_budget import DRAFT_OUTPUT_TOKEN_LIMIT, PROVIDER_TIMEOUT_SECONDS as TAILORING_TIMEOUT_SECONDS, STRATEGY_OUTPUT_TOKEN_LIMIT
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_profile_proposal_generation import CandidateAdviserProfileProposalGenerationService
 from app.schemas.candidate import CandidateContext
+from app.schemas.ai_settings import SemanticOperation
 from app.services.cv_interpretation_service import SemanticCVInterpreter
 from app.services.job_ranking_service import JobRankingService
 from app.services.requirement_matching_service import RequirementMatchingService
@@ -56,6 +59,7 @@ from app.services.user_job_workspace_service import UserJobWorkspaceReadService
 from app.services.user_job_decision_service import UserJobDecisionService
 from app.services.discovery_schedule_service import DiscoveryScheduleService
 from app.services.application_preparation_service import ApplicationPreparationReadService, ApplicationPreparationService
+from app.services.application_cv_tailoring_service import ApplicationCVTailoringService
 from app.services.application_tracking_service import ApplicationTrackingService
 from app.services.scheduled_discovery_execution_service import ScheduledDiscoveryExecutionService
 from app.services.one_off_discovery_service import OneOffDiscoveryService
@@ -181,13 +185,17 @@ def get_semantic_response_client(
             detail=str(exc),
         ) from exc
     bounded_visibility = operation == "cv_visibility_assessment"
+    tailoring_output_limits = {
+        "application_cv_tailoring_strategy": STRATEGY_OUTPUT_TOKEN_LIMIT,
+        "application_cv_tailoring_draft": DRAFT_OUTPUT_TOKEN_LIMIT,
+    }
     return SemanticResponseClient(
         llm,
         operation=operation,
         reasoning_effort=reasoning_effort,
-        max_output_tokens=MAX_OUTPUT_TOKENS if bounded_visibility else None,
-        timeout_seconds=PROVIDER_TIMEOUT_SECONDS if bounded_visibility else None,
-        max_retries=0 if bounded_visibility else None,
+        max_output_tokens=MAX_OUTPUT_TOKENS if bounded_visibility else tailoring_output_limits.get(operation),
+        timeout_seconds=PROVIDER_TIMEOUT_SECONDS if bounded_visibility else (TAILORING_TIMEOUT_SECONDS if operation in tailoring_output_limits else None),
+        max_retries=0 if bounded_visibility or operation in tailoring_output_limits else None,
     )
 
 
@@ -924,6 +932,35 @@ def get_application_preparation_service(
         graph_factory=lambda: _build_user_career_analysis_graph(runtime_snapshot, credential_resolver),
         drafting_agent_factory=build_drafting_agent,
         page_fetcher=PublicHttpPageFetcher(), settings=settings, runtime_snapshot=runtime_snapshot,
+    )
+
+
+def get_application_cv_tailoring_service(
+    db: DbSession,
+    runtime_snapshot: Annotated[ResolvedRuntimeSnapshot, Depends(get_user_runtime_snapshot)],
+    credential_resolver: Annotated[UserSemanticCredentialResolver | None, Depends(get_user_semantic_credential_resolver)] = None,
+) -> ApplicationCVTailoringService:
+    settings = get_settings()
+    application_service = get_application_preparation_service(db, runtime_snapshot, credential_resolver)
+
+    def build_tailoring_agent() -> OpenAIApplicationCVTailoringAgent:
+        model = runtime_snapshot.operation(SemanticOperation.APPLICATION_DRAFTING).model
+        return OpenAIApplicationCVTailoringAgent(
+            strategy_client=get_semantic_response_client(
+                settings, model=model, operation="application_cv_tailoring_strategy",
+                runtime_snapshot=runtime_snapshot, credential_resolver=credential_resolver,
+            ),
+            draft_client=get_semantic_response_client(
+                settings, model=model, operation="application_cv_tailoring_draft",
+                runtime_snapshot=runtime_snapshot, credential_resolver=credential_resolver,
+            ),
+            model=model,
+        )
+
+    return ApplicationCVTailoringService(
+        db, runtime_snapshot=runtime_snapshot, application_service=application_service,
+        agent_factory=build_tailoring_agent, settings=settings,
+        runtime_snapshot_resolver=lambda user_id: AiSettingsService(db).snapshot_for_user(user_id),
     )
 
 

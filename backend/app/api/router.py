@@ -3,7 +3,7 @@ from fastapi import APIRouter
 from app.api.routes import ai_settings, auth, config, job_discovery_settings, onboarding, profile, users
 from app.api.routes import cv_ingestion
 from app.api.routes import candidate_adviser
-from app.api.routes import applications, application_tracking
+from app.api.routes import applications, application_tracking, application_cv_tailoring
 from app.api.routes.demo import router as demo_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.cv_visibility import router as cv_visibility_router
@@ -18,6 +18,7 @@ api_router.include_router(ai_settings.router)
 api_router.include_router(job_discovery_settings.router)
 api_router.include_router(cv_ingestion.router)
 api_router.include_router(candidate_adviser.router)
+api_router.include_router(application_cv_tailoring.router)
 api_router.include_router(applications.router)
 api_router.include_router(application_tracking.router)
 api_router.include_router(jobs_router)

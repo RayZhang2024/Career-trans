@@ -553,6 +553,48 @@ export type ApplicationPrepareRequest = {
   application_questions: string[];
 };
 
+export type TailoringAction = "feature" | "reorder" | "condense" | "omit";
+export type TailoringDecision = "keep" | "reorder" | "deemphasise" | "skip";
+export type TailoringStatus =
+  | "strategy_in_progress" | "strategy_review" | "strategy_accepted" | "strategy_rejected"
+  | "strategy_failed" | "strategy_invalid" | "strategy_uncertain" | "draft_in_progress"
+  | "draft_review" | "draft_failed" | "draft_invalid" | "draft_uncertain" | "stale" | "approved";
+export type TailoringAttemptStatus = "not_started" | "in_progress" | "completed" | "failed" | "result_invalid" | "outcome_uncertain" | "stale";
+export type TailoringStrategy = {
+  positioning: string; summary_emphasis: string;
+  recommendations: Array<{ recommendation_id: string; requirement_index: number; action: TailoringAction; rationale: string; suggested_emphasis: string | null; source_refs: ApplicationSourceRef[] }>;
+  gaps_to_clarify: Array<{ requirement_index: number; reason: string }>;
+  not_to_claim: string[];
+};
+export type TailoringStrategyChoice = { recommendation_id: string; decision: TailoringDecision; order: number };
+export type CVWritingDraft = {
+  professional_summary: string; summary_source_refs: ApplicationSourceRef[]; key_skills: string[];
+  role_drafts: Array<{ employment_index: number; bullets: Array<{ text: string; source_refs: ApplicationSourceRef[]; priority: number }> }>;
+  project_drafts: Array<{ project_index: number; text: string; source_refs: ApplicationSourceRef[]; priority: number }>;
+};
+export type TailoringSession = {
+  id: string; client_request_id: string; discovered_job_id: string; status: TailoringStatus;
+  strategy_status: TailoringAttemptStatus; draft_status: TailoringAttemptStatus; is_current: boolean;
+  target: ApplicationPreparation["target"]; identity: ApplicationPreparation["identity"];
+  profile_outline: { employment: Array<{ employment_index: number; employer: string; title: string; start_date: string | null; end_date: string | null; location: string | null }>; projects: Array<{ project_index: number; name: string }>; education: string[]; credentials: string[] };
+  strategy: TailoringStrategy | null; strategy_accepted: boolean; strategy_positioning_override: string | null;
+  strategy_choices: TailoringStrategyChoice[]; strategy_revision: number;
+  draft: CVWritingDraft | null; draft_revision: number; target_pages: number;
+  failure_code: string | null; approved_preparation_id: string | null;
+  runtime_attribution: SemanticRuntimeAttribution | null; created_at: string; updated_at: string;
+};
+export type TailoringPreflight = {
+  discovered_job_id: string; job_title: string;
+  state: "ready" | "candidate_not_ready" | "identity_required" | "job_not_actionable" | "current_evaluation_required" | "input_too_large";
+  provider: string; model: string; strategy_output_token_limit: number; draft_output_token_limit: number;
+  timeout_seconds: number; max_requirements: number; max_input_characters: number; strategy_request_count: number; draft_request_count: number; sessions: TailoringSession[];
+};
+export type TailoringStartRequest = { client_request_id: string; discovered_job_id: string; target_pages: 1 | 2 | 3 };
+export type TailoringStrategyReviewWrite = { expected_revision: number; accepted: boolean | null; positioning_override: string | null; choices: TailoringStrategyChoice[] };
+export type TailoringDraftGenerateRequest = { client_request_id: string; expected_strategy_revision: number };
+export type TailoringDraftReviewWrite = { expected_revision: number; draft: CVWritingDraft };
+export type TailoringApproveWrite = { expected_strategy_revision: number; expected_draft_revision: number };
+
 export type ApplicationTrackingStatus = "prepared" | "applied" | "interview" | "rejected" | "offer" | "withdrawn";
 export type ApplicationTrackingEvent = { revision: number; from_status: ApplicationTrackingStatus | null; to_status: ApplicationTrackingStatus; recorded_at: string };
 export type ApplicationTrackingTarget = {
