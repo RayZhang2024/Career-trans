@@ -14,6 +14,8 @@ def test_compose_uses_an_absolute_sqlite_database_in_a_named_volume() -> None:
     assert "career_agent_data:/data" in compose
     assert "career_agent_data:" in compose
     assert "OPENAI_API_KEY: ${OPENAI_API_KEY:-}" in compose
+    assert "CV_VISIBILITY_ASSESSMENT_MODEL: ${CV_VISIBILITY_ASSESSMENT_MODEL:-gpt-5.6-luna}" in backend
+    assert "CV_VISIBILITY_ASSESSMENT_REASONING_EFFORT: ${CV_VISIBILITY_ASSESSMENT_REASONING_EFFORT:-}" in backend
     assert "LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}" in backend
     assert "LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}" in backend
     assert "LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-career-trans-dev}" in backend

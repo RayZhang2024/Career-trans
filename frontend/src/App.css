@@ -334,3 +334,16 @@ button:disabled { background: #e1e5ec; color: #46536b; cursor: not-allowed; }
   .overlap-actions button, .overlap-candidate button { width: 100%; }
   .provenance-item, .provenance-event, .structured-item-presentation { overflow-wrap: anywhere; }
 }
+.cv-visibility-result {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  border-top: 1px solid var(--border-color, #d5dbe2);
+  padding-top: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.cv-visibility-result blockquote {
+  margin: 0.75rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

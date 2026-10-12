@@ -38,6 +38,7 @@ class Settings(BaseSettings):
         "job_archetype_reasoning_effort",
         "agentic_discovery_reasoning_effort",
         "application_drafting_reasoning_effort",
+        "cv_visibility_assessment_reasoning_effort",
         mode="before",
     )
     @classmethod
@@ -96,6 +97,11 @@ class Settings(BaseSettings):
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("APPLICATION_DRAFTING_MODEL", "application_drafting_model"),
     )
+    cv_visibility_assessment_model: str = Field(
+        default="gpt-5.6-luna",
+        validation_alias=AliasChoices("CV_VISIBILITY_ASSESSMENT_MODEL", "cv_visibility_assessment_model"),
+    )
+    cv_visibility_assessment_reasoning_effort: ReasoningEffort | None = None
     requirement_matching_model: str = Field(
         default="gpt-5.6-luna",
         validation_alias=AliasChoices("REQUIREMENT_MATCHING_MODEL", "OPENAI_REQUIREMENT_MATCHING_MODEL", "requirement_matching_model", "openai_requirement_matching_model"),

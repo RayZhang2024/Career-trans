@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
-import type { ApplicationPreparation, ApplicationPrepareRequest, ApplicationTracking, ApplicationTrackingStatus, JobWorkspace, JobWorkspaceApplication, JobWorkspaceEvaluation, UserJobDecisionValue } from "./api";
+import type { ApplicationPreparation, ApplicationPrepareRequest, ApplicationTracking, ApplicationTrackingStatus, CVVisibilityAssessment, CVVisibilityAssessmentCreate, CVVisibilityPreflight, CVVisibilitySource, JobWorkspace, JobWorkspaceApplication, JobWorkspaceEvaluation, UserJobDecisionValue } from "./api";
 import { ApiError, useAuth } from "./auth";
 import { RuntimeAttributionPanel } from "./RuntimeAttributionPanel";
 import { OpportunityDetail } from "./JobsPage";
@@ -32,7 +32,146 @@ function WorkspaceOverview({ workspace }: { workspace: JobWorkspace }) {
 
 function CurrentFit({ workspace }: { workspace: JobWorkspace }) {
   const fit = workspace.current_fit;
-  return <><section className="card" aria-labelledby="workspace-current-fit-heading"><h2 id="workspace-current-fit-heading">Current Fit</h2>{fit.status === "current" && fit.evaluation ? <><p><strong>Current evaluation confirmed.</strong> This matches the current job content, candidate context, and evaluation contract.</p><dl className="detail-grid"><div><dt>Evaluation</dt><dd>{fit.evaluation.id}</dd></div><div><dt>Evaluated</dt><dd>{new Date(fit.evaluation.created_at).toLocaleString()}</dd></div></dl><OpportunityDetail opportunity={fit.evaluation.opportunity} /><RuntimeAttributionPanel attribution={fit.evaluation.runtime_attribution} boundary="evaluation" /></> : fit.status === "none" ? <p>{fit.reason === "job_not_actionable" ? "This vacancy is not currently actionable, so no current Fit is claimed." : "No analysis is current for the present job, candidate and evaluation configuration. Persisted evaluation history remains below when available."}</p> : <p>Current Fit is temporarily unavailable because {fit.reason === "candidate_evidence_incomplete" ? "candidate evidence is not fully materialised" : fit.reason === "candidate_not_ready" ? "the confirmed candidate context is not ready" : "the current evaluation configuration could not be confirmed"}. Persisted history remains available below.</p>}</section><EvaluationHistory evaluations={workspace.evaluations.items} /></>;
+  return <><section className="card" aria-labelledby="workspace-current-fit-heading"><h2 id="workspace-current-fit-heading">Current Fit</h2>{fit.status === "current" && fit.evaluation ? <><p><strong>Current evaluation confirmed.</strong> This matches the current job content, candidate context, and evaluation contract.</p><dl className="detail-grid"><div><dt>Evaluation</dt><dd>{fit.evaluation.id}</dd></div><div><dt>Evaluated</dt><dd>{new Date(fit.evaluation.created_at).toLocaleString()}</dd></div></dl><OpportunityDetail opportunity={fit.evaluation.opportunity} /><RuntimeAttributionPanel attribution={fit.evaluation.runtime_attribution} boundary="evaluation" /></> : fit.status === "none" ? <p>{fit.reason === "job_not_actionable" ? "This vacancy is not currently actionable, so no current Fit is claimed." : "No analysis is current for the present job, candidate and evaluation configuration. Persisted evaluation history remains below when available."}</p> : <p>Current Fit is temporarily unavailable because {fit.reason === "candidate_evidence_incomplete" ? "candidate evidence is not fully materialised" : fit.reason === "candidate_not_ready" ? "the confirmed candidate context is not ready" : "the current evaluation configuration could not be confirmed"}. Persisted history remains available below.</p>}</section><CVVisibilityPanel discoveredJobId={workspace.job.id} /><EvaluationHistory evaluations={workspace.evaluations.items} /></>;
+}
+
+function CVVisibilityPanel({ discoveredJobId }: { discoveredJobId: string }) {
+  const { api, user } = useAuth();
+  const [data, setData] = useState<CVVisibilityPreflight | null>(null);
+  const [selectedSource, setSelectedSource] = useState("");
+  const [consented, setConsented] = useState(false);
+  const [uncertainRetryConfirmed, setUncertainRetryConfirmed] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const [uncertainRequest, setUncertainRequest] = useState<CVVisibilityAssessmentCreate | null>(null);
+  const generation = useRef(0);
+  const path = `/api/v1/jobs/workspaces/${encodeURIComponent(discoveredJobId)}/cv-visibility`;
+  const refresh = useCallback(async () => {
+    const current = ++generation.current;
+    const owner = user?.id;
+    const epoch = api.sessionEpoch();
+    setLoading(true);
+    try {
+      const value = await api.request<CVVisibilityPreflight>(path);
+      if (generation.current !== current || owner !== user?.id || api.sessionEpoch() !== epoch) return false;
+      setData(value);
+      setUncertainRequest((previous) => previous && value.assessments.some((item) => item.client_request_id === previous.client_request_id) ? null : previous);
+      setSelectedSource((previous) => value.sources.some((source) => sourceKey(source) === previous) ? previous : "");
+      setError("");
+      return true;
+    } catch {
+      if (generation.current === current && owner === user?.id && api.sessionEpoch() === epoch) setError("CV visibility status could not be loaded. Saved assessment history remains unchanged.");
+      return false;
+    } finally {
+      if (generation.current === current && owner === user?.id && api.sessionEpoch() === epoch) setLoading(false);
+    }
+  }, [api, path, user?.id]);
+  useEffect(() => {
+    setData(null); setSelectedSource(""); setConsented(false); setUncertainRetryConfirmed(false); setError(""); setPending(false); setUncertainRequest(null);
+    void refresh();
+    return () => { generation.current += 1; };
+  }, [refresh]);
+  const source = data?.sources.find((item) => sourceKey(item) === selectedSource) ?? null;
+  const unresolved = data?.assessments.find((item) => item.status === "in_progress" || item.status === "outcome_uncertain");
+  const unresolvedRequest = uncertainRequest && !unresolved ? uncertainRequest : null;
+  const request = async (payload: CVVisibilityAssessmentCreate) => {
+    const owner = user?.id; const epoch = api.sessionEpoch(); const current = ++generation.current;
+    setPending(true); setError("");
+    try {
+      setUncertainRequest(payload);
+      const assessment = await api.request<CVVisibilityAssessment>(`${path}/assessments`, { method: "POST", body: JSON.stringify(payload) });
+      if (generation.current !== current || owner !== user?.id || api.sessionEpoch() !== epoch) return;
+      if (assessment.status === "outcome_uncertain" || assessment.status === "in_progress") setUncertainRequest(payload);
+      else setUncertainRequest(null);
+      await refresh();
+    } catch (caught) {
+      if (generation.current === current && owner === user?.id && api.sessionEpoch() === epoch) {
+        let message: string;
+        if (caught instanceof ApiError && caught.status >= 400 && caught.status < 500) {
+          setUncertainRequest(null);
+          message = caught.status === 404
+            ? "The selected job or source CV is no longer available. Refresh and select a current source."
+            : caught.status === 413
+              ? "The selected source exceeds the bounded assessment input. Choose a smaller extracted CV."
+              : "The assessment prerequisites changed or the request was rejected before it started. Refresh and review the current status.";
+        } else {
+          setUncertainRequest(payload);
+          message = "The assessment response was interrupted. Its outcome is uncertain, so no second model call was made automatically. Check the saved request status below.";
+        }
+        await refresh();
+        if (owner === user?.id && api.sessionEpoch() === epoch) setError(message);
+      }
+    } finally {
+      if (owner === user?.id && api.sessionEpoch() === epoch) setPending(false);
+    }
+  };
+  const start = () => {
+    const explicitSecondAttempt = unresolved?.status === "outcome_uncertain" && uncertainRetryConfirmed;
+    if (!source || !consented || !data || data.state !== "ready" || (unresolved && !explicitSecondAttempt) || unresolvedRequest || pending) return;
+    const clientRequestId = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => { const random = Math.random() * 16 | 0; return (char === "x" ? random : (random & 0x3 | 0x8)).toString(16); });
+    void request({ client_request_id: clientRequestId, source_draft_id: source.draft_id, source_document_index: source.document_index, source_document_sha256: source.document_sha256, segment_ids: source.segment_ids, consent: true });
+  };
+  const reconcile = () => {
+    if ((!unresolved && !unresolvedRequest) || pending) return;
+    const requestId = unresolved?.client_request_id ?? unresolvedRequest!.client_request_id;
+    const draftId = unresolved?.source_draft_id ?? unresolvedRequest!.source_draft_id;
+    const documentIndex = unresolved?.source_document_index ?? unresolvedRequest?.source_document_index;
+    const documentSha = unresolved?.source_document_sha256 ?? unresolvedRequest!.source_document_sha256;
+    const segments = unresolved?.segment_ids ?? unresolvedRequest!.segment_ids;
+    if (typeof documentIndex !== "number") {
+      setError("This saved request predates exact document selection and cannot be safely reconciled automatically. Refresh its status before starting another assessment.");
+      return;
+    }
+    void request({ client_request_id: requestId, source_draft_id: draftId, source_document_index: documentIndex, source_document_sha256: documentSha, segment_ids: segments, consent: true });
+  };
+  return <section className="card cv-visibility-panel" aria-labelledby="cv-visibility-heading" aria-busy={pending}>
+    <div className="section-heading"><div><p className="eyebrow">Optional semantic review</p><h2 id="cv-visibility-heading">How your CV communicates this evidence</h2></div><button type="button" className="button-secondary" onClick={() => void refresh()} disabled={loading || pending}>Refresh status</button></div>
+    {loading && <p role="status">Loading saved CV visibility status…</p>}
+    {pending && <p role="status">One bounded CV visibility request is in progress. It will not be retried automatically.</p>}
+    {error && <p role="alert">{error}</p>}
+    {!loading && data && <>
+      <p>This uses the current job evaluation, relevant confirmed evidence, and one original CV document you select. Reading this panel does not call a model.</p>
+      <p className="muted">Provider and model: {data.provider} · {data.model}. This may incur provider cost. One explicit assessment request, up to {data.max_input_characters.toLocaleString()} selected-CV characters, {data.max_evidence_characters.toLocaleString()} relevant confirmed-evidence characters, {data.max_total_input_characters.toLocaleString()} total input characters and {data.max_output_tokens.toLocaleString()} output tokens. No automatic retries. If deployment tracing is enabled, the existing tracing configuration may capture the request.</p>
+      {data.state === "current_evaluation_required" && <p role="status">Run a current job evaluation before assessing how your CV presents its evidence.</p>}
+      {data.state === "candidate_not_ready" && <p role="status">A complete confirmed candidate profile is required before CV visibility can be assessed.</p>}
+      {data.state === "source_required" && <p role="status">Upload a CV source document to enable an explicit assessment.</p>}
+      {data.state === "input_too_large" && <p role="status">The current requirement set exceeds the bounded assessment limit.</p>}
+      {data.state === "evaluation_unavailable" && <p role="status">The saved job evaluation does not contain a valid current requirement-to-match mapping. CV visibility is unavailable until the job is evaluated again.</p>}
+      {data.sources.length === 0 && <p role="status">No extracted CV source documents are available. Upload a CV in Profile first; confirmation is not required for a visibility-only comparison.</p>}
+      {data.sources.length > 0 && !data.sources.some((item) => item.assessable) && <p role="status">The available source documents exceed the assessment size or segment limit.</p>}
+      {data.sources.length > 0 && <>
+        <label htmlFor="cv-visibility-source">Select one exact original CV document</label>
+        <select id="cv-visibility-source" value={selectedSource} onChange={(event) => { setSelectedSource(event.target.value); setConsented(false); setUncertainRetryConfirmed(false); }} disabled={pending}>
+          <option value="">Choose a source document</option>
+          {data.sources.map((item) => <option key={sourceKey(item)} value={sourceKey(item)} disabled={!item.assessable}>{item.filename} · {new Date(item.created_at).toLocaleDateString()} · {item.draft_state} · document {item.document_index + 1} · {item.document_sha256.slice(0, 10)}{item.assessable ? "" : " · exceeds assessment limits"}</option>)}
+        </select>
+        {source && source.draft_state !== "confirmed" && <p role="status">This CV is not confirmed. It is comparison text only and cannot add facts to your confirmed candidate evidence.</p>}
+        <p className="muted">Only the explicitly selected document’s extracted segments and job-relevant confirmed evidence are sent. Email, phone, postal address and URL details are removed. No CV upload or application submission occurs.</p>
+        <label><input type="checkbox" checked={consented} onChange={(event) => setConsented(event.target.checked)} disabled={pending || data.state !== "ready" || !source} /> I want to send this selected CV and relevant confirmed evidence to {data.provider} ({data.model}) for this one assessment.</label>
+        {unresolved?.status === "outcome_uncertain" && <label><input type="checkbox" checked={uncertainRetryConfirmed} onChange={(event) => setUncertainRetryConfirmed(event.target.checked)} disabled={pending} /> I understand the previous request may already have reached the provider; starting again can incur a second bounded request.</label>}
+        <button type="button" onClick={start} disabled={pending || loading || data.state !== "ready" || !source?.assessable || !consented || (Boolean(unresolved) && !uncertainRetryConfirmed) || Boolean(unresolvedRequest)}>{pending ? "Analysing CV with AI…" : unresolved ? "Start a new assessment" : unresolvedRequest ? "Check saved request" : "Analyse CV with AI"}</button>
+      </>}
+      {(unresolved || unresolvedRequest) && <div className="notice"><p role="status">A saved assessment request has an unresolved outcome. A new assessment is blocked to avoid an accidental duplicate.</p><button type="button" className="button-secondary" onClick={reconcile} disabled={pending}>Check saved request</button></div>}
+      {data.assessments.map((assessment) => <article className="card" key={assessment.id}>
+        <h3>{assessment.status === "completed" && assessment.is_current ? "Current CV visibility assessment" : assessment.status === "stale" ? "Historical assessment · no longer current" : assessment.status === "outcome_uncertain" || assessment.status === "in_progress" ? "Assessment outcome uncertain" : assessment.status === "prerequisite_failed" ? "Assessment blocked before provider request" : assessment.status === "failed" ? "Assessment failed" : "Assessment result unavailable"}</h3>
+        <p className="muted">Source: {assessment.source_filename} · {assessment.provider} · {assessment.model} · {new Date(assessment.created_at).toLocaleString()}</p>
+        {assessment.status === "outcome_uncertain" && <p role="status">The saved request may have reached the provider. Use “Check saved request” to reconcile it without creating another request.</p>}
+        {(assessment.status === "failed" || assessment.status === "prerequisite_failed") && <p role="status">{assessment.failure_code === "provider_configuration_unavailable" ? "The provider was not ready, so no assessment request was sent and no model call was made." : assessment.failure_code === "provider_rejected_request" ? "The provider rejected the request. It was not retried automatically." : "The assessment failed. Review provider readiness before starting a new explicit assessment."}</p>}
+        {assessment.result.map((item) => <div key={item.requirement_index} className="cv-visibility-result"><h4>{item.requirement}</h4><p><strong>Candidate evidence coverage:</strong> {item.candidate_match_type}</p><p><strong>CV visibility (AI, extracted text):</strong> {visibilityLabel(item.visibility ?? null)}</p><p><strong>Gap recommendation:</strong> {projectionLabel(item.projection)}</p><p className="muted">AI commentary describes selected CV wording only. It does not verify the claim or change the existing candidate evidence classification.</p>{item.authority_note && <p role="note" className="notice">{item.authority_note}</p>}{item.candidate_evidence_refs && item.candidate_evidence_refs.length > 0 && <p className="muted">Confirmed evidence references: {item.candidate_evidence_refs.map((reference) => reference.value || reference.source_ref).join(" · ")}</p>}<p><strong>AI observation:</strong> {item.explanation}</p>{item.suggestion && <p><strong>Suggested next step:</strong> {item.suggestion}</p>}{item.citations.map((citation, index) => <blockquote key={`${citation.segment_id}-${index}`}><span className="muted">Selected CV excerpt referenced by the AI</span><br />{citation.quote}</blockquote>)}</div>)}
+      </article>)}
+      {data.requirements.length > 0 && <details><summary>Current requirement coverage used for this assessment</summary><ul>{data.requirements.map((item) => <li key={item.requirement_index}><strong>{item.text}</strong> · {item.match_type}<p>{item.candidate_coverage_summary}</p>{item.evidence_refs && item.evidence_refs.length > 0 && <p className="muted">Matching source references: {item.evidence_refs.map((reference) => reference.value || reference.source_ref).join(" · ")}</p>}</li>)}</ul></details>}
+    </>}
+  </section>;
+}
+
+function sourceKey(source?: CVVisibilitySource) { return source ? `${source.draft_id}:${source.document_index}:${source.document_sha256}` : ""; }
+function visibilityLabel(value: CVVisibilityAssessment["result"][number]["visibility"] | null) {
+  if (value == null) return "Unavailable in this historical report";
+  return ({ clearly_communicated: "Clearly communicated", present_but_weak: "Present but weakly communicated", not_evident_in_selected_cv: "Not evident in analysed extracted CV", uncertain: "Uncertain", not_assessable: "Not assessable from extracted text" } as const)[value];
+}
+function projectionLabel(value: CVVisibilityAssessment["result"][number]["projection"]) {
+  return ({ presentation_opportunity: "Presentation opportunity", clarification_needed: "Clarification needed", capability_evidence_gap: "Capability evidence gap", eligibility_concern: "Eligibility concern", supported_and_visible: "Supported and visible", not_assessed: "Not assessed" } as const)[value];
 }
 
 function emptyApplications(): JobWorkspace["applications"] { return { items: [], limit: 20, truncated: false }; }

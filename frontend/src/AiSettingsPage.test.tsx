@@ -330,14 +330,14 @@ describe("Issue #189 Settings → AI Models", () => {
     expect(JSON.parse(api.calls.find((call) => call.method === "PUT")?.body ?? "{}")).toMatchObject({ default_reasoning_effort: "none" });
   });
 
-  it("renders the canonical nine operations as responsive cards rather than a wide table", async () => {
+  it("renders the canonical semantic operations as responsive cards rather than a wide table", async () => {
     renderSettings(fetcher().mock);
     await waitForSettings();
     openAdvanced();
-    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(9);
+    expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(10);
     for (const { label } of SEMANTIC_OPERATION_ORDER) expect(screen.getByRole("heading", { name: label })).toBeInTheDocument();
     expect(document.querySelector("table")).toBeNull();
-    expect(document.querySelectorAll(".ai-operation-card")).toHaveLength(9);
+    expect(document.querySelectorAll(".ai-operation-card")).toHaveLength(10);
   });
 
   it("sends a model-only operation override and omits operations that inherit both fields", async () => {
@@ -862,6 +862,6 @@ describe("Issue #189 Settings → AI Models", () => {
     }
     openAdvanced();
     expect(document.querySelector("table")).toBeNull();
-    expect(document.querySelectorAll(".ai-operation-card")).toHaveLength(9);
+    expect(document.querySelectorAll(".ai-operation-card")).toHaveLength(10);
   });
 });

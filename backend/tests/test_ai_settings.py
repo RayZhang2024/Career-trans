@@ -26,6 +26,7 @@ from app.services.llm_runtime import (
     RuntimePreferenceError,
     resolve_runtime_snapshot,
     validate_preferences,
+    RUNTIME_OPERATION_TO_SETTING,
 )
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.services.application_preparation_service import ApplicationPreparationService
@@ -52,6 +53,7 @@ def test_no_row_is_virtual_revision_zero_with_deployment_inheritance(db_session)
         job_archetype_model="gpt-5.6-terra",
         agentic_discovery_model="gpt-5.6-terra",
         application_drafting_model="gpt-5.6-terra",
+        cv_visibility_assessment_model="gpt-5.6-terra",
     )
     service = AiSettingsService(db_session, settings=settings)
 
@@ -200,6 +202,7 @@ def test_catalog_invalid_preferences_are_retained_inactive_and_fall_back(db_sess
         job_archetype_model="gpt-5.6-terra",
         agentic_discovery_model="gpt-5.6-terra",
         application_drafting_model="gpt-5.6-terra",
+        cv_visibility_assessment_model="gpt-5.6-terra",
     )
     service = AiSettingsService(db_session, settings=settings)
     service.replace("stale-user", UserAiSettingsReplace(expected_revision=0, default_model="gpt-5.6-luna"))
@@ -249,6 +252,21 @@ def test_fingerprint_projections_ignore_preference_revision_and_unrelated_operat
     drafting_model = resolve_runtime_snapshot(settings, drafting_model_changed, preference_revision=5, persisted_override_provider="openai")
     assert base.fingerprint_projection(JOB_EVALUATION_OPERATIONS) == drafting_model.fingerprint_projection(JOB_EVALUATION_OPERATIONS)
     assert base.fingerprint_projection(PREPARATION_OPERATIONS) != drafting_model.fingerprint_projection(PREPARATION_OPERATIONS)
+
+
+def test_cv_visibility_has_a_distinct_deployment_and_user_preference_operation() -> None:
+    from app.schemas.ai_settings import SemanticOperation
+
+    settings = _base_settings(
+        cv_visibility_assessment_model="gpt-5.6-terra",
+        cv_visibility_assessment_reasoning_effort="medium",
+        requirement_matching_model="gpt-5.6-luna",
+    )
+    snapshot = resolve_runtime_snapshot(settings)
+    assert RUNTIME_OPERATION_TO_SETTING["cv_visibility_assessment"] is SemanticOperation.CV_VISIBILITY_ASSESSMENT
+    assert snapshot.operation(SemanticOperation.CV_VISIBILITY_ASSESSMENT).model == "gpt-5.6-terra"
+    assert snapshot.operation(SemanticOperation.CV_VISIBILITY_ASSESSMENT).reasoning_effort is ReasoningEffort.MEDIUM
+    assert snapshot.operation(SemanticOperation.REQUIREMENT_MATCHING).model == "gpt-5.6-luna"
 
 
 def test_fingerprint_projection_ignores_non_material_capability_metadata() -> None:
