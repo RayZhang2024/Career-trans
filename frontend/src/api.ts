@@ -477,11 +477,12 @@ export type JobWorkspaceApplication = {
   tracking: { id: string; preparation_id: string; current_status: ApplicationTrackingStatus; revision: number; created_at: string; updated_at: string } | null;
 };
 export type CVVisibilityProjection = "presentation_opportunity" | "clarification_needed" | "capability_evidence_gap" | "eligibility_concern" | "supported_and_visible" | "not_assessed";
-export type CVVisibilitySource = { draft_id: string; draft_state: string; filename: string; media_type: string; document_sha256: string; segment_ids: string[]; character_count: number; assessable: boolean; created_at: string };
-export type CVVisibilityItem = { requirement_index: number; requirement: string; candidate_match_type: string; projection: CVVisibilityProjection; explanation: string; citations: Array<{ segment_id: string; quote: string }>; candidate_evidence_refs?: ApplicationSourceRef[] };
+export type CVVisibilityLabel = "clearly_communicated" | "present_but_weak" | "not_evident_in_selected_cv" | "uncertain" | "not_assessable";
+export type CVVisibilitySource = { draft_id: string; draft_state: string; document_index: number; filename: string; media_type: string; document_sha256: string; segment_ids: string[]; character_count: number; assessable: boolean; created_at: string };
+export type CVVisibilityItem = { requirement_index: number; requirement: string; candidate_match_type: string; visibility?: CVVisibilityLabel | null; projection: CVVisibilityProjection; explanation: string; suggestion?: string | null; authority_note?: string | null; citations: Array<{ segment_id: string; quote: string }>; candidate_evidence_refs?: ApplicationSourceRef[] };
 export type CVVisibilityAssessment = {
   id: string; client_request_id: string; status: "in_progress" | "completed" | "prerequisite_failed" | "failed" | "result_invalid" | "outcome_uncertain" | "stale";
-  is_current: boolean; source_document_sha256: string; source_draft_id: string; source_filename: string; segment_ids: string[];
+  is_current: boolean; source_document_sha256: string; source_draft_id: string; source_document_index?: number | null; source_filename: string; segment_ids: string[];
   provider: string; model: string; created_at: string; completed_at: string | null; result: CVVisibilityItem[];
   failure_code: string | null; runtime_attribution: SemanticRuntimeAttribution | null;
 };
@@ -493,7 +494,7 @@ export type CVVisibilityPreflight = {
   sources: CVVisibilitySource[]; assessments: CVVisibilityAssessment[]; provider: string; model: string;
   max_input_characters: number; max_evidence_characters: number; max_total_input_characters: number; max_output_tokens: number;
 };
-export type CVVisibilityAssessmentCreate = { client_request_id: string; source_draft_id: string; source_document_sha256: string; segment_ids: string[]; consent: true };
+export type CVVisibilityAssessmentCreate = { client_request_id: string; source_draft_id: string; source_document_index: number; source_document_sha256: string; segment_ids: string[]; consent: true };
 
 export type ApplicationSourceRef = { source_type: string; source_ref: string; value?: string | null };
 export type ApplicationEvidenceSnapshotStatus = "available" | "legacy_unavailable";

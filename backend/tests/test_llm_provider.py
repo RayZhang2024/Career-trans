@@ -46,6 +46,15 @@ def test_openai_is_the_compatible_default_and_requires_safe_credential() -> None
     assert "server-secret" not in str(exc_info.value.detail)
 
 
+def test_cv_visibility_provider_client_has_a_feasible_finite_single_attempt_budget() -> None:
+    client = deps.get_semantic_response_client(Settings(openai_api_key="test-key"), model="gpt-5.6-luna", operation="cv_visibility_assessment")
+
+    assert isinstance(client, SemanticResponseClient)
+    assert client.responses._max_output_tokens == 16_000
+    assert client.responses._timeout_seconds == 120
+    assert client.responses._max_retries == 0
+
+
 def test_unknown_openai_model_is_not_assumed_structured_output_compatible() -> None:
     with pytest.raises(HTTPException, match="capability catalog") as exc_info:
         deps.get_semantic_response_client(Settings(openai_api_key="test-key"), model="arbitrary-model-alias", operation="job_extraction")
@@ -120,16 +129,16 @@ def test_visibility_operation_passes_single_call_budget_to_provider() -> None:
     client = SemanticResponseClient(
         llm,
         operation="cv_visibility_assessment",
-        max_output_tokens=1800,
-        timeout_seconds=30,
+        max_output_tokens=16_000,
+        timeout_seconds=120,
         max_retries=0,
     )
     client.responses.create(
         model="test-model",
         input=[{"role": "system", "content": "system"}, {"role": "user", "content": "user"}],
     )
-    assert llm.calls[0]["max_output_tokens"] == 1800
-    assert llm.calls[0]["timeout_seconds"] == 30
+    assert llm.calls[0]["max_output_tokens"] == 16_000
+    assert llm.calls[0]["timeout_seconds"] == 120
     assert llm.calls[0]["max_retries"] == 0
 
 

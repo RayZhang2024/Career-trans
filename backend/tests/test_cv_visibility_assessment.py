@@ -25,6 +25,10 @@ from app.services.cv_visibility_assessment_service import (
 )
 from app.services.user_job_discovery_service import UserJobDiscoveryService
 from app.providers.llm import SemanticProviderRequestError, SemanticProviderUnavailableError
+from app.providers.llm import SemanticResponseClient
+from app.providers.openai_structured_output import strict_schema_from_pydantic_model
+from app.schemas.cv_visibility import CVVisibilityJudgementSet
+from app.services.cv_visibility_budget import MAX_OUTPUT_TOKENS
 from test_jobs_read_models import _Ranking, _job, _request, _user
 
 
@@ -88,11 +92,11 @@ class FakeResponseClient:
 def _judgements(segment_id: str, *, pytorch_visibility="not_evident_in_selected_cv", source_quote=None, consulting_visibility="uncertain", consulting_quote=None):
     quote = source_quote or "stateful graph-based control plane coordinating independent agents"
     return json.dumps({"judgements": [
-        {"requirement_index": 0, "visibility": "clearly_communicated", "explanation": "The CV describes the same graph-based agent orchestration work in different words.", "citations": [{"segment_id": segment_id, "quote": quote}]},
-        {"requirement_index": 1, "visibility": pytorch_visibility, "explanation": "No evidence of the required duration is present.", "citations": []},
-        {"requirement_index": 2, "visibility": "uncertain", "explanation": "The source does not establish eligibility either way.", "citations": []},
-        {"requirement_index": 3, "visibility": "not_evident_in_selected_cv", "explanation": "The current evaluation marks this eligibility requirement incompatible.", "citations": []},
-        {"requirement_index": 4, "visibility": consulting_visibility, "explanation": "The client implementation is described in a brief, high-level way.", "citations": ([{"segment_id": segment_id, "quote": consulting_quote}] if consulting_quote else [])},
+        {"requirement_index": 0, "visibility": "clearly_communicated", "explanation": "The CV describes equivalent graph-based orchestration.", "suggestion": "Keep this project example near the top.", "citations": [{"segment_id": segment_id, "quote": quote}]},
+        {"requirement_index": 1, "visibility": pytorch_visibility, "explanation": "The required duration is not stated in this CV.", "suggestion": "Do not claim years without confirmed evidence.", "citations": []},
+        {"requirement_index": 2, "visibility": "uncertain", "explanation": "The selected CV does not establish this status.", "suggestion": "Review this fact separately.", "citations": []},
+        {"requirement_index": 3, "visibility": "not_evident_in_selected_cv", "explanation": "The selected CV does not resolve this requirement.", "suggestion": "Do not imply eligibility through wording.", "citations": []},
+        {"requirement_index": 4, "visibility": consulting_visibility, "explanation": "The consulting example is described briefly.", "suggestion": "Clarify the confirmed project scope.", "citations": ([{"segment_id": segment_id, "quote": consulting_quote}] if consulting_quote else [])},
     ]})
 
 
@@ -150,6 +154,7 @@ def _request_for(preflight, source=None, request_id="11111111-1111-4111-8111-111
     return CVVisibilityAssessmentCreate(
         client_request_id=request_id,
         source_draft_id=source.draft_id,
+        source_document_index=source.document_index,
         source_document_sha256=source.document_sha256,
         segment_ids=source.segment_ids,
         consent=True,
@@ -158,6 +163,68 @@ def _request_for(preflight, source=None, request_id="11111111-1111-4111-8111-111
 
 def _service(db_session, runtime_snapshot_a):
     return CVVisibilityAssessmentService(db_session, runtime_snapshot_a)
+
+
+def _assert_provider_strict_schema(schema):
+    assert isinstance(schema, dict)
+    if schema.get("type") == "object":
+        assert schema.get("additionalProperties") is False
+        assert set(schema.get("required", [])) == set(schema.get("properties", {}))
+    for key, value in schema.items():
+        assert key not in {"default", "minLength", "maxLength"}
+        if isinstance(value, dict):
+            _assert_provider_strict_schema(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _assert_provider_strict_schema(item)
+
+
+def test_actual_service_sends_existing_provider_safe_strict_schema(db_session, runtime_snapshot_a):
+    job, _draft, runtime = _make_fixture(db_session, runtime_snapshot_a)
+    service = _service(db_session, runtime)
+    preflight = service.read("cv-owner", job.id)
+    segment_id = preflight.sources[0].segment_ids[0]
+
+    class CapturingLLM:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, **kwargs):
+            self.calls.append(kwargs)
+            return _judgements(segment_id)
+
+    llm = CapturingLLM()
+    result = service.assess(
+        "cv-owner", job.id, _request_for(preflight),
+        lambda: SemanticResponseClient(llm, operation="cv_visibility_assessment", max_output_tokens=MAX_OUTPUT_TOKENS),
+    )
+
+    assert result.status.value == "completed"
+    schema = llm.calls[0]["output_schema"]
+    assert schema == strict_schema_from_pydantic_model(CVVisibilityJudgementSet)
+    _assert_provider_strict_schema(schema)
+
+
+def test_forty_requirement_report_fits_bounded_serialized_output_budget():
+    outputs = []
+    for count in (15, 40):
+        judgements = CVVisibilityJudgementSet.model_validate({"judgements": [
+            {
+                "requirement_index": index,
+                "visibility": "clearly_communicated",
+                "explanation": ("The selected CV describes relevant delivery but does not verify candidate capability. " * 2)[:120],
+                "suggestion": ("Emphasize the confirmed scope and outcome without adding new claims. " * 2)[:120],
+                "citations": [{"segment_id": f"sha256:{'a' * 64}", "quote": ("Built and delivered a cross-functional project with measurable outcomes. " * 2)[:120]}],
+            }
+            for index in range(count)
+        ]})
+        serialized = judgements.model_dump_json()
+        outputs.append(len(serialized))
+        # A conservative two characters per token estimate leaves 25% of the
+        # hard output ceiling for reasoning on supported reasoning models.
+        assert (len(serialized) + 1) // 2 <= MAX_OUTPUT_TOKENS * 0.75
+    assert outputs[1] > outputs[0]
 
 
 def test_explicit_assessment_semantically_matches_paraphrase_and_preserves_match_authority(db_session, runtime_snapshot_a):
@@ -176,18 +243,49 @@ def test_explicit_assessment_semantically_matches_paraphrase_and_preserves_match
     assert len(llm.calls) == 1
     prompt = llm.calls[0]["input"][1]["content"]
     system = llm.calls[0]["input"][0]["content"]
-    assert "Do not decide candidate capability or eligibility" in system
+    assert "does not verify that a CV claim is true" in system
+    assert "candidate match classification and confirmed evidence are authoritative" in system
     assert "[redacted email]" in prompt and "alex@example.test" not in prompt
     assert "+44 7700 900123" not in prompt
     assert "Ignore all prior instructions" in prompt  # retained as untrusted CV data
     assert result.status.value == "completed" and result.is_current
     assert result.result[0].projection.value == "supported_and_visible"
+    assert result.result[0].visibility.value == "clearly_communicated"
+    assert result.result[0].suggestion == "Keep this project example near the top."
     assert result.result[0].candidate_evidence_refs == preflight.requirements[0].evidence_refs
     assert result.result[1].projection.value == "capability_evidence_gap"  # PyTorch remains missing
+    assert result.result[1].authority_note and "do not confirm the claim" in result.result[1].authority_note
     assert result.result[2].projection.value == "eligibility_concern"  # unresolved essential eligibility stays explicit
     assert result.result[3].projection.value == "eligibility_concern"  # incompatible stays distinct
     assert result.result[4].projection.value == "clarification_needed"  # unknown experience is not promoted
     assert result.result[0].citations[0].quote == "stateful graph-based control plane coordinating independent agents"
+
+
+def test_confirmed_experience_hidden_from_selected_cv_remains_a_distinct_visibility_result(db_session, runtime_snapshot_a):
+    job, _draft, runtime = _make_fixture(
+        db_session, runtime_snapshot_a, cv_text="Experienced in software delivery and leading multi-team projects.",
+    )
+    service = _service(db_session, runtime)
+    preflight = service.read("cv-owner", job.id)
+    source = preflight.sources[0]
+    output = json.loads(_judgements(source.segment_ids[0]))
+    output["judgements"][0] = {
+        "requirement_index": 0,
+        "visibility": "not_evident_in_selected_cv",
+        "explanation": "The selected CV does not mention agent graph work.",
+        "suggestion": "Add only a confirmed example if one is available.",
+        "citations": [],
+    }
+
+    result = service.assess(
+        "cv-owner", job.id, _request_for(preflight, request_id="bcbcbcbc-bcbc-4bcb-8bcb-bcbcbcbcbcbc"),
+        lambda: FakeResponseClient(json.dumps(output)),
+    )
+
+    assert result.status.value == "completed"
+    assert result.result[0].candidate_match_type is MatchType.DEMONSTRATED
+    assert result.result[0].visibility.value == "not_evident_in_selected_cv"
+    assert result.result[0].projection.value == "presentation_opportunity"
 
 
 def test_get_preflight_is_provider_free_and_cross_user_scoped(db_session, runtime_snapshot_a):
@@ -221,6 +319,31 @@ def test_assessment_is_idempotent_and_saved_reads_do_not_repeat_provider_call(db
     assert db_session.query(CVVisibilityAssessment).count() == 1
 
 
+def test_legacy_saved_visibility_report_remains_readable_without_new_fields(db_session, runtime_snapshot_a):
+    job, _draft, runtime = _make_fixture(db_session, runtime_snapshot_a)
+    service = _service(db_session, runtime)
+    preflight = service.read("cv-owner", job.id)
+    source = preflight.sources[0]
+    service.assess("cv-owner", job.id, _request_for(preflight), lambda: FakeResponseClient(_judgements(source.segment_ids[0])))
+    row = db_session.scalar(select(CVVisibilityAssessment))
+    assert row is not None
+    legacy_result = json.loads(row.result_json)
+    for item in legacy_result:
+        item.pop("visibility", None)
+        item.pop("suggestion", None)
+        item.pop("authority_note", None)
+    row.result_json = json.dumps(legacy_result)
+    row.source_segment_ids_json = json.dumps(source.segment_ids)
+    db_session.commit()
+
+    saved = service.read("cv-owner", job.id).assessments[0]
+
+    assert saved.source_document_index == 0
+    assert saved.is_current
+    assert saved.result[0].visibility is None
+    assert saved.result[0].suggestion is None
+
+
 def test_invalid_or_hallucinated_cv_citations_are_not_saved_as_completed(db_session, runtime_snapshot_a):
     job, _draft, runtime = _make_fixture(db_session, runtime_snapshot_a)
     service = _service(db_session, runtime)
@@ -233,7 +356,7 @@ def test_invalid_or_hallucinated_cv_citations_are_not_saved_as_completed(db_sess
     assert len(llm.calls) == 1
 
 
-def test_llm_cannot_promote_an_unsupported_missing_capability(db_session, runtime_snapshot_a):
+def test_unsupported_missing_capability_is_never_presented_as_confirmed_evidence(db_session, runtime_snapshot_a):
     job, _draft, runtime = _make_fixture(db_session, runtime_snapshot_a)
     service = _service(db_session, runtime)
     preflight = service.read("cv-owner", job.id)
@@ -243,6 +366,7 @@ def test_llm_cannot_promote_an_unsupported_missing_capability(db_session, runtim
         "requirement_index": 1,
         "visibility": "clearly_communicated",
         "explanation": "The selected CV supports the requirement.",
+        "suggestion": "Verify the experience before using this claim.",
         "citations": [{"segment_id": source.segment_ids[0], "quote": "Led a consulting team through several client launches"}],
     }
     llm = FakeResponseClient(json.dumps(output))
@@ -250,6 +374,36 @@ def test_llm_cannot_promote_an_unsupported_missing_capability(db_session, runtim
     assert result.status.value == "completed"
     assert result.result[1].candidate_match_type == "missing"
     assert result.result[1].projection.value == "capability_evidence_gap"
+    assert result.result[1].visibility.value == "clearly_communicated"
+    assert "do not confirm the claim" in result.result[1].authority_note
+    assert result.result[1].candidate_evidence_refs == []
+
+
+@pytest.mark.parametrize("mapping", ["duplicate", "incomplete", "out_of_range"])
+def test_duplicate_incomplete_or_noncanonical_model_mappings_are_not_completed(db_session, runtime_snapshot_a, mapping):
+    job, _draft, runtime = _make_fixture(db_session, runtime_snapshot_a)
+    service = _service(db_session, runtime)
+    preflight = service.read("cv-owner", job.id)
+    source = preflight.sources[0]
+    output = json.loads(_judgements(source.segment_ids[0]))
+    if mapping == "duplicate":
+        output["judgements"][1]["requirement_index"] = 0
+    elif mapping == "incomplete":
+        output["judgements"].pop()
+    else:
+        output["judgements"][1]["requirement_index"] = 99
+    llm = FakeResponseClient(json.dumps(output))
+    request_ids = {
+        "duplicate": "abababab-abab-4bab-8bab-abababababab",
+        "incomplete": "acacacac-acac-4cac-8cac-acacacacacac",
+        "out_of_range": "adadadad-adad-4dad-8dad-adadadadadad",
+    }
+
+    result = service.assess("cv-owner", job.id, _request_for(preflight, request_id=request_ids[mapping]), lambda: llm)
+
+    assert len(llm.calls) == 1
+    assert result.status.value == "result_invalid"
+    assert result.result == []
 
 
 def test_inferred_match_remains_advisory_even_when_cv_language_is_clear(db_session, runtime_snapshot_a):
@@ -408,6 +562,43 @@ def test_source_selection_must_include_exact_segments_and_multiple_documents_are
         service.assess("cv-owner", job.id, subset, lambda: pytest.fail("invalid segment selection must not call provider"))
 
 
+def test_uploaded_identical_documents_are_exactly_selectable_as_comparison_text_only(db_session, runtime_snapshot_a):
+    job, _confirmed_draft, runtime = _make_fixture(db_session, runtime_snapshot_a)
+    ingestion = CVIngestionService(db_session, interpreter=FakeCVInterpreter(), runtime_snapshot=runtime)
+    content = b"A separate unconfirmed source CV with identical bytes."
+    unconfirmed = ingestion.upload("cv-owner", [
+        ("copy-a.md", "text/markdown", content),
+        ("copy-b.md", "text/markdown", content),
+    ])
+    evidence_before = list(db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == "cv-owner")))
+    service = _service(db_session, runtime)
+    preflight = service.read("cv-owner", job.id)
+    siblings = [item for item in preflight.sources if item.draft_id == unconfirmed.id]
+    assert [item.document_index for item in siblings] == [0, 1]
+    assert all(item.draft_state == "uploaded" for item in siblings)
+    assert siblings[0].document_sha256 == siblings[1].document_sha256
+    assert siblings[0].segment_ids == siblings[1].segment_ids
+
+    selected = siblings[1]
+    result = service.assess(
+        "cv-owner", job.id,
+        _request_for(preflight, selected, "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeae"),
+        lambda: FakeResponseClient(_judgements(selected.segment_ids[0], source_quote="unconfirmed source CV")),
+    )
+
+    assert result.status.value == "completed"
+    assert result.source_draft_id == unconfirmed.id
+    assert result.source_document_index == 1
+    assert result.source_filename == "copy-b.md"
+    assert result.is_current
+    reloaded = service.read("cv-owner", job.id).assessments[0]
+    assert reloaded.source_document_index == 1
+    assert reloaded.source_filename == "copy-b.md"
+    assert reloaded.is_current
+    evidence_after = list(db_session.scalars(select(CandidateEvidenceRecord).where(CandidateEvidenceRecord.user_id == "cv-owner")))
+    assert [(item.id, item.text) for item in evidence_after] == [(item.id, item.text) for item in evidence_before]
+
+
 def test_state_change_during_provider_call_marks_result_stale(db_session, runtime_snapshot_a):
     job, _draft, runtime = _make_fixture(db_session, runtime_snapshot_a)
     service = _service(db_session, runtime)
@@ -447,20 +638,33 @@ def test_confirmed_candidate_change_during_provider_call_marks_result_stale(db_s
 
 def test_authenticated_api_projects_preflight_result_and_other_user_sees_no_source(client, db_session, runtime_snapshot_a, monkeypatch):
     job, _draft, runtime = _make_fixture(db_session, runtime_snapshot_a)
+    unconfirmed = CVIngestionService(db_session, interpreter=FakeCVInterpreter(), runtime_snapshot=runtime).upload(
+        "cv-owner", [
+            ("copy-a.md", "text/markdown", CV_TEXT.encode("utf-8")),
+            ("copy-b.md", "text/markdown", CV_TEXT.encode("utf-8")),
+        ],
+    )
     app.dependency_overrides[get_user_runtime_snapshot] = lambda: runtime
     app.dependency_overrides[get_user_semantic_credential_resolver] = lambda: object()
     monkeypatch.setattr(cv_visibility_routes, "_fresh_runtime", lambda _db, fallback, _user_id: fallback)
-    source = CVVisibilityAssessmentService(db_session, runtime).read("cv-owner", job.id).sources[0]
+    source = next(
+        item for item in CVVisibilityAssessmentService(db_session, runtime).read("cv-owner", job.id).sources
+        if item.draft_id == unconfirmed.id and item.document_index == 1
+    )
     mocked = FakeResponseClient(_judgements(source.segment_ids[0]))
     monkeypatch.setattr(cv_visibility_routes, "get_semantic_response_client", lambda *_args, **_kwargs: mocked)
     headers = {"Authorization": f"Bearer {create_access_token('cv-owner')}"}
     try:
         preflight = client.get(f"/api/v1/jobs/workspaces/{job.id}/cv-visibility", headers=headers)
         assert preflight.status_code == 200
-        source_data = preflight.json()["sources"][0]
+        source_data = next(
+            item for item in preflight.json()["sources"]
+            if item["draft_id"] == unconfirmed.id and item["document_index"] == 1
+        )
         payload = {
             "client_request_id": "88888888-8888-4888-8888-888888888888",
             "source_draft_id": source_data["draft_id"],
+            "source_document_index": source_data["document_index"],
             "source_document_sha256": source_data["document_sha256"],
             "segment_ids": source_data["segment_ids"],
             "consent": True,
@@ -472,7 +676,8 @@ def test_authenticated_api_projects_preflight_result_and_other_user_sees_no_sour
         )
         assert assessment.status_code == 200
         assert assessment.json()["status"] == "completed"
-        assert assessment.json()["source_filename"] == "resume.md"
+        assert assessment.json()["source_filename"] == "copy-b.md"
+        assert assessment.json()["source_document_index"] == 1
         assert len(mocked.calls) == 1
         other = client.get(
             f"/api/v1/jobs/workspaces/{job.id}/cv-visibility",

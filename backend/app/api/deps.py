@@ -41,6 +41,7 @@ from app.services.canonical_candidate_read_service import (
     CandidateEvidenceMaterializationIncomplete,
     CanonicalCandidateReadService,
 )
+from app.services.cv_visibility_budget import MAX_OUTPUT_TOKENS, PROVIDER_TIMEOUT_SECONDS
 from app.services.candidate_adviser_service import CandidateAdviserService
 from app.services.candidate_adviser_profile_proposal_generation import CandidateAdviserProfileProposalGenerationService
 from app.schemas.candidate import CandidateContext
@@ -184,8 +185,8 @@ def get_semantic_response_client(
         llm,
         operation=operation,
         reasoning_effort=reasoning_effort,
-        max_output_tokens=1800 if bounded_visibility else None,
-        timeout_seconds=30 if bounded_visibility else None,
+        max_output_tokens=MAX_OUTPUT_TOKENS if bounded_visibility else None,
+        timeout_seconds=PROVIDER_TIMEOUT_SECONDS if bounded_visibility else None,
         max_retries=0 if bounded_visibility else None,
     )
 

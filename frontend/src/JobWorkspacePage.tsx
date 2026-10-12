@@ -57,7 +57,7 @@ function CVVisibilityPanel({ discoveredJobId }: { discoveredJobId: string }) {
       if (generation.current !== current || owner !== user?.id || api.sessionEpoch() !== epoch) return false;
       setData(value);
       setUncertainRequest((previous) => previous && value.assessments.some((item) => item.client_request_id === previous.client_request_id) ? null : previous);
-      setSelectedSource((previous) => value.sources.some((source) => sourceKey(source) === previous) ? previous : sourceKey(value.sources[0]));
+      setSelectedSource((previous) => value.sources.some((source) => sourceKey(source) === previous) ? previous : "");
       setError("");
       return true;
     } catch {
@@ -110,15 +110,20 @@ function CVVisibilityPanel({ discoveredJobId }: { discoveredJobId: string }) {
     const explicitSecondAttempt = unresolved?.status === "outcome_uncertain" && uncertainRetryConfirmed;
     if (!source || !consented || !data || data.state !== "ready" || (unresolved && !explicitSecondAttempt) || unresolvedRequest || pending) return;
     const clientRequestId = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => { const random = Math.random() * 16 | 0; return (char === "x" ? random : (random & 0x3 | 0x8)).toString(16); });
-    void request({ client_request_id: clientRequestId, source_draft_id: source.draft_id, source_document_sha256: source.document_sha256, segment_ids: source.segment_ids, consent: true });
+    void request({ client_request_id: clientRequestId, source_draft_id: source.draft_id, source_document_index: source.document_index, source_document_sha256: source.document_sha256, segment_ids: source.segment_ids, consent: true });
   };
   const reconcile = () => {
     if ((!unresolved && !unresolvedRequest) || pending) return;
     const requestId = unresolved?.client_request_id ?? unresolvedRequest!.client_request_id;
     const draftId = unresolved?.source_draft_id ?? unresolvedRequest!.source_draft_id;
+    const documentIndex = unresolved?.source_document_index ?? unresolvedRequest?.source_document_index;
     const documentSha = unresolved?.source_document_sha256 ?? unresolvedRequest!.source_document_sha256;
     const segments = unresolved?.segment_ids ?? unresolvedRequest!.segment_ids;
-    void request({ client_request_id: requestId, source_draft_id: draftId, source_document_sha256: documentSha, segment_ids: segments, consent: true });
+    if (typeof documentIndex !== "number") {
+      setError("This saved request predates exact document selection and cannot be safely reconciled automatically. Refresh its status before starting another assessment.");
+      return;
+    }
+    void request({ client_request_id: requestId, source_draft_id: draftId, source_document_index: documentIndex, source_document_sha256: documentSha, segment_ids: segments, consent: true });
   };
   return <section className="card cv-visibility-panel" aria-labelledby="cv-visibility-heading" aria-busy={pending}>
     <div className="section-heading"><div><p className="eyebrow">Optional semantic review</p><h2 id="cv-visibility-heading">How your CV communicates this evidence</h2></div><button type="button" className="button-secondary" onClick={() => void refresh()} disabled={loading || pending}>Refresh status</button></div>
@@ -130,18 +135,20 @@ function CVVisibilityPanel({ discoveredJobId }: { discoveredJobId: string }) {
       <p className="muted">Provider and model: {data.provider} · {data.model}. This may incur provider cost. One explicit assessment request, up to {data.max_input_characters.toLocaleString()} selected-CV characters, {data.max_evidence_characters.toLocaleString()} relevant confirmed-evidence characters, {data.max_total_input_characters.toLocaleString()} total input characters and {data.max_output_tokens.toLocaleString()} output tokens. No automatic retries. If deployment tracing is enabled, the existing tracing configuration may capture the request.</p>
       {data.state === "current_evaluation_required" && <p role="status">Run a current job evaluation before assessing how your CV presents its evidence.</p>}
       {data.state === "candidate_not_ready" && <p role="status">A complete confirmed candidate profile is required before CV visibility can be assessed.</p>}
-      {data.state === "source_required" && <p role="status">Confirm a source CV to enable an explicit assessment.</p>}
+      {data.state === "source_required" && <p role="status">Upload a CV source document to enable an explicit assessment.</p>}
       {data.state === "input_too_large" && <p role="status">The current requirement set exceeds the bounded assessment limit.</p>}
       {data.state === "evaluation_unavailable" && <p role="status">The saved job evaluation does not contain a valid current requirement-to-match mapping. CV visibility is unavailable until the job is evaluated again.</p>}
-      {data.sources.length === 0 && <p role="status">No confirmed source CV documents are available. Confirm a CV in Profile first.</p>}
-      {data.sources.length > 0 && !data.sources.some((item) => item.assessable) && <p role="status">The confirmed source documents exceed the assessment size or segment limit.</p>}
+      {data.sources.length === 0 && <p role="status">No extracted CV source documents are available. Upload a CV in Profile first; confirmation is not required for a visibility-only comparison.</p>}
+      {data.sources.length > 0 && !data.sources.some((item) => item.assessable) && <p role="status">The available source documents exceed the assessment size or segment limit.</p>}
       {data.sources.length > 0 && <>
-        <label htmlFor="cv-visibility-source">Original CV document</label>
+        <label htmlFor="cv-visibility-source">Select one exact original CV document</label>
         <select id="cv-visibility-source" value={selectedSource} onChange={(event) => { setSelectedSource(event.target.value); setConsented(false); setUncertainRetryConfirmed(false); }} disabled={pending}>
-          {data.sources.map((item) => <option key={sourceKey(item)} value={sourceKey(item)} disabled={!item.assessable}>{item.filename} · {new Date(item.created_at).toLocaleDateString()} · {item.draft_state} · {item.document_sha256.slice(0, 10)}{item.assessable ? "" : " · exceeds assessment limits"}</option>)}
+          <option value="">Choose a source document</option>
+          {data.sources.map((item) => <option key={sourceKey(item)} value={sourceKey(item)} disabled={!item.assessable}>{item.filename} · {new Date(item.created_at).toLocaleDateString()} · {item.draft_state} · document {item.document_index + 1} · {item.document_sha256.slice(0, 10)}{item.assessable ? "" : " · exceeds assessment limits"}</option>)}
         </select>
-        <p className="muted">Only the selected document’s extracted segments and job-relevant confirmed evidence are sent. Email, phone, postal address and URL details are removed. No CV upload or application submission occurs.</p>
-        <label><input type="checkbox" checked={consented} onChange={(event) => setConsented(event.target.checked)} disabled={pending || data.state !== "ready"} /> I want to send this selected CV and relevant confirmed evidence to {data.provider} ({data.model}) for this one assessment.</label>
+        {source && source.draft_state !== "confirmed" && <p role="status">This CV is not confirmed. It is comparison text only and cannot add facts to your confirmed candidate evidence.</p>}
+        <p className="muted">Only the explicitly selected document’s extracted segments and job-relevant confirmed evidence are sent. Email, phone, postal address and URL details are removed. No CV upload or application submission occurs.</p>
+        <label><input type="checkbox" checked={consented} onChange={(event) => setConsented(event.target.checked)} disabled={pending || data.state !== "ready" || !source} /> I want to send this selected CV and relevant confirmed evidence to {data.provider} ({data.model}) for this one assessment.</label>
         {unresolved?.status === "outcome_uncertain" && <label><input type="checkbox" checked={uncertainRetryConfirmed} onChange={(event) => setUncertainRetryConfirmed(event.target.checked)} disabled={pending} /> I understand the previous request may already have reached the provider; starting again can incur a second bounded request.</label>}
         <button type="button" onClick={start} disabled={pending || loading || data.state !== "ready" || !source?.assessable || !consented || (Boolean(unresolved) && !uncertainRetryConfirmed) || Boolean(unresolvedRequest)}>{pending ? "Analysing CV with AI…" : unresolved ? "Start a new assessment" : unresolvedRequest ? "Check saved request" : "Analyse CV with AI"}</button>
       </>}
@@ -151,15 +158,19 @@ function CVVisibilityPanel({ discoveredJobId }: { discoveredJobId: string }) {
         <p className="muted">Source: {assessment.source_filename} · {assessment.provider} · {assessment.model} · {new Date(assessment.created_at).toLocaleString()}</p>
         {assessment.status === "outcome_uncertain" && <p role="status">The saved request may have reached the provider. Use “Check saved request” to reconcile it without creating another request.</p>}
         {(assessment.status === "failed" || assessment.status === "prerequisite_failed") && <p role="status">{assessment.failure_code === "provider_configuration_unavailable" ? "The provider was not ready, so no assessment request was sent and no model call was made." : assessment.failure_code === "provider_rejected_request" ? "The provider rejected the request. It was not retried automatically." : "The assessment failed. Review provider readiness before starting a new explicit assessment."}</p>}
-        {assessment.result.map((item) => <div key={item.requirement_index} className="cv-visibility-result"><h4>{item.requirement}</h4><p><strong>{visibilityLabel(item.projection)}</strong> · Existing candidate coverage: {item.candidate_match_type}</p>{item.candidate_evidence_refs && item.candidate_evidence_refs.length > 0 && <p className="muted">Confirmed evidence references: {item.candidate_evidence_refs.map((reference) => reference.value || reference.source_ref).join(" · ")}</p>}<p>{item.explanation}</p>{item.citations.map((citation, index) => <blockquote key={`${citation.segment_id}-${index}`}>{citation.quote}</blockquote>)}</div>)}
+        {assessment.result.map((item) => <div key={item.requirement_index} className="cv-visibility-result"><h4>{item.requirement}</h4><p><strong>Candidate evidence coverage:</strong> {item.candidate_match_type}</p><p><strong>CV visibility (AI, extracted text):</strong> {visibilityLabel(item.visibility ?? null)}</p><p><strong>Gap recommendation:</strong> {projectionLabel(item.projection)}</p><p className="muted">AI commentary describes selected CV wording only. It does not verify the claim or change the existing candidate evidence classification.</p>{item.authority_note && <p role="note" className="notice">{item.authority_note}</p>}{item.candidate_evidence_refs && item.candidate_evidence_refs.length > 0 && <p className="muted">Confirmed evidence references: {item.candidate_evidence_refs.map((reference) => reference.value || reference.source_ref).join(" · ")}</p>}<p><strong>AI observation:</strong> {item.explanation}</p>{item.suggestion && <p><strong>Suggested next step:</strong> {item.suggestion}</p>}{item.citations.map((citation, index) => <blockquote key={`${citation.segment_id}-${index}`}><span className="muted">Selected CV excerpt referenced by the AI</span><br />{citation.quote}</blockquote>)}</div>)}
       </article>)}
       {data.requirements.length > 0 && <details><summary>Current requirement coverage used for this assessment</summary><ul>{data.requirements.map((item) => <li key={item.requirement_index}><strong>{item.text}</strong> · {item.match_type}<p>{item.candidate_coverage_summary}</p>{item.evidence_refs && item.evidence_refs.length > 0 && <p className="muted">Matching source references: {item.evidence_refs.map((reference) => reference.value || reference.source_ref).join(" · ")}</p>}</li>)}</ul></details>}
     </>}
   </section>;
 }
 
-function sourceKey(source?: CVVisibilitySource) { return source ? `${source.draft_id}:${source.document_sha256}` : ""; }
-function visibilityLabel(value: CVVisibilityAssessment["result"][number]["projection"]) {
+function sourceKey(source?: CVVisibilitySource) { return source ? `${source.draft_id}:${source.document_index}:${source.document_sha256}` : ""; }
+function visibilityLabel(value: CVVisibilityAssessment["result"][number]["visibility"] | null) {
+  if (value == null) return "Unavailable in this historical report";
+  return ({ clearly_communicated: "Clearly communicated", present_but_weak: "Present but weakly communicated", not_evident_in_selected_cv: "Not evident in analysed extracted CV", uncertain: "Uncertain", not_assessable: "Not assessable from extracted text" } as const)[value];
+}
+function projectionLabel(value: CVVisibilityAssessment["result"][number]["projection"]) {
   return ({ presentation_opportunity: "Presentation opportunity", clarification_needed: "Clarification needed", capability_evidence_gap: "Capability evidence gap", eligibility_concern: "Eligibility concern", supported_and_visible: "Supported and visible", not_assessed: "Not assessed" } as const)[value];
 }
 

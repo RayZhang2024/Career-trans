@@ -28,10 +28,19 @@ class CVVisibilityProjection(StrEnum):
     NOT_ASSESSED = "not_assessed"
 
 
+class CVVisibilityLabel(StrEnum):
+    CLEARLY_COMMUNICATED = "clearly_communicated"
+    PRESENT_BUT_WEAK = "present_but_weak"
+    NOT_EVIDENT_IN_SELECTED_CV = "not_evident_in_selected_cv"
+    UNCERTAIN = "uncertain"
+    NOT_ASSESSABLE = "not_assessable"
+
+
 class CVVisibilitySourceRead(BaseModel):
     model_config = ConfigDict(extra="forbid")
     draft_id: str
     draft_state: str
+    document_index: int = Field(ge=0)
     filename: str
     media_type: str
     document_sha256: str
@@ -63,8 +72,13 @@ class CVVisibilityItemRead(BaseModel):
     requirement_index: int
     requirement: str
     candidate_match_type: MatchType
+    # Nullable/defaulted for reports written before V2A exposed the independent
+    # semantic visibility axis. Never infer this historical value from projection.
+    visibility: CVVisibilityLabel | None = None
     projection: CVVisibilityProjection
     explanation: str
+    suggestion: str | None = None
+    authority_note: str | None = None
     citations: list[CVVisibilityCitationRead] = Field(default_factory=list)
     candidate_evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=20)
 
@@ -77,6 +91,7 @@ class CVVisibilityAssessmentRead(BaseModel):
     is_current: bool
     source_document_sha256: str
     source_draft_id: str
+    source_document_index: int | None = None
     source_filename: str
     segment_ids: list[str]
     provider: str
@@ -109,6 +124,7 @@ class CVVisibilityAssessmentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     client_request_id: str = Field(pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
     source_draft_id: str = Field(min_length=1, max_length=36)
+    source_document_index: int = Field(ge=0, le=4)
     source_document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     segment_ids: list[str] = Field(min_length=1, max_length=120)
     consent: Literal[True]
@@ -116,22 +132,17 @@ class CVVisibilityAssessmentCreate(BaseModel):
 
 class CVVisibilityCitationInput(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    segment_id: str = Field(min_length=1, max_length=120)
-    quote: str = Field(min_length=1, max_length=600)
+    segment_id: str = Field(min_length=1, max_length=80)
+    quote: str = Field(min_length=1, max_length=120)
 
 
 class CVVisibilityJudgement(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     requirement_index: int = Field(ge=0)
-    visibility: Literal[
-        "clearly_communicated",
-        "present_but_weak",
-        "not_evident_in_selected_cv",
-        "uncertain",
-        "not_assessable",
-    ]
-    explanation: str = Field(min_length=1, max_length=600)
-    citations: list[CVVisibilityCitationInput] = Field(default_factory=list, max_length=3)
+    visibility: CVVisibilityLabel
+    explanation: str = Field(min_length=1, max_length=120)
+    suggestion: str = Field(min_length=1, max_length=120)
+    citations: list[CVVisibilityCitationInput] = Field(default_factory=list, max_length=1)
 
 
 class CVVisibilityJudgementSet(BaseModel):
