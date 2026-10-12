@@ -49,41 +49,37 @@ def _uploaded_markdown_draft(client: TestClient, headers: dict[str, str]) -> str
     return response.json()["id"]
 
 
-def test_reasoning_effort_env_blank_means_unset_and_invalid_nonblank_fails(tmp_path) -> None:
-    env_file = tmp_path / "compose-style.env"
-    env_file.write_text(
-        "\n".join(
-            [
-                "CV_SEMANTIC_EXTRACTION_REASONING_EFFORT=",
-                "CANDIDATE_ADVISER_REASONING_EFFORT=",
-                "JOB_EXTRACTION_REASONING_EFFORT=",
-                "REQUIREMENT_MATCHING_REASONING_EFFORT=",
-                "CAREER_ALIGNMENT_REASONING_EFFORT=",
-                "JOB_RELEVANCE_REASONING_EFFORT=",
-                "JOB_ARCHETYPE_REASONING_EFFORT=",
-                "AGENTIC_DISCOVERY_REASONING_EFFORT=",
-                "APPLICATION_DRAFTING_REASONING_EFFORT=",
-            ]
-        ),
-        encoding="utf-8",
-    )
+def test_reasoning_effort_env_blank_means_unset_and_invalid_nonblank_fails(monkeypatch) -> None:
+    effort_env_names = [
+        "CV_SEMANTIC_EXTRACTION_REASONING_EFFORT",
+        "CANDIDATE_ADVISER_REASONING_EFFORT",
+        "JOB_EXTRACTION_REASONING_EFFORT",
+        "REQUIREMENT_MATCHING_REASONING_EFFORT",
+        "CAREER_ALIGNMENT_REASONING_EFFORT",
+        "JOB_RELEVANCE_REASONING_EFFORT",
+        "JOB_ARCHETYPE_REASONING_EFFORT",
+        "AGENTIC_DISCOVERY_REASONING_EFFORT",
+        "APPLICATION_DRAFTING_REASONING_EFFORT",
+        "CV_VISIBILITY_ASSESSMENT_REASONING_EFFORT",
+    ]
+    for name in effort_env_names:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv(name, "")
 
-    settings = Settings(_env_file=env_file)
+    settings = Settings(_env_file=None)
     effort_fields = [name for name in Settings.model_fields if name.endswith("_reasoning_effort")]
-    assert len(effort_fields) == 9
+    assert len(effort_fields) == 10
     assert all(getattr(settings, name) is None for name in effort_fields)
 
-    env_file.write_text(
-        "JOB_RELEVANCE_REASONING_EFFORT= high \nAPPLICATION_DRAFTING_REASONING_EFFORT=\n",
-        encoding="utf-8",
-    )
-    explicit = Settings(_env_file=env_file)
+    monkeypatch.setenv("JOB_RELEVANCE_REASONING_EFFORT", " high ")
+    monkeypatch.setenv("APPLICATION_DRAFTING_REASONING_EFFORT", "")
+    explicit = Settings(_env_file=None)
     assert explicit.job_relevance_reasoning_effort.value == "high"
     assert explicit.application_drafting_reasoning_effort is None
 
-    env_file.write_text("JOB_RELEVANCE_REASONING_EFFORT=unbounded\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_RELEVANCE_REASONING_EFFORT", "unbounded")
     with pytest.raises(ValidationError):
-        Settings(_env_file=env_file)
+        Settings(_env_file=None)
 
 
 @pytest.mark.parametrize(
@@ -153,13 +149,16 @@ def test_unexpected_cv_interpret_programming_error_remains_500(db_session, runti
         app.dependency_overrides.pop(get_db, None)
 
 
-def test_provider_neutral_model_setting_precedence_and_legacy_compatibility(tmp_path) -> None:
-    env_file = tmp_path / "settings.env"
-    env_file.write_text("JOB_EXTRACTION_MODEL=neutral-model\nOPENAI_JOB_EXTRACTION_MODEL=legacy-model\n")
-    assert Settings(_env_file=env_file).job_extraction_model == "neutral-model"
-    legacy_file = tmp_path / "legacy.env"
-    legacy_file.write_text("OPENAI_REQUIREMENT_MATCHING_MODEL=legacy-model\n")
-    settings = Settings(_env_file=legacy_file)
+def test_provider_neutral_model_setting_precedence_and_legacy_compatibility(monkeypatch) -> None:
+    monkeypatch.delenv("JOB_EXTRACTION_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_JOB_EXTRACTION_MODEL", raising=False)
+    monkeypatch.setenv("JOB_EXTRACTION_MODEL", "neutral-model")
+    monkeypatch.setenv("OPENAI_JOB_EXTRACTION_MODEL", "legacy-model")
+    assert Settings(_env_file=None).job_extraction_model == "neutral-model"
+    monkeypatch.delenv("REQUIREMENT_MATCHING_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_REQUIREMENT_MATCHING_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_REQUIREMENT_MATCHING_MODEL", "legacy-model")
+    settings = Settings(_env_file=None)
     assert settings.requirement_matching_model == "legacy-model"
     assert settings.openai_requirement_matching_model == "legacy-model"
 

@@ -16,6 +16,7 @@ class SemanticOperation(StrEnum):
     JOB_ARCHETYPE = "job_archetype"
     AGENTIC_DISCOVERY = "agentic_discovery"
     APPLICATION_DRAFTING = "application_drafting"
+    CV_VISIBILITY_ASSESSMENT = "cv_visibility_assessment"
 
 
 class ReasoningEffort(StrEnum):

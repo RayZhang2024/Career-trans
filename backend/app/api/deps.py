@@ -179,7 +179,15 @@ def get_semantic_response_client(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
-    return SemanticResponseClient(llm, operation=operation, reasoning_effort=reasoning_effort)
+    bounded_visibility = operation == "cv_visibility_assessment"
+    return SemanticResponseClient(
+        llm,
+        operation=operation,
+        reasoning_effort=reasoning_effort,
+        max_output_tokens=1800 if bounded_visibility else None,
+        timeout_seconds=30 if bounded_visibility else None,
+        max_retries=0 if bounded_visibility else None,
+    )
 
 
 def validate_semantic_configuration(settings: Settings) -> None:
@@ -195,6 +203,7 @@ def validate_semantic_configuration(settings: Settings) -> None:
         "JOB_ARCHETYPE_MODEL": settings.job_archetype_model,
         "AGENTIC_DISCOVERY_MODEL": settings.agentic_discovery_model,
         "APPLICATION_DRAFTING_MODEL": settings.application_drafting_model,
+        "CV_VISIBILITY_ASSESSMENT_MODEL": settings.cv_visibility_assessment_model,
     }
     for name, model in models.items():
         if not model.strip():
@@ -248,6 +257,7 @@ def validate_semantic_configuration(settings: Settings) -> None:
             )
         if provider == "openai":
             validate_openai_structured_output_model(settings.requirement_matching_model)
+            validate_openai_structured_output_model(settings.cv_visibility_assessment_model)
             validate_openai_structured_output_model(settings.application_drafting_model)
     except LLMProviderConfigurationError as exc:
         raise SemanticProviderConfigurationError(str(exc)) from exc

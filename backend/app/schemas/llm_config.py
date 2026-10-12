@@ -14,6 +14,7 @@ class LLMConfigurationRead(BaseModel):
     cv_semantic_extraction_model: str
     candidate_adviser_model: str
     application_drafting_model: str
+    cv_visibility_assessment_model: str
     job_extraction_model: str
     requirement_matching_model: str
     career_alignment_model: str
@@ -29,6 +30,7 @@ class LLMConfigurationRead(BaseModel):
     job_archetype_reasoning_effort: ReasoningEffort | None
     agentic_discovery_reasoning_effort: ReasoningEffort | None
     application_drafting_reasoning_effort: ReasoningEffort | None
+    cv_visibility_assessment_reasoning_effort: ReasoningEffort | None
     agentic_search_provider: str
     openai_web_search_model: str
     openai_api_key_configured: bool

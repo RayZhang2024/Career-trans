@@ -30,6 +30,7 @@ RUNTIME_OPERATION_TO_SETTING: Mapping[str, SemanticOperation] = {
     "application_cv_drafting": SemanticOperation.APPLICATION_DRAFTING,
     "application_cover_letter": SemanticOperation.APPLICATION_DRAFTING,
     "application_answer_drafting": SemanticOperation.APPLICATION_DRAFTING,
+    "cv_visibility_assessment": SemanticOperation.CV_VISIBILITY_ASSESSMENT,
 }
 
 JOB_EVALUATION_OPERATIONS = (
@@ -162,6 +163,7 @@ def deployment_operation_values(settings: Settings) -> dict[SemanticOperation, t
         SemanticOperation.JOB_ARCHETYPE: (settings.job_archetype_model, settings.job_archetype_reasoning_effort),
         SemanticOperation.AGENTIC_DISCOVERY: (settings.agentic_discovery_model, settings.agentic_discovery_reasoning_effort),
         SemanticOperation.APPLICATION_DRAFTING: (settings.application_drafting_model, settings.application_drafting_reasoning_effort),
+        SemanticOperation.CV_VISIBILITY_ASSESSMENT: (settings.cv_visibility_assessment_model, settings.cv_visibility_assessment_reasoning_effort),
     }
 
 

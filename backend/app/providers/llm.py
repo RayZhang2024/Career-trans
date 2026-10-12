@@ -108,6 +108,9 @@ class SemanticLLM(Protocol):
         required_capabilities: frozenset[LLMCapability] = frozenset(),
         output_schema: dict[str, object] | None = None,
         reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ) -> str: ...
 
 
@@ -139,6 +142,9 @@ class OpenAISemanticLLM:
         required_capabilities: frozenset[LLMCapability] = frozenset(),
         output_schema: dict[str, object] | None = None,
         reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ) -> str:
         _require_capabilities("openai", self.capabilities, required_capabilities)
         if output_schema is not None:
@@ -152,6 +158,8 @@ class OpenAISemanticLLM:
             api_key=self._api_key,
             trace_name=operation,
             base_url=self._base_url,
+            timeout=timeout_seconds,
+            max_retries=max_retries,
         )
         request: dict[str, object] = {
             "model": model,
@@ -162,6 +170,8 @@ class OpenAISemanticLLM:
         }
         if reasoning_effort is not None:
             request["reasoning"] = {"effort": reasoning_effort}
+        if max_output_tokens is not None:
+            request["max_output_tokens"] = max_output_tokens
         if output_schema is not None:
             request["text"] = {
                 "format": {
@@ -234,8 +244,11 @@ class OllamaSemanticLLM:
         required_capabilities: frozenset[LLMCapability] = frozenset(),
         output_schema: dict[str, object] | None = None,
         reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
     ) -> str:
-        del operation, output_schema  # Ollama has no hosted tracing capability in this bounded adapter.
+        del operation, output_schema, max_retries, timeout_seconds  # Ollama has no hosted tracing or retry configuration.
         if reasoning_effort is not None:
             raise SemanticProviderConfigurationError("The configured provider does not support reasoning-effort selection.")
         _require_capabilities("ollama", self.capabilities, required_capabilities)
@@ -250,6 +263,7 @@ class OllamaSemanticLLM:
                         {"role": "user", "content": user_prompt},
                     ],
                     "format": "json",
+                    **({"options": {"num_predict": max_output_tokens}} if max_output_tokens is not None else {}),
                 },
             )
         except HTTPError as exc:
@@ -307,32 +321,49 @@ class LLMProviderFactory:
 class SemanticResponseClient:
     """Compatibility façade so existing prompt-owning agents keep their unchanged inputs."""
 
-    def __init__(self, llm: SemanticLLM, *, operation: str, reasoning_effort: ReasoningEffort | None = None) -> None:
-        self.responses = _SemanticResponses(llm, operation=operation, reasoning_effort=reasoning_effort)
+    def __init__(
+        self, llm: SemanticLLM, *, operation: str, reasoning_effort: ReasoningEffort | None = None,
+        max_output_tokens: int | None = None, timeout_seconds: float | None = None, max_retries: int | None = None,
+    ) -> None:
+        self.responses = _SemanticResponses(
+            llm, operation=operation, reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens, timeout_seconds=timeout_seconds, max_retries=max_retries,
+        )
 
 
 class _SemanticResponses:
-    def __init__(self, llm: SemanticLLM, *, operation: str, reasoning_effort: ReasoningEffort | None) -> None:
+    def __init__(
+        self, llm: SemanticLLM, *, operation: str, reasoning_effort: ReasoningEffort | None,
+        max_output_tokens: int | None, timeout_seconds: float | None, max_retries: int | None,
+    ) -> None:
         self._llm = llm
         self._operation = operation
         self._reasoning_effort = reasoning_effort
+        self._max_output_tokens = max_output_tokens
+        self._timeout_seconds = timeout_seconds
+        self._max_retries = max_retries
 
     def create(self, *, model: str, input: object, **kwargs: object) -> SimpleNamespace:
         required = {LLMCapability.STRUCTURED_OUTPUT}
         if kwargs.get("tools"):
             required.add(LLMCapability.TOOL_CALLING)
         system_prompt, user_prompt = _messages(input)
-        return SimpleNamespace(
-            output_text=self._llm.generate(
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                operation=self._operation,
-                required_capabilities=frozenset(required),
-                output_schema=_json_schema_from_response_text(kwargs.get("text")),
-                reasoning_effort=self._reasoning_effort.value if self._reasoning_effort else None,
-            )
-        )
+        options: dict[str, object] = {
+            "model": model,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "operation": self._operation,
+            "required_capabilities": frozenset(required),
+            "output_schema": _json_schema_from_response_text(kwargs.get("text")),
+            "reasoning_effort": self._reasoning_effort.value if self._reasoning_effort else None,
+        }
+        if self._max_output_tokens is not None:
+            options["max_output_tokens"] = self._max_output_tokens
+        if self._timeout_seconds is not None:
+            options["timeout_seconds"] = self._timeout_seconds
+        if self._max_retries is not None:
+            options["max_retries"] = self._max_retries
+        return SimpleNamespace(output_text=self._llm.generate(**options))
 
 
 def _json_schema_from_response_text(value: object) -> dict[str, object] | None:

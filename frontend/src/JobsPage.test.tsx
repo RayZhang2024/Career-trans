@@ -2,7 +2,7 @@ import { StrictMode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation, useNavigate, useNavigationType } from "react-router-dom";
-import type { ApplicationPreparation, CreateDiscoveryRun, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, OneOffExecution, OneOffPreflight, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
+import type { ApplicationPreparation, CVVisibilityAssessment, CVVisibilityAssessmentCreate, CVVisibilityPreflight, CreateDiscoveryRun, DiscoveryRunDetail, DiscoveryRunSummary, DiscoveryScheduleRead, HistoricalRunJobDetail, InboxSummary, OnboardingStatus, OneOffExecution, OneOffPreflight, RankedJobOpportunity, ScheduledExecutionRead, User, UserOpportunitySummary } from "./api";
 import { App } from "./App";
 import { AuthProvider, useAuth } from "./auth";
 import { undecidedDecision, useJobDecisionMutator } from "./jobDecisions";
@@ -1831,7 +1831,8 @@ describe("Issue #236 Phase 5 repair regressions", () => {
     await screen.findByRole("heading", { name: "Current Fit" });
     expect(screen.getByText(/No analysis is current for the present job, candidate and evaluation configuration/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Job Search" })).toHaveClass("active");
-    expect(fetch.mock.calls.filter(([input]) => String(input).includes("/api/v1/jobs/workspaces/actionable")).length).toBe(1);
+    expect(fetch.mock.calls.filter(([input]) => String(input).includes("/api/v1/jobs/workspaces/actionable?")).length).toBe(1);
+    expect(fetch.mock.calls.filter(([input]) => String(input).includes("/api/v1/jobs/workspaces/actionable/cv-visibility")).length).toBe(1);
   });
 
   it("retains the exact successful Inbox analysis result across workspace navigation", async () => {
@@ -2668,5 +2669,171 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     expect(screen.getByText("Historical workspace role")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Overview" }));
     expect(await screen.findByText("workspace-source")).toBeInTheDocument();
+  });
+
+  it("requires explicit consent before one bounded CV visibility request and renders the saved result", async () => {
+    const source = { draft_id: "draft-owner", draft_state: "confirmed", filename: "original.md", media_type: "text/markdown", document_sha256: "a".repeat(64), segment_ids: ["segment-a"], character_count: 120, assessable: true, created_at: "2026-10-01T00:00:00Z" };
+    const assessment: CVVisibilityAssessment = { id: "assessment-1", client_request_id: "11111111-1111-4111-8111-111111111111", status: "completed", is_current: true, source_document_sha256: source.document_sha256, source_draft_id: source.draft_id, source_filename: source.filename, segment_ids: source.segment_ids, provider: "openai", model: "gpt-5.6-luna", created_at: "2026-10-01T00:00:00Z", completed_at: "2026-10-01T00:00:02Z", result: [{ requirement_index: 0, requirement: "Agentic workflow experience", candidate_match_type: "demonstrated", projection: "supported_and_visible", explanation: "The CV describes equivalent graph-based orchestration.", citations: [{ segment_id: "segment-a", quote: "Built a graph-based agent workflow" }] }], failure_code: null, runtime_attribution: null };
+    let saved: CVVisibilityAssessment | null = null;
+    const preflight = (): CVVisibilityPreflight => ({ discovered_job_id: "actionable", job_title: "Workspace role", state: "ready", current_evaluation_id: "eval-current", requirements: [{ requirement_index: 0, text: "Agentic workflow experience", importance: "essential", category: "technical", match_type: "demonstrated", candidate_coverage_summary: "Confirmed workflow evidence." }], sources: [source], assessments: saved ? [saved] : [], provider: "openai", model: "gpt-5.6-luna", max_input_characters: 24_000, max_evidence_characters: 12_000, max_total_input_characters: 48_000, max_output_tokens: 1800 });
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload()),
+      "/api/v1/jobs/workspaces/actionable/cv-visibility": () => json(preflight()),
+      "POST /api/v1/jobs/workspaces/actionable/cv-visibility/assessments": (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { consent: boolean; client_request_id: string; segment_ids: string[] };
+        expect(body.consent).toBe(true);
+        expect(body.segment_ids).toEqual(["segment-a"]);
+        saved = assessment;
+        return json(assessment);
+      },
+    });
+    renderJobs(fetch, "/jobs/actionable/fit");
+    await screen.findByRole("heading", { name: "How your CV communicates this evidence" });
+    await screen.findByLabelText(/I want to send this selected CV/);
+    const assess = screen.getByRole("button", { name: "Analyse CV with AI" });
+    expect(assess).toBeDisabled();
+    expect(requestPaths(fetch).filter((path) => path.includes("cv-visibility/assessments"))).toHaveLength(0);
+    fireEvent.click(screen.getByLabelText(/I want to send this selected CV/));
+    expect(assess).toBeEnabled();
+    fireEvent.click(assess);
+    expect(await screen.findByRole("heading", { name: "Current CV visibility assessment" })).toBeInTheDocument();
+    expect(screen.getByText("Supported and visible")).toBeInTheDocument();
+    expect(screen.getByText("Built a graph-based agent workflow")).toBeInTheDocument();
+    expect(requestPaths(fetch).filter((path) => path.includes("cv-visibility/assessments"))).toHaveLength(1);
+  });
+
+  it("reconciles an uncertain request with its original id instead of enabling a new launch", async () => {
+    const source = { draft_id: "draft-owner", draft_state: "confirmed", filename: "original.md", media_type: "text/markdown", document_sha256: "b".repeat(64), segment_ids: ["segment-b"], character_count: 120, assessable: true, created_at: "2026-10-01T00:00:00Z" };
+    const uncertain: CVVisibilityAssessment = { id: "assessment-uncertain", client_request_id: "22222222-2222-4222-8222-222222222222", status: "outcome_uncertain", is_current: false, source_document_sha256: source.document_sha256, source_draft_id: source.draft_id, source_filename: source.filename, segment_ids: source.segment_ids, provider: "openai", model: "gpt-5.6-luna", created_at: "2026-10-01T00:00:00Z", completed_at: null, result: [], failure_code: "provider_outcome_uncertain", runtime_attribution: null };
+    const reconciled: CVVisibilityAssessment = { ...uncertain, status: "completed", is_current: true, completed_at: "2026-10-01T00:00:02Z", result: [{ requirement_index: 0, requirement: "Agentic workflow experience", candidate_match_type: "demonstrated", projection: "presentation_opportunity", explanation: "The saved response was recovered.", citations: [] }] };
+    let saved: CVVisibilityAssessment | null = uncertain;
+    const preflight = (): CVVisibilityPreflight => ({ discovered_job_id: "actionable", job_title: "Workspace role", state: "ready", current_evaluation_id: "eval-current", requirements: [], sources: [source], assessments: saved ? [saved] : [], provider: "openai", model: "gpt-5.6-luna", max_input_characters: 24_000, max_evidence_characters: 12_000, max_total_input_characters: 48_000, max_output_tokens: 1800 });
+    const postIds: string[] = [];
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload()),
+      "/api/v1/jobs/workspaces/actionable/cv-visibility": () => json(preflight()),
+      "POST /api/v1/jobs/workspaces/actionable/cv-visibility/assessments": (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as { client_request_id: string };
+        postIds.push(body.client_request_id);
+        if (body.client_request_id === uncertain.client_request_id) return json(uncertain);
+        saved = reconciled;
+        return json(reconciled);
+      },
+    });
+    renderJobs(fetch, "/jobs/actionable/fit");
+    expect(await screen.findByText(/A saved assessment request has an unresolved outcome/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start a new assessment" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Check saved request" }));
+    await waitFor(() => expect(postIds).toHaveLength(1));
+    expect(screen.getByText(/A saved assessment request has an unresolved outcome/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start a new assessment" })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText(/I understand the previous request may already have reached the provider/));
+    fireEvent.click(screen.getByLabelText(/I want to send this selected CV/));
+    fireEvent.click(screen.getByRole("button", { name: "Start a new assessment" }));
+    expect(await screen.findByText("The saved response was recovered.")).toBeInTheDocument();
+    expect(postIds).toHaveLength(2);
+    expect(postIds[0]).toBe(uncertain.client_request_id);
+    expect(postIds[1]).not.toBe(uncertain.client_request_id);
+  });
+
+  it("does not apply an old CV visibility response after session replacement", async () => {
+    const source = { draft_id: "draft-owner", draft_state: "confirmed", filename: "original.md", media_type: "text/markdown", document_sha256: "c".repeat(64), segment_ids: ["segment-c"], character_count: 120, assessable: true, created_at: "2026-10-01T00:00:00Z" };
+    const staleResult: CVVisibilityAssessment = { id: "old-user-assessment", client_request_id: "33333333-3333-4333-8333-333333333333", status: "completed", is_current: true, source_document_sha256: source.document_sha256, source_draft_id: source.draft_id, source_filename: source.filename, segment_ids: source.segment_ids, provider: "openai", model: "gpt-5.6-luna", created_at: "2026-10-01T00:00:00Z", completed_at: "2026-10-01T00:00:02Z", result: [{ requirement_index: 0, requirement: "Private old-user requirement", candidate_match_type: "demonstrated", projection: "supported_and_visible", explanation: "Old user's private result.", citations: [] }], failure_code: null, runtime_attribution: null };
+    const pendingPost = deferred<Response>();
+    const requestIds: string[] = [];
+    const readyData = { discovered_job_id: "actionable", job_title: "Workspace role", state: "ready", current_evaluation_id: "eval-current", requirements: [], sources: [source], assessments: [], provider: "openai", model: "gpt-5.6-luna", max_input_characters: 24_000, max_evidence_characters: 12_000, max_total_input_characters: 48_000, max_output_tokens: 1800 };
+    const notReadyData = { ...readyData, state: "candidate_not_ready" as const, current_evaluation_id: null, sources: [] };
+    const fetch = fakeFetch({
+      "/api/v1/users/me": (_url, init) => json(new Headers(init?.headers).get("Authorization") === "Bearer user-b-token" ? { ...user, id: "user-b" } : user),
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload()),
+      "/api/v1/jobs/workspaces/actionable/cv-visibility": (_url, init) => json(new Headers(init?.headers).get("Authorization") === "Bearer user-b-token" ? notReadyData : readyData),
+      "POST /api/v1/jobs/workspaces/actionable/cv-visibility/assessments": (_url, init) => {
+        requestIds.push((JSON.parse(String(init?.body)) as { client_request_id: string }).client_request_id);
+        return pendingPost.promise;
+      },
+    });
+    renderJobsWithAuthSwitcher(fetch, "/jobs/actionable/fit");
+    await screen.findByRole("heading", { name: "How your CV communicates this evidence" });
+    await screen.findByLabelText(/I want to send this selected CV/);
+    fireEvent.click(screen.getByLabelText(/I want to send this selected CV/));
+    fireEvent.click(screen.getByRole("button", { name: "Analyse CV with AI" }));
+    await waitFor(() => expect(requestIds).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
+    await screen.findByText("A complete confirmed candidate profile is required before CV visibility can be assessed.");
+    pendingPost.resolve(json(staleResult));
+    await waitFor(() => expect(screen.queryByText("Old user's private result.")).not.toBeInTheDocument());
+    expect(screen.queryByRole("heading", { name: "Current CV visibility assessment" })).not.toBeInTheDocument();
+  });
+
+  it("shows an interrupted assessment as uncertain without automatically posting again", async () => {
+    const source = { draft_id: "draft-owner", draft_state: "confirmed", filename: "original.md", media_type: "text/markdown", document_sha256: "d".repeat(64), segment_ids: ["segment-d"], character_count: 120, assessable: true, created_at: "2026-10-01T00:00:00Z" };
+    const uncertain: CVVisibilityAssessment = { id: "uncertain-timeout", client_request_id: "44444444-4444-4444-8444-444444444444", status: "outcome_uncertain", is_current: false, source_document_sha256: source.document_sha256, source_draft_id: source.draft_id, source_filename: source.filename, segment_ids: source.segment_ids, provider: "openai", model: "gpt-5.6-luna", created_at: "2026-10-01T00:00:00Z", completed_at: null, result: [], failure_code: "provider_outcome_uncertain", runtime_attribution: null };
+    let posts = 0; let persisted = false;
+    const preflight = () => ({ discovered_job_id: "actionable", job_title: "Workspace role", state: "ready" as const, current_evaluation_id: "eval-current", requirements: [], sources: [source], assessments: persisted ? [uncertain] : [], provider: "openai", model: "gpt-5.6-luna", max_input_characters: 24_000, max_evidence_characters: 12_000, max_total_input_characters: 48_000, max_output_tokens: 1800 });
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload()),
+      "/api/v1/jobs/workspaces/actionable/cv-visibility": () => json(preflight()),
+      "POST /api/v1/jobs/workspaces/actionable/cv-visibility/assessments": () => { posts += 1; persisted = true; return Promise.reject(new Error("transport interrupted")); },
+    });
+    renderJobs(fetch, "/jobs/actionable/fit");
+    await screen.findByRole("heading", { name: "How your CV communicates this evidence" });
+    await screen.findByLabelText(/I want to send this selected CV/);
+    fireEvent.click(screen.getByLabelText(/I want to send this selected CV/));
+    fireEvent.click(screen.getByRole("button", { name: "Analyse CV with AI" }));
+    expect(await screen.findByText(/The assessment response was interrupted/)).toBeInTheDocument();
+    expect(await screen.findByText(/A saved assessment request has an unresolved outcome/)).toBeInTheDocument();
+    expect(posts).toBe(1);
+    expect(screen.getByRole("button", { name: "Check saved request" })).toBeEnabled();
+  });
+
+  it("does not describe a definite preflight rejection as an uncertain provider outcome", async () => {
+    const source = { draft_id: "draft-owner", draft_state: "confirmed", filename: "original.md", media_type: "text/markdown", document_sha256: "e".repeat(64), segment_ids: ["segment-e"], character_count: 120, assessable: true, created_at: "2026-10-01T00:00:00Z" };
+    const ready = { discovered_job_id: "actionable", job_title: "Workspace role", state: "ready" as const, current_evaluation_id: "eval-current", requirements: [], sources: [source], assessments: [], provider: "openai", model: "gpt-5.6-luna", max_input_characters: 24_000, max_evidence_characters: 12_000, max_total_input_characters: 48_000, max_output_tokens: 1800 };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload()),
+      "/api/v1/jobs/workspaces/actionable/cv-visibility": () => json(ready),
+      "POST /api/v1/jobs/workspaces/actionable/cv-visibility/assessments": () => json({ detail: "stale preflight" }, 409),
+    });
+    renderJobs(fetch, "/jobs/actionable/fit");
+    await screen.findByRole("heading", { name: "How your CV communicates this evidence" });
+    await screen.findByLabelText(/I want to send this selected CV/);
+    fireEvent.click(screen.getByLabelText(/I want to send this selected CV/));
+    fireEvent.click(screen.getByRole("button", { name: "Analyse CV with AI" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/prerequisites changed or the request was rejected before it started/);
+    expect(screen.queryByText(/outcome is uncertain/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Analyse CV with AI" })).toBeEnabled();
+  });
+
+  it("keeps the exact request locked when reconciliation status cannot be loaded", async () => {
+    const source = { draft_id: "draft-owner", draft_state: "confirmed", filename: "original.md", media_type: "text/markdown", document_sha256: "f".repeat(64), segment_ids: ["segment-f"], character_count: 120, assessable: true, created_at: "2026-10-01T00:00:00Z" };
+    const uncertain: CVVisibilityAssessment = { id: "uncertain-after-reload", client_request_id: "55555555-5555-4555-8555-555555555555", status: "outcome_uncertain", is_current: false, source_document_sha256: source.document_sha256, source_draft_id: source.draft_id, source_filename: source.filename, segment_ids: source.segment_ids, provider: "openai", model: "gpt-5.6-luna", created_at: "2026-10-01T00:00:00Z", completed_at: null, result: [], failure_code: "provider_outcome_uncertain", runtime_attribution: null };
+    const ready = { discovered_job_id: "actionable", job_title: "Workspace role", state: "ready" as const, current_evaluation_id: "eval-current", requirements: [], sources: [source], assessments: [], provider: "openai", model: "gpt-5.6-luna", max_input_characters: 24_000, max_evidence_characters: 12_000, max_total_input_characters: 48_000, max_output_tokens: 1800 };
+    let reads = 0;
+    const requestIds: string[] = [];
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload()),
+      "/api/v1/jobs/workspaces/actionable/cv-visibility": () => {
+        reads += 1;
+        if (reads === 2) return json({ detail: "temporarily unavailable" }, 503);
+        return json(reads >= 3 ? { ...ready, assessments: [uncertain] } : ready);
+      },
+      "POST /api/v1/jobs/workspaces/actionable/cv-visibility/assessments": (_url, init) => {
+        requestIds.push((JSON.parse(String(init?.body)) as CVVisibilityAssessmentCreate).client_request_id);
+        return requestIds.length === 1 ? Promise.reject(new Error("transport interrupted")) : json(uncertain);
+      },
+    });
+    renderJobs(fetch, "/jobs/actionable/fit");
+    await screen.findByRole("heading", { name: "How your CV communicates this evidence" });
+    await screen.findByLabelText(/I want to send this selected CV/);
+    fireEvent.click(screen.getByLabelText(/I want to send this selected CV/));
+    fireEvent.click(screen.getByRole("button", { name: "Analyse CV with AI" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/outcome is uncertain/);
+    const notice = screen.getByText(/blocked to avoid an accidental duplicate/).closest(".notice");
+    expect(notice).not.toBeNull();
+    expect(within(notice as HTMLElement).getByRole("button", { name: "Check saved request" })).toBeEnabled();
+    fireEvent.click(within(notice as HTMLElement).getByRole("button", { name: "Check saved request" }));
+    await waitFor(() => expect(requestIds).toHaveLength(2));
+    expect(requestIds[1]).toBe(requestIds[0]);
+    expect(await screen.findByText(/A saved assessment request has an unresolved outcome/)).toBeInTheDocument();
   });
 });

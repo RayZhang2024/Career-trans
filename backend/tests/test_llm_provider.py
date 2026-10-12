@@ -115,6 +115,24 @@ def test_semantic_response_facade_preserves_existing_agent_message_shape() -> No
     ]
 
 
+def test_visibility_operation_passes_single_call_budget_to_provider() -> None:
+    llm = FakeSemanticLLM()
+    client = SemanticResponseClient(
+        llm,
+        operation="cv_visibility_assessment",
+        max_output_tokens=1800,
+        timeout_seconds=30,
+        max_retries=0,
+    )
+    client.responses.create(
+        model="test-model",
+        input=[{"role": "system", "content": "system"}, {"role": "user", "content": "user"}],
+    )
+    assert llm.calls[0]["max_output_tokens"] == 1800
+    assert llm.calls[0]["timeout_seconds"] == 30
+    assert llm.calls[0]["max_retries"] == 0
+
+
 def test_semantic_response_facade_passes_json_schema_to_provider() -> None:
     llm = FakeSemanticLLM()
     client = SemanticResponseClient(llm, operation="requirement_matching")
