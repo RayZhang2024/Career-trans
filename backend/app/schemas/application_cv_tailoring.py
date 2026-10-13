@@ -86,6 +86,7 @@ class TailoringStrategyReviewWrite(BaseModel):
     expected_revision: int = Field(ge=1)
     accepted: bool | None = None
     positioning_override: str | None = Field(default=None, max_length=500)
+    acknowledge_unverified_positioning: bool = False
     choices: list[TailoringStrategyReview] = Field(default_factory=list, max_length=5)
 
 
@@ -106,6 +107,7 @@ class TailoringDraftReviewWrite(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     expected_revision: int = Field(ge=1)
     draft: CVWritingDraft
+    acknowledge_unverified_claims: bool = False
 
 
 class TailoringApproveWrite(BaseModel):
@@ -153,10 +155,13 @@ class TailoringSessionRead(BaseModel):
     strategy: TailoringStrategy | None = None
     strategy_accepted: bool = False
     strategy_positioning_override: str | None = None
+    strategy_positioning_review_status: Literal["not_overridden", "unverified_needs_acknowledgement", "user_acknowledged_unverified"] = "not_overridden"
     strategy_choices: list[TailoringStrategyReview] = Field(default_factory=list)
     strategy_revision: int = Field(ge=0)
     draft: CVWritingDraft | None = None
     draft_revision: int = Field(ge=0)
+    draft_claim_review_status: Literal["not_started", "model_generated_not_semantically_verified", "user_edits_unverified", "user_edits_acknowledged_unverified"] = "not_started"
+    draft_claim_review_acknowledged: bool = False
     target_pages: int = Field(ge=1, le=3)
     failure_code: str | None = None
     approved_preparation_id: str | None = None

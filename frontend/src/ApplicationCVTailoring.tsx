@@ -28,6 +28,14 @@ function activeSession(session: TailoringSession | undefined) {
   return !!session && !["approved", "stale", "strategy_failed", "strategy_invalid", "draft_failed", "draft_invalid", "strategy_rejected"].includes(session.status);
 }
 
+function draftSnapshot(draft: CVWritingDraft | null | undefined) {
+  return draft ? JSON.stringify(draft) : null;
+}
+
+function normalizedWording(value: string | null | undefined) {
+  return (value ?? "").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
 export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparationApproved }: { discoveredJobId: string; actionable: boolean; onPreparationApproved?: () => void }) {
   const { api, user } = useAuth();
   const [preflight, setPreflight] = useState<TailoringPreflight | null>(null);
@@ -38,11 +46,24 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [uncertainRequestId, setUncertainRequestId] = useState<string | null>(null);
+  const [draftConflict, setDraftConflict] = useState(false);
+  const [acknowledgePositioningOverride, setAcknowledgePositioningOverride] = useState(false);
+  const [acknowledgeDraftClaims, setAcknowledgeDraftClaims] = useState(false);
   const generation = useRef(0);
   const sessionIdRef = useRef<string | undefined>(undefined);
   const uncertainRequestIdRef = useRef<string | null>(null);
+  const sessionRef = useRef(session);
+  const savedDraftSnapshotRef = useRef<string | null>(null);
+  const draftReviewDirtyRef = useRef(false);
   sessionIdRef.current = session?.id;
+  sessionRef.current = session;
   uncertainRequestIdRef.current = uncertainRequestId;
+  const draftIsDirty = !!session?.draft && draftSnapshot(session.draft) !== savedDraftSnapshotRef.current;
+  const draftReviewIsDirty = draftIsDirty || acknowledgeDraftClaims !== !!session?.draft_claim_review_acknowledged;
+  draftReviewDirtyRef.current = draftReviewIsDirty;
+  const positioningOverrideIsEdited = !!session?.strategy_positioning_override
+    && normalizedWording(session.strategy_positioning_override) !== normalizedWording(session.strategy?.positioning);
+  const positioningNeedsAcknowledgement = positioningOverrideIsEdited && !acknowledgePositioningOverride;
   const basePath = "/api/v1/applications/tailoring";
   const preflightPath = `${basePath}/preflight?discovered_job_id=${encodeURIComponent(discoveredJobId)}`;
 
@@ -59,7 +80,30 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
         ?? value.sessions.find((item) => item.id === sessionIdRef.current)
         ?? value.sessions[0]
         ?? null;
-      setSession(next);
+      const local = sessionRef.current;
+      if (next && local?.id === next.id && draftReviewDirtyRef.current && next.draft) {
+        const savedSnapshot = draftSnapshot(next.draft);
+        savedDraftSnapshotRef.current = savedSnapshot;
+        const localSnapshot = draftSnapshot(local.draft);
+        if (localSnapshot === savedSnapshot) {
+          setSession(next);
+          sessionRef.current = next;
+          setDraftConflict(false);
+          setAcknowledgeDraftClaims(!!next.draft_claim_review_acknowledged);
+        } else {
+          const retained = { ...next, draft: local.draft };
+          setSession(retained);
+          sessionRef.current = retained;
+          setDraftConflict(next.draft_revision !== local.draft_revision);
+        }
+      } else {
+        setSession(next);
+        sessionRef.current = next;
+        savedDraftSnapshotRef.current = draftSnapshot(next?.draft);
+        setDraftConflict(false);
+        setAcknowledgeDraftClaims(!!next?.draft_claim_review_acknowledged);
+      }
+      setAcknowledgePositioningOverride(!!next?.strategy_positioning_review_status?.includes("acknowledged"));
       if (next?.client_request_id === uncertainRequestIdRef.current) setUncertainRequestId(null);
       setError("");
       return true;
@@ -74,14 +118,50 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
   }, [api, preflightPath, user?.id]);
 
   useEffect(() => {
-    setPreflight(null); setSession(null); setError(""); setNotice(""); setUncertainRequestId(null);
+    setPreflight(null); setSession(null); sessionRef.current = null; savedDraftSnapshotRef.current = null; setDraftConflict(false);
+    setAcknowledgePositioningOverride(false); setAcknowledgeDraftClaims(false);
+    setError(""); setNotice(""); setUncertainRequestId(null);
     void refresh();
     return () => { generation.current += 1; };
   }, [refresh]);
 
+  useEffect(() => {
+    if (!draftReviewIsDirty) return;
+    const protectUnsavedDraft = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", protectUnsavedDraft);
+    return () => window.removeEventListener("beforeunload", protectUnsavedDraft);
+  }, [draftReviewIsDirty]);
+
+  useEffect(() => {
+    if (!draftReviewIsDirty) return;
+    const confirmInternalNavigation = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest<HTMLAnchorElement>("a[href]");
+      if (!link || link.target || link.hasAttribute("download")) return;
+      const destination = new URL(link.href, window.location.href);
+      if (destination.origin !== window.location.origin || destination.href === window.location.href) return;
+      if (!window.confirm("You have unsaved tailoring review changes. Leave this page and discard them?")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    };
+    document.addEventListener("click", confirmInternalNavigation, true);
+    return () => document.removeEventListener("click", confirmInternalNavigation, true);
+  }, [draftReviewIsDirty]);
+
   const acceptResponse = (value: TailoringSession, owner: string | undefined, epoch: number, current: number) => {
     if (generation.current !== current || owner !== user?.id || api.sessionEpoch() !== epoch) return false;
     setSession(value);
+    sessionRef.current = value;
+    savedDraftSnapshotRef.current = draftSnapshot(value.draft);
+    setDraftConflict(false);
+    setAcknowledgePositioningOverride(!!value.strategy_positioning_review_status?.includes("acknowledged"));
+    setAcknowledgeDraftClaims(!!value.draft_claim_review_acknowledged);
     setUncertainRequestId(null);
     return true;
   };
@@ -162,6 +242,7 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
     void mutate("/strategy", "POST", {
       expected_revision: session.strategy_revision, accepted,
       positioning_override: session.strategy_positioning_override,
+      acknowledge_unverified_positioning: acknowledgePositioningOverride,
       choices,
     }, () => accepted === true ? "Strategy accepted. You can now request one tailored CV draft." : "Strategy review saved.");
   };
@@ -174,7 +255,13 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
   };
 
   const saveDraft = (draft: CVWritingDraft) => {
-    void mutate("/draft", "PATCH", { expected_revision: session?.draft_revision, draft }, () => "Draft edits saved as a new review revision.");
+    if (!session) return;
+    void mutate("/draft", "PATCH", {
+      expected_revision: session.draft_revision, draft,
+      acknowledge_unverified_claims: acknowledgeDraftClaims,
+    }, (value) => value.draft_claim_review_acknowledged
+      ? "Draft edits saved. Your review decision is recorded; citations do not independently verify edited claims."
+      : "Draft saved. Edited factual claims remain unverified until you review and acknowledge them.");
   };
 
   const approve = () => {
@@ -220,7 +307,10 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
   };
 
   const updateDraft = (update: (draft: CVWritingDraft) => CVWritingDraft) => {
-    if (session?.draft) setSession({ ...session, draft: update(session.draft) });
+    if (session?.draft) {
+      setAcknowledgeDraftClaims(false);
+      setSession({ ...session, draft: update(session.draft) });
+    }
   };
 
   return <section className="card application-section cv-tailoring" aria-labelledby="workspace-tailoring-heading" aria-busy={pending}>
@@ -252,20 +342,24 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
         {session.status === "strategy_rejected" && <p role="status">Strategy rejected. No CV draft was generated. You can prepare a new strategy from the current job.</p>}
         {session.status === "strategy_review" && session.strategy && <>
           <h5>Top experience to highlight</h5><p><strong>Positioning:</strong> {session.strategy.positioning}</p><p><strong>Summary emphasis:</strong> {session.strategy.summary_emphasis}</p>
-          <label htmlFor="tailoring-positioning">Your positioning adjustment (optional)</label><textarea id="tailoring-positioning" value={session.strategy_positioning_override ?? ""} onChange={(event) => setSession({ ...session, strategy_positioning_override: event.target.value || null })} disabled={pending} />
+          <label htmlFor="tailoring-positioning">Your positioning adjustment (optional)</label><textarea id="tailoring-positioning" value={session.strategy_positioning_override ?? ""} onChange={(event) => { setSession({ ...session, strategy_positioning_override: event.target.value || null }); setAcknowledgePositioningOverride(false); }} disabled={pending} />
+          {positioningOverrideIsEdited && <div className="tailoring-claim-review">
+            <p role="status">This is user-written positioning, not Profile evidence. Its factual wording has not been independently verified.</p>
+            <label><input type="checkbox" checked={acknowledgePositioningOverride} onChange={(event) => setAcknowledgePositioningOverride(event.target.checked)} disabled={pending} /> I have reviewed this wording and understand it remains unverified.</label>
+          </div>}
           <ul className="tailoring-recommendations">{[...session.strategy.recommendations].sort((left, right) => {
-            const leftOrder = session.strategy_choices.find((choice) => choice.recommendation_id === left.recommendation_id)?.order ?? session.strategy.recommendations.indexOf(left);
-            const rightOrder = session.strategy_choices.find((choice) => choice.recommendation_id === right.recommendation_id)?.order ?? session.strategy.recommendations.indexOf(right);
+            const leftOrder = session.strategy_choices.find((choice) => choice.recommendation_id === left.recommendation_id)?.order ?? session.strategy!.recommendations.indexOf(left);
+            const rightOrder = session.strategy_choices.find((choice) => choice.recommendation_id === right.recommendation_id)?.order ?? session.strategy!.recommendations.indexOf(right);
             return leftOrder - rightOrder;
           }).map((item) => {
             const match = session.target.requirement_matches.find((value) => value.requirement_index === item.requirement_index);
             const evidence = match?.evidence_refs?.filter((ref) => item.source_refs.some((selected) => selected.source_type === ref.source_type && selected.source_ref === ref.source_ref)) ?? [];
-            const order = session.strategy_choices.find((choice) => choice.recommendation_id === item.recommendation_id)?.order ?? session.strategy.recommendations.indexOf(item);
+            const order = session.strategy_choices.find((choice) => choice.recommendation_id === item.recommendation_id)?.order ?? session.strategy!.recommendations.indexOf(item);
             return <li key={item.recommendation_id}>
             <strong>{actionLabel(item.action)}</strong><p>{item.rationale}</p>{item.suggested_emphasis && <p>Suggested emphasis: {item.suggested_emphasis}</p>}
             <details><summary>Why this?</summary><p><strong>Job requirement:</strong> {match?.requirement.text ?? "Current job requirement"}</p><p><strong>Current match:</strong> {match?.match_type.replaceAll("_", " ") ?? "Not available"}</p><p><strong>Confirmed Profile evidence:</strong> {evidence.map((ref) => ref.value ?? "Confirmed Profile source").join(" · ") || "No relevant confirmed evidence"}</p></details>
             <label htmlFor={`tailoring-order-${item.recommendation_id}`}>Order in draft for requirement {item.requirement_index + 1}</label><select id={`tailoring-order-${item.recommendation_id}`} value={order} onChange={(event) => updateOrder(item.recommendation_id, Number(event.target.value))} disabled={pending}>
-              {session.strategy.recommendations.map((_, index) => <option key={index} value={index}>{index + 1}</option>)}
+              {session.strategy!.recommendations.map((_, index) => <option key={index} value={index}>{index + 1}</option>)}
             </select>
             <label htmlFor={`tailoring-choice-${item.recommendation_id}`}>Your choice</label><select id={`tailoring-choice-${item.recommendation_id}`} value={session.strategy_choices.find((choice) => choice.recommendation_id === item.recommendation_id)?.decision ?? (item.action === "omit" ? "skip" : item.action === "reorder" ? "reorder" : item.action === "condense" ? "deemphasise" : "keep")} onChange={(event) => updateChoice(item.recommendation_id, event.target.value as TailoringStrategyChoice["decision"])} disabled={pending}>
               {["keep", "reorder", "deemphasise", "skip"].map((value) => <option key={value} value={value}>{choiceLabel(value)}</option>)}
@@ -273,13 +367,18 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
           </li>; })}</ul>
           {session.strategy.gaps_to_clarify.length > 0 && <div><h5>Evidence gaps to keep clear</h5><ul>{session.strategy.gaps_to_clarify.map((gap) => <li key={gap.requirement_index}>{gap.reason}</li>)}</ul></div>}
           {session.strategy.not_to_claim.length > 0 && <div><h5>Do not claim</h5><ul>{session.strategy.not_to_claim.map((item) => <li key={item}>{item}</li>)}</ul></div>}
-          <div className="card-actions"><button type="button" className="button-secondary" disabled={pending} onClick={() => saveStrategy(null)}>{pending ? "Saving review…" : "Save strategy review"}</button><button type="button" className="button-secondary" disabled={pending} onClick={() => saveStrategy(false)}>{pending ? "Saving…" : "Reject strategy"}</button><button type="button" disabled={pending || !session.is_current} onClick={() => saveStrategy(true)}>{pending ? "Saving…" : "Accept strategy and continue"}</button></div>
+          <div className="card-actions"><button type="button" className="button-secondary" disabled={pending} onClick={() => saveStrategy(null)}>{pending ? "Saving review…" : "Save strategy review"}</button><button type="button" className="button-secondary" disabled={pending} onClick={() => saveStrategy(false)}>{pending ? "Saving…" : "Reject strategy"}</button><button type="button" disabled={pending || !session.is_current || positioningNeedsAcknowledgement} onClick={() => saveStrategy(true)}>{pending ? "Saving…" : "Accept strategy and continue"}</button></div>
         </>}
         {session.status === "strategy_accepted" && <><p>Strategy accepted at revision {session.strategy_revision}. Draft generation uses one separate explicit request.</p><button type="button" disabled={pending || !session.is_current} onClick={generateDraft}>{pending ? "Drafting CV…" : "Draft tailored CV"}</button></>}
         {(session.status === "draft_in_progress" || session.status === "draft_uncertain") && <p role="status">Draft generation is recorded as {session.status.replaceAll("_", " ")}. Refresh saved status; a paid request is never replayed automatically.</p>}
         {(session.status === "draft_failed" || session.status === "draft_invalid") && <p role="alert">The draft was not saved as a reviewable CV. The strategy remains available; start a new tailoring request to try again.</p>}
         {session.status === "draft_review" && session.draft && <>
-          <p>Review every statement and its Profile evidence before saving or approving.</p>
+          <p>Review every statement and its Profile evidence before saving or approving. Source citations identify inputs; they do not independently verify that wording is true.</p>
+          {session.draft_claim_review_status === "model_generated_not_semantically_verified" && <p role="status">This AI-generated draft passed source and structure checks, but its claims have not had semantic verification.</p>}
+          {session.draft_claim_review_status === "user_edits_unverified" && <p role="alert">Saved wording differs from the AI draft. Those factual edits remain unverified and cannot be approved until you acknowledge that status.</p>}
+          {session.draft_claim_review_status === "user_edits_acknowledged_unverified" && <p role="status">You recorded a review decision for edited wording. The edits remain unverified by the application.</p>}
+          {draftReviewIsDirty && <p role="alert">Unsaved review changes are still local. Save them successfully before approval; approval is disabled while edits or review decisions are unsaved.</p>}
+          {draftConflict && <div role="alert"><p>The saved draft changed in another tab. Your local text is preserved, but save and approval are blocked until you reload the saved version.</p><button type="button" className="button-secondary" disabled={pending} onClick={() => { if (window.confirm("Discard local edits and reload the saved draft?")) { savedDraftSnapshotRef.current = draftSnapshot(session.draft); draftReviewDirtyRef.current = false; setAcknowledgeDraftClaims(!!session.draft_claim_review_acknowledged); void refresh(session.id); } }}>Discard local edits and reload saved draft</button></div>}
           <label htmlFor="tailoring-summary">Professional summary</label><textarea id="tailoring-summary" value={session.draft.professional_summary} onChange={(event) => updateDraft((draft) => ({ ...draft, professional_summary: event.target.value }))} disabled={pending} />
           <p className="muted">Summary sources: {session.draft.summary_source_refs.map((ref) => ref.value ?? "Confirmed Profile evidence").join(" · ") || "None"}</p>
           <label htmlFor="tailoring-skills">Key skills (one per line)</label><textarea id="tailoring-skills" value={session.draft.key_skills.join("\n")} onChange={(event) => updateDraft((draft) => ({ ...draft, key_skills: event.target.value.split(/\r?\n/).filter(Boolean) }))} disabled={pending} />
@@ -287,7 +386,10 @@ export function ApplicationCVTailoring({ discoveredJobId, actionable, onPreparat
           {session.draft.project_drafts.map((project, projectIndex) => <div key={project.project_index}><label htmlFor={`tailoring-project-${project.project_index}`}>Project: {session.profile_outline.projects.find((item) => item.project_index === project.project_index)?.name ?? project.project_index + 1}</label><textarea id={`tailoring-project-${project.project_index}`} value={project.text} onChange={(event) => updateDraft((draft) => ({ ...draft, project_drafts: draft.project_drafts.map((item, index) => index === projectIndex ? { ...item, text: event.target.value } : item) }))} disabled={pending} /><p className="muted">Evidence: {project.source_refs.map((ref) => ref.value ?? "Confirmed Profile evidence").join(" · ")}</p></div>)}
           {session.profile_outline.education.length > 0 && <section><h5>Education (from Profile)</h5><ul>{session.profile_outline.education.map((item) => <li key={item}>{item}</li>)}</ul></section>}
           {session.profile_outline.credentials.length > 0 && <section><h5>Credentials (from Profile)</h5><ul>{session.profile_outline.credentials.map((item) => <li key={item}>{item}</li>)}</ul></section>}
-          <div className="card-actions"><button type="button" className="button-secondary" disabled={pending || !session.is_current} onClick={() => saveDraft(session.draft!)}>{pending ? "Saving…" : "Save draft edits"}</button><button type="button" disabled={pending || !session.is_current} onClick={approve}>{pending ? "Approving…" : "Approve and prepare documents"}</button></div>
+          <div className="tailoring-claim-review">
+            <label><input type="checkbox" checked={acknowledgeDraftClaims} onChange={(event) => setAcknowledgeDraftClaims(event.target.checked)} disabled={pending || draftConflict} /> I have checked any factual wording I changed. I understand citations are not proof, and my changed claims remain unverified by the application.</label>
+          </div>
+          <div className="card-actions"><button type="button" className="button-secondary" disabled={pending || !session.is_current || draftConflict || !draftReviewIsDirty} onClick={() => saveDraft(session.draft!)}>{pending ? "Saving…" : acknowledgeDraftClaims ? "Save and record review" : "Save draft edits"}</button><button type="button" disabled={pending || !session.is_current || draftReviewIsDirty || draftConflict || session.draft_claim_review_status === "user_edits_unverified" || session.strategy_positioning_review_status === "unverified_needs_acknowledgement"} onClick={approve}>{pending ? "Approving…" : "Approve and prepare documents"}</button></div>
         </>}
         {session.status === "approved" && session.approved_preparation_id && <p role="status">Approved preparation saved. <Link to={`/applications/${encodeURIComponent(session.approved_preparation_id)}`}>Open preparation and download CV</Link>.</p>}
         {session.status === "stale" && <><p role="alert">The saved review no longer matches current inputs. Its history is retained; it cannot be approved.</p>{preflight.state === "ready" && <button type="button" disabled={pending || !!uncertainRequestId} onClick={() => { setSession(null); void start(); }}>Start a new current review</button>}</>}

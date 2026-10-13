@@ -537,6 +537,13 @@ export type ApplicationPreparation = {
     cover_letter: { body: string; source_refs: ApplicationSourceRef[] } | null;
     answers: Array<{ question: string; status: "drafted" | "unsupported"; answer?: string | null; source_refs: ApplicationSourceRef[] }>;
     layout_status: "fit" | "overflow"; target_pages: number; actual_pdf_pages: number;
+    tailoring_review?: {
+      draft_claim_status: "model_generated_not_semantically_verified" | "user_edits_acknowledged_unverified";
+      draft_user_decision: "approved_model_generated_text" | "acknowledged_unverified_user_edits";
+      positioning_status: "not_overridden" | "user_acknowledged_unverified";
+      positioning_user_decision: "not_applicable" | "acknowledged_unverified_positioning";
+      strategy_revision: number; draft_revision: number;
+    } | null;
   };
   created_at: string;
 };
@@ -578,8 +585,11 @@ export type TailoringSession = {
   target: ApplicationPreparation["target"]; identity: ApplicationPreparation["identity"];
   profile_outline: { employment: Array<{ employment_index: number; employer: string; title: string; start_date: string | null; end_date: string | null; location: string | null }>; projects: Array<{ project_index: number; name: string }>; education: string[]; credentials: string[] };
   strategy: TailoringStrategy | null; strategy_accepted: boolean; strategy_positioning_override: string | null;
+  strategy_positioning_review_status?: "not_overridden" | "unverified_needs_acknowledgement" | "user_acknowledged_unverified";
   strategy_choices: TailoringStrategyChoice[]; strategy_revision: number;
-  draft: CVWritingDraft | null; draft_revision: number; target_pages: number;
+  draft: CVWritingDraft | null; draft_revision: number;
+  draft_claim_review_status?: "not_started" | "model_generated_not_semantically_verified" | "user_edits_unverified" | "user_edits_acknowledged_unverified";
+  draft_claim_review_acknowledged?: boolean; target_pages: number;
   failure_code: string | null; approved_preparation_id: string | null;
   runtime_attribution: SemanticRuntimeAttribution | null; created_at: string; updated_at: string;
 };
@@ -590,9 +600,9 @@ export type TailoringPreflight = {
   timeout_seconds: number; max_requirements: number; max_input_characters: number; strategy_request_count: number; draft_request_count: number; sessions: TailoringSession[];
 };
 export type TailoringStartRequest = { client_request_id: string; discovered_job_id: string; target_pages: 1 | 2 | 3 };
-export type TailoringStrategyReviewWrite = { expected_revision: number; accepted: boolean | null; positioning_override: string | null; choices: TailoringStrategyChoice[] };
+export type TailoringStrategyReviewWrite = { expected_revision: number; accepted: boolean | null; positioning_override: string | null; acknowledge_unverified_positioning: boolean; choices: TailoringStrategyChoice[] };
 export type TailoringDraftGenerateRequest = { client_request_id: string; expected_strategy_revision: number };
-export type TailoringDraftReviewWrite = { expected_revision: number; draft: CVWritingDraft };
+export type TailoringDraftReviewWrite = { expected_revision: number; draft: CVWritingDraft; acknowledge_unverified_claims: boolean };
 export type TailoringApproveWrite = { expected_strategy_revision: number; expected_draft_revision: number };
 
 export type ApplicationTrackingStatus = "prepared" | "applied" | "interview" | "rejected" | "offer" | "withdrawn";

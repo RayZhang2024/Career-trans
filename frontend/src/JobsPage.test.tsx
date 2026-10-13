@@ -2453,6 +2453,7 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
 
   it("offers profile-first tailoring without selecting an original CV and saves an approved immutable preparation", async () => {
     let starts = 0; let strategyWrites = 0; let draftCalls = 0; let draftWrites = 0; let approvals = 0;
+    let savedSession: Record<string, unknown> | null = null;
     const strategy = { positioning: "Evidence-led Python delivery.", summary_emphasis: "Python systems.", recommendations: [{ recommendation_id: "requirement-0", requirement_index: 0, action: "feature", rationale: "Confirmed Python evidence supports this requirement.", suggested_emphasis: "Python delivery", source_refs: [{ source_type: "skills", source_ref: "skill:0" }] }, { recommendation_id: "requirement-1", requirement_index: 1, action: "feature", rationale: "Employment evidence supports this requirement.", suggested_emphasis: "Service delivery", source_refs: [{ source_type: "employment", source_ref: "employment:0" }] }], gaps_to_clarify: [], not_to_claim: ["Do not claim unsupported certifications."] };
     const draft = { professional_summary: "Engineer building Python services.", summary_source_refs: [{ source_type: "skills", source_ref: "skill:0" }], key_skills: ["Python"], role_drafts: [{ employment_index: 0, bullets: [{ text: "Built data services.", source_refs: [{ source_type: "employment", source_ref: "employment:0" }, { source_type: "skills", source_ref: "skill:0" }], priority: 70 }] }], project_drafts: [] };
     const currentSession = { id: "tailoring-1", client_request_id: "11111111-1111-4111-8111-111111111111", discovered_job_id: "actionable", status: "strategy_review", strategy_status: "completed", draft_status: "not_started", is_current: true, target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "Workspace role", company: "Public Co", location: "London", job_profile: { title: "Workspace role", requirements: [{ text: "Build Python services", importance: "essential", category: "technical" }, { text: "Deliver reliable services", importance: "desirable", category: "experience" }] }, requirement_matches: [], job_content_hash: "hash" }, identity: { display_name: "Current Person", email: "person@example.test" }, profile_outline: { employment: [{ employment_index: 0, employer: "Example Co", title: "Engineer", start_date: "2020", end_date: "2024", location: null }], projects: [], education: [], credentials: [] }, strategy, strategy_accepted: false, strategy_positioning_override: null, strategy_choices: [], strategy_revision: 1, draft: null, draft_revision: 0, target_pages: 2, failure_code: null, approved_preparation_id: null, runtime_attribution: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" };
@@ -2461,12 +2462,12 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     const draftReview = { ...accepted, status: "draft_review", draft_status: "completed", draft, draft_revision: 1 };
     const fetch = fakeFetch({
       "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [], limit: 20, truncated: false } })),
-      "/api/v1/applications/tailoring/preflight": () => json(preflight),
-      "POST /api/v1/applications/tailoring": (_url, init) => { starts += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ discovered_job_id: "actionable", target_pages: 2 }); return json(currentSession, 201); },
-      "POST /api/v1/applications/tailoring/tailoring-1/strategy": (_url, init) => { strategyWrites += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_revision: 1, accepted: true, choices: [{ recommendation_id: "requirement-0", decision: "keep", order: 1 }, { recommendation_id: "requirement-1", decision: "keep", order: 0 }] }); return json(accepted); },
-      "POST /api/v1/applications/tailoring/tailoring-1/draft": (_url, init) => { draftCalls += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_strategy_revision: 2 }); return json(draftReview); },
-      "PATCH /api/v1/applications/tailoring/tailoring-1/draft": (_url, init) => { draftWrites += 1; expect(JSON.parse(String(init?.body)).draft.professional_summary).toBe("Engineer delivering Python services."); return json({ ...draftReview, draft: { ...draft, professional_summary: "Engineer delivering Python services." }, draft_revision: 2 }); },
-      "POST /api/v1/applications/tailoring/tailoring-1/approve": (_url, init) => { approvals += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_strategy_revision: 2, expected_draft_revision: 2 }); return json({ ...draftReview, status: "approved", draft_revision: 2, approved_preparation_id: "preparation-new" }); },
+      "/api/v1/applications/tailoring/preflight": () => json({ ...preflight, sessions: savedSession ? [savedSession] : [] }),
+      "POST /api/v1/applications/tailoring": (_url, init) => { starts += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ discovered_job_id: "actionable", target_pages: 2 }); savedSession = currentSession; return json(currentSession, 201); },
+      "POST /api/v1/applications/tailoring/tailoring-1/strategy": (_url, init) => { strategyWrites += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_revision: 1, accepted: true, choices: [{ recommendation_id: "requirement-0", decision: "keep", order: 1 }, { recommendation_id: "requirement-1", decision: "keep", order: 0 }] }); savedSession = accepted; return json(accepted); },
+      "POST /api/v1/applications/tailoring/tailoring-1/draft": (_url, init) => { draftCalls += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_strategy_revision: 2 }); savedSession = draftReview; return json(draftReview); },
+      "PATCH /api/v1/applications/tailoring/tailoring-1/draft": (_url, init) => { draftWrites += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ draft: { professional_summary: "Engineer delivering Python services." }, acknowledge_unverified_claims: true }); savedSession = { ...draftReview, draft: { ...draft, professional_summary: "Engineer delivering Python services." }, draft_revision: 2, draft_claim_review_status: "user_edits_acknowledged_unverified", draft_claim_review_acknowledged: true }; return json(savedSession); },
+      "POST /api/v1/applications/tailoring/tailoring-1/approve": (_url, init) => { approvals += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_strategy_revision: 2, expected_draft_revision: 2 }); savedSession = { ...draftReview, status: "approved", draft_revision: 2, approved_preparation_id: "preparation-new" }; return json(savedSession); },
     });
     renderJobs(fetch, "/jobs/actionable/application");
     fireEvent.click(await screen.findByRole("button", { name: "Prepare tailored CV" }));
@@ -2480,8 +2481,19 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Draft tailored CV" }));
     const summary = await screen.findByLabelText("Professional summary");
     fireEvent.change(summary, { target: { value: "Engineer delivering Python services." } });
-    fireEvent.click(screen.getByRole("button", { name: "Save draft edits" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Approve and prepare documents" }));
+    const approveButton = await screen.findByRole("button", { name: "Approve and prepare documents" });
+    expect(approveButton).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Unsaved review changes are still local");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh status" }));
+    expect(await screen.findByLabelText("Professional summary")).toHaveValue("Engineer delivering Python services.");
+    expect(screen.getByRole("button", { name: "Approve and prepare documents" })).toBeDisabled();
+    fireEvent.click(approveButton);
+    expect(approvals).toBe(0);
+    fireEvent.click(screen.getByRole("checkbox", { name: /I have checked any factual wording I changed/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save and record review" }));
+    await waitFor(() => expect(draftWrites).toBe(1));
+    expect(await screen.findByRole("button", { name: "Approve and prepare documents" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Approve and prepare documents" }));
     expect(await screen.findByRole("link", { name: "Open preparation and download CV" })).toHaveAttribute("href", "/applications/preparation-new");
     expect(starts).toBe(1); expect(strategyWrites).toBe(1); expect(draftCalls).toBe(1); expect(draftWrites).toBe(1); expect(approvals).toBe(1);
     expect(requestPaths(fetch)).not.toContain("/api/v1/applications/prepare");

@@ -30,7 +30,8 @@ from app.schemas.application_cv_tailoring import (
 )
 from app.schemas.application_preparation import (
     ApplicationEvidenceSnapshotStatus, ApplicationEvidenceSource, ApplicationIdentitySnapshot,
-    ApplicationPreparationResult, ApplicationTargetSnapshot, CVWritingDraft, PersistedApplicationPreparationEnvelope,
+    ApplicationPreparationResult, ApplicationTailoringReviewSnapshot, ApplicationTargetSnapshot,
+    CVWritingDraft, PersistedApplicationPreparationEnvelope,
 )
 from app.schemas.candidate import CandidateContext
 from app.schemas.cv_ingestion import CandidateCVData
@@ -257,6 +258,15 @@ class ApplicationCVTailoringService:
         if len(json.loads(row.strategy_history_json or "[]")) >= MAX_REVIEW_REVISIONS:
             raise ApplicationCVTailoringError("The strategy revision limit was reached. Start a new tailored CV.")
         strategy = TailoringStrategy.model_validate_json(row.strategy_json or "{}")
+        positioning_override = (write.positioning_override or "").strip() or None
+        positioning_changed = bool(
+            positioning_override and _normalise_claim_text(positioning_override) != _normalise_claim_text(strategy.positioning)
+        )
+        if write.accepted is True and positioning_changed and not write.acknowledge_unverified_positioning:
+            raise ApplicationCVTailoringError(
+                "Your positioning adjustment is user-written and not verified by its citations. Review and acknowledge it before accepting the strategy.",
+                status_code=422,
+            )
         by_id = {item.recommendation_id: item for item in strategy.recommendations}
         choices = write.choices or [
             TailoringStrategyReview(
@@ -284,7 +294,13 @@ class ApplicationCVTailoringService:
                 raise ApplicationCVTailoringError("Inferred, missing, unknown, and incompatible requirements cannot be selected as CV evidence.")
         review = {
             "accepted": write.accepted,
-            "positioning_override": write.positioning_override,
+            "positioning_override": positioning_override,
+            "positioning_review_status": (
+                "user_acknowledged_unverified" if positioning_changed and write.acknowledge_unverified_positioning
+                else "unverified_needs_acknowledgement" if positioning_changed
+                else "not_overridden"
+            ),
+            "positioning_user_decision": "acknowledged_unverified_positioning" if positioning_changed and write.acknowledge_unverified_positioning else None,
             "choices": [item.model_dump(mode="json") for item in choices],
         }
         history = json.loads(row.strategy_history_json or "[]")
@@ -330,10 +346,14 @@ class ApplicationCVTailoringService:
             raise ApplicationCVTailoringError("The Profile, job evaluation, or AI settings changed. Start a new tailored CV from the current job.")
         authority = self._authority(user_id, row.discovered_job_id)
         strategy, review = self._strategy_and_review(row)
-        allowed = self._selected_sources(authority.sources, strategy, review)
-        if not allowed:
+        if self._positioning_status(strategy, review) == "unverified_needs_acknowledgement":
+            raise ApplicationCVTailoringError("Review and acknowledge the user-written positioning before requesting a draft.", status_code=422)
+        selected = self._selected_sources(authority.sources, strategy, review)
+        if not selected:
             raise ApplicationCVTailoringError("Keep at least one evidence-backed strategy item before generating a tailored CV.")
-        context = self._draft_context(authority, strategy, review, allowed, row.target_pages)
+        structural = self._structural_anchor_sources(authority, selected)
+        allowed = {**selected, **structural}
+        context = self._draft_context(authority, strategy, review, selected, structural, row.target_pages)
         self._check_input_budget(context)
 
         result = self._session.execute(update(ApplicationCVTailoringSession).where(
@@ -369,7 +389,7 @@ class ApplicationCVTailoringService:
         try:
             draft = agent.draft_tailored_cv(context)
             self._application_service._materialize_cv(draft, authority.structured, allowed)
-            self._validate_draft_strategy_refs(draft, allowed)
+            self._validate_draft_strategy_refs(draft, selected, structural, authority.structured)
         except SemanticProviderRequestError:
             return self._finish_draft_failure(row, user_id, "provider_request_rejected", uncertain=False)
         except (SemanticOutputError, ValueError):
@@ -391,7 +411,13 @@ class ApplicationCVTailoringService:
         row.status = TailoringStatus.DRAFT_REVIEW.value
         row.draft_revision = 1
         row.draft_history_json = _json([{
-            "revision": 1, "kind": "generated", "draft": draft.model_dump(mode="json"), "recorded_at": _iso(_now()),
+            "revision": 1, "kind": "generated", "draft": draft.model_dump(mode="json"),
+            "factual_review": {
+                "status": "model_generated_not_semantically_verified",
+                "decision": "awaiting_user_review",
+                "acknowledged": False,
+            },
+            "recorded_at": _iso(_now()),
         }])
         row.updated_at = _now()
         self._session.commit()
@@ -406,10 +432,12 @@ class ApplicationCVTailoringService:
             raise ApplicationCVTailoringError("This draft is stale because its Profile, job evaluation, or AI settings changed.")
         authority = self._authority(user_id, row.discovered_job_id)
         strategy, review = self._strategy_and_review(row)
-        allowed = self._selected_sources(authority.sources, strategy, review)
+        selected = self._selected_sources(authority.sources, strategy, review)
+        structural = self._structural_anchor_sources(authority, selected)
+        allowed = {**selected, **structural}
         try:
             self._application_service._materialize_cv(write.draft, authority.structured, allowed)
-            self._validate_draft_strategy_refs(write.draft, allowed)
+            self._validate_draft_strategy_refs(write.draft, selected, structural, authority.structured)
         except ValueError as exc:
             # A rejected user edit is a validation response, not an internal error.
             # The frontend keeps the unsaved edit visible and lets the user correct it.
@@ -417,8 +445,26 @@ class ApplicationCVTailoringService:
         history = json.loads(row.draft_history_json or "[]")
         if len(history) >= MAX_REVIEW_REVISIONS:
             raise ApplicationCVTailoringError("The draft revision limit was reached. Start a new tailored CV.")
+        generated = CVWritingDraft.model_validate(history[0]["draft"])
+        edited_claims = self._draft_claim_content(write.draft) != self._draft_claim_content(generated)
+        previous_review = (history[-1].get("factual_review") or {}) if history else {}
+        acknowledged = bool(write.acknowledge_unverified_claims) if edited_claims else False
+        factual_review = {
+            "status": (
+                "user_edits_acknowledged_unverified" if edited_claims and acknowledged
+                else "user_edits_unverified" if edited_claims
+                else "model_generated_not_semantically_verified"
+            ),
+            "decision": "acknowledged_by_user" if edited_claims and acknowledged else "not_acknowledged" if edited_claims else "restored_model_generated_text",
+            "acknowledged": acknowledged,
+            "changed_from_model_draft": edited_claims,
+            "recorded_at": _iso(_now()),
+        }
         next_revision = row.draft_revision + 1
-        history.append({"revision": next_revision, "kind": "user_edit", "draft": write.draft.model_dump(mode="json"), "recorded_at": _iso(_now())})
+        history.append({
+            "revision": next_revision, "kind": "user_edit", "draft": write.draft.model_dump(mode="json"),
+            "factual_review": factual_review, "recorded_at": _iso(_now()),
+        })
         result = self._session.execute(update(ApplicationCVTailoringSession).where(
             ApplicationCVTailoringSession.id == row.id,
             ApplicationCVTailoringSession.user_id == user_id,
@@ -451,15 +497,40 @@ class ApplicationCVTailoringService:
             raise ApplicationCVTailoringError("This draft is stale. It cannot be approved; start again from the current job.")
         authority = self._authority(user_id, row.discovered_job_id)
         strategy, review = self._strategy_and_review(row)
+        positioning_status = self._positioning_status(strategy, review)
+        if positioning_status == "unverified_needs_acknowledgement":
+            raise ApplicationCVTailoringError("A user-written positioning adjustment still needs explicit acknowledgement before approval.", status_code=422)
+        factual_review = self._draft_factual_review(row)
+        if factual_review.get("status") == "user_edits_unverified" or (factual_review.get("changed_from_model_draft") and not factual_review.get("acknowledged")):
+            raise ApplicationCVTailoringError("Edited factual claims are not verified by their citations. Review and acknowledge the saved draft before approval.", status_code=422)
         if not review.get("accepted"):
             raise ApplicationCVTailoringError("Accept the current strategy before approving a CV.")
-        allowed = self._selected_sources(authority.sources, strategy, review)
-        from app.schemas.application_preparation import CVWritingDraft
+        selected = self._selected_sources(authority.sources, strategy, review)
+        structural = self._structural_anchor_sources(authority, selected)
+        allowed = {**selected, **structural}
         draft = CVWritingDraft.model_validate_json(row.draft_json)
         cv = self._application_service._materialize_cv(draft, authority.structured, allowed)
-        self._validate_draft_strategy_refs(draft, allowed)
+        self._validate_draft_strategy_refs(draft, selected, structural, authority.structured)
+        cv = cv.model_copy(update={"roles": [role for role in cv.roles if role.bullets]})
+        draft_status = factual_review.get("status", "model_generated_not_semantically_verified")
+        override_status = positioning_status
+        review_snapshot = ApplicationTailoringReviewSnapshot(
+            draft_claim_status=(
+                "user_edits_acknowledged_unverified" if draft_status == "user_edits_acknowledged_unverified"
+                else "model_generated_not_semantically_verified"
+            ),
+            draft_user_decision=(
+                "acknowledged_unverified_user_edits" if draft_status == "user_edits_acknowledged_unverified"
+                else "approved_model_generated_text"
+            ),
+            positioning_status=("user_acknowledged_unverified" if override_status == "user_acknowledged_unverified" else "not_overridden"),
+            positioning_user_decision=(
+                "acknowledged_unverified_positioning" if override_status == "user_acknowledged_unverified" else "not_applicable"
+            ),
+            strategy_revision=row.strategy_revision, draft_revision=row.draft_revision,
+        )
         result = ApplicationPreparationResult(
-            cv=cv, cover_letter=None, answers=[], target_pages=row.target_pages,
+            cv=cv, cover_letter=None, answers=[], target_pages=row.target_pages, tailoring_review=review_snapshot,
         )
         renderer = ApplicationDocumentRenderer()
         result, pages, layout_status = renderer.compact_cv_to_target(authority.identity, authority.target, result)
@@ -587,11 +658,28 @@ class ApplicationCVTailoringService:
 
     def _draft_context(
         self, authority: _Authority, strategy: TailoringStrategy, review: dict[str, object],
-        allowed: dict[tuple[str, str], str], target_pages: int,
+        selected: dict[tuple[str, str], str], structural: dict[tuple[str, str], str], target_pages: int,
     ) -> dict[str, object]:
+        allowed = {**selected, **structural}
         base = self._application_service._draft_context(authority.target, allowed, authority.structured)
         return {
             **base,
+            "sources": [
+                {"source_type": kind, "source_ref": ref, "text": value}
+                for (kind, ref), value in sorted(allowed.items())
+            ],
+            "selected_support_refs": [
+                {"source_type": kind, "source_ref": ref}
+                for kind, ref in sorted(selected)
+            ],
+            "structural_attribution_refs": [
+                {"source_type": kind, "source_ref": ref}
+                for kind, ref in sorted(structural)
+            ],
+            "allowed_skills": sorted({
+                value.strip() for (kind, _ref), value in selected.items()
+                if kind == EvidenceSourceType.SKILLS.value and value.strip()
+            }, key=str.casefold),
             "requirements": [
                 {
                     "requirement_index": item.requirement_index,
@@ -605,7 +693,11 @@ class ApplicationCVTailoringService:
             "accepted_strategy": strategy.model_dump(mode="json"),
             "user_review": review,
             "target_pages": target_pages,
-            "tailoring_contract": "Only accepted recommendations can guide emphasis; canonical Profile still controls identity and chronology.",
+            "tailoring_contract": (
+                "Only accepted recommendation sources are substantive content support. Structural employment/project refs are for attribution only; "
+                "cite one selected support ref plus the matching role/project anchor for each role/project bullet. "
+                "Only the selected allowed_skills may appear. User positioning is not candidate evidence."
+            ),
         }
 
     def _selected_sources(
@@ -621,6 +713,36 @@ class ApplicationCVTailoringService:
             if choice and choice.get("decision") != "skip":
                 selected.update((ref.source_type.value, ref.source_ref) for ref in recommendation.source_refs)
         return {key: value for key, value in sources.items() if key in selected}
+
+    @staticmethod
+    def _structural_anchor_sources(
+        authority: _Authority, selected: dict[tuple[str, str], str],
+    ) -> dict[tuple[str, str], str]:
+        """Keep identity-only role/project anchors separate from selected evidence."""
+        anchors: dict[tuple[str, str], str] = {}
+        for (kind, ref) in authority.sources:
+            if (kind, ref) in selected:
+                continue
+            if kind == EvidenceSourceType.EMPLOYMENT.value and ref.startswith("employment:"):
+                try:
+                    index = int(ref.split(":", 1)[1])
+                    item = authority.structured.employment[index]
+                except (ValueError, IndexError):
+                    continue
+                identity = [item.title, item.employer]
+                if item.start_date or item.end_date:
+                    identity.append(" – ".join(value for value in (item.start_date, item.end_date) if value))
+                if item.location:
+                    identity.append(item.location)
+                anchors[(kind, ref)] = ". ".join(value for value in identity if value)
+            elif kind == EvidenceSourceType.PROJECT.value and ref.startswith("project:"):
+                try:
+                    index = int(ref.split(":", 1)[1])
+                    item = authority.structured.projects[index]
+                except (ValueError, IndexError):
+                    continue
+                anchors[(kind, ref)] = item.name
+        return anchors
 
     def _validate_strategy(self, strategy: TailoringStrategy, authority: _Authority) -> None:
         matches = {item.requirement_index: item for item in authority.target.requirement_matches}
@@ -642,13 +764,80 @@ class ApplicationCVTailoringService:
             raise SemanticOutputError("CV tailoring returned duplicate requirement mappings.")
 
     @staticmethod
-    def _validate_draft_strategy_refs(draft, allowed: dict[tuple[str, str], str]) -> None:
-        refs = [*draft.summary_source_refs]
+    def _validate_draft_strategy_refs(
+        draft, selected: dict[tuple[str, str], str], structural: dict[tuple[str, str], str], data: CandidateCVData,
+    ) -> None:
+        allowed = set(selected) | set(structural)
+        summary_refs = {(ref.source_type.value, ref.source_ref) for ref in draft.summary_source_refs}
+        if not summary_refs or not summary_refs <= set(selected):
+            raise ValueError("The CV summary must cite only evidence selected in the accepted strategy.")
+        selected_skills = {
+            value.strip().casefold() for (kind, _ref), value in selected.items()
+            if kind == EvidenceSourceType.SKILLS.value and value.strip()
+        }
+        if any(skill.strip().casefold() not in selected_skills for skill in draft.key_skills):
+            raise ValueError("The CV draft reintroduced a skill that was not selected in the accepted strategy.")
         for role in draft.role_drafts:
-            refs.extend(ref for bullet in role.bullets for ref in bullet.source_refs)
-        refs.extend(ref for project in draft.project_drafts for ref in project.source_refs)
-        if any((ref.source_type.value, ref.source_ref) not in allowed for ref in refs):
-            raise ValueError("The CV draft used evidence that was not selected in the accepted strategy.")
+            anchor = (EvidenceSourceType.EMPLOYMENT.value, f"employment:{role.employment_index}")
+            if anchor not in allowed:
+                raise ValueError("The CV draft references a role without a current structural attribution anchor.")
+            for bullet in role.bullets:
+                refs = {(ref.source_type.value, ref.source_ref) for ref in bullet.source_refs}
+                if not refs <= allowed or anchor not in refs or not refs.intersection(selected):
+                    raise ValueError("Each role bullet needs selected Profile support and its matching role attribution anchor.")
+        for project in draft.project_drafts:
+            anchor = (EvidenceSourceType.PROJECT.value, f"project:{project.project_index}")
+            refs = {(ref.source_type.value, ref.source_ref) for ref in project.source_refs}
+            if not refs <= allowed or anchor not in refs or not refs.intersection(selected):
+                raise ValueError("Each project bullet needs selected Profile support and its matching project attribution anchor.")
+
+    @staticmethod
+    def _draft_claim_content(draft: CVWritingDraft) -> dict[str, object]:
+        return {
+            "professional_summary": draft.professional_summary,
+            "summary_source_refs": sorted((item.source_type.value, item.source_ref) for item in draft.summary_source_refs),
+            "key_skills": [value.casefold() for value in draft.key_skills],
+            "roles": {
+                item.employment_index: sorted(
+                    (bullet.text, tuple(sorted((ref.source_type.value, ref.source_ref) for ref in bullet.source_refs)))
+                    for bullet in item.bullets
+                )
+                for item in draft.role_drafts
+            },
+            "projects": {
+                item.project_index: (
+                    item.text, tuple(sorted((ref.source_type.value, ref.source_ref) for ref in item.source_refs))
+                )
+                for item in draft.project_drafts
+            },
+        }
+
+    @staticmethod
+    def _positioning_status(strategy: TailoringStrategy, review: dict[str, object]) -> str:
+        override = (review.get("positioning_override") or "").strip()
+        changed = bool(override and _normalise_claim_text(override) != _normalise_claim_text(strategy.positioning))
+        if not changed:
+            return "not_overridden"
+        return str(review.get("positioning_review_status") or "unverified_needs_acknowledgement")
+
+    @staticmethod
+    def _draft_factual_review(row: ApplicationCVTailoringSession) -> dict[str, object]:
+        history = json.loads(row.draft_history_json or "[]")
+        if not history or not row.draft_json:
+            return {"status": "not_started", "acknowledged": False, "changed_from_model_draft": False}
+        saved = history[-1].get("factual_review")
+        if saved:
+            return saved
+        try:
+            generated = CVWritingDraft.model_validate(history[0]["draft"])
+            current = CVWritingDraft.model_validate_json(row.draft_json)
+        except (KeyError, ValueError, TypeError):
+            return {"status": "user_edits_unverified", "acknowledged": False, "changed_from_model_draft": True}
+        changed = ApplicationCVTailoringService._draft_claim_content(generated) != ApplicationCVTailoringService._draft_claim_content(current)
+        return {
+            "status": "user_edits_unverified" if changed else "model_generated_not_semantically_verified",
+            "acknowledged": False, "changed_from_model_draft": changed,
+        }
 
     @staticmethod
     def _check_input_budget(value: dict[str, object]) -> None:
@@ -724,6 +913,8 @@ class ApplicationCVTailoringService:
             status = TailoringStatus.STALE
         review = json.loads(row.strategy_review_json or "{}")
         strategy = TailoringStrategy.model_validate_json(row.strategy_json) if row.strategy_json else None
+        factual_review = self._draft_factual_review(row)
+        positioning_status = self._positioning_status(strategy, review) if strategy else "not_overridden"
         from app.schemas.application_cv_tailoring import TailoringStrategyReview
         choices = [TailoringStrategyReview.model_validate(item) for item in review.get("choices", [])]
         return TailoringSessionRead(
@@ -733,10 +924,15 @@ class ApplicationCVTailoringService:
             identity=ApplicationIdentitySnapshot.model_validate_json(row.identity_snapshot_json),
             profile_outline=TailoringProfileOutline.model_validate_json(row.profile_outline_json or "{}"),
             strategy=strategy, strategy_accepted=bool(review.get("accepted", False)),
-            strategy_positioning_override=review.get("positioning_override"), strategy_choices=choices,
+            strategy_positioning_override=review.get("positioning_override"),
+            strategy_positioning_review_status=positioning_status,
+            strategy_choices=choices,
             strategy_revision=row.strategy_revision,
             draft=CVWritingDraft.model_validate_json(row.draft_json) if row.draft_json else None,
-            draft_revision=row.draft_revision, target_pages=row.target_pages,
+            draft_revision=row.draft_revision,
+            draft_claim_review_status=factual_review.get("status", "not_started"),
+            draft_claim_review_acknowledged=bool(factual_review.get("acknowledged", False)),
+            target_pages=row.target_pages,
             failure_code=row.failure_code, approved_preparation_id=row.approved_preparation_id,
             runtime_attribution=read_attribution(row.runtime_attribution_json),
             created_at=_aware(row.created_at), updated_at=_aware(row.updated_at),
@@ -826,3 +1022,8 @@ def _aware(value: datetime) -> datetime:
 def _iso(value: datetime) -> str:
     return _aware(value).isoformat()
 
+
+def _normalise_claim_text(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+\n

@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_serializer, model_validator
 
 from app.schemas.job import JobProfile
 from app.schemas.matching import EvidenceRef, EvidenceSourceType, RequirementMatch
@@ -203,6 +203,18 @@ class ApplicationQuestionAnswerSet(BaseModel):
     answers: list[ApplicationQuestionAnswer] = Field(default_factory=list, max_length=8)
 
 
+class ApplicationTailoringReviewSnapshot(BaseModel):
+    """Honest V2B record of user review without implying semantic verification."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    draft_claim_status: Literal["model_generated_not_semantically_verified", "user_edits_acknowledged_unverified"]
+    draft_user_decision: Literal["approved_model_generated_text", "acknowledged_unverified_user_edits"]
+    positioning_status: Literal["not_overridden", "user_acknowledged_unverified"]
+    positioning_user_decision: Literal["not_applicable", "acknowledged_unverified_positioning"]
+    strategy_revision: int = Field(ge=1)
+    draft_revision: int = Field(ge=1)
+
+
 class ApplicationPreparationResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cv: TailoredCVContent
@@ -211,6 +223,15 @@ class ApplicationPreparationResult(BaseModel):
     layout_status: ApplicationLayoutStatus = ApplicationLayoutStatus.FIT
     target_pages: int = Field(ge=1, le=3)
     actual_pdf_pages: int = Field(default=0, ge=0)
+    tailoring_review: ApplicationTailoringReviewSnapshot | None = None
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_result_shape(self, handler):
+        """Keep the historical V2C1 payload unchanged unless V2B review exists."""
+        result = handler(self)
+        if self.tailoring_review is None:
+            result.pop("tailoring_review", None)
+        return result
 
 
 class PersistedApplicationPreparationEnvelope(BaseModel):

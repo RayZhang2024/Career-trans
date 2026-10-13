@@ -1,9 +1,11 @@
 """Provider-free regressions for profile-first application CV tailoring."""
 
 import json
+import re
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +20,9 @@ from app.models.candidate_cv_ingestion import CandidateCVIngestionDraft, Candida
 from app.models.cv_visibility_assessment import CVVisibilityAssessment
 from app.models.discovered_job import DiscoveredJob
 from app.models.user import User
+from app.api.deps import get_application_cv_tailoring_service
+from app.core.security import create_access_token
+from app.main import app as fastapi_app
 from app.models.user_job_discovery import UserJobEvaluation
 from app.providers.llm import SemanticOutputError
 from app.schemas.ai_settings import SemanticOperation
@@ -32,7 +37,7 @@ from app.schemas.application_preparation import (
 )
 from app.schemas.assessment import FitAssessment
 from app.schemas.candidate import CandidateContext
-from app.schemas.cv_ingestion import CandidateCVData, Employment, Skill
+from app.schemas.cv_ingestion import CandidateCVData, CareerEvidenceDraft, Employment, EvidenceProvenance, Project, Skill
 from app.schemas.career_assessment import AlignmentConfidence, CareerAssessment
 from app.schemas.job import JobProfile, JobRequirement
 from app.schemas.job_ranking import (
@@ -105,15 +110,19 @@ class _Agent:
         self.error = error
         self.strategy_calls = 0
         self.draft_calls = 0
+        self.strategy_contexts = []
+        self.draft_contexts = []
 
     def recommend_strategy(self, _context):
         self.strategy_calls += 1
+        self.strategy_contexts.append(_context)
         if self.error:
             raise self.error
         return self.strategy
 
     def draft_tailored_cv(self, _context):
         self.draft_calls += 1
+        self.draft_contexts.append(_context)
         if self.error:
             raise self.error
         return self.draft
@@ -258,14 +267,26 @@ def test_profile_first_strategy_review_draft_revisions_and_approval_are_durable_
     edited_draft = draft.draft.model_copy(update={"professional_summary": "Engineer delivering Python services."})
     saved = service.review_draft(user.id, started.id, TailoringDraftReviewWrite(expected_revision=1, draft=edited_draft))
     assert saved.draft_revision == 2
+    assert saved.draft_claim_review_status == "user_edits_unverified"
+    assert saved.draft_claim_review_acknowledged is False
     assert len(json.loads(db_session.get(ApplicationCVTailoringSession, started.id).draft_history_json)) == 2
+    with pytest.raises(ApplicationCVTailoringError, match="Edited factual claims"):
+        service.approve(user.id, started.id, TailoringApproveWrite(expected_strategy_revision=2, expected_draft_revision=2))
 
-    approved = service.approve(user.id, started.id, TailoringApproveWrite(expected_strategy_revision=2, expected_draft_revision=2))
+    acknowledged = service.review_draft(user.id, started.id, TailoringDraftReviewWrite(
+        expected_revision=2, draft=saved.draft, acknowledge_unverified_claims=True,
+    ))
+    assert acknowledged.draft_claim_review_status == "user_edits_acknowledged_unverified"
+    assert acknowledged.draft_claim_review_acknowledged is True
+
+    approved = service.approve(user.id, started.id, TailoringApproveWrite(expected_strategy_revision=2, expected_draft_revision=3))
     assert approved.status == "approved"
     assert approved.approved_preparation_id
     assert db_session.query(ApplicationPreparation).filter_by(user_id=user.id).count() == 1
     final = ApplicationPreparationReadService(db_session).get(user.id, approved.approved_preparation_id)
     assert final.result.cv.professional_summary == "Engineer delivering Python services."
+    assert final.result.tailoring_review.draft_claim_status == "user_edits_acknowledged_unverified"
+    assert final.result.tailoring_review.draft_user_decision == "acknowledged_unverified_user_edits"
     assert final.target.title == authority.target.title
     assert db_session.query(ApplicationCVTailoringSession).filter_by(user_id=other.id).count() == 0
 
@@ -278,8 +299,14 @@ def test_real_canonical_profile_and_current_evaluation_are_sufficient_without_cv
         headline="Python engineer", summary="Builds reliable services.",
     ))
     structured = CandidateCVData(
-        skills=[Skill(name="Python")],
+        skills=[Skill(name="Python"), Skill(name="HiddenTool")],
         employment=[Employment(employer="Example Co", title="Engineer", start_date="2021", end_date="2025", description="Built Python data services.")],
+        projects=[Project(name="Agentic research prototype", description="Evaluated retrieval workflows.", skills=["Python"])],
+        evidence=[CareerEvidenceDraft(
+            evidence_type="project", title="Agentic research prototype",
+            text="Built and evaluated a retrieval research prototype.", skills=["Python"],
+            provenance=[EvidenceProvenance(document_sha256="a" * 64, segment_ids=["project-segment"])],
+        )],
     )
     db_session.add(CandidateStructuredProfile(user_id=user.id, structured_json=structured.model_dump_json()))
     job = DiscoveredJob(
@@ -299,13 +326,38 @@ def test_real_canonical_profile_and_current_evaluation_are_sufficient_without_cv
     snapshot = reader.read(user.id)
     context = reader.candidate_context(snapshot, require_structured_profile=True, require_complete_evidence=True)
     assert context is not None and context.evidence
-    requirement = JobRequirement(text="Build Python data services", importance="essential", category="technical")
-    match = RequirementMatch(
-        requirement_index=0, requirement=requirement, match_type="demonstrated", score=0.9,
-        evidence_ids=[context.evidence[0].evidence_id],
-        evidence_refs=[EvidenceRef(source_type=EvidenceSourceType.SKILLS, source_ref="skills:0", value="Python")],
-        reasoning="Current confirmed Profile evidence.",
-    )
+    employment_evidence = next(item for item in context.evidence if item.evidence_type == "employment")
+    project_evidence = next(item for item in context.evidence if item.evidence_type == "project")
+    requirements = [
+        JobRequirement(text="Build reliable data services", importance="essential", category="technical"),
+        JobRequirement(text="Prototype retrieval research", importance="essential", category="experience"),
+        JobRequirement(text="Use Python", importance="desirable", category="technical"),
+        JobRequirement(text="Use HiddenTool", importance="desirable", category="technical"),
+    ]
+    matches = [
+        RequirementMatch(
+            requirement_index=0, requirement=requirements[0], match_type="demonstrated", score=0.9,
+            evidence_ids=[employment_evidence.evidence_id],
+            evidence_refs=[EvidenceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref=employment_evidence.evidence_id, value=employment_evidence.text)],
+            reasoning="Current confirmed employment evidence.",
+        ),
+        RequirementMatch(
+            requirement_index=1, requirement=requirements[1], match_type="transferable", score=0.8,
+            evidence_ids=[project_evidence.evidence_id],
+            evidence_refs=[EvidenceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref=project_evidence.evidence_id, value=project_evidence.text)],
+            reasoning="Current confirmed project evidence.",
+        ),
+        RequirementMatch(
+            requirement_index=2, requirement=requirements[2], match_type="demonstrated", score=0.9,
+            evidence_refs=[EvidenceRef(source_type=EvidenceSourceType.SKILLS, source_ref="skills:0", value="Python")],
+            reasoning="Current confirmed Profile skill.",
+        ),
+        RequirementMatch(
+            requirement_index=3, requirement=requirements[3], match_type="demonstrated", score=0.8,
+            evidence_refs=[EvidenceRef(source_type=EvidenceSourceType.SKILLS, source_ref="skills:1", value="HiddenTool")],
+            reasoning="Current confirmed Profile skill.",
+        ),
+    ]
     opportunity = RankedJobOpportunity(
         job=UserJobDiscoveryService._listing(job),
         relevance=JobRelevanceAssessment(relevant=True, score=0.9, reasoning="Synthetic relevance."),
@@ -318,8 +370,8 @@ def test_real_canonical_profile_and_current_evaluation_are_sufficient_without_cv
             reasoning="Synthetic recommendation.",
         ),
         legitimacy=PostingLegitimacyAssessment(legitimacy=PostingLegitimacy.HIGH_CONFIDENCE, reasoning="Synthetic listing."),
-        rank=1, job_profile=JobProfile(title=job.title, company=job.company, requirements=[requirement]),
-        requirement_matches=[match],
+        rank=1, job_profile=JobProfile(title=job.title, company=job.company, requirements=requirements),
+        requirement_matches=matches,
     )
     db_session.add(UserJobEvaluation(
         id="profile-first-evaluation", user_id=user.id, discovered_job_id=job.id,
@@ -330,15 +382,30 @@ def test_real_canonical_profile_and_current_evaluation_are_sufficient_without_cv
         evaluation_json=opportunity.model_dump_json(),
     ))
     db_session.commit()
-    actual_strategy = _strategy()
-    actual_recommendation = actual_strategy.recommendations[0].model_copy(update={
-        "source_refs": [
-            ApplicationSourceRef(source_type="skills", source_ref="skills:0"),
-            ApplicationSourceRef(source_type="employment", source_ref="employment:0"),
-        ],
-    })
-    actual_strategy = actual_strategy.model_copy(update={"recommendations": [actual_recommendation]})
-    agent = _Agent(strategy=actual_strategy, draft=_draft())
+    actual_strategy = TailoringStrategy(
+        positioning="Evidence-led applied AI engineering.", summary_emphasis="Confirmed service and research work.",
+        recommendations=[
+            TailoringRecommendation(recommendation_id="requirement-0", requirement_index=0, action="feature", rationale="Confirmed employment evidence.", source_refs=[ApplicationSourceRef(source_type="career_evidence", source_ref=employment_evidence.evidence_id)]),
+            TailoringRecommendation(recommendation_id="requirement-1", requirement_index=1, action="feature", rationale="Confirmed project evidence.", source_refs=[ApplicationSourceRef(source_type="career_evidence", source_ref=project_evidence.evidence_id)]),
+            TailoringRecommendation(recommendation_id="requirement-2", requirement_index=2, action="feature", rationale="Confirmed Python skill.", source_refs=[ApplicationSourceRef(source_type="skills", source_ref="skills:0")]),
+            TailoringRecommendation(recommendation_id="requirement-3", requirement_index=3, action="feature", rationale="Confirmed skill is optional.", source_refs=[ApplicationSourceRef(source_type="skills", source_ref="skills:1")]),
+        ], gaps_to_clarify=[], not_to_claim=["Do not claim unconfirmed production ownership."],
+    )
+    career_evidence_ref = ApplicationSourceRef(source_type="career_evidence", source_ref=employment_evidence.evidence_id)
+    project_evidence_ref = ApplicationSourceRef(source_type="career_evidence", source_ref=project_evidence.evidence_id)
+    python_skill_ref = ApplicationSourceRef(source_type="skills", source_ref="skills:0")
+    actual_draft = CVWritingDraft(
+        professional_summary="Engineer building reliable data services and retrieval prototypes.",
+        summary_source_refs=[career_evidence_ref, project_evidence_ref, python_skill_ref], key_skills=["Python"],
+        role_drafts=[TailoredRoleDraft(employment_index=0, bullets=[TailoredBullet(
+            text="Built Python data services.", source_refs=[career_evidence_ref, python_skill_ref, ApplicationSourceRef(source_type="employment", source_ref="employment:0")], priority=80,
+        )])],
+        project_drafts=[{
+            "project_index": 0, "text": "Built and evaluated a retrieval research prototype.",
+            "source_refs": [project_evidence_ref, ApplicationSourceRef(source_type="project", source_ref="project:0")], "priority": 75,
+        }],
+    )
+    agent = _Agent(strategy=actual_strategy, draft=actual_draft)
     application_service = ApplicationPreparationService(
         db_session, user_discovery=UserJobDiscoveryService(db_session, runtime_snapshot=runtime_snapshot_a),
         graph_factory=lambda: None, drafting_agent_factory=lambda: None,
@@ -354,18 +421,53 @@ def test_real_canonical_profile_and_current_evaluation_are_sufficient_without_cv
     assert preflight.max_requirements == 40 and preflight.max_input_characters == 36_000
     assert agent.strategy_calls == agent.draft_calls == 0
     actual_authority = service._authority(user.id, job.id)
-    assert {("skills", "skills:0"), ("employment", "employment:0")} <= set(actual_authority.sources), actual_authority.sources
+    assert {("career_evidence", employment_evidence.evidence_id), ("career_evidence", project_evidence.evidence_id), ("skills", "skills:0"), ("skills", "skills:1"), ("employment", "employment:0"), ("project", "project:0")} <= set(actual_authority.sources), actual_authority.sources
     service._validate_strategy(actual_strategy, actual_authority)
     started = service.start(user.id, TailoringStartRequest(
         client_request_id="66666666-6666-4666-8666-666666666666", discovered_job_id=job.id,
     ))
     assert started.status == "strategy_review", started.failure_code
     assert started.profile_outline.employment[0].title == "Engineer"
+    assert started.profile_outline.projects[0].name == "Agentic research prototype"
     assert agent.strategy_calls == 1
+    reviewed = service.review_strategy(user.id, started.id, TailoringStrategyReviewWrite(
+        expected_revision=1, accepted=True,
+        choices=[
+            TailoringStrategyReview(recommendation_id="requirement-0", decision="keep", order=2),
+            TailoringStrategyReview(recommendation_id="requirement-1", decision="keep", order=1),
+            TailoringStrategyReview(recommendation_id="requirement-2", decision="keep", order=0),
+            TailoringStrategyReview(recommendation_id="requirement-3", decision="skip", order=3),
+        ],
+    ))
+    assert reviewed.status == "strategy_accepted"
+    generated = service.generate_draft(user.id, started.id, TailoringDraftGenerateRequest(
+        client_request_id="67676767-6767-4676-8676-676767676767", expected_strategy_revision=2,
+    ))
+    assert generated.status == "draft_review", generated.failure_code
+    draft_context = agent.draft_contexts[0]
+    assert draft_context["allowed_skills"] == ["Python"]
+    assert not any(source["source_type"] == "skills" and source["source_ref"] == "skills:1" for source in draft_context["sources"])
+    assert {("employment", "employment:0"), ("project", "project:0")} == {
+        (item["source_type"], item["source_ref"]) for item in draft_context["structural_attribution_refs"]
+    }
+    assert all(item["source_type"] != "employment" and item["source_type"] != "project" for item in draft_context["selected_support_refs"])
+    choices = draft_context["user_review"]["choices"]
+    assert next(item["order"] for item in choices if item["recommendation_id"] == "requirement-2") == 0
+    assert next(item["decision"] for item in choices if item["recommendation_id"] == "requirement-3") == "skip"
+    rejected_hidden_skill = generated.draft.model_copy(update={"key_skills": ["Python", "HiddenTool"]})
+    with pytest.raises(ApplicationCVTailoringError, match="not selected in the accepted strategy"):
+        service.review_draft(user.id, started.id, TailoringDraftReviewWrite(expected_revision=1, draft=rejected_hidden_skill))
+    approved = service.approve(user.id, started.id, TailoringApproveWrite(expected_strategy_revision=2, expected_draft_revision=1))
+    final = ApplicationPreparationReadService(db_session).get(user.id, approved.approved_preparation_id)
+    assert final.result.cv.key_skills == ["Python"]
+    assert len(final.result.cv.roles) == 1 and final.result.cv.roles[0].bullets[0].text == "Built Python data services."
+    assert len(final.result.cv.selected_projects) == 1
+    assert final.result.cv.selected_projects[0].name == "Agentic research prototype"
+    assert final.result.cv.selected_projects[0].text == "Built and evaluated a retrieval research prototype."
     assert db_session.query(CandidateStructuredProfile).filter_by(user_id=user.id).count() == 1
     assert db_session.query(CandidateCVIngestionDraft).filter_by(user_id=user.id).count() == 0
     assert db_session.query(CVVisibilityAssessment).filter_by(user_id=user.id).count() == 0
-    assert db_session.query(ApplicationPreparation).filter_by(user_id=user.id).count() == 0
+    assert db_session.query(ApplicationPreparation).filter_by(user_id=user.id).count() == 1
 
 
 def test_repeated_start_is_idempotent_and_preserves_uncertain_provider_outcome(db_session, runtime_snapshot_a):
@@ -441,3 +543,170 @@ def test_unsupported_user_draft_edit_returns_validation_error_without_advancing_
     unchanged = service.get(user.id, started.id)
     assert unchanged.draft_revision == 1
     assert unchanged.draft.professional_summary == draft.draft.professional_summary
+
+
+@pytest.mark.parametrize("case,target,claim", [
+    ("production", "summary", "Independently owned enterprise production deployments."),
+    ("leadership", "bullet", "Led engineering teams through production delivery."),
+    ("qualification", "summary", "Holds an active chartered engineering qualification."),
+    ("reference-reuse", "summary", "Led production research programs."),
+])
+def test_user_authored_factual_claims_and_reused_refs_are_unverified_until_acknowledged(db_session, runtime_snapshot_a, case, target, claim):
+    user = User(id=f"tailor-claim-{case}", email=f"{case}@example.test", password_hash="safe")
+    db_session.add(user); db_session.commit()
+    authority = _make_authority(db_session, runtime_snapshot_a, user.id, f"claim-job-{case}")
+    agent = _Agent(strategy=_strategy(), draft=_draft())
+    service = _service(db_session, runtime_snapshot_a, authority, agent)
+    started = service.start(user.id, TailoringStartRequest(
+        client_request_id="a9090909-9090-4909-8090-909090909090", discovered_job_id=authority.job.id,
+    ))
+    accepted = service.review_strategy(user.id, started.id, TailoringStrategyReviewWrite(expected_revision=1, accepted=True))
+    draft = service.generate_draft(user.id, started.id, TailoringDraftGenerateRequest(
+        client_request_id="b9191919-1919-4191-8191-919191919191", expected_strategy_revision=accepted.strategy_revision,
+    ))
+    if target == "summary":
+        edited = draft.draft.model_copy(update={"professional_summary": claim})
+    else:
+        role = draft.draft.role_drafts[0]
+        bullets = [role.bullets[0].model_copy(update={"text": claim})]
+        edited = draft.draft.model_copy(update={"role_drafts": [role.model_copy(update={"bullets": bullets})]})
+
+    saved = service.review_draft(user.id, started.id, TailoringDraftReviewWrite(expected_revision=1, draft=edited))
+    assert saved.draft_claim_review_status == "user_edits_unverified"
+    assert saved.draft_claim_review_acknowledged is False
+    with pytest.raises(ApplicationCVTailoringError, match="Edited factual claims"):
+        service.approve(user.id, started.id, TailoringApproveWrite(expected_strategy_revision=2, expected_draft_revision=2))
+    assert db_session.query(ApplicationPreparation).filter_by(user_id=user.id).count() == 0
+
+    acknowledged = service.review_draft(user.id, started.id, TailoringDraftReviewWrite(
+        expected_revision=2, draft=saved.draft, acknowledge_unverified_claims=True,
+    ))
+    assert acknowledged.draft_claim_review_status == "user_edits_acknowledged_unverified"
+    assert acknowledged.draft_claim_review_acknowledged is True
+    history = json.loads(db_session.get(ApplicationCVTailoringSession, started.id).draft_history_json)
+    assert history[-1]["factual_review"]["decision"] == "acknowledged_by_user"
+    approved = service.approve(user.id, started.id, TailoringApproveWrite(expected_strategy_revision=2, expected_draft_revision=3))
+    final = ApplicationPreparationReadService(db_session).get(user.id, approved.approved_preparation_id)
+    assert final.result.tailoring_review.draft_claim_status == "user_edits_acknowledged_unverified"
+    assert final.result.cv.professional_summary == (claim if target == "summary" else draft.draft.professional_summary)
+    if target == "bullet":
+        assert final.result.cv.roles[0].bullets[0].text == claim
+
+
+def test_unsubstantiated_user_metrics_remain_rejected_by_existing_deterministic_guard(db_session, runtime_snapshot_a):
+    user = User(id="tailor-unsupported-metric", email="metric@example.test", password_hash="safe")
+    db_session.add(user); db_session.commit()
+    authority = _make_authority(db_session, runtime_snapshot_a, user.id, "unsupported-metric-job")
+    service = _service(db_session, runtime_snapshot_a, authority, _Agent(strategy=_strategy(), draft=_draft()))
+    started = service.start(user.id, TailoringStartRequest(
+        client_request_id="c9090909-9090-4909-8090-909090909090", discovered_job_id=authority.job.id,
+    ))
+    accepted = service.review_strategy(user.id, started.id, TailoringStrategyReviewWrite(expected_revision=1, accepted=True))
+    draft = service.generate_draft(user.id, started.id, TailoringDraftGenerateRequest(
+        client_request_id="d9191919-1919-4191-8191-919191919191", expected_strategy_revision=accepted.strategy_revision,
+    ))
+    edited = draft.draft.model_copy(update={"professional_summary": "Led a team of 12 engineers."})
+    with pytest.raises(ApplicationCVTailoringError, match="unsupported numerical claim"):
+        service.review_draft(user.id, started.id, TailoringDraftReviewWrite(
+            expected_revision=1, draft=edited, acknowledge_unverified_claims=True,
+        ))
+    assert service.get(user.id, started.id).draft_revision == 1
+
+
+def test_positioning_override_requires_recorded_unverified_acknowledgement(db_session, runtime_snapshot_a):
+    user = User(id="tailor-positioning-review", email="position@example.test", password_hash="safe")
+    db_session.add(user); db_session.commit()
+    authority = _make_authority(db_session, runtime_snapshot_a, user.id, "positioning-job")
+    service = _service(db_session, runtime_snapshot_a, authority, _Agent(strategy=_strategy(), draft=_draft()))
+    started = service.start(user.id, TailoringStartRequest(
+        client_request_id="e9090909-9090-4909-8090-909090909090", discovered_job_id=authority.job.id,
+    ))
+    with pytest.raises(ApplicationCVTailoringError, match="user-written and not verified"):
+        service.review_strategy(user.id, started.id, TailoringStrategyReviewWrite(
+            expected_revision=1, accepted=True, positioning_override="Owned production deployments and led a large engineering group.",
+        ))
+    assert service.get(user.id, started.id).strategy_revision == 1
+    reviewed = service.review_strategy(user.id, started.id, TailoringStrategyReviewWrite(
+        expected_revision=1, accepted=True,
+        positioning_override="Owned production deployments and led a large engineering group.",
+        acknowledge_unverified_positioning=True,
+    ))
+    assert reviewed.strategy_positioning_review_status == "user_acknowledged_unverified"
+    assert json.loads(db_session.get(ApplicationCVTailoringSession, started.id).strategy_review_json)["positioning_user_decision"] == "acknowledged_unverified_positioning"
+    draft = service.generate_draft(user.id, started.id, TailoringDraftGenerateRequest(
+        client_request_id="e9292929-2929-4929-8929-292929292929", expected_strategy_revision=2,
+    ))
+    assert draft.status == "draft_review"
+    approved = service.approve(user.id, started.id, TailoringApproveWrite(expected_strategy_revision=2, expected_draft_revision=1))
+    final = ApplicationPreparationReadService(db_session).get(user.id, approved.approved_preparation_id)
+    assert final.result.tailoring_review.positioning_status == "user_acknowledged_unverified"
+    assert final.result.tailoring_review.positioning_user_decision == "acknowledged_unverified_positioning"
+
+
+def test_authenticated_api_approval_downloads_the_exact_saved_draft_revision(client, db_session, runtime_snapshot_a):
+    user = User(id="tailor-api-owner", email="api-owner@example.test", password_hash="safe")
+    db_session.add(user); db_session.commit()
+    authority = _make_authority(db_session, runtime_snapshot_a, user.id, "tailor-api-job")
+    agent = _Agent(strategy=_strategy(), draft=_draft())
+    service = _service(db_session, runtime_snapshot_a, authority, agent)
+    fastapi_app.dependency_overrides[get_application_cv_tailoring_service] = lambda: service
+    headers = {"Authorization": f"Bearer {create_access_token(user.id)}"}
+    try:
+        started = client.post("/api/v1/applications/tailoring", headers=headers, json={
+            "client_request_id": "f1111111-1111-4111-8111-111111111111",
+            "discovered_job_id": authority.job.id, "target_pages": 2,
+        })
+        assert started.status_code == 201, started.text
+        tailoring_id = started.json()["id"]
+        accepted = client.post(f"/api/v1/applications/tailoring/{tailoring_id}/strategy", headers=headers, json={
+            "expected_revision": 1, "accepted": True, "positioning_override": None,
+            "choices": [{"recommendation_id": "requirement-0", "decision": "keep", "order": 0}],
+        })
+        assert accepted.status_code == 200, accepted.text
+        generated = client.post(f"/api/v1/applications/tailoring/{tailoring_id}/draft", headers=headers, json={
+            "client_request_id": "f2222222-2222-4222-8222-222222222222",
+            "expected_strategy_revision": accepted.json()["strategy_revision"],
+        })
+        assert generated.status_code == 200, generated.text
+        edited = generated.json()["draft"]
+        edited["professional_summary"] = "Engineer delivering the exact reviewed Python services summary."
+        edited["role_drafts"][0]["bullets"][0]["text"] = "Built the exact reviewed Python data services bullet."
+        saved = client.patch(f"/api/v1/applications/tailoring/{tailoring_id}/draft", headers=headers, json={
+            "expected_revision": generated.json()["draft_revision"], "draft": edited,
+            "acknowledge_unverified_claims": True,
+        })
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["draft_claim_review_status"] == "user_edits_acknowledged_unverified"
+        approved = client.post(f"/api/v1/applications/tailoring/{tailoring_id}/approve", headers=headers, json={
+            "expected_strategy_revision": saved.json()["strategy_revision"],
+            "expected_draft_revision": saved.json()["draft_revision"],
+        })
+        assert approved.status_code == 200, approved.text
+        preparation_id = approved.json()["approved_preparation_id"]
+        final_read = client.get(f"/api/v1/applications/{preparation_id}", headers=headers)
+        assert final_read.status_code == 200
+        assert final_read.json()["result"]["cv"]["professional_summary"] == edited["professional_summary"]
+        assert final_read.json()["result"]["cv"]["roles"][0]["bullets"][0]["text"] == edited["role_drafts"][0]["bullets"][0]["text"]
+        assert final_read.json()["result"]["tailoring_review"]["draft_user_decision"] == "acknowledged_unverified_user_edits"
+
+        download = client.get(f"/api/v1/applications/{preparation_id}/cv.docx", headers=headers)
+        assert download.status_code == 200
+        assert "attachment" in download.headers["content-disposition"]
+        from docx import Document
+        document = Document(BytesIO(download.content))
+        document_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+        document_text += "\n" + "\n".join(cell.text for table in document.tables for row in table.rows for cell in row.cells)
+        assert edited["professional_summary"] in document_text
+        assert edited["role_drafts"][0]["bullets"][0]["text"] in document_text
+        assert "Engineer building Python services." not in document_text
+        pdf = client.get(f"/api/v1/applications/{preparation_id}/cv.pdf", headers=headers)
+        assert pdf.status_code == 200
+        assert pdf.headers["content-type"].startswith("application/pdf")
+        from pypdf import PdfReader
+        pdf_text = " ".join((page.extract_text() or "") for page in PdfReader(BytesIO(pdf.content)).pages)
+        pdf_text = re.sub(r"\s+", " ", pdf_text)
+        assert edited["professional_summary"] in pdf_text
+        assert edited["role_drafts"][0]["bullets"][0]["text"] in pdf_text
+        assert "Engineer building Python services." not in pdf_text
+    finally:
+        fastapi_app.dependency_overrides.pop(get_application_cv_tailoring_service, None)
