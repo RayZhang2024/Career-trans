@@ -63,6 +63,7 @@ function fakeFetch(overrides: Record<string, Handler> = {}) {
       });
       return Promise.resolve(json(page([{ type: "discovery_run", id: run().id, started_at: run().started_at, run: run() }])));
     }
+    if (path === "/api/v1/applications/tailoring/preflight") return Promise.resolve(json({ discovered_job_id: "actionable", job_title: "Workspace role", state: "current_evaluation_required", provider: "openai", model: "mock-model", strategy_output_token_limit: 2400, draft_output_token_limit: 8000, timeout_seconds: 120, max_requirements: 40, max_input_characters: 36000, strategy_request_count: 1, draft_request_count: 1, sessions: [] }));
     if (path === "/api/v1/users/me") return Promise.resolve(json(user));
     if (path === "/api/v1/onboarding/status") return Promise.resolve(json(ready));
     if (path === "/api/v1/profile") return Promise.resolve(json({ id: "profile", user_id: user.id, display_name: "Current Person", created_at: "", updated_at: "" }));
@@ -2448,6 +2449,106 @@ describe("Issue #240 Phase 7 frontend acceptance matrix", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Create preparation" }));
     await waitFor(() => expect(posts).toBe(1));
     await waitFor(() => expect(screen.getAllByRole("link", { name: /Open preparation/ }).some((link) => link.getAttribute("href") === "/applications/prep-created")).toBe(true));
+  });
+
+  it("offers profile-first tailoring without selecting an original CV and saves an approved immutable preparation", async () => {
+    let starts = 0; let strategyWrites = 0; let draftCalls = 0; let draftWrites = 0; let approvals = 0;
+    let savedSession: Record<string, unknown> | null = null;
+    const strategy = { positioning: "Evidence-led Python delivery.", summary_emphasis: "Python systems.", recommendations: [{ recommendation_id: "requirement-0", requirement_index: 0, action: "feature", rationale: "Confirmed Python evidence supports this requirement.", suggested_emphasis: "Python delivery", source_refs: [{ source_type: "skills", source_ref: "skill:0" }] }, { recommendation_id: "requirement-1", requirement_index: 1, action: "feature", rationale: "Employment evidence supports this requirement.", suggested_emphasis: "Service delivery", source_refs: [{ source_type: "employment", source_ref: "employment:0" }] }], gaps_to_clarify: [], not_to_claim: ["Do not claim unsupported certifications."] };
+    const draft = { professional_summary: "Engineer building Python services.", summary_source_refs: [{ source_type: "skills", source_ref: "skill:0" }], key_skills: ["Python"], role_drafts: [{ employment_index: 0, bullets: [{ text: "Built data services.", source_refs: [{ source_type: "employment", source_ref: "employment:0" }, { source_type: "skills", source_ref: "skill:0" }], priority: 70 }] }], project_drafts: [] };
+    const currentSession = { id: "tailoring-1", client_request_id: "11111111-1111-4111-8111-111111111111", discovered_job_id: "actionable", status: "strategy_review", strategy_status: "completed", draft_status: "not_started", is_current: true, target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "Workspace role", company: "Public Co", location: "London", job_profile: { title: "Workspace role", requirements: [{ text: "Build Python services", importance: "essential", category: "technical" }, { text: "Deliver reliable services", importance: "desirable", category: "experience" }] }, requirement_matches: [], job_content_hash: "hash" }, identity: { display_name: "Current Person", email: "person@example.test" }, profile_outline: { employment: [{ employment_index: 0, employer: "Example Co", title: "Engineer", start_date: "2020", end_date: "2024", location: null }], projects: [], education: [], credentials: [] }, strategy, strategy_accepted: false, strategy_positioning_override: null, strategy_choices: [], strategy_revision: 1, draft: null, draft_revision: 0, target_pages: 2, failure_code: null, approved_preparation_id: null, runtime_attribution: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" };
+    const preflight = { discovered_job_id: "actionable", job_title: "Workspace role", state: "ready", provider: "openai", model: "mock-model", strategy_output_token_limit: 2400, draft_output_token_limit: 8000, timeout_seconds: 120, max_requirements: 40, max_input_characters: 36000, strategy_request_count: 1, draft_request_count: 1, sessions: [] };
+    const accepted = { ...currentSession, status: "strategy_accepted", strategy_accepted: true, strategy_choices: [{ recommendation_id: "requirement-0", decision: "keep", order: 1 }, { recommendation_id: "requirement-1", decision: "keep", order: 0 }], strategy_revision: 2 };
+    const draftReview = { ...accepted, status: "draft_review", draft_status: "completed", draft, draft_revision: 1 };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [], limit: 20, truncated: false } })),
+      "/api/v1/applications/tailoring/preflight": () => json({ ...preflight, sessions: savedSession ? [savedSession] : [] }),
+      "POST /api/v1/applications/tailoring": (_url, init) => { starts += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ discovered_job_id: "actionable", target_pages: 2 }); savedSession = currentSession; return json(currentSession, 201); },
+      "POST /api/v1/applications/tailoring/tailoring-1/strategy": (_url, init) => { strategyWrites += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_revision: 1, accepted: true, choices: [{ recommendation_id: "requirement-0", decision: "keep", order: 1 }, { recommendation_id: "requirement-1", decision: "keep", order: 0 }] }); savedSession = accepted; return json(accepted); },
+      "POST /api/v1/applications/tailoring/tailoring-1/draft": (_url, init) => { draftCalls += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_strategy_revision: 2 }); savedSession = draftReview; return json(draftReview); },
+      "PATCH /api/v1/applications/tailoring/tailoring-1/draft": (_url, init) => { draftWrites += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ draft: { professional_summary: "Engineer delivering Python services." }, acknowledge_unverified_claims: true }); savedSession = { ...draftReview, draft: { ...draft, professional_summary: "Engineer delivering Python services." }, draft_revision: 2, draft_claim_review_status: "user_edits_acknowledged_unverified", draft_claim_review_acknowledged: true }; return json(savedSession); },
+      "POST /api/v1/applications/tailoring/tailoring-1/approve": (_url, init) => { approvals += 1; expect(JSON.parse(String(init?.body))).toMatchObject({ expected_strategy_revision: 2, expected_draft_revision: 2 }); savedSession = { ...draftReview, status: "approved", draft_revision: 2, approved_preparation_id: "preparation-new" }; return json(savedSession); },
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    fireEvent.click(await screen.findByRole("button", { name: "Prepare tailored CV" }));
+    expect(await screen.findByRole("button", { name: "Accept strategy and continue" })).toBeInTheDocument();
+    expect(screen.getByText(/confirmed Profile evidence and this job’s details are sent to the configured AI service/)).toBeInTheDocument();
+    expect(requestPaths(fetch).some((path) => path.includes("cv-visibility") || path.includes("candidate-cv"))).toBe(false);
+    fireEvent.change(screen.getByLabelText("Order in draft for requirement 1"), { target: { value: "1" } });
+    const orderedList = screen.getByLabelText("Order in draft for requirement 1").closest("li")?.parentElement;
+    expect(within(orderedList!).getAllByRole("listitem")[0]).toHaveTextContent("Employment evidence supports this requirement.");
+    fireEvent.click(screen.getByRole("button", { name: "Accept strategy and continue" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Draft tailored CV" }));
+    const summary = await screen.findByLabelText("Professional summary");
+    fireEvent.change(summary, { target: { value: "Engineer delivering Python services." } });
+    const approveButton = await screen.findByRole("button", { name: "Approve and prepare documents" });
+    expect(approveButton).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Unsaved review changes are still local");
+    fireEvent.click(screen.getByRole("button", { name: "Refresh status" }));
+    expect(await screen.findByLabelText("Professional summary")).toHaveValue("Engineer delivering Python services.");
+    expect(screen.getByRole("button", { name: "Approve and prepare documents" })).toBeDisabled();
+    fireEvent.click(approveButton);
+    expect(approvals).toBe(0);
+    fireEvent.click(screen.getByRole("checkbox", { name: /I have checked any factual wording I changed/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save and record review" }));
+    await waitFor(() => expect(draftWrites).toBe(1));
+    expect(await screen.findByRole("button", { name: "Approve and prepare documents" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Approve and prepare documents" }));
+    expect(await screen.findByRole("link", { name: "Open preparation and download CV" })).toHaveAttribute("href", "/applications/preparation-new");
+    expect(starts).toBe(1); expect(strategyWrites).toBe(1); expect(draftCalls).toBe(1); expect(draftWrites).toBe(1); expect(approvals).toBe(1);
+    expect(requestPaths(fetch)).not.toContain("/api/v1/applications/prepare");
+  });
+
+  it("reconciles an interrupted strategy POST by its saved request ID without replaying the provider call", async () => {
+    let starts = 0; let lookups = 0;
+    const saved = { id: "tailoring-uncertain", client_request_id: "55555555-5555-4555-8555-555555555555", discovered_job_id: "actionable", status: "strategy_review", strategy_status: "completed", draft_status: "not_started", is_current: true, target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "Workspace role", company: "Public Co", location: "London", job_profile: { title: "Workspace role", requirements: [] }, requirement_matches: [], job_content_hash: "hash" }, identity: { display_name: "Current Person", email: "person@example.test" }, profile_outline: { employment: [], projects: [], education: [], credentials: [] }, strategy: { positioning: "Evidence-led.", summary_emphasis: "Confirmed skills.", recommendations: [], gaps_to_clarify: [], not_to_claim: [] }, strategy_accepted: false, strategy_positioning_override: null, strategy_choices: [], strategy_revision: 1, draft: null, draft_revision: 0, target_pages: 2, failure_code: null, approved_preparation_id: null, runtime_attribution: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [], limit: 20, truncated: false } })),
+      "/api/v1/applications/tailoring/preflight": () => json({ discovered_job_id: "actionable", job_title: "Workspace role", state: "ready", provider: "openai", model: "mock", strategy_output_token_limit: 2400, draft_output_token_limit: 8000, timeout_seconds: 120, max_requirements: 40, max_input_characters: 36000, sessions: [] }),
+      "POST /api/v1/applications/tailoring": () => { starts += 1; return Promise.reject(new TypeError("offline after commit")); },
+      "/api/v1/applications/tailoring/by-request/": () => json(saved),
+    });
+    const wrappedFetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname.startsWith("/api/v1/applications/tailoring/by-request/")) { lookups += 1; return Promise.resolve(json(saved)); }
+      return fetch(input, init);
+    };
+    renderJobs(wrappedFetch as ReturnType<typeof fakeFetch>, "/jobs/actionable/application");
+    fireEvent.click(await screen.findByRole("button", { name: "Prepare tailored CV" }));
+    expect(await screen.findByRole("button", { name: "Accept strategy and continue" })).toBeInTheDocument();
+    expect(starts).toBe(1); expect(lookups).toBe(1);
+    expect(screen.getByRole("status")).toHaveTextContent("No model request was repeated");
+  });
+
+  it("restores a saved strategy after reload without making another model request", async () => {
+    const saved = { id: "tailoring-reload", client_request_id: "88888888-8888-4888-8888-888888888888", discovered_job_id: "actionable", status: "strategy_review", strategy_status: "completed", draft_status: "not_started", is_current: true, target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "Workspace role", company: "Public Co", location: "London", job_profile: { title: "Workspace role", requirements: [] }, requirement_matches: [], job_content_hash: "hash" }, identity: { display_name: "Current Person", email: "person@example.test" }, profile_outline: { employment: [], projects: [], education: [], credentials: [] }, strategy: { positioning: "Evidence-led Python delivery.", summary_emphasis: "Confirmed Python experience.", recommendations: [], gaps_to_clarify: [], not_to_claim: [] }, strategy_accepted: false, strategy_positioning_override: null, strategy_choices: [], strategy_revision: 1, draft: null, draft_revision: 0, target_pages: 2, failure_code: null, approved_preparation_id: null, runtime_attribution: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [], limit: 20, truncated: false } })),
+      "/api/v1/applications/tailoring/preflight": () => json({ discovered_job_id: "actionable", job_title: "Workspace role", state: "ready", provider: "openai", model: "mock", strategy_output_token_limit: 2400, draft_output_token_limit: 8000, timeout_seconds: 120, max_requirements: 40, max_input_characters: 36000, sessions: [saved] }),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    expect(await screen.findByText("Evidence-led Python delivery.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Accept strategy and continue" })).toBeInTheDocument();
+    expect(requestPaths(fetch).filter((path) => path === "/api/v1/applications/tailoring")).toHaveLength(0);
+  });
+
+  it("keeps an unsupported unsaved draft edit visible when server validation rejects it", async () => {
+    const draft = { professional_summary: "Engineer building Python services.", summary_source_refs: [{ source_type: "skills", source_ref: "skill:0" }], key_skills: ["Python"], role_drafts: [], project_drafts: [] };
+    const saved = { id: "tailoring-edit", client_request_id: "99999999-9999-4999-8999-999999999999", discovered_job_id: "actionable", status: "draft_review", strategy_status: "completed", draft_status: "completed", is_current: true, target: { source_kind: "discovered_job", canonical_discovered_job_id: "actionable", title: "Workspace role", company: "Public Co", location: "London", job_profile: { title: "Workspace role", requirements: [] }, requirement_matches: [], job_content_hash: "hash" }, identity: { display_name: "Current Person", email: "person@example.test" }, profile_outline: { employment: [], projects: [], education: ["MSc — Synthetic University"], credentials: [] }, strategy: { positioning: "Evidence-led.", summary_emphasis: "Confirmed skills.", recommendations: [], gaps_to_clarify: [], not_to_claim: [] }, strategy_accepted: true, strategy_positioning_override: null, strategy_choices: [], strategy_revision: 2, draft, draft_revision: 1, target_pages: 2, failure_code: null, approved_preparation_id: null, runtime_attribution: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" };
+    const fetch = fakeFetch({
+      "/api/v1/jobs/workspaces/actionable": () => json(workspacePayload(decision("actionable"), { applications: { items: [], limit: 20, truncated: false } })),
+      "/api/v1/applications/tailoring/preflight": () => json({ discovered_job_id: "actionable", job_title: "Workspace role", state: "ready", provider: "openai", model: "mock", strategy_output_token_limit: 2400, draft_output_token_limit: 8000, timeout_seconds: 120, max_requirements: 40, max_input_characters: 36000, sessions: [saved] }),
+      "PATCH /api/v1/applications/tailoring/tailoring-edit/draft": () => json({ detail: "unsupported edit" }, 422),
+    });
+    renderJobs(fetch, "/jobs/actionable/application");
+    expect(await screen.findByText("Education (from Profile)")).toBeInTheDocument();
+    const summary = screen.getByLabelText("Professional summary");
+    fireEvent.change(summary, { target: { value: "Engineer with unconfirmed PyTorch production experience." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft edits" }));
+    expect(await screen.findByText("This edit was rejected because it contains unsupported facts, citations or wording. Your unsaved text is still here; revise it and try again.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Professional summary")).toHaveValue("Engineer with unconfirmed PyTorch production experience.");
+    expect(screen.getByText("Unsaved review changes are still local. Save them successfully before approval; approval is disabled while edits or review decisions are unsaved.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve and prepare documents" })).toBeDisabled();
   });
 
   it("uses shared profile-missing authority on direct Workspace Application load", async () => {

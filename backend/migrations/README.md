@@ -1,5 +1,31 @@
 # Discovery run request ID migration
 
+## Profile-first CV tailoring (Issue #296)
+
+This additive migration creates user-scoped review sessions for profile-first
+CV tailoring. Apply it after all earlier repository migrations, including the
+20261012 bounded-refinement migration, and before starting the updated app.
+It does not alter existing application preparations or their download history.
+Back up the database and stop application writers before upgrading.
+
+SQLite:
+
+```powershell
+python -c "import pathlib,sqlite3; c=sqlite3.connect(r'D:\Career-trans-data\career_agent.db'); c.executescript(pathlib.Path('backend/migrations/20261012_application_cv_tailoring_sqlite.sql').read_text(encoding='utf-8')); c.close()"
+```
+
+PostgreSQL:
+
+```powershell
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20261012_application_cv_tailoring_postgresql.sql
+```
+
+Both scripts are additive and safe to rerun. The review session is separate
+from `application_preparations`; approval creates a normal immutable
+preparation record, so existing application routes and downloads remain the
+same. No original-CV upload or CV-visibility assessment is required for this
+workflow.
+
 ## OpenAI semantic credential storage (Issue #269)
 
 Apply repository migrations in their documented/date order through the

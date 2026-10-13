@@ -31,6 +31,8 @@ RUNTIME_OPERATION_TO_SETTING: Mapping[str, SemanticOperation] = {
     "application_cover_letter": SemanticOperation.APPLICATION_DRAFTING,
     "application_answer_drafting": SemanticOperation.APPLICATION_DRAFTING,
     "cv_visibility_assessment": SemanticOperation.CV_VISIBILITY_ASSESSMENT,
+    "application_cv_tailoring_strategy": SemanticOperation.APPLICATION_DRAFTING,
+    "application_cv_tailoring_draft": SemanticOperation.APPLICATION_DRAFTING,
 }
 
 JOB_EVALUATION_OPERATIONS = (
