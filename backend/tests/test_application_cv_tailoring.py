@@ -24,7 +24,7 @@ from app.api.deps import get_application_cv_tailoring_service
 from app.core.security import create_access_token
 from app.main import app as fastapi_app
 from app.models.user_job_discovery import UserJobEvaluation
-from app.providers.llm import SemanticOutputError
+from app.providers.llm import OpenAISemanticLLM, SemanticOutputError, SemanticResponseClient
 from app.schemas.ai_settings import SemanticOperation
 from app.schemas.application_cv_tailoring import (
     TailoringAction, TailoringApproveWrite, TailoringDraftGenerateRequest,
@@ -139,6 +139,39 @@ class _RecordingClient:
         return SimpleNamespace(output_text=self.response)
 
 
+def _run_draft_through_semantic_adapter(monkeypatch, context, draft):
+    """Capture the provider request after the Responses compatibility adapter."""
+    calls = []
+
+    class _Responses:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(output_text=json.dumps(draft.model_dump(mode="json")))
+
+    client = SimpleNamespace(responses=_Responses())
+    monkeypatch.setattr("app.providers.llm.create_traced_openai_client", lambda **_kwargs: client)
+    semantic_client = SemanticResponseClient(
+        OpenAISemanticLLM(api_key="synthetic-test-key"), operation="application_cv_tailoring_draft",
+    )
+    agent = OpenAIApplicationCVTailoringAgent(
+        strategy_client=semantic_client, draft_client=semantic_client, model="gpt-5.6-luna",
+    )
+    result = agent.draft_tailored_cv(context)
+    assert len(calls) == 1
+    return result, calls[0]
+
+
+def _assert_provider_schema_has_no_array_bounds(schema):
+    if isinstance(schema, dict):
+        assert "maxItems" not in schema
+        assert "minItems" not in schema
+        for value in schema.values():
+            _assert_provider_schema_has_no_array_bounds(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            _assert_provider_schema_has_no_array_bounds(value)
+
+
 def _strategy() -> TailoringStrategy:
     return TailoringStrategy(
         positioning="Evidence-led Python delivery.", summary_emphasis="Python services and delivery.",
@@ -216,6 +249,91 @@ def test_generated_strategy_schema_is_strict_and_scoped_to_current_profile_and_r
     assert draft_schema["$defs"]["TailoredRoleDraft"]["properties"]["employment_index"]["enum"] == [0]
     assert draft_schema["properties"]["key_skills"]["items"]["enum"] == ["Python"]
     assert len(draft_client.calls) == 1
+
+
+def test_v2b_semantic_provider_schema_accepts_career_evidence_only_with_empty_sections(monkeypatch):
+    evidence = ApplicationSourceRef(source_type="career_evidence", source_ref="evidence:research")
+    context = {
+        "sources": [{"source_type": "career_evidence", "source_ref": "evidence:research", "text": "Built a retrieval research prototype."}],
+        "selected_support_refs": [{"source_type": "career_evidence", "source_ref": "evidence:research"}],
+        "allowed_skills": [], "employment": [], "projects": [],
+    }
+    expected = CVWritingDraft(
+        professional_summary="Engineer with confirmed retrieval research experience.",
+        summary_source_refs=[evidence], key_skills=[], role_drafts=[], project_drafts=[],
+    )
+
+    result, request = _run_draft_through_semantic_adapter(monkeypatch, context, expected)
+    format_request = request["text"]["format"]
+    schema = format_request["schema"]
+
+    assert format_request["strict"] is True
+    _assert_provider_schema_has_no_array_bounds(schema)
+    assert result.key_skills == result.role_drafts == result.project_drafts == []
+    ApplicationCVTailoringService._validate_draft_strategy_refs(
+        result, {("career_evidence", "evidence:research"): "Built a retrieval research prototype."}, {}, CandidateCVData(),
+    )
+
+
+def test_v2b_semantic_provider_schema_allows_empty_skills_and_projects_with_selected_role(monkeypatch):
+    evidence = ApplicationSourceRef(source_type="career_evidence", source_ref="evidence:employment")
+    role_anchor = ApplicationSourceRef(source_type="employment", source_ref="employment:0")
+    context = {
+        "sources": [
+            {"source_type": "career_evidence", "source_ref": "evidence:employment", "text": "Built data services."},
+            {"source_type": "employment", "source_ref": "employment:0", "text": "Engineer at Example Co, 2020 to 2024"},
+        ],
+        "selected_support_refs": [{"source_type": "career_evidence", "source_ref": "evidence:employment"}],
+        "structural_attribution_refs": [{"source_type": "employment", "source_ref": "employment:0"}],
+        "allowed_skills": [], "employment": [{"employment_index": 0}], "projects": [],
+    }
+    expected = CVWritingDraft(
+        professional_summary="Engineer with confirmed data services experience.", summary_source_refs=[evidence], key_skills=[],
+        role_drafts=[TailoredRoleDraft(employment_index=0, bullets=[TailoredBullet(
+            text="Built data services.", source_refs=[evidence, role_anchor], priority=70,
+        )])],
+        project_drafts=[],
+    )
+
+    result, request = _run_draft_through_semantic_adapter(monkeypatch, context, expected)
+    schema = request["text"]["format"]["schema"]
+    _assert_provider_schema_has_no_array_bounds(schema)
+    assert schema["$defs"]["TailoredRoleDraft"]["properties"]["employment_index"]["enum"] == [0]
+    assert result.key_skills == [] and result.project_drafts == []
+    ApplicationCVTailoringService._validate_draft_strategy_refs(
+        result,
+        {("career_evidence", "evidence:employment"): "Built data services."},
+        {("employment", "employment:0"): "Engineer at Example Co, 2020 to 2024"},
+        CandidateCVData(employment=[Employment(employer="Example Co", title="Engineer", start_date="2020", end_date="2024")]),
+    )
+
+
+@pytest.mark.parametrize("kind", ["skill", "role", "project"])
+def test_v2b_application_validation_rejects_content_outside_empty_selected_sections(kind):
+    evidence = ApplicationSourceRef(source_type="career_evidence", source_ref="evidence:selected")
+    values = {
+        "professional_summary": "Engineer with selected evidence.",
+        "summary_source_refs": [evidence],
+        "key_skills": [], "role_drafts": [], "project_drafts": [],
+    }
+    if kind == "skill":
+        values["key_skills"] = ["Unselected PyTorch"]
+    elif kind == "role":
+        values["role_drafts"] = [TailoredRoleDraft(employment_index=0, bullets=[TailoredBullet(
+            text="Unselected employment claim.",
+            source_refs=[evidence, ApplicationSourceRef(source_type="employment", source_ref="employment:0")], priority=70,
+        )])]
+    else:
+        values["project_drafts"] = [{
+            "project_index": 0, "text": "Unselected project claim.",
+            "source_refs": [evidence, ApplicationSourceRef(source_type="project", source_ref="project:0")], "priority": 70,
+        }]
+    draft = CVWritingDraft.model_validate(values)
+
+    with pytest.raises(ValueError):
+        ApplicationCVTailoringService._validate_draft_strategy_refs(
+            draft, {("career_evidence", "evidence:selected"): "Selected career evidence."}, {}, CandidateCVData(),
+        )
 
 
 def test_sqlite_migration_is_additive_and_idempotent_for_existing_application_data():

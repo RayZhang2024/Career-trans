@@ -1025,5 +1025,3 @@ def _iso(value: datetime) -> str:
 
 def _normalise_claim_text(value: str) -> str:
     return " ".join(value.split()).casefold()
-
-\n

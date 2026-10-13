@@ -29,6 +29,7 @@ class OpenAIApplicationCVTailoringAgent:
 
     def draft_tailored_cv(self, context: dict[str, object]) -> CVWritingDraft:
         schema = OpenAIApplicationDraftingAgent._build_request_schema(CVWritingDraft, context, "application_cv_drafting")
+        _remove_unsupported_array_bounds(schema)
         return self._generate("application_cv_tailoring_draft", CVWritingDraft, schema, context, self._draft_client)
 
     @staticmethod
@@ -70,3 +71,21 @@ class OpenAIApplicationCVTailoringAgent:
             return output_type.model_validate(json.loads(response.output_text.strip()))
         except (OSError, json.JSONDecodeError, ValidationError) as exc:
             raise SemanticOutputError("CV tailoring returned invalid structured output.") from exc
+
+
+def _remove_unsupported_array_bounds(value: object) -> None:
+    """Leave array cardinality to Pydantic and deterministic V2B validation.
+
+    OpenAI strict Structured Outputs does not accept ``minItems`` or ``maxItems``.
+    The reused schema builder adds these from Pydantic limits and also uses
+    ``maxItems: 0`` to encode an empty selected section. The application validates
+    the parsed draft against the Pydantic model and selected-evidence boundary.
+    """
+    if isinstance(value, dict):
+        value.pop("minItems", None)
+        value.pop("maxItems", None)
+        for child in value.values():
+            _remove_unsupported_array_bounds(child)
+    elif isinstance(value, list):
+        for child in value:
+            _remove_unsupported_array_bounds(child)
