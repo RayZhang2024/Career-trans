@@ -139,19 +139,26 @@ class _RecordingClient:
         return SimpleNamespace(output_text=self.response)
 
 
-def _run_draft_through_semantic_adapter(monkeypatch, context, draft):
-    """Capture the provider request after the Responses compatibility adapter."""
+def _mock_openai_semantic_adapter(monkeypatch, output_text, operation):
+    """Capture the provider request after the semantic compatibility adapter."""
     calls = []
 
     class _Responses:
         def create(self, **kwargs):
             calls.append(kwargs)
-            return SimpleNamespace(output_text=json.dumps(draft.model_dump(mode="json")))
+            return SimpleNamespace(output_text=output_text)
 
     client = SimpleNamespace(responses=_Responses())
     monkeypatch.setattr("app.providers.llm.create_traced_openai_client", lambda **_kwargs: client)
     semantic_client = SemanticResponseClient(
-        OpenAISemanticLLM(api_key="synthetic-test-key"), operation="application_cv_tailoring_draft",
+        OpenAISemanticLLM(api_key="synthetic-test-key"), operation=operation,
+    )
+    return semantic_client, calls
+
+
+def _run_draft_through_semantic_adapter(monkeypatch, context, draft):
+    semantic_client, calls = _mock_openai_semantic_adapter(
+        monkeypatch, json.dumps(draft.model_dump(mode="json")), "application_cv_tailoring_draft",
     )
     agent = OpenAIApplicationCVTailoringAgent(
         strategy_client=semantic_client, draft_client=semantic_client, model="gpt-5.6-luna",
@@ -159,6 +166,18 @@ def _run_draft_through_semantic_adapter(monkeypatch, context, draft):
     result = agent.draft_tailored_cv(context)
     assert len(calls) == 1
     return result, calls[0]
+
+
+def _run_strategy_through_semantic_adapter(monkeypatch, context, response_json):
+    semantic_client, calls = _mock_openai_semantic_adapter(
+        monkeypatch, json.dumps(response_json), "application_cv_tailoring_strategy",
+    )
+    agent = OpenAIApplicationCVTailoringAgent(
+        strategy_client=semantic_client, draft_client=semantic_client, model="gpt-5.6-luna",
+    )
+    result = agent.recommend_strategy(context)
+    assert len(calls) == 1
+    return result, calls[0], calls
 
 
 def _assert_provider_schema_has_no_array_bounds(schema):
@@ -249,6 +268,85 @@ def test_generated_strategy_schema_is_strict_and_scoped_to_current_profile_and_r
     assert draft_schema["$defs"]["TailoredRoleDraft"]["properties"]["employment_index"]["enum"] == [0]
     assert draft_schema["properties"]["key_skills"]["items"]["enum"] == ["Python"]
     assert len(draft_client.calls) == 1
+
+
+def test_v2b_strategy_schema_is_normalized_after_scope_and_enum_restrictions(monkeypatch):
+    context = {
+        "sources": [
+            {"source_type": "career_evidence", "source_ref": "evidence:research", "text": "Built a research prototype."},
+            {"source_type": "skills", "source_ref": "skills:0", "text": "Python"},
+        ],
+        "requirements": [{"requirement_index": 2}, {"requirement_index": 7}],
+    }
+    result_payload = TailoringStrategy(
+        positioning="Evidence-led applied AI engineering.", summary_emphasis="Research and Python delivery.",
+        recommendations=[
+            TailoringRecommendation(
+                recommendation_id="requirement-2", requirement_index=2, action=TailoringAction.FEATURE,
+                rationale="Confirmed research evidence supports this requirement.",
+                source_refs=[ApplicationSourceRef(source_type="career_evidence", source_ref="evidence:research")],
+            ),
+            TailoringRecommendation(
+                recommendation_id="requirement-7", requirement_index=7, action=TailoringAction.FEATURE,
+                rationale="Confirmed Python evidence supports this requirement.",
+                source_refs=[ApplicationSourceRef(source_type="skills", source_ref="skills:0")],
+            ),
+        ], gaps_to_clarify=[], not_to_claim=["Do not claim production ownership."],
+    ).model_dump(mode="json")
+
+    result, request, calls = _run_strategy_through_semantic_adapter(monkeypatch, context, result_payload)
+    format_request = request["text"]["format"]
+    schema = format_request["schema"]
+
+    assert format_request["strict"] is True
+    assert format_request["name"] == "application_cv_tailoring_strategy"
+    _assert_provider_schema_has_no_array_bounds(schema)
+    recommendation_properties = schema["$defs"]["TailoringRecommendation"]["properties"]
+    assert recommendation_properties["requirement_index"]["enum"] == [2, 7]
+    assert recommendation_properties["recommendation_id"]["enum"] == ["requirement-2", "requirement-7"]
+    source_pairs = {
+        (item["properties"]["source_type"]["enum"][0], item["properties"]["source_ref"]["enum"][0])
+        for item in schema["$defs"]["ApplicationSourceRef"]["anyOf"]
+    }
+    assert source_pairs == {("career_evidence", "evidence:research"), ("skills", "skills:0")}
+    assert [(item.requirement_index, item.recommendation_id) for item in result.recommendations] == [
+        (2, "requirement-2"), (7, "requirement-7"),
+    ]
+    assert len(calls) == 1
+
+
+def test_v2b_strategy_pydantic_bounds_reject_oversized_model_recommendations(monkeypatch):
+    context = {
+        "sources": [{"source_type": "career_evidence", "source_ref": "evidence:confirmed", "text": "Confirmed experience."}],
+        "requirements": [{"requirement_index": index} for index in range(6)],
+    }
+    response_payload = {
+        "positioning": "Evidence-led candidate.", "summary_emphasis": "Confirmed experience.",
+        "recommendations": [
+            {
+                "recommendation_id": f"requirement-{index}", "requirement_index": index,
+                "action": "feature", "rationale": "This confirmed evidence supports the requirement.",
+                "suggested_emphasis": None,
+                "source_refs": [{"source_type": "career_evidence", "source_ref": "evidence:confirmed"}],
+            }
+            for index in range(6)
+        ],
+        "gaps_to_clarify": [], "not_to_claim": [],
+    }
+    semantic_client, calls = _mock_openai_semantic_adapter(
+        monkeypatch, json.dumps(response_payload), "application_cv_tailoring_strategy",
+    )
+    agent = OpenAIApplicationCVTailoringAgent(
+        strategy_client=semantic_client, draft_client=semantic_client, model="gpt-5.6-luna",
+    )
+
+    with pytest.raises(SemanticOutputError, match="invalid structured output"):
+        agent.recommend_strategy(context)
+
+    assert len(calls) == 1
+    schema = calls[0]["text"]["format"]["schema"]
+    _assert_provider_schema_has_no_array_bounds(schema)
+    assert schema["$defs"]["TailoringRecommendation"]["properties"]["requirement_index"]["enum"] == list(range(6))
 
 
 def test_v2b_semantic_provider_schema_accepts_career_evidence_only_with_empty_sections(monkeypatch):

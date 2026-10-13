@@ -25,6 +25,7 @@ class OpenAIApplicationCVTailoringAgent:
 
     def recommend_strategy(self, context: dict[str, object]) -> TailoringStrategy:
         schema = self._strategy_schema(context)
+        _remove_unsupported_array_bounds(schema)
         return self._generate("application_cv_tailoring_strategy", TailoringStrategy, schema, context, self._strategy_client)
 
     def draft_tailored_cv(self, context: dict[str, object]) -> CVWritingDraft:
