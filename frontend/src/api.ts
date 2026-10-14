@@ -4,7 +4,12 @@
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string, public readonly detail: string | null = null) { super(message); }
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly detail: string | null = null,
+    public readonly sessionExpired = false,
+  ) { super(message); }
 }
 
 export type User = { id: string; email: string; created_at: string };
@@ -12,6 +17,7 @@ export type PasswordPolicy = {
   version: number; min_length: number; max_length: number;
   common_passwords_rejected: boolean; composition_requirements: string[]; whitespace_allowed: boolean;
 };
+export type PasswordChangeResult = { changed: boolean };
 
 export type SemanticOperation =
   | "cv_semantic_extraction"
@@ -583,14 +589,15 @@ export class SessionApi {
         headers.set("Content-Type", "application/json");
       }
       const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers, signal: controller.signal });
-      if (authenticated && response.status === 401 && epoch === this.epoch) this.onAuthenticated401();
+        const sessionExpired = authenticated && response.status === 401 && epoch === this.epoch;
+        if (sessionExpired) this.onAuthenticated401();
       if (!response.ok) {
         let detail: string | null = null;
         try {
           const body = await response.clone().json() as { detail?: unknown };
           if (typeof body.detail === "string") detail = body.detail;
         } catch { /* Error responses may have no JSON body. */ }
-        throw new ApiError(response.status, "Request could not be completed.", detail);
+          throw new ApiError(response.status, "Request could not be completed.", detail, sessionExpired);
       }
       const value = await response.json() as T;
       if (epoch !== this.epoch) throw new DOMException("Superseded auth session", "AbortError");
@@ -605,8 +612,9 @@ export class SessionApi {
       if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
       const response = await fetch(`${API_BASE_URL}${path}`, { headers, signal: controller.signal });
       if (epoch !== this.epoch) throw new DOMException("Superseded auth session", "AbortError");
-      if (response.status === 401 && epoch === this.epoch) this.onAuthenticated401();
-      if (!response.ok) throw new ApiError(response.status, "Request could not be completed.");
+        const sessionExpired = response.status === 401 && epoch === this.epoch;
+        if (sessionExpired) this.onAuthenticated401();
+        if (!response.ok) throw new ApiError(response.status, "Request could not be completed.", null, sessionExpired);
       const blob = await response.blob();
       if (epoch !== this.epoch) throw new DOMException("Superseded auth session", "AbortError");
       return { blob, filename: response.headers.get("Content-Disposition") ? dispositionFilename(response.headers.get("Content-Disposition")!) : null };

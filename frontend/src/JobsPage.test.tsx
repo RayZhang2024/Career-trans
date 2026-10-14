@@ -934,7 +934,7 @@ describe("Issue #261 transient one-off discovery", () => {
     expect(await screen.findByText(/Tavily · Configured for launch/)).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "One-off discovery policy" })).toHaveTextContent("Maximum jobs: 20");
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "  AI roles  " } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(await screen.findByRole("heading", { name: "Search Completed" })).toBeInTheDocument();
     expect(submitted).toMatchObject({ expected_launch_fingerprint: "a".repeat(64), query: { keywords: ["AI roles"] } });
     expect(submitted?.client_request_id).toEqual(expect.any(String));
@@ -969,7 +969,7 @@ describe("Issue #261 transient one-off discovery", () => {
     const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => { posts += 1; return pending.promise; } });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
-    const launch = screen.getByRole("button", { name: "Find jobs" });
+    const launch = await screen.findByRole("button", { name: "Find jobs" });
     fireEvent.click(launch);
     expect(await screen.findByText(/One-off job discovery is in progress/)).toBeInTheDocument();
     fireEvent.click(launch);
@@ -983,7 +983,7 @@ describe("Issue #261 transient one-off discovery", () => {
     const fetch = fakeFetch({ "POST /api/v1/jobs/one-off-discovery/executions": () => json(oneOffExecution({ status, acquisition_summary: { canonical_jobs: status === "completed" ? 0 : 2, relevance_screened: 1, analysed: 0 } })) });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(await screen.findByRole("heading", { name: `Search ${label}` })).toBeInTheDocument();
   });
 
@@ -1002,7 +1002,7 @@ describe("Issue #261 transient one-off discovery", () => {
     })) });
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
 
     expect(await screen.findByText("Searches run")).toBeInTheDocument();
     expect(screen.getByText("Geography incompatible")).toBeInTheDocument();
@@ -1051,7 +1051,7 @@ describe("Issue #261 transient one-off discovery", () => {
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
     await screen.findByRole("button", { name: "Find jobs" });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
     expect(posts).toBe(2);
     expect(submitted[1]).toEqual(submitted[0]);
@@ -1073,7 +1073,7 @@ describe("Issue #261 transient one-off discovery", () => {
     renderJobs(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
     await screen.findByRole("button", { name: "Find jobs" });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(await screen.findByRole("button", { name: "Reconcile search" })).toBeInTheDocument();
     expect(screen.getByText(/result is uncertain/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Reconcile search" }));
@@ -1097,7 +1097,7 @@ describe("Issue #261 transient one-off discovery", () => {
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
     fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(await screen.findByText(/review the refreshed summary, then explicitly start again/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Find jobs" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Find jobs" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reconcile search" })).not.toBeInTheDocument();
     expect(preflights).toBe(2);
     expect(submitted).toHaveLength(2);
@@ -1114,7 +1114,7 @@ describe("Issue #261 transient one-off discovery", () => {
     });
     renderJobsWithAuthSwitcher(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     expect(posts).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
     first.reject(new TypeError("interrupted"));
@@ -1137,7 +1137,7 @@ describe("Issue #261 transient one-off discovery", () => {
     });
     renderJobsWithAuthSwitcher(fetch); await screen.findByRole("heading", { name: "Find jobs" });
     fireEvent.change(screen.getByLabelText("What roles are you looking for? (one per line)"), { target: { value: "AI roles" } });
-    fireEvent.click(screen.getByRole("button", { name: "Find jobs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Find jobs" }));
     fireEvent.click(await screen.findByRole("button", { name: "Reconcile search" }));
     expect(submitted).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: "Switch user" }));
@@ -1254,7 +1254,7 @@ describe("Issue #230 route and shell foundation", () => {
     expect(await screen.findByText("Your confirmed profile context is ready for the workspace.")).toBeInTheDocument();
     const nav = screen.getByRole("navigation", { name: "Workspace" });
     expect(within(nav).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
-      ["Home", "/home"], ["Profile", "/profile"], ["Job Search", "/jobs/find"], ["Applications", "/applications"], ["Tracking", "/tracking"], ["Settings", "/settings/ai"],
+      ["Home", "/home"], ["Profile", "/profile"], ["Job Search", "/jobs/find"], ["Applications", "/applications"], ["Tracking", "/tracking"], ["Settings", "/settings/security"],
     ]);
     expect(within(nav).getByRole("link", { name: "Home" })).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Career-trans" })).toHaveAttribute("href", "/home");
