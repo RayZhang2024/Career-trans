@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import type { DiscoveryProvider, JobDiscoverySettings, LocalCodexStatus, LocalCodexTest, TavilyConnectionTest } from "./api";
 import { ApiError, useAuth } from "./auth";
+import { SettingsNavigation } from "./SettingsNavigation";
 
 const providerNames: Record<JobDiscoverySettings["effective_provider"], string> = {
   tavily: "Tavily", openai: "OpenAI web search", local_codex: "Local Codex", brave: "Brave Search", disabled: "Disabled", unsupported: "Unsupported deployment provider",
@@ -106,7 +107,7 @@ export function JobDiscoverySettingsPage() {
 
   return <main className="workspace ai-settings-page">
     <header className="workspace-header"><div><p className="eyebrow"><Link to="/settings/ai">Settings</Link> / Job Discovery</p><h1>Job Discovery</h1><p>Choose the web-search provider used to find job listings.</p></div></header>
-    <nav className="settings-tabs" aria-label="Settings"><Link to="/settings/ai">AI Models</Link><Link aria-current="page" to="/settings/discovery">Job Discovery</Link></nav>
+    <SettingsNavigation current="discovery" />
     {notice && <p role={notice.role} className={notice.role === "alert" ? "profile-warning" : "profile-notice"}>{notice.text}</p>}
     {!settings ? <section className="card"><p role="status">Loading Job Discovery settings…</p></section> : <>
       <section className="card ai-state-card">

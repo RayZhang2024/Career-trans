@@ -222,11 +222,11 @@ describe("Issue #189 Settings → AI Models", () => {
     expect(screen.queryByRole("region", { name: "OpenAI credential" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/API key/)).not.toBeInTheDocument();
   });
-  it("navigates through the authenticated Settings link to /settings/ai", async () => {
+  it("keeps the legacy Settings URL on AI Models and exposes Account Security in global navigation", async () => {
     const api = fetcher();
     renderSettings(api.mock, "/settings");
     await waitForSettings();
-    expect(screen.getAllByRole("link", { name: "Settings" })[0]).toHaveAttribute("href", "/settings/ai");
+    expect(screen.getAllByRole("link", { name: "Settings" })[0]).toHaveAttribute("href", "/settings/security");
     expect(screen.getByRole("navigation", { name: "Workspace" })).toBeInTheDocument();
   });
 

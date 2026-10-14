@@ -10,6 +10,7 @@ import { ApplicationsPage, ApplicationDetailPage } from "./ApplicationsPage";
 import { TrackingDetailPage, TrackingPage } from "./TrackingPage";
 import { AiSettingsPage } from "./AiSettingsPage";
 import { JobDiscoverySettingsPage } from "./JobDiscoverySettingsPage";
+import { AccountSecurityPage } from "./AccountSecurityPage";
 import { ProfileRevisionWorkflow } from "./ProfileRevisionWorkflow";
 import { ProfileSecondaryNavigation } from "./ProfileSecondaryNavigation";
 import { structuredItemLabel, StructuredItemPresentation } from "./StructuredItemPresentation";
@@ -19,7 +20,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
   const location = useLocation();
   const jobSearchActive = location.pathname === "/jobs" || location.pathname.startsWith("/jobs/");
-  return <div className="app-shell"><header className="site-header"><Link className="brand" to="/home">Career-trans</Link>{status === "authenticated" && <nav className="site-nav" aria-label="Workspace"><NavLink to="/home">Home</NavLink><NavLink to="/profile">Profile</NavLink><NavLink to="/jobs/find" className={jobSearchActive ? "active" : undefined} aria-current={jobSearchActive ? "page" : undefined}>Job Search</NavLink><NavLink to="/applications">Applications</NavLink><NavLink to="/tracking">Tracking</NavLink><NavLink to="/settings/ai">Settings</NavLink></nav>}</header>{children}</div>;
+  return <div className="app-shell"><header className="site-header"><Link className="brand" to="/home">Career-trans</Link>{status === "authenticated" && <nav className="site-nav" aria-label="Workspace"><NavLink to="/home">Home</NavLink><NavLink to="/profile">Profile</NavLink><NavLink to="/jobs/find" className={jobSearchActive ? "active" : undefined} aria-current={jobSearchActive ? "page" : undefined}>Job Search</NavLink><NavLink to="/applications">Applications</NavLink><NavLink to="/tracking">Tracking</NavLink><NavLink to="/settings/security">Settings</NavLink></nav>}</header>{children}</div>;
 }
 
 export function ProfileFamilyShell({ children }: { children: React.ReactNode }) {
@@ -62,8 +63,12 @@ export function HomePage() {
 }
 
 function Login() {
-  const { login } = useAuth();
+  const { login, signInNotice } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const locationNotice = signInNotice ?? (typeof (location.state as { notice?: unknown } | null)?.notice === "string"
+    ? (location.state as { notice: string }).notice
+    : null);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
@@ -76,7 +81,7 @@ function Login() {
     catch (e) { setError(e instanceof ApiError && e.status === 401 ? "Incorrect email or password." : "Login is unavailable."); }
     finally { pendingRef.current = false; setPending(false); }
   }
-  return <AuthPage><form className="form-stack" onSubmit={submit}><div><h1>Sign in</h1><p className="muted">Access your Career-trans workspace.</p></div><label htmlFor="login-email">Email</label><input id="login-email" name="email" type="email" autoComplete="email" required disabled={pending} /><label htmlFor="login-password">Password</label><input id="login-password" name="password" type="password" autoComplete="current-password" required disabled={pending} /><button disabled={pending}>{pending ? "Signing in…" : "Sign in"}</button>{pending && <p role="status">Signing in…</p>}{error && <p role="alert">{error}</p>}<p className="auth-link">New to Career-trans? <Link to="/register">Create account</Link></p></form></AuthPage>;
+  return <AuthPage><form className="form-stack" onSubmit={submit}><div><h1>Sign in</h1><p className="muted">Access your Career-trans workspace.</p></div>{locationNotice && <p role="status">{locationNotice}</p>}<label htmlFor="login-email">Email</label><input id="login-email" name="email" type="email" autoComplete="email" required disabled={pending} /><label htmlFor="login-password">Password</label><input id="login-password" name="password" type="password" autoComplete="current-password" required disabled={pending} /><button disabled={pending}>{pending ? "Signing in…" : "Sign in"}</button>{pending && <p role="status">Signing in…</p>}{error && <p role="alert">{error}</p>}<p className="auth-link">New to Career-trans? <Link to="/register">Create account</Link></p></form></AuthPage>;
 }
 
 function Register() {
@@ -345,4 +350,4 @@ function LegacySavedSearchesRedirect() {
   return <Navigate to="/jobs/find/saved" replace state={location.state} />;
 }
 
-export function App() { return <Routes><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/" element={<Navigate to="/profile" replace />} /><Route path="/home" element={<Protected><HomePage /></Protected>} /><Route path="/profile" element={<Protected><ProfileHome /></Protected>} /><Route path="/profile/cv" element={<Protected><ProfileFamilyShell><CvPage /></ProfileFamilyShell></Protected>} /><Route path="/profile/adviser" element={<Protected><ProfileFamilyShell><AdviserPage /></ProfileFamilyShell></Protected>} /><Route path="/cv" element={<Navigate to="/profile/cv" replace />} /><Route path="/adviser" element={<Navigate to="/profile/adviser" replace />} /><Route path="/jobs" element={<Protected><Navigate to="/jobs/find" replace /></Protected>} /><Route path="/jobs/searches" element={<Protected><LegacySavedSearchesRedirect /></Protected>} /><Route path="/jobs/*" element={<Protected><AppShell><JobsPage /></AppShell></Protected>} /><Route path="/applications" element={<Protected><AppShell><ApplicationsPage /></AppShell></Protected>} /><Route path="/applications/:preparationId" element={<Protected><AppShell><ApplicationDetailPage /></AppShell></Protected>} /><Route path="/tracking" element={<Protected><AppShell><TrackingPage /></AppShell></Protected>} /><Route path="/tracking/:trackingId" element={<Protected><AppShell><TrackingDetailPage /></AppShell></Protected>} /><Route path="/settings" element={<Protected><Navigate to="/settings/ai" replace /></Protected>} /><Route path="/settings/ai" element={<Protected><AppShell><AiSettingsPage /></AppShell></Protected>} /><Route path="/settings/discovery" element={<Protected><AppShell><JobDiscoverySettingsPage /></AppShell></Protected>} /><Route path="*" element={<Navigate to="/profile" replace />} /></Routes>; }
+export function App() { return <Routes><Route path="/login" element={<Login />} /><Route path="/register" element={<Register />} /><Route path="/" element={<Navigate to="/profile" replace />} /><Route path="/home" element={<Protected><HomePage /></Protected>} /><Route path="/profile" element={<Protected><ProfileHome /></Protected>} /><Route path="/profile/cv" element={<Protected><ProfileFamilyShell><CvPage /></ProfileFamilyShell></Protected>} /><Route path="/profile/adviser" element={<Protected><ProfileFamilyShell><AdviserPage /></ProfileFamilyShell></Protected>} /><Route path="/cv" element={<Navigate to="/profile/cv" replace />} /><Route path="/adviser" element={<Navigate to="/profile/adviser" replace />} /><Route path="/jobs" element={<Protected><Navigate to="/jobs/find" replace /></Protected>} /><Route path="/jobs/searches" element={<Protected><LegacySavedSearchesRedirect /></Protected>} /><Route path="/jobs/*" element={<Protected><AppShell><JobsPage /></AppShell></Protected>} /><Route path="/applications" element={<Protected><AppShell><ApplicationsPage /></AppShell></Protected>} /><Route path="/applications/:preparationId" element={<Protected><AppShell><ApplicationDetailPage /></AppShell></Protected>} /><Route path="/tracking" element={<Protected><AppShell><TrackingPage /></AppShell></Protected>} /><Route path="/tracking/:trackingId" element={<Protected><AppShell><TrackingDetailPage /></AppShell></Protected>} /><Route path="/settings" element={<Protected><Navigate to="/settings/ai" replace /></Protected>} /><Route path="/settings/security" element={<Protected><AppShell><AccountSecurityPage /></AppShell></Protected>} /><Route path="/settings/ai" element={<Protected><AppShell><AiSettingsPage /></AppShell></Protected>} /><Route path="/settings/discovery" element={<Protected><AppShell><JobDiscoverySettingsPage /></AppShell></Protected>} /><Route path="*" element={<Navigate to="/profile" replace />} /></Routes>; }

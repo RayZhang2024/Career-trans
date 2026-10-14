@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { AiModelCatalog, AiPreferences, AiSettings, AiSettingsReplace, ReasoningEffort, SemanticCredentialConnectionTest, SemanticCredentialStatus, SemanticOperation } from "./api";
 import { SEMANTIC_OPERATION_ORDER } from "./api";
 import { ApiError, useAuth } from "./auth";
+import { SettingsNavigation } from "./SettingsNavigation";
 import {
   REASONING_EFFORT_LABELS,
   canonicalizeAiPreferences,
@@ -338,7 +339,7 @@ export function AiSettingsPage() {
 
   return <main className="ai-settings-page">
     <header className="workspace-header"><div><p className="eyebrow"><Link to="/settings/ai">Settings</Link> / AI Models</p><h1>AI Models</h1></div></header>
-    <nav className="settings-tabs" aria-label="Settings"><Link aria-current="page" to="/settings/ai">AI Models</Link><Link to="/settings/discovery">Job Discovery</Link></nav>
+    <SettingsNavigation current="ai" />
     <div className="ai-settings-content">
       <section className="card ai-boundary-copy">
         <h2>About these settings</h2>

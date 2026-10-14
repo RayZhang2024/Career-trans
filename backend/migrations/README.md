@@ -1,4 +1,44 @@
-# Discovery run request ID migration
+# Database migrations
+
+## Shared authentication generation and change password (Issue #298 / #194)
+
+The authenticated password-change flow and the planned Issue #194 password
+recovery flow share `users.auth_version`. Do not add a second generation field
+or a parallel token/session store. Existing accounts are backfilled as
+generation `0`; legacy JWTs without the claim remain valid only for those
+generation-0 accounts. A successful password change updates the password hash
+and increments the generation in one conditional transaction, invalidating all
+older access tokens.
+
+Back up the database and stop application writers before applying this migration.
+Apply it once before starting the updated app; both scripts are transactional
+and safe to rerun. They only add the generation field and preserve existing
+user, profile, job, and settings rows. Fresh databases created from current ORM
+metadata already include the field.
+
+SQLite:
+
+```powershell
+python backend/migrations/20261014_user_auth_version_sqlite.py "sqlite:///D:/Career-trans-data/career_agent.db"
+```
+
+PostgreSQL:
+
+```powershell
+psql $env:CAREER_TRANS_POSTGRES_DSN --set ON_ERROR_STOP=on --file backend/migrations/20261014_user_auth_version_postgresql.sql
+```
+
+Before starting the app, verify `users.auth_version` is an integer, non-null,
+has default `0`, and rejects negative values. For SQLite:
+
+```powershell
+python -c "import sqlite3; c=sqlite3.connect(r'D:\Career-trans-data\career_agent.db'); print(c.execute('PRAGMA table_info(users)').fetchall()); print(c.execute('SELECT id, auth_version FROM users LIMIT 5').fetchall()); c.close()"
+```
+
+For PostgreSQL, inspect `\d+ users` in `psql` and confirm the column default,
+not-null marker, and `ck_users_auth_version_nonnegative` constraint. Existing
+sessions are not forced to rotate during migration; they are revoked after the
+account changes its password.
 
 ## OpenAI semantic credential storage (Issue #269)
 
