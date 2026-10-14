@@ -72,6 +72,81 @@ class _RawTextGraph(_Graph):
         return {"job_profile": profile, "requirement_matches": [RequirementMatch(requirement_index=0, requirement=requirement, match_type=MatchType.DEMONSTRATED, score=1, evidence_ids=["e1"], reasoning="safe")]}
 
 
+class _Issue300Graph:
+    """Offline normal-path analysis fixture with several role-relevant requirements."""
+
+    def __init__(self):
+        self.calls = 0
+        self.requirements = [
+            JobRequirement(text="Python engineering data analysis automation", category=RequirementCategory.TECHNICAL, importance=RequirementImportance.ESSENTIAL),
+            JobRequirement(text="LangGraph agent workflows with RAG retrieval persistent review", category=RequirementCategory.TECHNICAL, importance=RequirementImportance.ESSENTIAL),
+            JobRequirement(text="Industrial client delivery programmes and project scope", category=RequirementCategory.EXPERIENCE, importance=RequirementImportance.ESSENTIAL),
+        ]
+
+    def invoke(self, *, job_text, candidate_context, job_listing=None):
+        self.calls += 1
+        profile = JobProfile(title="Applied AI Engineer", requirements=self.requirements)
+        evidence_ids = ["e-analysis", "e-agent-primary", "e-delivery-scope"]
+        matches = [
+            RequirementMatch(
+                requirement_index=index,
+                requirement=requirement,
+                match_type=MatchType.DEMONSTRATED,
+                score=0.9,
+                evidence_ids=[evidence_id],
+                evidence_refs=[EvidenceRef(source_type=EvidenceSourceType.CAREER_EVIDENCE, source_ref=evidence_id)],
+                reasoning="Synthetic confirmed evidence supports this requirement.",
+            )
+            for index, (requirement, evidence_id) in enumerate(zip(self.requirements, evidence_ids, strict=True))
+        ]
+        return {"job_profile": profile, "requirement_matches": matches}
+
+
+class _Issue300Drafting:
+    """Deterministic mocked model output used by the complete one-step service path."""
+
+    def __init__(self):
+        self.calls = 0
+        self.contexts = []
+
+    @staticmethod
+    def _ref(source_type, source_ref):
+        return ApplicationSourceRef(source_type=source_type, source_ref=source_ref)
+
+    def draft_cv(self, context):
+        self.calls += 1
+        self.contexts.append(context)
+        evidence = lambda source_ref: self._ref(EvidenceSourceType.CAREER_EVIDENCE, source_ref)
+        employment = lambda index: self._ref(EvidenceSourceType.EMPLOYMENT, f"employment:{index}")
+        return CVWritingDraft(
+            professional_summary="Applied AI engineer combining Python automation, agent workflows and industrial delivery.",
+            summary_source_refs=[evidence("e-analysis"), evidence("e-agent-primary"), evidence("e-delivery-scope")],
+            key_skills=["Python", "LangGraph", "LangChain", "RAG"],
+            role_drafts=[
+                TailoredRoleDraft(employment_index=2, bullets=[
+                    TailoredBullet(text="Built a LangGraph research assistant with retrieval-augmented generation, persistent checkpoints, human approval, validated outputs and clear recovery when a workflow failed. The implementation joined orchestration, retrieval and review into a maintainable engineering workflow.", source_refs=[employment(2), evidence("e-agent-primary")], priority=98),
+                ]),
+                TailoredRoleDraft(employment_index=1, bullets=[
+                    TailoredBullet(text="Designed a second agent workflow for document triage, combining LangChain orchestration, retrieval, structured decisions and human review. Added failure handling and traceable checkpoints so the workflow remained inspectable and recoverable during repeated engineering runs.", source_refs=[employment(1), evidence("e-agent-secondary")], priority=95),
+                ]),
+                TailoredRoleDraft(employment_index=0, bullets=[
+                    TailoredBullet(text="Delivered 50+ industrial project days across a £1M engineering delivery portfolio for 12 client teams, translating technical requirements into practical work and coordinating engineering and commercial handoffs.", source_refs=[employment(0), evidence("e-delivery-scope")], priority=100),
+                    TailoredBullet(text="Automated a Python engineering-data analysis workflow, reducing the repeated review cycle from 2 hours to 20 minutes while retaining reproducible inputs and independent checks for the industrial test group.", source_refs=[employment(0), evidence("e-analysis")], priority=90),
+                ]),
+            ],
+            project_drafts=[
+                TailoredProjectDraft(project_index=0, text="Built a research assistant around LangGraph and RAG retrieval, then added persistent checkpoints, human approval and validated outputs for a reviewable agent workflow.", source_refs=[self._ref(EvidenceSourceType.PROJECT, "project:0"), evidence("e-agent-primary")], priority=96),
+                TailoredProjectDraft(project_index=1, text="Developed a separate document-triage agent using LangChain orchestration, retrieval and structured human-reviewed decisions, with recovery paths for interrupted runs.", source_refs=[self._ref(EvidenceSourceType.PROJECT, "project:1"), evidence("e-agent-secondary")], priority=90),
+            ],
+        )
+
+    def draft_cover_letter(self, context):
+        raise AssertionError("The regression fixture must not make an extra drafting call.")
+
+    def draft_answers(self, context):
+        raise AssertionError("The regression fixture must not make an extra drafting call.")
+
+
 class _Discovery:
     def __init__(self, reusable=None): self.reusable = reusable; self.actionability_calls = 0; self.reuse_calls = 0; self.candidate_contexts = []
     def is_currently_actionable(self, job): self.actionability_calls += 1; return True
@@ -97,11 +172,11 @@ def _context():
     return CandidateContext(skills_text="Python", evidence=[CareerEvidence(evidence_id="e1", title="Delivery", text="Led delivery from 2 hours to 20 minutes", skills=["Python"], provenance=[CareerEvidenceProvenance(document_sha256="a" * 64, segment_ids=["s1"])])])
 
 
-def _service(db_session, monkeypatch, drafting=None, discovery=None, pages=None, settings=None, runtime_snapshot=None):
+def _service(db_session, monkeypatch, drafting=None, discovery=None, pages=None, settings=None, runtime_snapshot=None, candidate_context=None):
     user = User(id="u1", email="account@example.test", password_hash="safe")
     profile = CandidateProfile(user_id="u1", display_name="Example Person", preferred_email="old@example.test", location="London")
     db_session.add_all([user, profile, CandidateStructuredProfile(user_id="u1", structured_json=_data().model_dump_json())]); db_session.commit()
-    context = _context()
+    context = candidate_context or _context()
     ActiveCandidateEvidenceResolver(db_session).resolve("u1", _data())
     db_session.commit()
     read_snapshot = CanonicalCandidateReadService.read
@@ -311,6 +386,150 @@ def test_raw_text_creates_immutable_preparation_and_documents(db_session, monkey
     assert "Selected Projects" in docx_text and "Selected Projects" in pdf_text
     db_session.query(CandidateProfile).filter_by(user_id="u1").one().preferred_email = "new@example.test"; db_session.commit()
     assert service.get("u1", result.id).identity.email == "old@example.test"
+
+
+def test_one_step_preparation_preserves_chronology_relevant_evidence_and_historical_downloads(client, db_session, monkeypatch):
+    """Mock one drafting response through the normal save/render/download path."""
+    from app.models.application_preparation import ApplicationPreparation
+
+    evidence = [
+        CareerEvidence(
+            evidence_id="e-analysis", title="Engineering data analysis automation",
+            text="Automated a Python engineering-data analysis workflow, reducing the repeated review cycle from 2 hours to 20 minutes while retaining reproducible inputs and independent checks for an industrial test group.",
+            skills=["Python"], evidence_type="achievement",
+            provenance=[CareerEvidenceProvenance(source_kind="confirmed_profile", source_ref="confirmed:analysis")],
+        ),
+        CareerEvidence(
+            evidence_id="e-agent-primary", title="Research assistant agent workflow",
+            text="Built a LangGraph research assistant with retrieval-augmented generation, persistent checkpoints, human approval, validated outputs and recovery when a workflow failed. The implementation joined orchestration, retrieval and review into a maintainable engineering workflow.",
+            skills=["LangGraph", "RAG"], evidence_type="project",
+            provenance=[CareerEvidenceProvenance(source_kind="confirmed_profile", source_ref="confirmed:agent-primary")],
+        ),
+        CareerEvidence(
+            evidence_id="e-agent-secondary", title="Second document-triage agent workflow",
+            text="Designed a separate document-triage agent with LangChain orchestration, retrieval, structured decisions and human review. Added failure handling and traceable checkpoints so repeated engineering runs remained inspectable and recoverable.",
+            skills=["LangChain", "RAG"], evidence_type="project",
+            provenance=[CareerEvidenceProvenance(source_kind="confirmed_profile", source_ref="confirmed:agent-secondary")],
+        ),
+        CareerEvidence(
+            evidence_id="e-delivery-scope", title="Quantified industrial delivery scope",
+            text="Delivered 50+ industrial project days across a £1M engineering delivery portfolio for 12 client teams, translating technical requirements into practical work and coordinating engineering and commercial handoffs.",
+            skills=["Python"], evidence_type="achievement",
+            provenance=[CareerEvidenceProvenance(source_kind="confirmed_profile", source_ref="confirmed:delivery-scope")],
+        ),
+        CareerEvidence(
+            evidence_id="e-irrelevant", title="Community music activity",
+            text="Organized community music rehearsals and played cello.",
+            evidence_type="other",
+            provenance=[CareerEvidenceProvenance(source_kind="confirmed_profile", source_ref="confirmed:unrelated")],
+        ),
+    ]
+    candidate_context = _context().model_copy(update={"evidence": evidence})
+    drafting = _Issue300Drafting()
+    service, context = _service(db_session, monkeypatch, drafting=drafting, candidate_context=candidate_context)
+    service._graph = _Issue300Graph()
+
+    data = _data().model_copy(update={
+        "employment": [
+            Employment(employer="Orion Engineering", title="Data Engineer", start_date="Feb 2019", end_date="Aug 2021", location="London", description="Built Python analysis workflows."),
+            Employment(employer="Meridian AI", title="Research Engineer", start_date="Apr 2020", end_date="Apr 2023", location="Cambridge", description="Designed agent workflows."),
+            Employment(employer="Northstar Research", title="Applied AI Engineer", start_date="2022-01", end_date="Present", location="Oxford", description="Built retrieval and review systems."),
+        ],
+        "skills": [Skill(name=name) for name in ("Python", "LangGraph", "LangChain", "RAG")],
+        "projects": [
+            Project(name="Research Assistant Workflow", description="Built a LangGraph RAG assistant with persistent checkpoints and human review.", skills=["LangGraph", "RAG"]),
+            Project(name="Document Triage Workflow", description="Built a second LangChain agent with retrieval and structured review.", skills=["LangChain", "RAG"]),
+        ],
+    })
+    structured_row = db_session.query(CandidateStructuredProfile).filter_by(user_id="u1").one()
+    structured_row.structured_json = data.model_dump_json()
+    ActiveCandidateEvidenceResolver(db_session).resolve("u1", data)
+    db_session.commit()
+    # The preparation receives only this confirmed active evidence snapshot;
+    # the irrelevant item is present but must not crowd out relevant sources.
+    context.evidence = evidence
+
+    request = ApplicationPrepareRequest(
+        target=ApplicationTargetInput(job_text="Applied AI Engineer. Python data analysis, LangGraph agent workflows, retrieval and industrial client delivery. " * 3),
+        target_pages=2,
+        include_cover_letter=False,
+    )
+    created = service.prepare("u1", request)
+
+    assert service._graph.calls == 1
+    assert drafting.calls == 1  # no hidden strategy call or retry
+    assert drafting.contexts[0]["target_pages"] == 2
+    source_text = "\n".join(item["text"] for item in drafting.contexts[0]["sources"])
+    source_refs = {(item["source_type"], item["source_ref"]) for item in drafting.contexts[0]["sources"]}
+    assert {("career_evidence", item) for item in ("e-analysis", "e-agent-primary", "e-agent-secondary", "e-delivery-scope")} <= source_refs
+    assert ("career_evidence", "e-irrelevant") not in source_refs
+    assert "Organized community music" not in source_text
+    assert "Kubernetes" not in source_text
+    assert created.result.target_pages == 2
+    assert created.result.actual_pdf_pages <= 2
+    assert created.result.layout_status.value == "fit"
+    assert [(role.employer, role.start_date, role.end_date) for role in created.result.cv.roles] == [
+        ("Northstar Research", "2022-01", "Present"),
+        ("Meridian AI", "Apr 2020", "Apr 2023"),
+        ("Orion Engineering", "Feb 2019", "Aug 2021"),
+    ]
+
+    row = db_session.get(ApplicationPreparation, created.id)
+    before = (row.target_snapshot_json, row.identity_snapshot_json, row.preparation_result_json)
+    # A later profile change cannot rewrite the already saved preparation.
+    changed = data.model_copy(update={"employment": [Employment(employer="Changed employer", title="Changed title")]})
+    structured_row.structured_json = changed.model_dump_json()
+    db_session.commit()
+    historical = service.get("u1", created.id)
+    assert (row.target_snapshot_json, row.identity_snapshot_json, row.preparation_result_json) == before
+    assert historical.result == created.result
+
+    renderer = ApplicationDocumentRenderer()
+    docx_text = " ".join(" ".join(item.text for item in Document(__import__("io").BytesIO(renderer.render_cv_docx(historical.identity, historical.target, historical.result))).paragraphs).split())
+    pdf_bytes, pdf_pages, pdf_status = renderer.render_cv_pdf(historical.identity, historical.target, historical.result)
+    pdf_text = " ".join(" ".join(page.extract_text() or "" for page in PdfReader(__import__("io").BytesIO(pdf_bytes)).pages).split())
+    expected_phrases = (
+        "Northstar Research", "2022-01 – Present", "Meridian AI", "Apr 2020 – Apr 2023",
+        "Orion Engineering", "Feb 2019 – Aug 2021", "50+ industrial project days",
+        "£1M engineering delivery portfolio", "second agent workflow", "Research Assistant Workflow",
+        "Document Triage Workflow",
+    )
+    for phrase in expected_phrases:
+        assert phrase in docx_text
+        assert phrase in pdf_text
+    assert docx_text.index("Northstar Research") < docx_text.index("Meridian AI") < docx_text.index("Orion Engineering")
+    assert pdf_text.index("Northstar Research") < pdf_text.index("Meridian AI") < pdf_text.index("Orion Engineering")
+    assert "Organized community music" not in docx_text + pdf_text
+    assert "Kubernetes" not in docx_text + pdf_text
+    assert pdf_pages <= 2 and pdf_status.value == "fit"
+
+    fastapi_app.dependency_overrides[get_application_preparation_service] = lambda: service
+    try:
+        headers = {"Authorization": f"Bearer {create_access_token('u1')}"}
+        docx_download = client.get(f"/api/v1/applications/{created.id}/cv.docx", headers=headers)
+        pdf_download = client.get(f"/api/v1/applications/{created.id}/cv.pdf", headers=headers)
+        assert docx_download.status_code == 200 and "attachment" in docx_download.headers["content-disposition"]
+        assert pdf_download.status_code == 200 and "attachment" in pdf_download.headers["content-disposition"]
+        downloaded_docx = Document(__import__("io").BytesIO(docx_download.content))
+        downloaded_pdf = PdfReader(__import__("io").BytesIO(pdf_download.content))
+        assert "Northstar Research" in " ".join(item.text for item in downloaded_docx.paragraphs)
+        assert "50+ industrial project days" in " ".join(page.extract_text() or "" for page in downloaded_pdf.pages)
+    finally:
+        fastapi_app.dependency_overrides.pop(get_application_preparation_service, None)
+
+
+def test_requested_page_target_reaches_one_step_drafter_and_persists_unchanged(db_session, monkeypatch):
+    drafting = _Drafting()
+    service, _ = _service(db_session, monkeypatch, drafting=drafting)
+    result = service.prepare(
+        "u1",
+        ApplicationPrepareRequest(target=ApplicationTargetInput(job_text="Python analysis and agent workflow role " * 3), target_pages=1, include_cover_letter=False),
+    )
+    assert drafting.calls == 1
+    assert drafting.contexts[0]["target_pages"] == 1
+    assert result.result.target_pages == 1
+    assert result.result.actual_pdf_pages <= 1
+    assert result.result.layout_status.value == "fit"
 
 
 def test_preparation_attribution_distinguishes_fresh_from_reused_analysis_and_is_immutable(db_session, monkeypatch, runtime_snapshot_a):

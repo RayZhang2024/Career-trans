@@ -28,6 +28,7 @@ from app.schemas.application_preparation import (
 from app.schemas.candidate import CandidateContext, CareerEvidence
 from app.schemas.cv_ingestion import CandidateCVData
 from app.schemas.discovery import JobListing
+from app.schemas.job import JobProfile
 from app.schemas.matching import EvidenceRef, EvidenceSourceType, RequirementMatch
 from app.services.canonical_candidate_read_service import (
     CandidateEvidenceMaterializationIncomplete,
@@ -36,13 +37,14 @@ from app.services.canonical_candidate_read_service import (
 from app.services.user_job_discovery_service import UserJobDiscoveryService, _application_revision
 from app.services.application_document_renderer import ApplicationDocumentRenderer
 from app.services.agentic_job_discovery_service import AgenticJobDiscoveryService
+from app.services.candidate_profile_compaction import top_evidence
 from app.workflows.career_analysis_graph import CareerAnalysisGraph
 from app.services.llm_runtime import PREPARATION_OPERATIONS, ResolvedRuntimeSnapshot, resolve_runtime_snapshot
 from app.services.semantic_runtime_attribution import available_attribution, canonical_attribution_json, read_attribution
 from app.schemas.ai_settings import SemanticOperation
 
 
-_CONTRACT_VERSION = "application-preparation-v2"
+_CONTRACT_VERSION = "application-preparation-v3"
 _MAX_CONTEXT_SOURCES = 18
 # Match support has priority over structural attribution anchors.  The latter
 # are separately bounded and only exposed when they can be cited canonically.
@@ -174,8 +176,18 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
         )
         resolution = self._resolve_target(user_id, request, context)
         target = resolution.target
-        source_catalog = self._bounded_sources(context, structured, target.requirement_matches)
-        draft_context = self._draft_context(target, source_catalog, structured)
+        source_catalog = self._bounded_sources(
+            context,
+            structured,
+            target.requirement_matches,
+            target.job_profile,
+        )
+        draft_context = self._draft_context(
+            target,
+            source_catalog,
+            structured,
+            target_pages=request.target_pages,
+        )
         drafting_agent = self._get_drafting_agent()
         cv_draft = drafting_agent.draft_cv(draft_context)
         cv = self._materialize_cv(cv_draft, structured, source_catalog)
@@ -260,7 +272,13 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
             raise ApplicationInsufficientDetailError("Job detail did not yield sufficient requirements; provide job text.")
         return ApplicationTargetSnapshot(source_kind=kind, canonical_discovered_job_id=canonical_id, public_url=listing.url if kind != ApplicationTargetKind.JOB_TEXT else None, title=profile.title or listing.title, company=profile.company or listing.company, location=profile.location or listing.location, work_arrangement=profile.work_arrangement or listing.work_arrangement, employment_type=profile.employment_type or listing.employment_type, job_profile=profile, requirement_matches=matches, job_content_hash=content_hash)
 
-    def _bounded_sources(self, context: CandidateContext, data: CandidateCVData, matches: list[RequirementMatch]) -> dict[tuple[str, str], str]:
+    def _bounded_sources(
+        self,
+        context: CandidateContext,
+        data: CandidateCVData,
+        matches: list[RequirementMatch],
+        job_profile: JobProfile | None = None,
+    ) -> dict[tuple[str, str], str]:
         catalog: dict[tuple[str, str], str] = {}
         by_id = {item.evidence_id: item for item in context.evidence}
 
@@ -281,6 +299,23 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
                     break
             if len(catalog) >= _MAX_SUPPORT_SOURCES:
                 break
+        # Requirement matches are authoritative, but they are not always a
+        # complete CV-writing source set. Add the strongest other confirmed
+        # evidence selected by the existing deterministic, job-relevance
+        # compactor before generic profile facts can use the support budget.
+        if job_profile is not None and job_profile.requirements:
+            for item in top_evidence(
+                list(context.evidence),
+                job_profile,
+                limit=_MAX_SUPPORT_SOURCES,
+            ):
+                add_support(
+                    EvidenceSourceType.CAREER_EVIDENCE,
+                    item.evidence_id,
+                    item.text,
+                )
+                if len(catalog) >= _MAX_SUPPORT_SOURCES:
+                    break
         # Confirmed deterministic facts are separately typed, never fake evidence.
         for index, item in enumerate(data.education):
             add_support(EvidenceSourceType.EDUCATION, f"education:{index}", f"{item.qualification} at {item.institution}. {item.description}")
@@ -321,9 +356,17 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
                 remaining_anchors -= 1
         return catalog
 
-    def _draft_context(self, target: ApplicationTargetSnapshot, catalog: dict[tuple[str, str], str], data: CandidateCVData) -> dict[str, object]:
+    def _draft_context(
+        self,
+        target: ApplicationTargetSnapshot,
+        catalog: dict[tuple[str, str], str],
+        data: CandidateCVData,
+        *,
+        target_pages: int = 2,
+    ) -> dict[str, object]:
         return {
             "job": {"title": target.title, "company": target.company, "requirements": [item.requirement.text for item in target.requirement_matches]},
+            "target_pages": target_pages,
             "sources": [{"source_type": key[0], "source_ref": key[1], "text": value} for key, value in catalog.items()],
             "allowed_skills": sorted({item.name for item in data.skills}, key=str.casefold),
             "employment": [
@@ -344,7 +387,11 @@ class ApplicationPreparationService(ApplicationPreparationReadService):
         drafts = {item.employment_index: item for item in draft.role_drafts}
         if any(index < 0 or index >= len(data.employment) for index in drafts):
             raise ValueError("Generated CV references an unknown employment record.")
-        ordered = sorted(enumerate(data.employment), key=lambda pair: ((pair[1].end_date or pair[1].start_date or ""), pair[0]), reverse=True)
+        ordered = sorted(
+            enumerate(data.employment),
+            key=lambda pair: _employment_chronology_key(pair[1], pair[0]),
+            reverse=True,
+        )
         roles: list[TailoredRole] = []
         for index, item in ordered:
             bullets = drafts.get(index).bullets if index in drafts else []
@@ -516,3 +563,36 @@ def _employment_anchor(
     if description:
         values.append(description)
     return " ".join(values)
+
+
+def _employment_chronology_key(item, original_index: int) -> tuple[int, ...]:
+    """Sort roles by verified end date, then start date, without rewriting either.
+
+    CV dates are intentionally stored as source text. Parse common year/month
+    forms only for ordering; keep the exact confirmed strings in the rendered
+    role snapshot. Present/current roles sort ahead of closed roles.
+    """
+    end_key = _employment_date_key(item.end_date)
+    start_key = _employment_date_key(item.start_date)
+    primary = end_key if end_key != (0, 0, 0) else start_key
+    return (*primary, *start_key, -original_index)
+
+
+def _employment_date_key(value: str | None) -> tuple[int, int, int]:
+    if not value:
+        return (0, 0, 0)
+    text = " ".join(value.casefold().split())
+    if re.search(r"\b(present|current|ongoing|now)\b", text):
+        return (1, 9999, 12)
+    for date_format in (
+        "%Y-%m-%d", "%Y-%m", "%Y/%m", "%Y.%m", "%m/%Y", "%m-%Y",
+        "%b %Y", "%B %Y", "%b, %Y", "%B, %Y", "%Y",
+    ):
+        try:
+            parsed = datetime.strptime(text, date_format)
+        except ValueError:
+            continue
+        return (0, parsed.year, parsed.month if date_format != "%Y" else 0)
+
+    year_only = re.search(r"\b((?:19|20|21)\d{2})\b", text)
+    return (0, int(year_only.group(1)), 0) if year_only else (0, 0, 0)
