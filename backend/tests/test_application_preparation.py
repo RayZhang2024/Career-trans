@@ -518,6 +518,39 @@ def test_one_step_preparation_preserves_chronology_relevant_evidence_and_histori
         fastapi_app.dependency_overrides.pop(get_application_preparation_service, None)
 
 
+def test_one_step_preparation_orders_sept_after_april_and_preserves_source_date_text(db_session, monkeypatch):
+    service, _ = _service(db_session, monkeypatch, drafting=_Drafting())
+    data = _data().model_copy(update={
+        "employment": [
+            Employment(employer="April Role", title="Engineer", start_date="Jan 2020", end_date="Apr 2021"),
+            Employment(employer="September Role", title="Engineer", start_date="Feb 2020", end_date="Sept 2021"),
+        ],
+    })
+    structured_row = db_session.query(CandidateStructuredProfile).filter_by(user_id="u1").one()
+    structured_row.structured_json = data.model_dump_json()
+    ActiveCandidateEvidenceResolver(db_session).resolve("u1", data)
+    db_session.commit()
+
+    created = service.prepare(
+        "u1",
+        ApplicationPrepareRequest(
+            target=ApplicationTargetInput(job_text="Python engineer role " * 20),
+            include_cover_letter=False,
+        ),
+    )
+
+    assert [(role.employer, role.end_date) for role in created.result.cv.roles] == [
+        ("September Role", "Sept 2021"),
+        ("April Role", "Apr 2021"),
+    ]
+    rendered = ApplicationDocumentRenderer().render_cv_docx(created.identity, created.target, created.result)
+    docx_text = " ".join(item.text for item in Document(__import__("io").BytesIO(rendered)).paragraphs)
+    assert "September Role" in docx_text
+    assert "Sept 2021" in docx_text
+    assert "Apr 2021" in docx_text
+    assert docx_text.index("September Role") < docx_text.index("April Role")
+
+
 def test_requested_page_target_reaches_one_step_drafter_and_persists_unchanged(db_session, monkeypatch):
     drafting = _Drafting()
     service, _ = _service(db_session, monkeypatch, drafting=drafting)

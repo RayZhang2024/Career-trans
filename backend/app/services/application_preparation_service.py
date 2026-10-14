@@ -584,6 +584,10 @@ def _employment_date_key(value: str | None) -> tuple[int, int, int]:
     text = " ".join(value.casefold().split())
     if re.search(r"\b(present|current|ongoing|now)\b", text):
         return (1, 9999, 12)
+    # ``strptime`` recognises ``Sep`` but not the common ``Sept`` spelling.
+    # Normalize only the temporary parse value; the source date remains intact
+    # on the rendered CV role.
+    text = re.sub(r"\bsept\.?(?=\s|,|$)", "sep", text)
     for date_format in (
         "%Y-%m-%d", "%Y-%m", "%Y/%m", "%Y.%m", "%m/%Y", "%m-%Y",
         "%b %Y", "%B %Y", "%b, %Y", "%B, %Y", "%Y",
